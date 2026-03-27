@@ -175,17 +175,35 @@ router.post("/jobs/:jobId/process", async (req, res) => {
 
     await saveParsedResult(jobId, parsedResults);
 
+    const failedCount = parsedResults.filter((r) => "error" in r).length;
+    const allFailed = failedCount === files.length;
+
+    if (allFailed) {
+      const errorSummary = parsedResults
+        .filter((r): r is { fileId: string; fileName: string; error: string } => "error" in r)
+        .map((r) => `${r.fileName}: ${r.error}`)
+        .join("; ");
+      await db
+        .update(jobsTable)
+        .set({ status: "failed", error: `All files failed extraction: ${errorSummary}`, updatedAt: new Date() })
+        .where(eq(jobsTable.id, jobId));
+      req.log.warn({ jobId, failedCount }, "All files failed — marking job as failed");
+      res.status(422).json({ error: "Extraction failed for all files", details: errorSummary });
+      return;
+    }
+
     await db
       .update(jobsTable)
       .set({ status: "completed", updatedAt: new Date() })
       .where(eq(jobsTable.id, jobId));
 
-    req.log.info({ jobId, extractedCount: allRows.length }, "Job processing complete");
+    req.log.info({ jobId, extractedCount: allRows.length, failedCount }, "Job processing complete");
 
     res.json({
       success: true,
-      message: `Extraction complete. Found ${allRows.length} sign entries.`,
+      message: `Extraction complete. Found ${allRows.length} sign entries.${failedCount > 0 ? ` (${failedCount} file(s) failed)` : ""}`,
       extractedCount: allRows.length,
+      failedFileCount: failedCount,
     });
   } catch (err) {
     req.log.error({ err, jobId }, "Job processing failed");
