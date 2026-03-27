@@ -1,2 +1,12 @@
 export * from "./generated/api";
-export * from "./generated/types";
+export type {
+  ErrorResponse,
+  ExtractedSign,
+  HealthStatus,
+  JobDetails,
+  JobFile,
+  JobSummary,
+  JobSummaryStatus,
+  ProcessResponse,
+  UploadResponse,
+} from "./generated/types";

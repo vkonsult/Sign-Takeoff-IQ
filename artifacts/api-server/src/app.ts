@@ -3,6 +3,11 @@ import cors from "cors";
 import pinoHttp from "pino-http";
 import router from "./routes";
 import { logger } from "./lib/logger";
+import { ensureDirectories } from "./lib/storage";
+
+ensureDirectories().catch((err) => {
+  logger.error({ err }, "Failed to initialize storage directories");
+});
 
 const app: Express = express();
 

@@ -3,13 +3,15 @@ info:
   # Do not change the title, if the title changes, the import paths will be broken
   title: Api
   version: 0.1.0
-  description: API specification
+  description: Sign Takeoff Portal API
 servers:
   - url: /api
     description: Base API path
 tags:
   - name: health
     description: Health operations
+  - name: jobs
+    description: Sign takeoff job operations
 paths:
   /healthz:
     get:
@@ -24,6 +26,144 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthStatus"
+
+  /upload:
+    post:
+      operationId: uploadFiles
+      tags: [jobs]
+      summary: Upload PDF plan files
+      description: Upload one or more PDF plan files to create a new extraction job
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                files:
+                  type: array
+                  items:
+                    type: string
+                    format: binary
+              required:
+                - files
+      responses:
+        "201":
+          description: Job created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UploadResponse"
+        "400":
+          description: Bad request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /jobs/{jobId}/process:
+    post:
+      operationId: processJob
+      tags: [jobs]
+      summary: Process a job with Gemini extraction
+      description: Trigger Gemini AI extraction for all files in a job
+      parameters:
+        - name: jobId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Processing started
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProcessResponse"
+        "404":
+          description: Job not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /jobs/{jobId}:
+    get:
+      operationId: getJob
+      tags: [jobs]
+      summary: Get job status and results
+      description: Returns the job status, file list, and extracted sign data
+      parameters:
+        - name: jobId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Job details
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/JobDetails"
+        "404":
+          description: Job not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /jobs/{jobId}/export:
+    get:
+      operationId: exportJob
+      tags: [jobs]
+      summary: Export job results to XLSX
+      description: Download extraction results as a formatted Excel file
+      parameters:
+        - name: jobId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: XLSX file download
+          content:
+            application/vnd.openxmlformats-officedocument.spreadsheetml.sheet:
+              schema:
+                type: string
+                format: binary
+        "404":
+          description: Job not found or no results yet
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /jobs:
+    get:
+      operationId: listJobs
+      tags: [jobs]
+      summary: List all jobs
+      description: Returns all jobs ordered by creation date descending
+      responses:
+        "200":
+          description: List of jobs
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  jobs:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/JobSummary"
+                required:
+                  - jobs
+
 components:
   schemas:
     HealthStatus:
@@ -34,3 +174,178 @@ components:
       required:
         - status
 
+    UploadResponse:
+      type: object
+      properties:
+        jobId:
+          type: string
+          format: uuid
+        fileCount:
+          type: integer
+        message:
+          type: string
+      required:
+        - jobId
+        - fileCount
+        - message
+
+    ProcessResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        message:
+          type: string
+        extractedCount:
+          type: integer
+      required:
+        - success
+        - message
+
+    JobSummary:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [pending, processing, completed, failed]
+        fileCount:
+          type: integer
+        error:
+          type: string
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+      required:
+        - id
+        - status
+        - fileCount
+        - createdAt
+        - updatedAt
+
+    JobFile:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        originalName:
+          type: string
+        pageCount:
+          type: integer
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+      required:
+        - id
+        - originalName
+        - createdAt
+
+    ExtractedSign:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        jobFileId:
+          type: string
+          format: uuid
+          nullable: true
+        sheetNumber:
+          type: string
+          nullable: true
+        detailReference:
+          type: string
+          nullable: true
+        signType:
+          type: string
+          nullable: true
+        signIdentifier:
+          type: string
+          nullable: true
+        quantity:
+          type: integer
+          nullable: true
+        location:
+          type: string
+          nullable: true
+        dimensions:
+          type: string
+          nullable: true
+        mountingType:
+          type: string
+          nullable: true
+        finishColor:
+          type: string
+          nullable: true
+        illumination:
+          type: string
+          nullable: true
+        materials:
+          type: string
+          nullable: true
+        messageContent:
+          type: string
+          nullable: true
+        notes:
+          type: string
+          nullable: true
+        confidenceScore:
+          type: number
+          minimum: 0
+          maximum: 1
+        reviewFlag:
+          type: boolean
+        createdAt:
+          type: string
+          format: date-time
+      required:
+        - id
+        - confidenceScore
+        - reviewFlag
+        - createdAt
+
+    JobDetails:
+      type: object
+      properties:
+        job:
+          $ref: "#/components/schemas/JobSummary"
+        files:
+          type: array
+          items:
+            $ref: "#/components/schemas/JobFile"
+        extractedSigns:
+          type: array
+          items:
+            $ref: "#/components/schemas/ExtractedSign"
+        totalSigns:
+          type: integer
+        flaggedCount:
+          type: integer
+        highConfidenceCount:
+          type: integer
+      required:
+        - job
+        - files
+        - extractedSigns
+        - totalSigns
+        - flaggedCount
+        - highConfidenceCount
+
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+        details:
+          type: string
+          nullable: true
+      required:
+        - error

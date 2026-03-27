@@ -1,8 +1,18 @@
-# Workspace
+# Sign Takeoff Portal
 
 ## Overview
 
-pnpm workspace monorepo using TypeScript. Each package manages its own dependencies.
+Sign Takeoff Portal is an MVP web app for sign contractors and fabricators. Users upload PDF architectural plan documents, the system extracts sign-related data (types, quantities, dimensions, mounting, illumination, finishes, materials, messages, locations) using Gemini AI, displays results in a review table with confidence scores and flags, and exports structured data to XLSX.
+
+## Architecture
+
+pnpm workspace monorepo using TypeScript. 
+
+- **Frontend**: React + Vite + TanStack Query (port 22333, previewPath `/`)
+- **API server**: Express 5 (port 8080, proxied via Vite `/api` proxy)
+- **Database**: PostgreSQL + Drizzle ORM
+- **AI**: Gemini (via `@workspace/integrations-gemini-ai`, model `gemini-2.5-flash`)
+- **API codegen**: Orval (from OpenAPI spec `lib/api-spec/openapi.yaml`)
 
 ## Stack
 
@@ -12,85 +22,121 @@ pnpm workspace monorepo using TypeScript. Each package manages its own dependenc
 - **TypeScript version**: 5.9
 - **API framework**: Express 5
 - **Database**: PostgreSQL + Drizzle ORM
-- **Validation**: Zod (`zod/v4`), `drizzle-zod`
+- **Validation**: Zod, `drizzle-zod`
 - **API codegen**: Orval (from OpenAPI spec)
-- **Build**: esbuild (CJS bundle)
+- **Build**: esbuild (ESM bundle via `build.mjs`)
+- **Frontend build**: Vite
 
 ## Structure
 
 ```text
-artifacts-monorepo/
-├── artifacts/              # Deployable applications
-│   └── api-server/         # Express API server
-├── lib/                    # Shared libraries
-│   ├── api-spec/           # OpenAPI spec + Orval codegen config
-│   ├── api-client-react/   # Generated React Query hooks
-│   ├── api-zod/            # Generated Zod schemas from OpenAPI
-│   └── db/                 # Drizzle ORM schema + DB connection
-├── scripts/                # Utility scripts (single workspace package)
-│   └── src/                # Individual .ts scripts, run via `pnpm --filter @workspace/scripts run <script>`
-├── pnpm-workspace.yaml     # pnpm workspace (artifacts/*, lib/*, lib/integrations/*, scripts)
-├── tsconfig.base.json      # Shared TS options (composite, bundler resolution, es2022)
-├── tsconfig.json           # Root TS project references
-└── package.json            # Root package with hoisted devDeps
+artifacts/
+├── api-server/             # Express API server
+│   └── src/
+│       ├── app.ts          # Express app setup, middleware
+│       ├── index.ts        # Server entry point
+│       ├── routes/         # Route handlers (health, upload, jobs)
+│       └── lib/            # storage.ts, extraction.ts, export.ts
+└── web/                    # React + Vite frontend
+    └── src/
+        ├── App.tsx          # Router + QueryClient setup
+        ├── pages/           # Home.tsx, JobDetails.tsx, JobsList.tsx
+        ├── components/      # layout/Sidebar.tsx, layout/Shell.tsx, ui/*
+        └── hooks/           # use-takeoff.ts
+
+lib/
+├── api-spec/               # OpenAPI spec + Orval codegen config
+├── api-client-react/       # Generated React Query hooks + fetch client
+├── api-zod/                # Generated Zod schemas from OpenAPI
+├── db/                     # Drizzle ORM schema + DB connection
+└── integrations-gemini-ai/ # Gemini AI wrapper (Replit-managed, no user API key)
 ```
 
-## TypeScript & Composite Projects
+## Database Schema
 
-Every package extends `tsconfig.base.json` which sets `composite: true`. The root `tsconfig.json` lists all packages as project references. This means:
+Three tables in PostgreSQL:
 
-- **Always typecheck from the root** — run `pnpm run typecheck` (which runs `tsc --build --emitDeclarationOnly`). This builds the full dependency graph so that cross-package imports resolve correctly. Running `tsc` inside a single package will fail if its dependencies haven't been built yet.
-- **`emitDeclarationOnly`** — we only emit `.d.ts` files during typecheck; actual JS bundling is handled by esbuild/tsx/vite...etc, not `tsc`.
-- **Project references** — when package A depends on package B, A's `tsconfig.json` must list B in its `references` array. `tsc --build` uses this to determine build order and skip up-to-date packages.
+### `jobs`
+- `id` UUID (PK)
+- `status` text (pending | processing | completed | failed)
+- `file_count` int
+- `error` text (nullable)
+- `created_at`, `updated_at` timestamps
 
-## Root Scripts
+### `job_files`
+- `id` UUID (PK)
+- `job_id` UUID (FK → jobs)
+- `original_name` text
+- `stored_path` text
+- `page_count` int (nullable, populated after extraction)
+- `extracted_text` text (nullable, first 10k chars)
+- `created_at` timestamp
 
-- `pnpm run build` — runs `typecheck` first, then recursively runs `build` in all packages that define it
-- `pnpm run typecheck` — runs `tsc --build --emitDeclarationOnly` using project references
+### `extracted_signs`
+- `id` UUID (PK)
+- `job_id` UUID (FK → jobs)
+- `job_file_id` UUID (FK → job_files)
+- `sheet_number`, `detail_reference`, `sign_type`, `sign_identifier` text (nullable)
+- `quantity` int (default 1)
+- `location`, `dimensions`, `mounting_type`, `finish_color` text (nullable)
+- `illumination`, `materials`, `message_content`, `notes` text (nullable)
+- `confidence_score` numeric (0–1)
+- `review_flag` boolean (true if confidence < 0.7)
+- `raw_json` jsonb
+- `created_at` timestamp
 
-## Packages
+## API Endpoints
 
-### `artifacts/api-server` (`@workspace/api-server`)
+All prefixed `/api`:
 
-Express 5 API server. Routes live in `src/routes/` and use `@workspace/api-zod` for request and response validation and `@workspace/db` for persistence.
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/healthz` | Health check |
+| POST | `/upload` | Upload PDFs (multipart/form-data, field: `files[]`) → creates job |
+| POST | `/jobs/:jobId/process` | Trigger Gemini extraction |
+| GET | `/jobs/:jobId` | Job status + extracted signs |
+| GET | `/jobs/:jobId/export` | Download XLSX |
+| GET | `/jobs` | List all jobs |
 
-- Entry: `src/index.ts` — reads `PORT`, starts Express
-- App setup: `src/app.ts` — mounts CORS, JSON/urlencoded parsing, routes at `/api`
-- Routes: `src/routes/index.ts` mounts sub-routers; `src/routes/health.ts` exposes `GET /health` (full path: `/api/health`)
-- Depends on: `@workspace/db`, `@workspace/api-zod`
-- `pnpm --filter @workspace/api-server run dev` — run the dev server
-- `pnpm --filter @workspace/api-server run build` — production esbuild bundle (`dist/index.cjs`)
-- Build bundles an allowlist of deps (express, cors, pg, drizzle-orm, zod, etc.) and externalizes the rest
+## User Flow
 
-### `lib/db` (`@workspace/db`)
+1. Upload PDF plan files → creates a job in "pending" state
+2. Navigate to job page → click "Start Extraction"
+3. Gemini AI reads PDF text, extracts sign schedules (JSON output)
+4. Review table shows all extracted signs with confidence badges
+5. Export to XLSX for use in fabrication/bidding workflows
 
-Database layer using Drizzle ORM with PostgreSQL. Exports a Drizzle client instance and schema models.
+## File Storage
 
-- `src/index.ts` — creates a `Pool` + Drizzle instance, exports schema
-- `src/schema/index.ts` — barrel re-export of all models
-- `src/schema/<modelname>.ts` — table definitions with `drizzle-zod` insert schemas (no models definitions exist right now)
-- `drizzle.config.ts` — Drizzle Kit config (requires `DATABASE_URL`, automatically provided by Replit)
-- Exports: `.` (pool, db, schema), `./schema` (schema only)
+- Uploads: `data/uploads/{jobId}/`
+- Parsed JSON results: `data/parsed/{jobId}.json`
+- XLSX exports: `data/exports/{jobId}.xlsx`
+- Temp upload staging: `/tmp/sign-takeoff-uploads/`
 
-Production migrations are handled by Replit when publishing. In development, we just use `pnpm --filter @workspace/db run push`, and we fallback to `pnpm --filter @workspace/db run push-force`.
+## Key Notes
 
-### `lib/api-spec` (`@workspace/api-spec`)
+- Gemini extraction uses `gemini-2.5-flash` with a detailed sign-industry prompt
+- PDF text is extracted via `pdf-parse`, then sent to Gemini as structured extraction task
+- Confidence scores: ≥0.8 = high (green), 0.6–0.8 = medium (yellow), <0.6 = low/flagged (red)
+- `review_flag = true` when confidence < 0.7 or required fields are missing
+- XLSX export uses `exceljs` with conditional formatting (colored confidence cells, flagged row highlighting)
+- Vite proxy forwards `/api` requests to Express API server at port 8080
 
-Owns the OpenAPI 3.1 spec (`openapi.yaml`) and the Orval config (`orval.config.ts`). Running codegen produces output into two sibling packages:
+## Development Commands
 
-1. `lib/api-client-react/src/generated/` — React Query hooks + fetch client
-2. `lib/api-zod/src/generated/` — Zod schemas
+```bash
+# Start frontend
+pnpm --filter @workspace/web run dev
 
-Run codegen: `pnpm --filter @workspace/api-spec run codegen`
+# Start API server  
+pnpm --filter @workspace/api-server run dev
 
-### `lib/api-zod` (`@workspace/api-zod`)
+# Push DB schema
+pnpm --filter @workspace/db run push
 
-Generated Zod schemas from the OpenAPI spec (e.g. `HealthCheckResponse`). Used by `api-server` for response validation.
+# Run codegen (after changing openapi.yaml)
+pnpm --filter @workspace/api-spec run codegen
 
-### `lib/api-client-react` (`@workspace/api-client-react`)
-
-Generated React Query hooks and fetch client from the OpenAPI spec (e.g. `useHealthCheck`, `healthCheck`).
-
-### `scripts` (`@workspace/scripts`)
-
-Utility scripts package. Each script is a `.ts` file in `src/` with a corresponding npm script in `package.json`. Run scripts via `pnpm --filter @workspace/scripts run <script>`. Scripts can import any workspace package (e.g., `@workspace/db`) by adding it as a dependency in `scripts/package.json`.
+# TypeScript typecheck
+pnpm run typecheck
+```

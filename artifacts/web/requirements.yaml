@@ -1,0 +1,15 @@
+packages:
+  "react-dropzone": "For drag and drop PDF file uploads"
+  "date-fns": "For formatting dates in the job list and details"
+  "framer-motion": "For subtle animations on the processing states and page transitions"
+  "clsx": "For conditional class name joining"
+  "tailwind-merge": "For safely merging tailwind classes"
+
+images:
+  - path: "artifacts/web/public/images/blueprint-bg.png"
+    description: "Subtle dark architectural blueprint grid background pattern, industrial and precise, low contrast"
+    aspect_ratio: "16:9"
+
+notes:
+  - Using generated Orval hooks from @workspace/api-client-react
+  - Implementing auto-polling for job status when in 'processing' state
