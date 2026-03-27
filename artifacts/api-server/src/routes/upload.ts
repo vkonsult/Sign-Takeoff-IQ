@@ -5,6 +5,7 @@ import fs from "fs/promises";
 import { db } from "@workspace/db";
 import { jobsTable, jobFilesTable } from "@workspace/db";
 import { ensureJobUploadDir } from "../lib/storage";
+import { processJob } from "../lib/process-job";
 
 const router: IRouter = Router();
 
@@ -76,12 +77,16 @@ router.post("/upload", upload.array("files", 20), async (req, res) => {
 
     await db.insert(jobFilesTable).values(fileRecords);
 
-    req.log.info({ jobId: job.id, fileCount: files.length }, "Upload complete, job created");
+    req.log.info({ jobId: job.id, fileCount: files.length }, "Upload complete, auto-starting extraction");
 
     res.status(201).json({
       jobId: job.id,
       fileCount: files.length,
-      message: `Successfully uploaded ${files.length} file(s). Use POST /api/jobs/${job.id}/process to start extraction.`,
+      message: `Successfully uploaded ${files.length} file(s). Extraction starting automatically.`,
+    });
+
+    processJob(job.id).catch((err) => {
+      req.log.error({ err, jobId: job.id }, "Auto-triggered extraction failed");
     });
   } catch (err) {
     req.log.error({ err }, "Upload failed");
