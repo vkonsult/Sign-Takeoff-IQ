@@ -10,4 +10,5 @@ export interface ProcessResponse {
   success: boolean;
   message: string;
   extractedCount?: number;
+  status?: "pending" | "processing" | "completed" | "failed";
 }

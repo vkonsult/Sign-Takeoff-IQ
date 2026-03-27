@@ -97,12 +97,14 @@ router.post("/jobs/:jobId/process", async (req, res) => {
     await processJob(jobId);
 
     const [updated] = await db.select().from(jobsTable).where(eq(jobsTable.id, jobId));
+    const extractedCount = (await db.select().from(extractedSignsTable).where(eq(extractedSignsTable.jobId, jobId))).length;
     res.json({
       success: true,
       status: updated?.status,
       message: updated?.status === "completed"
-        ? "Extraction complete."
+        ? `Extraction complete. Found ${extractedCount} sign entries.`
         : `Job ended with status: ${updated?.status}`,
+      extractedCount,
     });
   } catch (err) {
     req.log.error({ err, jobId }, "Job processing failed");

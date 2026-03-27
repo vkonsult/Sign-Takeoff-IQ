@@ -6,12 +6,15 @@ import {
   extractedSignsTable,
   type InsertExtractedSign,
 } from "@workspace/db";
+
 import { ai } from "@workspace/integrations-gemini-ai";
 import { extractSignsFromPdf } from "./extraction";
 import { saveParsedResult } from "./storage";
 import { logger } from "./logger";
 
 export async function processJob(jobId: string): Promise<void> {
+  await db.delete(extractedSignsTable).where(eq(extractedSignsTable.jobId, jobId));
+
   await db
     .update(jobsTable)
     .set({ status: "processing", updatedAt: new Date() })

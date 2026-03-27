@@ -198,6 +198,9 @@ components:
           type: string
         extractedCount:
           type: integer
+        status:
+          type: string
+          enum: [pending, processing, completed, failed]
       required:
         - success
         - message

@@ -35,6 +35,7 @@ export const ProcessJobResponse = zod.object({
   success: zod.boolean(),
   message: zod.string(),
   extractedCount: zod.number().optional(),
+  status: zod.enum(["pending", "processing", "completed", "failed"]).optional(),
 });
 
 /**
