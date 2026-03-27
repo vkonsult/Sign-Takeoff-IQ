@@ -1,0 +1,204 @@
+Build a production-minded MVP called **Sign Takeoff Portal** for the sign industry.
+
+## Product Goal
+This is a portal for sign contractors, sign shops, and fabricators. A user uploads plan PDFs, and the system uses Gemini to read the plans, identify sign-related information, extract structured takeoff data, and export the results into Excel. This is not a generic construction takeoff app. It is specifically for signage.
+
+The system should understand things like:
+- sign schedules
+- sign callouts
+- sign types
+- quantities
+- sign locations
+- dimensions
+- mounting types
+- finishes
+- illumination notes
+- materials when available
+- message/content when available
+- general notes related to signs
+- uncertain or missing items that need review
+
+In a later phase, the system will also retrieve sign code requirements by jurisdiction using a RAG knowledge base, so the architecture should be designed for that now.
+
+## Tech Stack
+Use this stack:
+- Frontend: React + Vite + TypeScript
+- Backend: Python + FastAPI
+- AI model: Gemini
+- Embeddings: current supported Gemini embedding model only, no deprecated embedding models
+- Vector database: Chroma with persistent local storage
+- File export: XLSX
+- Storage:
+  - uploaded files stored locally in app storage
+  - parsed outputs stored locally
+  - Chroma db stored locally
+- Keep the code modular and production-friendly
+
+## Required Monorepo Structure
+Create this project structure:
+
+sign-takeoff-portal/
+  apps/
+    web/
+    api/
+  data/
+    uploads/
+    parsed/
+    chroma/
+    exports/
+  knowledge/
+    federal_codes/
+    state_codes/
+    city_codes/
+    sign_glossary/
+    plan_guides/
+    customer_standards/
+  scripts/
+    ingest_knowledge.py
+    validate_knowledge.py
+    rebuild_index.py
+  replit.md
+  README.md
+
+## Core MVP Features
+Plan the app to include these features:
+
+### 1. Upload Flow
+- User uploads one or more PDF plan files
+- Backend stores uploaded files
+- Backend creates a processing job
+
+### 2. Plan Extraction
+Use Gemini to analyze uploaded PDFs and extract sign-specific data into structured JSON.
+
+Each extracted sign row should try to include:
+- sheet number
+- detail/reference if available
+- sign type
+- sign identifier/callout
+- quantity
+- location
+- dimensions
+- mounting type
+- finish/color
+- illumination
+- materials
+- message/content
+- notes
+- confidence score
+- review flag
+
+### 3. Review Screen
+- Frontend should show extraction results in a table
+- User should be able to see which rows are high confidence and which need review
+- Rows with missing or uncertain data should be visibly flagged
+
+### 4. Excel Export
+- Export reviewed structured results to XLSX
+- Keep the export schema clean and consistent
+
+### 5. RAG-Ready Knowledge Layer
+Even if not fully implemented yet, architect for this:
+- Chroma persistent database
+- collections for:
+  - federal_codes
+  - state_codes
+  - city_codes
+  - sign_glossary
+  - plan_guides
+  - customer_standards
+- metadata on chunks:
+  - source_file
+  - jurisdiction
+  - doc_type
+  - section
+  - effective_date
+  - status
+- retrieval layer should be designed to support jurisdiction-filtered lookups later
+
+## Planning Requirements
+In planning mode, do NOT jump straight into coding everything at once.
+
+Instead, do the following:
+
+1. Produce a clear implementation plan with phases
+2. Show the proposed file tree
+3. Explain the purpose of each major folder and service
+4. Identify the backend modules and API routes
+5. Identify the frontend pages/components
+6. Identify the extraction pipeline flow
+7. Identify the RAG ingestion and retrieval flow
+8. Identify environment variables required
+9. Identify any risks, assumptions, and TODO items
+10. Recommend the order of implementation for fastest MVP success
+
+## Backend Requirements
+Plan backend modules for:
+- file upload handling
+- job/process orchestration
+- Gemini extraction service
+- structured output validation
+- XLSX export service
+- Chroma client/service
+- knowledge ingestion scripts
+- retrieval service
+- config/settings management
+
+Plan API routes like:
+- POST /upload
+- POST /process/{job_id}
+- GET /results/{job_id}
+- GET /export/{job_id}
+- POST /knowledge/ingest
+- GET /health
+
+## Frontend Requirements
+Plan frontend pages/components for:
+- upload page
+- processing/status page
+- results review table
+- export action
+- future code lookup panel
+
+Keep the UI clean, practical, and business-focused.
+
+## Data and Validation Rules
+The app should not blindly trust model output.
+Plan for:
+- strict JSON schema validation
+- confidence scoring
+- review flags
+- missing-value handling
+- source traceability where possible
+- a second-pass validation step later if needed
+
+## RAG Accuracy Requirements
+Plan the knowledge system so it is trustworthy:
+- only approved knowledge files should be ingested
+- validation should check metadata before indexing
+- collections should be separated by document type
+- retrieval should later support jurisdiction filtering
+- code-related outputs should eventually include citations
+
+## Replit-Specific Requirements
+- Create a replit.md file with architecture notes and coding rules
+- Use environment variables for secrets
+- Keep the app easy to run in Replit
+- Avoid fake business logic; where needed, use real scaffolding with TODOs
+- Prefer modular files over giant single files
+
+## Important Constraints
+- This is sign-industry specific software
+- Do not design it like a generic estimating platform
+- Do not use deprecated Gemini embedding models
+- Keep the MVP realistic and extensible
+- Plan first before writing code
+
+## Final Output I Want From You
+In planning mode, respond with:
+1. a phased build plan
+2. the proposed file tree
+3. the key modules/services/pages
+4. the API contract
+5. the implementation order
+6. any architecture recommendations before coding begins
