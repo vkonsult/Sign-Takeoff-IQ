@@ -1,5 +1,6 @@
 import fs from "fs/promises";
 import pdfParse from "pdf-parse/lib/pdf-parse.js";
+import { z } from "zod";
 import { logger } from "./logger";
 
 export interface ExtractedSignRow {
@@ -85,6 +86,30 @@ function computeReviewFlag(item: Record<string, unknown>, score: number): boolea
   return score < 0.6 || !item.sign_type || !item.location;
 }
 
+const GeminiSignRowSchema = z.object({
+  sheet_number: z.string().nullable().optional().default(null),
+  detail_reference: z.string().nullable().optional().default(null),
+  sign_type: z.string().nullable().optional().default(null),
+  sign_identifier: z.string().nullable().optional().default(null),
+  quantity: z
+    .union([z.number().int().positive(), z.null()])
+    .optional()
+    .default(null)
+    .transform((v) => (v !== null && v !== undefined ? Math.max(1, Math.round(v)) : null)),
+  location: z.string().nullable().optional().default(null),
+  dimensions: z.string().nullable().optional().default(null),
+  mounting_type: z.string().nullable().optional().default(null),
+  finish_color: z.string().nullable().optional().default(null),
+  illumination: z.string().nullable().optional().default(null),
+  materials: z.string().nullable().optional().default(null),
+  message_content: z.string().nullable().optional().default(null),
+  notes: z.string().nullable().optional().default(null),
+  confidence_score: z.number().min(0).max(1).optional(),
+  review_flag: z.boolean().optional(),
+});
+
+const GeminiResponseSchema = z.array(GeminiSignRowSchema);
+
 function parseGeminiResponse(raw: string): ExtractedSignRow[] {
   let text = raw.trim();
 
@@ -101,33 +126,34 @@ function parseGeminiResponse(raw: string): ExtractedSignRow[] {
   const jsonStr = text.slice(start, end + 1);
   const parsed: unknown = JSON.parse(jsonStr);
 
-  if (!Array.isArray(parsed)) {
-    throw new Error("Gemini response is not a JSON array");
+  const result = GeminiResponseSchema.safeParse(parsed);
+  if (!result.success) {
+    logger.warn({ issues: result.error.issues }, "Gemini response failed Zod schema validation");
+    throw new Error(`Gemini response schema validation failed: ${result.error.message}`);
   }
 
-  return (parsed as Record<string, unknown>[]).map((item) => {
+  return result.data.map((item) => {
     const score =
-      typeof item.confidence_score === "number"
+      item.confidence_score !== undefined
         ? Math.min(1, Math.max(0, item.confidence_score))
-        : computeConfidence(item);
+        : computeConfidence(item as unknown as Record<string, unknown>);
 
     return {
-      sheet_number: typeof item.sheet_number === "string" ? item.sheet_number : null,
-      detail_reference: typeof item.detail_reference === "string" ? item.detail_reference : null,
-      sign_type: typeof item.sign_type === "string" ? item.sign_type : null,
-      sign_identifier: typeof item.sign_identifier === "string" ? item.sign_identifier : null,
-      quantity:
-        typeof item.quantity === "number" ? Math.max(1, Math.round(item.quantity)) : null,
-      location: typeof item.location === "string" ? item.location : null,
-      dimensions: typeof item.dimensions === "string" ? item.dimensions : null,
-      mounting_type: typeof item.mounting_type === "string" ? item.mounting_type : null,
-      finish_color: typeof item.finish_color === "string" ? item.finish_color : null,
-      illumination: typeof item.illumination === "string" ? item.illumination : null,
-      materials: typeof item.materials === "string" ? item.materials : null,
-      message_content: typeof item.message_content === "string" ? item.message_content : null,
-      notes: typeof item.notes === "string" ? item.notes : null,
+      sheet_number: item.sheet_number ?? null,
+      detail_reference: item.detail_reference ?? null,
+      sign_type: item.sign_type ?? null,
+      sign_identifier: item.sign_identifier ?? null,
+      quantity: item.quantity ?? null,
+      location: item.location ?? null,
+      dimensions: item.dimensions ?? null,
+      mounting_type: item.mounting_type ?? null,
+      finish_color: item.finish_color ?? null,
+      illumination: item.illumination ?? null,
+      materials: item.materials ?? null,
+      message_content: item.message_content ?? null,
+      notes: item.notes ?? null,
       confidence_score: score,
-      review_flag: computeReviewFlag(item, score),
+      review_flag: item.review_flag ?? computeReviewFlag(item as unknown as Record<string, unknown>, score),
     };
   });
 }
