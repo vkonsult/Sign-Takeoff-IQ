@@ -1,4 +1,5 @@
 import fs from "fs/promises";
+import pdfParse from "pdf-parse/lib/pdf-parse.js";
 import { logger } from "./logger";
 
 export interface ExtractedSignRow {
@@ -64,8 +65,6 @@ TEXT FROM PLAN DOCUMENTS:
 async function extractTextFromPdf(filePath: string): Promise<{ text: string; numPages: number }> {
   try {
     const dataBuffer = await fs.readFile(filePath);
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const pdfParse: (buf: Buffer) => Promise<{ text: string; numpages: number }> = (await import("pdf-parse" as any)).default;
     const result = await pdfParse(dataBuffer);
     return { text: result.text, numPages: result.numpages };
   } catch (err) {
@@ -139,7 +138,7 @@ export interface GeminiAI {
       model: string;
       contents: { role: string; parts: { text: string }[] }[];
       config?: { maxOutputTokens?: number; temperature?: number };
-    }) => Promise<{ text: string }>;
+    }) => Promise<{ text: string | undefined }>;
   };
 }
 

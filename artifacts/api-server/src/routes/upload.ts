@@ -64,7 +64,8 @@ router.post("/upload", upload.array("files", 20), async (req, res) => {
     const fileRecords = await Promise.all(
       files.map(async (file) => {
         const destPath = path.join(uploadDir, file.filename);
-        await fs.rename(file.path, destPath);
+        await fs.copyFile(file.path, destPath);
+        await fs.unlink(file.path).catch(() => undefined);
         return {
           jobId: job.id,
           originalName: file.originalname,
