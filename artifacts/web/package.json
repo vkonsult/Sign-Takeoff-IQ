@@ -75,6 +75,7 @@
     "zod": "catalog:"
   },
   "dependencies": {
-    "react-dropzone": "^15.0.0"
+    "react-dropzone": "^15.0.0",
+    "react-pdf": "^10.4.1"
   }
 }

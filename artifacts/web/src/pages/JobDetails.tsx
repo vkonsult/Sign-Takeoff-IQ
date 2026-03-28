@@ -1,6 +1,10 @@
+import { useState } from "react";
 import { useRoute } from "wouter";
+import { useQueryClient } from "@tanstack/react-query";
 import { AppShell } from "@/components/layout/Shell";
 import { useJobDetails, useStartExtraction, downloadExport } from "@/hooks/use-takeoff";
+import { SignReviewModal } from "@/components/SignReviewModal";
+import { getGetJobQueryKey } from "@workspace/api-client-react";
 import { 
   FileText, 
   Cpu, 
@@ -9,7 +13,8 @@ import {
   Download, 
   Play, 
   Loader2,
-  ListFilter
+  ListFilter,
+  Pencil
 } from "lucide-react";
 import { format } from "date-fns";
 import { motion } from "framer-motion";
@@ -20,6 +25,10 @@ export default function JobDetails() {
   
   const { data, isLoading, isError, error } = useJobDetails(jobId);
   const extractMutation = useStartExtraction();
+  const queryClient = useQueryClient();
+
+  type SignRow = NonNullable<typeof data>["extractedSigns"][number];
+  const [reviewSign, setReviewSign] = useState<SignRow | null>(null);
 
   const handleStartExtraction = () => {
     if (jobId) {
@@ -31,6 +40,11 @@ export default function JobDetails() {
     if (jobId) {
       downloadExport(jobId);
     }
+  };
+
+  const handleSignSaved = () => {
+    queryClient.invalidateQueries({ queryKey: getGetJobQueryKey(jobId) });
+    setReviewSign(null);
   };
 
   if (isLoading && !data) {
@@ -168,6 +182,7 @@ export default function JobDetails() {
                         <th className="data-header">Message</th>
                         <th className="data-header text-center">Confidence</th>
                         <th className="data-header text-center">Status</th>
+                        <th className="data-header text-center w-20">Review</th>
                       </tr>
                     </thead>
                     <tbody className="bg-background">
@@ -197,15 +212,25 @@ export default function JobDetails() {
                           <td className="data-cell text-center">
                             {sign.reviewFlag && (
                               <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider bg-primary/20 text-primary border border-primary/30">
-                                Review
+                                <AlertTriangle className="w-3 h-3 mr-1" />
+                                Flag
                               </span>
                             )}
+                          </td>
+                          <td className="data-cell text-center">
+                            <button
+                              onClick={() => setReviewSign(sign)}
+                              className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-display font-semibold uppercase tracking-wide bg-secondary hover:bg-primary/20 hover:text-primary border border-border hover:border-primary/40 text-muted-foreground transition-all"
+                            >
+                              <Pencil className="w-3 h-3" />
+                              Edit
+                            </button>
                           </td>
                         </tr>
                       ))}
                       {extractedSigns.length === 0 && (
                         <tr>
-                          <td colSpan={10} className="p-8 text-center text-muted-foreground">
+                          <td colSpan={11} className="p-8 text-center text-muted-foreground">
                             No signs were extracted from these documents.
                           </td>
                         </tr>
@@ -242,6 +267,16 @@ export default function JobDetails() {
           )}
         </div>
       </div>
+
+      {reviewSign && (
+        <SignReviewModal
+          sign={reviewSign}
+          jobId={jobId}
+          files={files}
+          onClose={() => setReviewSign(null)}
+          onSaved={handleSignSaved}
+        />
+      )}
     </AppShell>
   );
 }

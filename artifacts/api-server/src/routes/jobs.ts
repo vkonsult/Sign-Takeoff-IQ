@@ -10,6 +10,8 @@ import { buildExcelExport } from "../lib/export";
 import { getJobExportPath } from "../lib/storage";
 import { processJob } from "../lib/process-job";
 import fs from "fs/promises";
+import fsSync from "fs";
+import { z } from "zod/v4";
 
 const router: IRouter = Router();
 
@@ -113,6 +115,118 @@ router.post("/jobs/:jobId/process", async (req, res) => {
       .set({ status: "failed", error: String(err), updatedAt: new Date() })
       .where(eq(jobsTable.id, jobId)).catch(() => {});
     res.status(500).json({ error: "Job processing failed", details: String(err) });
+  }
+});
+
+router.get("/jobs/:jobId/files/:fileId/pdf", async (req, res) => {
+  const { jobId, fileId } = req.params;
+  if (!jobId || !fileId) {
+    res.status(400).json({ error: "Job ID and file ID required" });
+    return;
+  }
+
+  try {
+    const [file] = await db
+      .select()
+      .from(jobFilesTable)
+      .where(eq(jobFilesTable.id, fileId));
+
+    if (!file || file.jobId !== jobId) {
+      res.status(404).json({ error: "File not found" });
+      return;
+    }
+
+    try {
+      await fs.access(file.storedPath);
+    } catch {
+      res.status(404).json({ error: "PDF file not found on disk" });
+      return;
+    }
+
+    const stat = await fs.stat(file.storedPath);
+    const fileSize = stat.size;
+    const rangeHeader = req.headers.range;
+
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Accept-Ranges", "bytes");
+    res.setHeader("Cache-Control", "private, max-age=300");
+    res.setHeader("Content-Disposition", `inline; filename="${file.originalName}"`);
+
+    if (rangeHeader) {
+      const parts = rangeHeader.replace(/bytes=/, "").split("-");
+      const start = parseInt(parts[0]!, 10);
+      const end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1;
+      const chunkSize = end - start + 1;
+
+      res.status(206);
+      res.setHeader("Content-Range", `bytes ${start}-${end}/${fileSize}`);
+      res.setHeader("Content-Length", chunkSize);
+
+      const stream = fsSync.createReadStream(file.storedPath, { start, end });
+      stream.pipe(res);
+    } else {
+      res.setHeader("Content-Length", fileSize);
+      const stream = fsSync.createReadStream(file.storedPath);
+      stream.pipe(res);
+    }
+  } catch (err) {
+    req.log.error({ err, fileId }, "Failed to serve PDF");
+    res.status(500).json({ error: "Failed to serve PDF" });
+  }
+});
+
+const UpdateSignSchema = z.object({
+  sheetNumber: z.string().nullable().optional(),
+  detailReference: z.string().nullable().optional(),
+  signType: z.string().nullable().optional(),
+  signIdentifier: z.string().nullable().optional(),
+  quantity: z.coerce.number().int().positive().nullable().optional(),
+  location: z.string().nullable().optional(),
+  dimensions: z.string().nullable().optional(),
+  mountingType: z.string().nullable().optional(),
+  finishColor: z.string().nullable().optional(),
+  illumination: z.string().nullable().optional(),
+  materials: z.string().nullable().optional(),
+  messageContent: z.string().nullable().optional(),
+  notes: z.string().nullable().optional(),
+  reviewFlag: z.boolean().optional(),
+});
+
+router.patch("/extracted-signs/:signId", async (req, res) => {
+  const { signId } = req.params;
+  if (!signId) {
+    res.status(400).json({ error: "Sign ID required" });
+    return;
+  }
+
+  const parsed = UpdateSignSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: "Invalid request body", details: parsed.error.issues });
+    return;
+  }
+
+  try {
+    const [existing] = await db
+      .select()
+      .from(extractedSignsTable)
+      .where(eq(extractedSignsTable.id, signId));
+
+    if (!existing) {
+      res.status(404).json({ error: "Sign not found" });
+      return;
+    }
+
+    const [updated] = await db
+      .update(extractedSignsTable)
+      .set(parsed.data)
+      .where(eq(extractedSignsTable.id, signId))
+      .returning();
+
+    res.json({ sign: updated });
+    req.log.info({ signId }, "Sign updated");
+  } catch (err) {
+    req.log.error({ err, signId }, "Failed to update sign");
+    res.status(500).json({ error: "Failed to update sign" });
   }
 });
 
