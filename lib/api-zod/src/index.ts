@@ -9,4 +9,12 @@ export type {
   JobSummaryStatus,
   ProcessResponse,
   UploadResponse,
+  KnowledgeCollectionName,
+  KnowledgeIngestRequest,
+  KnowledgeIngestFileResult,
+  KnowledgeIngestResponse,
+  KnowledgeQueryRequest,
+  KnowledgeResult,
+  KnowledgeResultMetadata,
+  KnowledgeQueryResponse,
 } from "./generated/types";

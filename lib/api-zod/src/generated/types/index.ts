@@ -17,3 +17,6 @@ export * from "./listJobs200";
 export * from "./processResponse";
 export * from "./uploadFilesBody";
 export * from "./uploadResponse";
+export * from "./knowledgeIngestRequest";
+export * from "./knowledgeIngestResponse";
+export * from "./knowledgeQueryResponse";

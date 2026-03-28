@@ -12,6 +12,8 @@ tags:
     description: Health operations
   - name: jobs
     description: Sign takeoff job operations
+  - name: knowledge
+    description: RAG knowledge base operations
 paths:
   /healthz:
     get:
@@ -163,6 +165,70 @@ paths:
                       $ref: "#/components/schemas/JobSummary"
                 required:
                   - jobs
+
+  /knowledge/ingest:
+    post:
+      operationId: ingestKnowledge
+      tags: [knowledge]
+      summary: Ingest knowledge files into ChromaDB
+      description: Reads knowledge files from the knowledge directory, generates embeddings, and stores them in ChromaDB. Optionally filter by collection name or specific file path.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/KnowledgeIngestRequest"
+      responses:
+        "200":
+          description: Ingestion results
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/KnowledgeIngestResponse"
+        "400":
+          description: Bad request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Ingestion failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /knowledge/query:
+    post:
+      operationId: queryKnowledge
+      tags: [knowledge]
+      summary: Query the knowledge base
+      description: Performs semantic search against ChromaDB collections using text-embedding-004 embeddings. Returns ranked results with citations.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/KnowledgeQueryRequest"
+      responses:
+        "200":
+          description: Query results
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/KnowledgeQueryResponse"
+        "400":
+          description: Bad request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Query failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
 
 components:
   schemas:
@@ -341,6 +407,143 @@ components:
         - totalSigns
         - flaggedCount
         - highConfidenceCount
+
+    KnowledgeIngestRequest:
+      type: object
+      properties:
+        collection:
+          type: string
+          enum: [federal_codes, state_codes, city_codes, sign_glossary, plan_guides, customer_standards]
+          nullable: true
+        file_path:
+          type: string
+          nullable: true
+          description: Optional specific file path to ingest (relative to knowledge directory)
+
+    KnowledgeIngestFileResult:
+      type: object
+      properties:
+        file:
+          type: string
+        chunksAdded:
+          type: integer
+        errors:
+          type: array
+          items:
+            type: string
+      required:
+        - file
+        - chunksAdded
+        - errors
+
+    KnowledgeIngestResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        totalChunksAdded:
+          type: integer
+        fileCount:
+          type: integer
+        results:
+          type: array
+          items:
+            $ref: "#/components/schemas/KnowledgeIngestFileResult"
+      required:
+        - success
+        - totalChunksAdded
+        - fileCount
+        - results
+
+    KnowledgeQueryRequest:
+      type: object
+      properties:
+        text:
+          type: string
+          description: The query text for semantic search
+        nResults:
+          type: integer
+          default: 5
+          description: Maximum number of results to return
+        jurisdiction:
+          type: string
+          nullable: true
+          description: Filter results by jurisdiction (e.g. "federal", "CA", "Los Angeles, CA")
+        doc_type:
+          oneOf:
+            - type: string
+              enum: [federal_codes, state_codes, city_codes, sign_glossary, plan_guides, customer_standards]
+            - type: array
+              items:
+                type: string
+                enum: [federal_codes, state_codes, city_codes, sign_glossary, plan_guides, customer_standards]
+          nullable: true
+          description: Filter results by collection type(s)
+      required:
+        - text
+
+    KnowledgeResultMetadata:
+      type: object
+      properties:
+        source_file:
+          type: string
+        jurisdiction:
+          type: string
+        doc_type:
+          type: string
+        section:
+          type: string
+        effective_date:
+          type: string
+        status:
+          type: string
+        chunk_index:
+          type: integer
+          nullable: true
+      required:
+        - source_file
+        - jurisdiction
+        - doc_type
+        - section
+        - effective_date
+        - status
+
+    KnowledgeResult:
+      type: object
+      properties:
+        id:
+          type: string
+        document:
+          type: string
+        score:
+          type: number
+          minimum: 0
+          maximum: 1
+        metadata:
+          $ref: "#/components/schemas/KnowledgeResultMetadata"
+      required:
+        - id
+        - document
+        - score
+        - metadata
+
+    KnowledgeQueryResponse:
+      type: object
+      properties:
+        results:
+          type: array
+          items:
+            $ref: "#/components/schemas/KnowledgeResult"
+        citations:
+          type: array
+          items:
+            type: string
+        totalResults:
+          type: integer
+      required:
+        - results
+        - citations
+        - totalResults
 
     ErrorResponse:
       type: object

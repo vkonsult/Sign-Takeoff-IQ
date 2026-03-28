@@ -97,6 +97,8 @@ All prefixed `/api`:
 | GET | `/jobs/:jobId` | Job status + extracted signs |
 | GET | `/jobs/:jobId/export` | Download XLSX |
 | GET | `/jobs` | List all jobs |
+| POST | `/knowledge/ingest` | Ingest knowledge files into ChromaDB (optional `collection` + `file_path` body params) |
+| POST | `/knowledge/query` | Semantic search against ChromaDB (required `text`, optional `nResults`, `jurisdiction`, `doc_type`) |
 
 ## User Flow
 
@@ -112,6 +114,44 @@ All prefixed `/api`:
 - Parsed JSON results: `data/parsed/{jobId}.json`
 - XLSX exports: `data/exports/{jobId}.xlsx`
 - Temp upload staging: `/tmp/sign-takeoff-uploads/`
+- ChromaDB vector store: `data/chroma/` (workspace root, requires ChromaDB Python server)
+
+## RAG Knowledge Layer (Task #2)
+
+Six ChromaDB collections for sign industry knowledge:
+
+| Collection | Purpose |
+|-----------|---------|
+| `federal_codes` | ADA, MUTCD, OSHA federal sign regulations |
+| `state_codes` | State building codes and accessibility standards |
+| `city_codes` | Local jurisdiction ordinances and permits |
+| `sign_glossary` | Industry terminology, materials, finishes |
+| `plan_guides` | Plan reading guides, sign schedule formats |
+| `customer_standards` | Customer-specific brand standards |
+
+Knowledge files live in `knowledge/{collection_name}/` with YAML front-matter:
+```markdown
+---
+jurisdiction: federal
+doc_type: federal_codes
+section: "ADA 703.7.2"
+effective_date: "2010-09-15"
+status: active
+---
+Content...
+```
+
+Scripts (run from workspace root with `pnpm --filter @workspace/scripts run ...`):
+
+| Script | Description |
+|--------|-------------|
+| `validate-knowledge` | Validate front-matter metadata in all knowledge files |
+| `ingest-knowledge [collection] [--dry-run]` | Embed and ingest knowledge into ChromaDB |
+| `rebuild-index [collection] [--dry-run]` | Wipe + rebuild a collection from source files |
+
+Requirements for RAG:
+- **ChromaDB server**: `pip install chromadb && chroma run --path data/chroma`
+- **GOOGLE_AI_API_KEY**: Google AI API key for `text-embedding-004` embeddings (not the Replit integration key)
 
 ## Key Notes
 
