@@ -17,16 +17,18 @@ export function Sidebar() {
     <div className="w-64 bg-card border-r border-border h-screen flex flex-col fixed left-0 top-0 overflow-y-auto">
       <div className="p-6 border-b border-border">
         <div className="flex items-center gap-3">
-          <div className="w-8 h-8 rounded bg-primary flex items-center justify-center">
-            <svg viewBox="0 0 24 24" fill="none" className="w-5 h-5 text-primary-foreground stroke-current" strokeWidth="2">
-              <path d="M4 22L20 2" strokeLinecap="round"/>
-              <path d="M4 12L12 4" strokeLinecap="round"/>
-              <path d="M12 20L20 12" strokeLinecap="round"/>
+          <div className="w-9 h-9 rounded-lg flex items-center justify-center flex-shrink-0" style={{background: 'linear-gradient(135deg, hsl(var(--primary)) 0%, hsl(180 70% 35%) 100%)'}}>
+            <svg viewBox="0 0 28 28" fill="none" className="w-6 h-6">
+              <rect x="3" y="4" width="22" height="14" rx="2" fill="white" fillOpacity="0.15" stroke="white" strokeWidth="1.5"/>
+              <rect x="3" y="4" width="22" height="14" rx="2" fill="white" fillOpacity="0.08"/>
+              <line x1="14" y1="18" x2="14" y2="24" stroke="white" strokeWidth="1.5" strokeLinecap="round"/>
+              <line x1="10" y1="24" x2="18" y2="24" stroke="white" strokeWidth="1.5" strokeLinecap="round"/>
+              <path d="M10 8.5L12.5 11.5L16 7L18 13" stroke="white" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
             </svg>
           </div>
           <div>
-            <h1 className="font-display font-bold text-lg leading-tight text-foreground">SIGN TAKEOFF</h1>
-            <p className="text-[10px] text-primary tracking-widest font-mono uppercase">Precision Portal</p>
+            <h1 className="font-display font-bold text-base leading-tight text-foreground tracking-wide">SIGN TAKEOFF</h1>
+            <p className="text-[11px] text-primary tracking-[0.2em] font-mono uppercase font-semibold">IQ</p>
           </div>
         </div>
       </div>
