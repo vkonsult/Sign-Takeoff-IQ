@@ -67,6 +67,25 @@ TEXT FROM PLAN DOCUMENTS (with page markers):
 ---
 `;
 
+const SIGN_KEYWORDS = [
+  "sign", "signage", "wayfinding", "ada", "directional", "monument", "pylon",
+  "channel letter", "cabinet", "dimensional letter", "room id", "room number",
+  "exit sign", "egress", "illuminated", "non-illuminated", "sign schedule",
+  "sign type", "sign location", "interior sign", "exterior sign", "parking sign",
+  "restroom", "tenant", "building id", "site sign", "regulatory", "code",
+  "handicap", "accessible", "logo", "branding", "blade sign", "projecting",
+  "flush mount", "post mount", "suspended", "aluminum", "acrylic", "vinyl",
+  "12\"", "18\"", "24\"", "36\"", "48\"", "letter height", "copy", "message",
+];
+
+function scorePageForSigns(text: string): number {
+  const lower = text.toLowerCase();
+  return SIGN_KEYWORDS.reduce((score, kw) => {
+    const count = (lower.match(new RegExp(kw, "g")) || []).length;
+    return score + count;
+  }, 0);
+}
+
 async function extractTextFromPdf(filePath: string): Promise<{ text: string; numPages: number }> {
   try {
     const dataBuffer = await fs.readFile(filePath);
@@ -84,9 +103,50 @@ async function extractTextFromPdf(filePath: string): Promise<{ text: string; num
 
     const result = await pdfParse(dataBuffer, options as Parameters<typeof pdfParse>[1]);
 
-    const pagedText = pageTexts.length > 0
-      ? pageTexts.map((t, i) => `--- PAGE ${i + 1} ---\n${t}`).join("\n\n")
-      : result.text;
+    if (pageTexts.length === 0) {
+      return { text: result.text, numPages: result.numpages };
+    }
+
+    // Score every page for sign relevance, then build a prioritized text block
+    const scored = pageTexts.map((text, i) => ({
+      pageNum: i + 1,
+      text,
+      score: scorePageForSigns(text),
+    }));
+
+    // Sort: high-scoring pages first, preserve page order within same score
+    const highRelevance = scored.filter((p) => p.score >= 3).sort((a, b) => b.score - a.score);
+    const lowRelevance = scored.filter((p) => p.score < 3);
+
+    // Build the final text: sign pages first, then fill with remaining pages
+    // Cap each page at 6,000 chars so dense specification pages don't crowd out
+    // the actual sign schedule pages. 6K chars × 80 pages ≈ 480K chars.
+    const MAX_CHARS = 480000;
+    const MAX_PAGE_CHARS = 6000;
+    const orderedPages = [...highRelevance, ...lowRelevance];
+    const includedPages: Array<typeof scored[0] & { displayText: string }> = [];
+    let totalChars = 0;
+
+    for (const page of orderedPages) {
+      const truncatedPageText = page.text.length > MAX_PAGE_CHARS
+        ? page.text.slice(0, MAX_PAGE_CHARS) + " [...]"
+        : page.text;
+      const chunk = `--- PAGE ${page.pageNum} ---\n${truncatedPageText}`;
+      if (totalChars + chunk.length > MAX_CHARS) break;
+      includedPages.push({ ...page, displayText: truncatedPageText });
+      totalChars += chunk.length;
+    }
+
+    // Sort back into page order for coherent reading by Gemini
+    includedPages.sort((a, b) => a.pageNum - b.pageNum);
+
+    const signPageCount = highRelevance.length;
+    const pagedText = includedPages.map((p) => `--- PAGE ${p.pageNum} ---\n${p.displayText}`).join("\n\n");
+
+    logger.info(
+      { filePath: filePath.split("/").pop(), totalPages: pageTexts.length, signPages: signPageCount, includedPages: includedPages.length, chars: totalChars },
+      "PDF text extracted with sign-page prioritization"
+    );
 
     return { text: pagedText, numPages: result.numpages };
   } catch (err) {
@@ -219,24 +279,43 @@ export async function extractSignsFromPdf(
     return { rows: [], pageCount: numPages, rawText };
   }
 
-  const MAX_TEXT = 30000;
-  const truncatedText = rawText.length > MAX_TEXT ? rawText.slice(0, MAX_TEXT) + "\n[...text truncated...]" : rawText;
-  const prompt = SIGN_EXTRACTION_PROMPT + truncatedText;
+  const prompt = SIGN_EXTRACTION_PROMPT + rawText;
 
-  try {
-    const response = await ai.models.generateContent({
-      model: "gemini-2.5-flash",
-      contents: [{ role: "user", parts: [{ text: prompt }] }],
-      config: { maxOutputTokens: 8192, temperature: 0.1 },
-    });
+  const MAX_RETRIES = 4;
+  let attempt = 0;
 
-    const responseText = response.text ?? "";
-    logger.info({ filePath, responseLength: responseText.length }, "Gemini extraction complete");
+  while (attempt <= MAX_RETRIES) {
+    try {
+      const response = await ai.models.generateContent({
+        model: "gemini-2.5-flash",
+        contents: [{ role: "user", parts: [{ text: prompt }] }],
+        config: { maxOutputTokens: 16384, temperature: 0.1 },
+      });
 
-    const rows = parseGeminiResponse(responseText);
-    return { rows, pageCount: numPages, rawText };
-  } catch (err) {
-    logger.error({ err, filePath }, "Gemini extraction failed");
-    throw err;
+      const responseText = response.text ?? "";
+      logger.info({ filePath, responseLength: responseText.length }, "Gemini extraction complete");
+
+      const rows = parseGeminiResponse(responseText);
+      return { rows, pageCount: numPages, rawText };
+    } catch (err: unknown) {
+      const isRateLimit =
+        err instanceof Error &&
+        (err.message.includes("RATELIMIT_EXCEEDED") ||
+          err.message.includes("429") ||
+          (err as { status?: number }).status === 429);
+
+      if (isRateLimit && attempt < MAX_RETRIES) {
+        const delayMs = Math.min(30000, 5000 * Math.pow(2, attempt));
+        logger.warn({ attempt, delayMs, filePath }, "Gemini rate limit hit — retrying after delay");
+        await new Promise((r) => setTimeout(r, delayMs));
+        attempt++;
+        continue;
+      }
+
+      logger.error({ err, filePath }, "Gemini extraction failed");
+      throw err;
+    }
   }
+
+  throw new Error("Gemini extraction exhausted all retries");
 }
