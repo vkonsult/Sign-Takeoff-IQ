@@ -31,9 +31,11 @@ const storage = multer.diskStorage({
   },
 });
 
+const MAX_FILE_SIZE = 500 * 1024 * 1024; // 500 MB
+
 const upload = multer({
   storage,
-  limits: { fileSize: 50 * 1024 * 1024 },
+  limits: { fileSize: MAX_FILE_SIZE },
   fileFilter: (_req, file, cb) => {
     if (
       file.mimetype === "application/pdf" ||
@@ -46,7 +48,21 @@ const upload = multer({
   },
 });
 
-router.post("/upload", upload.array("files", 20), async (req, res) => {
+router.post("/upload", (req, res, next) => {
+  upload.array("files", 20)(req, res, (err) => {
+    if (err) {
+      if (err.code === "LIMIT_FILE_SIZE") {
+        res.status(413).json({
+          error: `File too large. Maximum allowed size is ${MAX_FILE_SIZE / (1024 * 1024)} MB per file.`,
+        });
+      } else {
+        res.status(400).json({ error: err.message ?? "Upload error" });
+      }
+      return;
+    }
+    next();
+  });
+}, async (req, res) => {
   const files = req.files as Express.Multer.File[];
 
   if (!files || files.length === 0) {
