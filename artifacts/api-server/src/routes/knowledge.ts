@@ -8,27 +8,18 @@ import { logger } from "../lib/logger";
 const router: IRouter = Router();
 
 const WORKSPACE_ROOT = path.resolve(process.cwd(), "..");
-const KNOWLEDGE_DIR = path.join(WORKSPACE_ROOT, "knowledge");
+const KNOWLEDGE_DIR = path.resolve(WORKSPACE_ROOT, "knowledge");
 
-interface KnowledgeChunk {
-  id: string;
-  text: string;
-  metadata: {
-    source_file: string;
-    jurisdiction: string;
-    doc_type: string;
-    section: string;
-    effective_date: string;
-    status: string;
-    chunk_index: number;
-  };
+function isWithinKnowledgeDir(resolvedPath: string): boolean {
+  const confined = KNOWLEDGE_DIR + path.sep;
+  return resolvedPath.startsWith(confined) || resolvedPath === KNOWLEDGE_DIR;
 }
 
 function parseFrontMatter(content: string): {
   metadata: Record<string, string>;
   body: string;
 } {
-  const fmMatch = content.match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/);
+  const fmMatch = content.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/);
   if (!fmMatch) {
     return { metadata: {}, body: content };
   }
@@ -37,7 +28,7 @@ function parseFrontMatter(content: string): {
   const body = fmMatch[2].trim();
   const metadata: Record<string, string> = {};
 
-  for (const line of yamlStr.split("\n")) {
+  for (const line of yamlStr.split(/\r?\n/)) {
     const colonIdx = line.indexOf(":");
     if (colonIdx === -1) continue;
     const key = line.slice(0, colonIdx).trim();
@@ -58,6 +49,29 @@ function chunkText(text: string, chunkSize = 2000, overlap = 200): string[] {
     start = end - overlap;
   }
   return chunks.filter((c) => c.length > 50);
+}
+
+async function findFiles(dir: string, extensions = [".md", ".txt"]): Promise<string[]> {
+  const files: string[] = [];
+  try {
+    const entries = await fs.readdir(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      const fullPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        const subFiles = await findFiles(fullPath, extensions);
+        files.push(...subFiles);
+      } else if (
+        entry.isFile() &&
+        extensions.some((ext) => entry.name.endsWith(ext)) &&
+        entry.name !== "README.md"
+      ) {
+        files.push(fullPath);
+      }
+    }
+  } catch {
+    // Directory doesn't exist or is unreadable
+  }
+  return files;
 }
 
 async function ingestFile(
@@ -130,7 +144,7 @@ async function ingestFile(
 }
 
 router.post("/knowledge/ingest", async (req, res) => {
-  const { collection, file_path: filePath } = req.body as {
+  const { collection, file_path: rawFilePath } = req.body as {
     collection?: string;
     file_path?: string;
   };
@@ -148,14 +162,26 @@ router.post("/knowledge/ingest", async (req, res) => {
   let totalChunks = 0;
 
   try {
-    if (filePath) {
-      const absPath = path.isAbsolute(filePath)
-        ? filePath
-        : path.join(KNOWLEDGE_DIR, filePath);
+    if (rawFilePath) {
+      if (path.isAbsolute(rawFilePath)) {
+        res.status(400).json({
+          error: "file_path must be a relative path within the knowledge directory",
+        });
+        return;
+      }
+
+      const absPath = path.resolve(KNOWLEDGE_DIR, rawFilePath);
+
+      if (!isWithinKnowledgeDir(absPath)) {
+        res.status(400).json({
+          error: "file_path must be within the knowledge directory (path traversal rejected)",
+        });
+        return;
+      }
 
       const targetCollection =
         collectionName ??
-        (COLLECTION_NAMES.find((n) => absPath.includes(n)) as CollectionName | undefined);
+        (COLLECTION_NAMES.find((n) => absPath.includes(path.sep + n + path.sep) || absPath.includes(path.sep + n + "\\")) as CollectionName | undefined);
 
       if (!targetCollection) {
         res.status(400).json({
@@ -166,7 +192,7 @@ router.post("/knowledge/ingest", async (req, res) => {
       }
 
       const { chunksAdded, errors } = await ingestFile(absPath, targetCollection);
-      results.push({ file: filePath, chunksAdded, errors });
+      results.push({ file: rawFilePath, chunksAdded, errors });
       totalChunks += chunksAdded;
     } else {
       const dirsToProcess = collectionName
@@ -175,16 +201,7 @@ router.post("/knowledge/ingest", async (req, res) => {
 
       for (const dir of dirsToProcess) {
         const dirPath = path.join(KNOWLEDGE_DIR, dir);
-        let files: string[] = [];
-        try {
-          const entries = await fs.readdir(dirPath, { withFileTypes: true });
-          files = entries
-            .filter((e) => e.isFile() && (e.name.endsWith(".md") || e.name.endsWith(".txt")))
-            .filter((e) => e.name !== "README.md")
-            .map((e) => path.join(dirPath, e.name));
-        } catch {
-          req.log.warn({ dir: dirPath }, "Knowledge directory not found or empty");
-        }
+        const files = await findFiles(dirPath);
 
         for (const f of files) {
           const { chunksAdded, errors } = await ingestFile(f, dir as CollectionName);
