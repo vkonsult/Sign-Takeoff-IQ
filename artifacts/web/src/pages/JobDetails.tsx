@@ -42,8 +42,16 @@ export default function JobDetails() {
     }
   };
 
-  const handleSignSaved = () => {
-    queryClient.invalidateQueries({ queryKey: getGetJobQueryKey(jobId) });
+  const handleSignSaved = (updatedSign: Record<string, unknown>) => {
+    queryClient.setQueryData(getGetJobQueryKey(jobId), (old: typeof data) => {
+      if (!old) return old;
+      return {
+        ...old,
+        extractedSigns: old.extractedSigns.map((s) =>
+          s.id === updatedSign.id ? { ...s, ...updatedSign } : s
+        ),
+      };
+    });
     setReviewSign(null);
   };
 

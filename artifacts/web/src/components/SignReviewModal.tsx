@@ -14,10 +14,7 @@ import {
   AlertTriangle,
 } from "lucide-react";
 
-pdfjs.GlobalWorkerOptions.workerSrc = new URL(
-  "pdfjs-dist/build/pdf.worker.min.mjs",
-  import.meta.url
-).toString();
+pdfjs.GlobalWorkerOptions.workerSrc = `${import.meta.env.BASE_URL}pdf.worker.min.mjs`;
 
 interface ExtractedSign {
   id: string;
@@ -50,7 +47,7 @@ interface SignReviewModalProps {
   jobId: string;
   files: FileInfo[];
   onClose: () => void;
-  onSaved: (updated: ExtractedSign) => void;
+  onSaved: (updated: Record<string, unknown>) => void;
 }
 
 type FormState = {
@@ -156,7 +153,7 @@ export function SignReviewModal({
         throw new Error((err as { error?: string }).error ?? "Save failed");
       }
 
-      const data = await res.json() as { sign: ExtractedSign };
+      const data = await res.json() as { sign: Record<string, unknown> };
       setDirty(false);
       onSaved(data.sign);
     } catch (err) {
