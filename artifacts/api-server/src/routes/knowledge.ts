@@ -7,8 +7,11 @@ import { logger } from "../lib/logger";
 
 const router: IRouter = Router();
 
-const WORKSPACE_ROOT = path.resolve(process.cwd(), "..");
-const KNOWLEDGE_DIR = path.resolve(WORKSPACE_ROOT, "knowledge");
+// API server CWD is artifacts/api-server — go up two levels to reach workspace root
+const WORKSPACE_ROOT = path.resolve(process.cwd(), "../..");
+const KNOWLEDGE_DIR = path.resolve(
+  process.env.KNOWLEDGE_DIR ?? path.join(WORKSPACE_ROOT, "knowledge")
+);
 
 function isWithinKnowledgeDir(resolvedPath: string): boolean {
   const confined = KNOWLEDGE_DIR + path.sep;

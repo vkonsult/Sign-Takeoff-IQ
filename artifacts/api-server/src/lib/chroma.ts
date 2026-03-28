@@ -21,6 +21,10 @@ const COLLECTION_DESCRIPTIONS: Record<CollectionName, string> = {
   customer_standards: "Customer-specific brand standards and sign requirements",
 };
 
+// ChromaDB server URL. Start the server with persistent storage pointing to <workspace>/data/chroma:
+//   pip install chromadb
+//   chroma run --path <workspace>/data/chroma --host localhost --port 8000
+// Then set CHROMA_SERVER_URL if using a non-default host/port.
 const CHROMA_SERVER_URL = process.env.CHROMA_SERVER_URL ?? "http://localhost:8000";
 
 let _client: ChromaClient | null = null;
