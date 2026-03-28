@@ -1,3 +1,19 @@
+/**
+ * Validate knowledge files in all (or a specific) collection directory.
+ * Checks required YAML front-matter fields and value constraints.
+ * Exits with code 1 if any files fail validation (CI-friendly).
+ *
+ * Usage:
+ *   pnpm run validate-knowledge                # Validate all collections
+ *   pnpm run validate-knowledge federal_codes  # Validate a single collection
+ *
+ * TODO (future enhancements):
+ *   - JSON Schema or zod-based front-matter validation for richer type checking
+ *   - Cross-file checks: detect duplicate section references within a collection
+ *   - Auto-suggest effective_date from git log when field is missing
+ *   - Integration with pre-commit hook (lint-staged) to validate on git commit
+ */
+
 import path from "path";
 import { fileURLToPath } from "url";
 import { findKnowledgeFiles, loadKnowledgeFile } from "./lib/knowledge-loader.js";

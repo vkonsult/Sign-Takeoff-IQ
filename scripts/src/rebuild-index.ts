@@ -14,6 +14,13 @@
  * Requirements:
  *   - ChromaDB server running at CHROMA_SERVER_URL (default: http://localhost:8000)
  *   - GOOGLE_AI_API_KEY set for embedding generation
+ *
+ * TODO (future enhancements):
+ *   - Add --no-confirm flag to skip the 5-second cancel window (for CI use)
+ *   - Backup collection metadata before deletion so rebuild can be rolled back
+ *   - Support partial rebuild: only re-embed files whose content hash has changed
+ *   - Publish rebuild completion events to a webhook or log aggregator
+ *   - Add tokenizer-aware chunking (see ingest-knowledge.ts TODO)
  */
 
 import path from "path";

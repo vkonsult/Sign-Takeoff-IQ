@@ -11,6 +11,15 @@
  *     Start with: chroma run --path ../../data/chroma
  *   - GOOGLE_AI_API_KEY set for embedding generation
  *     Get one at: https://makersuite.google.com/app/apikey
+ *
+ * TODO (future enhancements):
+ *   - Switch from character-based chunking to tokenizer-aware chunk sizing
+ *     (e.g. tiktoken or google/genai token counting) for model-accurate splits
+ *   - Add retry logic with exponential backoff for embedding API failures
+ *   - Support batch embedding requests instead of sequential per-chunk calls
+ *   - Add incremental indexing: skip files unchanged since last ingest via hash/mtime
+ *   - Add --concurrency flag for parallel file ingestion
+ *   - Parse richer YAML front-matter (multi-value, arrays, nested keys)
  */
 
 import path from "path";
