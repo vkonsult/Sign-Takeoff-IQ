@@ -58,6 +58,8 @@ IMPORTANT RULES:
 - Parse dimension strings carefully: feet and inches, metric, etc.
 - Return ONLY a valid JSON array. No markdown, no code blocks, no explanation.
 - Each array element must have all the fields listed above.
+- If the document contains NO sign-related information (e.g. structural drawings, site plans with no sign callouts, or unreadable content), return an empty JSON array: []
+- NEVER explain why there are no signs. ONLY output the JSON array (even if it is empty).
 
 TEXT FROM PLAN DOCUMENTS:
 ---
@@ -119,12 +121,25 @@ function parseGeminiResponse(raw: string): ExtractedSignRow[] {
 
   const start = text.indexOf("[");
   const end = text.lastIndexOf("]");
+
   if (start === -1 || end === -1) {
-    throw new Error("No JSON array found in Gemini response");
+    // Gemini returned a narrative response instead of JSON — treat as "no signs found"
+    logger.info(
+      { responsePreview: text.slice(0, 200) },
+      "Gemini returned no JSON array — interpreting as zero signs found in document"
+    );
+    return [];
   }
 
   const jsonStr = text.slice(start, end + 1);
-  const parsed: unknown = JSON.parse(jsonStr);
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(jsonStr);
+  } catch (err) {
+    logger.warn({ err, jsonPreview: jsonStr.slice(0, 200) }, "Gemini JSON parse error");
+    throw new Error(`Gemini returned malformed JSON: ${String(err)}`);
+  }
 
   const result = GeminiResponseSchema.safeParse(parsed);
   if (!result.success) {
