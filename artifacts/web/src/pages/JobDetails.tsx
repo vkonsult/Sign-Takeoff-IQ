@@ -204,7 +204,14 @@ export default function JobDetails() {
                           `}
                         >
                           <td className="data-cell sticky left-0 z-10 bg-inherit shadow-[2px_0_5px_-2px_rgba(0,0,0,0.3)]">
-                            <div className="font-mono text-xs text-muted-foreground mb-1">{sign.sheetNumber || '—'}</div>
+                            <div className="flex items-center gap-1.5 mb-1">
+                              <span className="font-mono text-xs text-muted-foreground">{sign.sheetNumber || '—'}</span>
+                              {sign.pageNumber != null && (
+                                <span className="text-[10px] font-mono px-1 py-0 rounded bg-secondary text-muted-foreground border border-border">
+                                  pg {sign.pageNumber}
+                                </span>
+                              )}
+                            </div>
                             <div className="font-medium text-foreground">{sign.signIdentifier || sign.detailReference || 'Unknown'}</div>
                           </td>
                           <td className="data-cell text-foreground">{sign.signType || '—'}</td>
@@ -281,6 +288,7 @@ export default function JobDetails() {
           sign={reviewSign}
           jobId={jobId}
           files={files}
+          allSigns={extractedSigns}
           onClose={() => setReviewSign(null)}
           onSaved={handleSignSaved}
         />

@@ -17,13 +17,14 @@ export interface ExtractedSignRow {
   materials: string | null;
   message_content: string | null;
   notes: string | null;
+  page_number: number | null;
   confidence_score: number;
   review_flag: boolean;
 }
 
 const SIGN_EXTRACTION_PROMPT = `You are an expert sign industry estimator and takeoff specialist. Your task is to extract all sign-related information from architectural or sign plan documents.
 
-Analyze the following text extracted from sign/architectural plan documents. Identify every sign, sign type, or sign callout mentioned.
+The text below is extracted from a PDF, with each page delimited by "--- PAGE N ---". Use these page markers to determine which PDF page each sign appears on.
 
 For each unique sign or sign entry identified, extract the following fields. Use null if a field is not available:
 
@@ -40,6 +41,7 @@ For each unique sign or sign entry identified, extract the following fields. Use
 - materials: Construction materials (e.g. "Aluminum", "Acrylic", "HDU", "Aluminum with Acrylic Face", "Vinyl on Aluminum", "PVC", "Stainless Steel", "Bronze", "Powder Coated Steel")
 - message_content: The actual text, copy, or content of the sign (e.g. "ENTRANCE", "EXIT", "RESTROOMS", "Suite 100 - Company Name", "NO PARKING")
 - notes: Any special instructions, specifications, or notes relevant to this sign (e.g. "ADA compliant", "UL Listed", "Landlord approval required", "Match existing signage")
+- page_number: The PDF page number (integer, 1-indexed) where this sign callout, schedule row, or reference appears. Use the "--- PAGE N ---" markers to determine this. If a sign schedule spans multiple pages, use the page where the sign entry first appears.
 
 After extracting all fields, compute:
 - confidence_score: A number from 0.0 to 1.0 indicating how confident you are in the extraction.
@@ -57,19 +59,36 @@ IMPORTANT RULES:
 - If quantity appears in a schedule, use that exact number
 - Parse dimension strings carefully: feet and inches, metric, etc.
 - Return ONLY a valid JSON array. No markdown, no code blocks, no explanation.
-- Each array element must have all the fields listed above.
+- Each array element must have all the fields listed above (including page_number).
 - If the document contains NO sign-related information (e.g. structural drawings, site plans with no sign callouts, or unreadable content), return an empty JSON array: []
 - NEVER explain why there are no signs. ONLY output the JSON array (even if it is empty).
 
-TEXT FROM PLAN DOCUMENTS:
+TEXT FROM PLAN DOCUMENTS (with page markers):
 ---
 `;
 
 async function extractTextFromPdf(filePath: string): Promise<{ text: string; numPages: number }> {
   try {
     const dataBuffer = await fs.readFile(filePath);
-    const result = await pdfParse(dataBuffer);
-    return { text: result.text, numPages: result.numpages };
+    const pageTexts: string[] = [];
+
+    const options = {
+      pagerender: (pageData: { getTextContent: () => Promise<{ items: Array<{ str: string }> }> }) => {
+        return pageData.getTextContent().then((textContent) => {
+          const pageText = textContent.items.map((item) => item.str).join(" ");
+          pageTexts.push(pageText);
+          return pageText;
+        });
+      },
+    };
+
+    const result = await pdfParse(dataBuffer, options as Parameters<typeof pdfParse>[1]);
+
+    const pagedText = pageTexts.length > 0
+      ? pageTexts.map((t, i) => `--- PAGE ${i + 1} ---\n${t}`).join("\n\n")
+      : result.text;
+
+    return { text: pagedText, numPages: result.numpages };
   } catch (err) {
     logger.error({ err, filePath }, "Error extracting text from PDF");
     return { text: "", numPages: 0 };
@@ -106,6 +125,11 @@ const GeminiSignRowSchema = z.object({
   materials: z.string().nullable().optional().default(null),
   message_content: z.string().nullable().optional().default(null),
   notes: z.string().nullable().optional().default(null),
+  page_number: z
+    .union([z.number().int().positive(), z.null()])
+    .optional()
+    .default(null)
+    .transform((v) => (v !== null && v !== undefined ? Math.round(v) : null)),
   confidence_score: z.number().min(0).max(1).optional(),
   review_flag: z.boolean().optional(),
 });
@@ -167,6 +191,7 @@ function parseGeminiResponse(raw: string): ExtractedSignRow[] {
       materials: item.materials ?? null,
       message_content: item.message_content ?? null,
       notes: item.notes ?? null,
+      page_number: item.page_number ?? null,
       confidence_score: score,
       review_flag: item.review_flag ?? computeReviewFlag(item as unknown as Record<string, unknown>, score),
     };

@@ -2,7 +2,7 @@
 
 ## Overview
 
-Sign Takeoff Portal is an MVP web app for sign contractors and fabricators. Users upload PDF architectural plan documents, the system extracts sign-related data (types, quantities, dimensions, mounting, illumination, finishes, materials, messages, locations) using Gemini AI, displays results in a review table with confidence scores and flags, and exports structured data to XLSX.
+Sign Takeoff Portal is an MVP web app for sign contractors and fabricators. Users upload PDF architectural plan documents, the system extracts sign-related data (types, quantities, dimensions, mounting, illumination, finishes, materials, messages, locations, page numbers) using Gemini AI, displays results in a review table with confidence scores and flags, provides a PDF review modal with color-coded sign markers and page navigation, and exports structured data to XLSX.
 
 ## Architecture
 

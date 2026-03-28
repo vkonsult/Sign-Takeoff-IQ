@@ -71,6 +71,7 @@ export async function processJob(jobId: string): Promise<void> {
           materials: row.materials,
           messageContent: row.message_content,
           notes: row.notes,
+          pageNumber: row.page_number,
           confidenceScore: row.confidence_score,
           reviewFlag: row.review_flag,
           rawJson: row as unknown as Record<string, unknown>,

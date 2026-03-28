@@ -32,6 +32,7 @@ interface ExtractedSign {
   materials?: string | null;
   messageContent?: string | null;
   notes?: string | null;
+  pageNumber?: number | null;
   confidenceScore: number;
   reviewFlag: boolean;
 }
@@ -46,8 +47,38 @@ interface SignReviewModalProps {
   sign: ExtractedSign;
   jobId: string;
   files: FileInfo[];
+  allSigns: ExtractedSign[];
   onClose: () => void;
   onSaved: (updated: Record<string, unknown>) => void;
+}
+
+const SIGN_TYPE_COLORS: Record<string, string> = {
+  wayfinding: "#3B82F6",
+  directional: "#10B981",
+  informational: "#06B6D4",
+  regulatory: "#EF4444",
+  safety: "#F97316",
+  exit: "#DC2626",
+  ada: "#8B5CF6",
+  accessibility: "#8B5CF6",
+  "room id": "#F59E0B",
+  "building id": "#6366F1",
+  monument: "#78716C",
+  pylon: "#78716C",
+  parking: "#EC4899",
+  "channel letter": "#84CC16",
+  cabinet: "#14B8A6",
+  "dimensional letter": "#A78BFA",
+  "building sign": "#6366F1",
+};
+
+function getSignColor(signType: string | null | undefined): string {
+  if (!signType) return "#6B7280";
+  const key = signType.toLowerCase();
+  for (const [k, v] of Object.entries(SIGN_TYPE_COLORS)) {
+    if (key.includes(k)) return v;
+  }
+  return "#6B7280";
 }
 
 type FormState = {
@@ -90,6 +121,7 @@ export function SignReviewModal({
   sign,
   jobId,
   files,
+  allSigns,
   onClose,
   onSaved,
 }: SignReviewModalProps) {
@@ -99,7 +131,7 @@ export function SignReviewModal({
     : null;
 
   const [numPages, setNumPages] = useState<number | null>(null);
-  const [pageNumber, setPageNumber] = useState(1);
+  const [pageNumber, setPageNumber] = useState(sign.pageNumber ?? 1);
   const [scale, setScale] = useState(1.0);
   const [pdfError, setPdfError] = useState<string | null>(null);
 
@@ -111,7 +143,12 @@ export function SignReviewModal({
   useEffect(() => {
     setForm(signToForm(sign));
     setDirty(false);
+    setPageNumber(sign.pageNumber ?? 1);
   }, [sign.id]);
+
+  const signsOnCurrentPage = allSigns.filter(
+    (s) => s.jobFileId === sign.jobFileId && s.pageNumber === pageNumber
+  );
 
   const handleField = useCallback(
     (field: keyof FormState, value: string | boolean) => {
@@ -213,6 +250,7 @@ export function SignReviewModal({
           {/* PDF toolbar */}
           <div className="flex-none flex items-center gap-3 px-4 py-2 bg-card border-b border-border">
             <button
+              aria-label="Previous page"
               disabled={pageNumber <= 1}
               onClick={() => setPageNumber((p) => Math.max(1, p - 1))}
               className="p-1.5 rounded hover:bg-secondary disabled:opacity-30 transition-colors"
@@ -223,6 +261,7 @@ export function SignReviewModal({
               {numPages ? `${pageNumber} / ${numPages}` : "—"}
             </span>
             <button
+              aria-label="Next page"
               disabled={numPages === null || pageNumber >= numPages}
               onClick={() => setPageNumber((p) => (numPages ? Math.min(numPages, p + 1) : p))}
               className="p-1.5 rounded hover:bg-secondary disabled:opacity-30 transition-colors"
@@ -247,13 +286,48 @@ export function SignReviewModal({
             >
               <ZoomIn className="w-4 h-4" />
             </button>
-            {sign.sheetNumber && (
-              <>
-                <div className="w-px h-4 bg-border mx-1" />
-                <span className="text-xs text-muted-foreground">
-                  Looking for sheet <span className="font-mono text-foreground">{sign.sheetNumber}</span>
-                </span>
-              </>
+            <div className="w-px h-4 bg-border mx-1" />
+            {sign.pageNumber ? (
+              <button
+                onClick={() => setPageNumber(sign.pageNumber!)}
+                className="text-xs font-mono px-2 py-0.5 rounded transition-colors"
+                style={{
+                  backgroundColor: `${getSignColor(sign.signType)}22`,
+                  color: getSignColor(sign.signType),
+                  border: `1px solid ${getSignColor(sign.signType)}55`,
+                }}
+                title="Jump to AI-detected sign page"
+              >
+                ● Go to pg {sign.pageNumber}
+              </button>
+            ) : sign.sheetNumber ? (
+              <span className="text-xs text-muted-foreground">
+                Sheet <span className="font-mono text-foreground">{sign.sheetNumber}</span>
+              </span>
+            ) : null}
+            {signsOnCurrentPage.length > 0 && (
+              <div className="flex items-center gap-1.5 ml-2 overflow-x-auto max-w-[400px]">
+                {signsOnCurrentPage.map((s) => {
+                  const color = getSignColor(s.signType);
+                  const isCurrent = s.id === sign.id;
+                  return (
+                    <span
+                      key={s.id}
+                      title={`${s.signType ?? "Sign"} — ${s.location ?? ""}`}
+                      className="flex-shrink-0 text-[10px] font-mono px-1.5 py-0.5 rounded cursor-default whitespace-nowrap"
+                      style={{
+                        backgroundColor: isCurrent ? color : `${color}25`,
+                        color: isCurrent ? "#fff" : color,
+                        border: `1px solid ${color}`,
+                        fontWeight: isCurrent ? 700 : 500,
+                        boxShadow: isCurrent ? `0 0 6px ${color}66` : "none",
+                      }}
+                    >
+                      {s.signIdentifier ?? s.signType?.slice(0, 8) ?? "SIGN"}
+                    </span>
+                  );
+                })}
+              </div>
             )}
           </div>
 

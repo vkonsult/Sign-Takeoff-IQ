@@ -30,6 +30,7 @@ export const extractedSignsTable = pgTable("extracted_signs", {
   materials: text("materials"),
   messageContent: text("message_content"),
   notes: text("notes"),
+  pageNumber: integer("page_number"),
   confidenceScore: real("confidence_score").notNull().default(0),
   reviewFlag: boolean("review_flag").notNull().default(false),
   rawJson: json("raw_json"),

@@ -22,6 +22,7 @@ export interface ExtractedSign {
   materials?: string | null;
   messageContent?: string | null;
   notes?: string | null;
+  pageNumber?: number | null;
   /**
    * @minimum 0
    * @maximum 1

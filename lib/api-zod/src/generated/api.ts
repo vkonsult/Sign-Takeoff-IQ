@@ -83,6 +83,7 @@ export const GetJobResponse = zod.object({
       materials: zod.string().nullish(),
       messageContent: zod.string().nullish(),
       notes: zod.string().nullish(),
+      pageNumber: zod.number().int().nullish(),
       confidenceScore: zod
         .number()
         .min(getJobResponseExtractedSignsItemConfidenceScoreMin)
