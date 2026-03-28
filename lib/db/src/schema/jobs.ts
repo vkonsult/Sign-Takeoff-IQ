@@ -11,6 +11,7 @@ export const jobStatusEnum = pgEnum("job_status", [
 
 export const jobsTable = pgTable("jobs", {
   id: uuid("id").primaryKey().defaultRandom(),
+  name: text("name"),
   status: jobStatusEnum("status").notNull().default("pending"),
   fileCount: integer("file_count").notNull().default(0),
   error: text("error"),

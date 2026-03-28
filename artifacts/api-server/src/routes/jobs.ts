@@ -76,6 +76,43 @@ router.get("/jobs/:jobId", async (req, res) => {
   }
 });
 
+const UpdateJobSchema = z.object({
+  name: z.string().min(1).max(200),
+});
+
+router.patch("/jobs/:jobId", async (req, res) => {
+  const { jobId } = req.params;
+  if (!jobId) {
+    res.status(400).json({ error: "Job ID required" });
+    return;
+  }
+
+  const parsed = UpdateJobSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: "Invalid request body", details: parsed.error.issues });
+    return;
+  }
+
+  try {
+    const [updated] = await db
+      .update(jobsTable)
+      .set({ name: parsed.data.name, updatedAt: new Date() })
+      .where(eq(jobsTable.id, jobId))
+      .returning();
+
+    if (!updated) {
+      res.status(404).json({ error: "Job not found" });
+      return;
+    }
+
+    res.json({ job: updated });
+    req.log.info({ jobId, name: parsed.data.name }, "Job name updated");
+  } catch (err) {
+    req.log.error({ err, jobId }, "Failed to update job");
+    res.status(500).json({ error: "Failed to update job" });
+  }
+});
+
 router.post("/jobs/:jobId/process", async (req, res) => {
   const { jobId } = req.params;
   if (!jobId) {

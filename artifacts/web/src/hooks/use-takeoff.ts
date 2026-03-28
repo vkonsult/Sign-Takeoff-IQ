@@ -54,6 +54,20 @@ export function useStartExtraction() {
   });
 }
 
+export function useUpdateJobName(jobId: string) {
+  const queryClient = useQueryClient();
+  return async (name: string) => {
+    const res = await fetch(`/api/jobs/${jobId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name }),
+    });
+    if (!res.ok) throw new Error("Failed to update job name");
+    queryClient.invalidateQueries({ queryKey: getGetJobQueryKey(jobId) });
+    queryClient.invalidateQueries({ queryKey: getListJobsQueryKey() });
+  };
+}
+
 export function downloadExport(jobId: string) {
   window.location.href = `/api/jobs/${jobId}/export`;
 }

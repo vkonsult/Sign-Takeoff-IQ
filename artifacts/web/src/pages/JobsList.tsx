@@ -38,7 +38,7 @@ export default function JobsList() {
         ) : (
           <div className="bg-card rounded-xl border border-border overflow-hidden shadow-lg">
             <div className="grid grid-cols-[1fr_120px_120px_200px_40px] gap-4 p-4 border-b border-border bg-secondary/50 text-xs font-display font-semibold uppercase tracking-wider text-muted-foreground">
-              <div>Job ID</div>
+              <div>Job Name</div>
               <div className="text-center">Files</div>
               <div className="text-center">Status</div>
               <div className="text-right">Created</div>
@@ -56,8 +56,13 @@ export default function JobsList() {
                   href={`/jobs/${job.id}`}
                   className="grid grid-cols-[1fr_120px_120px_200px_40px] gap-4 p-4 items-center hover:bg-secondary/40 transition-colors group cursor-pointer"
                 >
-                  <div className="font-mono text-sm text-foreground truncate pr-4">
-                    {job.id}
+                  <div className="min-w-0 pr-4">
+                    <div className="text-sm font-medium text-foreground truncate">
+                      {job.name ?? "Untitled Job"}
+                    </div>
+                    <div className="text-xs font-mono text-muted-foreground/60 truncate mt-0.5">
+                      {job.id.split('-')[0]}
+                    </div>
                   </div>
                   
                   <div className="flex items-center justify-center gap-1.5 text-muted-foreground text-sm font-mono">

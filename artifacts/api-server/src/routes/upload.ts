@@ -55,9 +55,12 @@ router.post("/upload", upload.array("files", 20), async (req, res) => {
   }
 
   try {
+    const firstName = files[0]?.originalname ?? "Untitled Job";
+    const jobName = firstName.replace(/\.pdf$/i, "").replace(/[_-]/g, " ").trim();
+
     const [job] = await db
       .insert(jobsTable)
-      .values({ status: "pending", fileCount: files.length })
+      .values({ name: jobName, status: "pending", fileCount: files.length })
       .returning();
 
     const uploadDir = await ensureJobUploadDir(job.id);

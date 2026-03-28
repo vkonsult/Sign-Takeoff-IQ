@@ -52,6 +52,7 @@ export const getJobResponseExtractedSignsItemConfidenceScoreMax = 1;
 export const GetJobResponse = zod.object({
   job: zod.object({
     id: zod.string().uuid(),
+    name: zod.string().nullish(),
     status: zod.enum(["pending", "processing", "completed", "failed"]),
     fileCount: zod.number(),
     error: zod.string().nullish(),
@@ -113,6 +114,7 @@ export const ListJobsResponse = zod.object({
   jobs: zod.array(
     zod.object({
       id: zod.string().uuid(),
+      name: zod.string().nullish(),
       status: zod.enum(["pending", "processing", "completed", "failed"]),
       fileCount: zod.number(),
       error: zod.string().nullish(),

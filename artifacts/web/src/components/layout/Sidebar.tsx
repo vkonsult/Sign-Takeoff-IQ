@@ -76,9 +76,9 @@ export function Sidebar() {
                     : "hover:bg-secondary/30"
                 )}
               >
-                <div className="flex items-center justify-between">
-                  <span className="text-xs font-mono text-foreground truncate max-w-[120px]">
-                    {job.id.split('-')[0]}
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-xs font-medium text-foreground truncate">
+                    {job.name ?? job.id.split('-')[0]}
                   </span>
                   <StatusDot status={job.status} />
                 </div>

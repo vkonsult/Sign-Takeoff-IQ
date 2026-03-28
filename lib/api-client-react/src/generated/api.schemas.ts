@@ -33,6 +33,7 @@ export const JobSummaryStatus = {
 
 export interface JobSummary {
   id: string;
+  name?: string | null;
   status: JobSummaryStatus;
   fileCount: number;
   error?: string | null;

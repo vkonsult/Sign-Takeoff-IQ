@@ -1,8 +1,8 @@
-import { useState } from "react";
+import { useState, useRef, useEffect } from "react";
 import { useRoute } from "wouter";
 import { useQueryClient } from "@tanstack/react-query";
 import { AppShell } from "@/components/layout/Shell";
-import { useJobDetails, useStartExtraction, downloadExport } from "@/hooks/use-takeoff";
+import { useJobDetails, useStartExtraction, downloadExport, useUpdateJobName } from "@/hooks/use-takeoff";
 import { SignReviewModal } from "@/components/SignReviewModal";
 import { getGetJobQueryKey } from "@workspace/api-client-react";
 import { 
@@ -29,6 +29,31 @@ export default function JobDetails() {
 
   type SignRow = NonNullable<typeof data>["extractedSigns"][number];
   const [reviewSign, setReviewSign] = useState<SignRow | null>(null);
+  const [editingName, setEditingName] = useState(false);
+  const [nameValue, setNameValue] = useState("");
+  const nameInputRef = useRef<HTMLInputElement>(null);
+  const updateJobName = useUpdateJobName(jobId);
+
+  const startNameEdit = (currentName: string) => {
+    setNameValue(currentName);
+    setEditingName(true);
+  };
+
+  useEffect(() => {
+    if (editingName) nameInputRef.current?.select();
+  }, [editingName]);
+
+  const commitNameEdit = async () => {
+    const trimmed = nameValue.trim();
+    if (trimmed && data?.job) {
+      try {
+        await updateJobName(trimmed);
+      } catch {
+        // silently ignore
+      }
+    }
+    setEditingName(false);
+  };
 
   const handleStartExtraction = () => {
     if (jobId) {
@@ -87,14 +112,41 @@ export default function JobDetails() {
         {/* Header Area */}
         <header className="flex-none p-6 border-b border-border bg-background">
           <div className="flex items-start justify-between max-w-7xl mx-auto w-full gap-4">
-            <div>
+            <div className="min-w-0 flex-1">
               <div className="flex items-center gap-3 mb-2">
-                <h1 className="text-2xl font-display text-foreground leading-none">
-                  Job <span className="text-primary">{job.id.split('-')[0]}</span>
-                </h1>
+                {editingName ? (
+                  <input
+                    ref={nameInputRef}
+                    value={nameValue}
+                    onChange={(e) => setNameValue(e.target.value)}
+                    onBlur={commitNameEdit}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") commitNameEdit();
+                      if (e.key === "Escape") setEditingName(false);
+                    }}
+                    className="text-2xl font-display text-foreground leading-none bg-secondary border border-primary/50 rounded px-2 py-0.5 outline-none focus:border-primary min-w-0 w-full max-w-md"
+                    autoFocus
+                  />
+                ) : (
+                  <button
+                    onClick={() => startNameEdit(job.name ?? job.id.split('-')[0])}
+                    className="group flex items-center gap-2 text-left"
+                    title="Click to rename"
+                  >
+                    <h1 className="text-2xl font-display text-foreground leading-none truncate">
+                      {job.name ? (
+                        <span className="text-primary">{job.name}</span>
+                      ) : (
+                        <>Job <span className="text-primary">{job.id.split('-')[0]}</span></>
+                      )}
+                    </h1>
+                    <Pencil className="w-4 h-4 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0" />
+                  </button>
+                )}
                 <StatusBadge status={job.status} />
               </div>
               <p className="text-sm text-muted-foreground font-mono">
+                {job.name && <span className="text-muted-foreground/50 mr-2">{job.id.split('-')[0]}</span>}
                 Created {format(new Date(job.createdAt), "PP pp")} • {files.length} file(s)
               </p>
               
