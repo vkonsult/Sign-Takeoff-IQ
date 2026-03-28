@@ -153,10 +153,25 @@ Requirements for RAG:
 - **ChromaDB server**: `pip install chromadb && chroma run --path data/chroma`
 - **GOOGLE_AI_API_KEY**: Google AI API key for `text-embedding-004` embeddings (not the Replit integration key)
 
-## Key Notes
+## Key Notes — Extraction Engine
 
-- Gemini extraction uses `gemini-2.5-flash` with a detailed sign-industry prompt
-- PDF text is extracted via `pdf-parse`, then sent to Gemini as structured extraction task
+### Two-Phase ADA Extraction (`artifacts/api-server/src/lib/extraction.ts`)
+
+PDF pages are classified into three types: floor_plan, sign_schedule, or other.
+
+**Pass 1 — Sign Schedule:** Pages with sign schedule keywords are sent to Gemini with a detailed sign-industry extraction prompt (finds explicitly specified/designed signs).
+
+**Pass 2 — Floor Plan ADA:** Floor plan pages are batched (240K chars/batch) and sent with an ADA-compliance prompt that instructs Gemini to enumerate EVERY room and generate all legally required signs: Room ID signs for every room, Exit signs at every egress door, Stairwell IDs, Elevator floor levels, Restroom signs, Fire safety signs, and Mechanical/utility room IDs.
+
+**Pass 3 — Fallback:** If passes 1 & 2 produce no results, a general extraction is run on all pages.
+
+### Gemini Configuration
+- Model: `gemini-2.5-flash`, `maxOutputTokens: 65536`, thinking disabled (`thinkingBudget: 0`)
+- Thinking mode disabled to maximize JSON output budget (prevents truncation)
+- Rate limit retry: exponential backoff (4 retries, up to 60s) for 429 errors
+- JSON repair: `repairTruncatedJson()` recovers partial arrays from truncated responses by extracting all complete top-level objects
+
+### Other Notes
 - Confidence scores: ≥0.8 = high (green), 0.6–0.8 = medium (yellow), <0.6 = low/flagged (red)
 - `review_flag = true` when confidence < 0.7 or required fields are missing
 - XLSX export uses `exceljs` with conditional formatting (colored confidence cells, flagged row highlighting)
