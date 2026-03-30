@@ -222,6 +222,10 @@ export function SignReviewModal({
   const [scale, setScale] = useState(1.0);
   const [pdfError, setPdfError] = useState<string | null>(null);
 
+  // activeSign tracks which sign is currently being edited — starts as the
+  // prop but can change when the user clicks a marker on the PDF.
+  const [activeSign, setActiveSign] = useState<ExtractedSign>(sign);
+
   const [form, setForm] = useState<FormState>(() => signToForm(sign));
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -235,14 +239,21 @@ export function SignReviewModal({
   const [textSearchStatus, setTextSearchStatus] = useState<"idle" | "found" | "not-found">("idle");
   const [showOverlay, setShowOverlay] = useState(true);
 
+  // When the parent passes a new sign (user clicked a different row), reset activeSign.
   useEffect(() => {
-    setForm(signToForm(sign));
+    setActiveSign(sign);
+  }, [sign.id]);
+
+  // When activeSign changes (from parent switch or marker click), reset form + page.
+  useEffect(() => {
+    setForm(signToForm(activeSign));
     setDirty(false);
-    setPageNumber(sign.pageNumber ?? 1);
+    setPageNumber(activeSign.pageNumber ?? 1);
     setNativeSize(null);
     setTextMarkers([]);
     setTextSearchStatus("idle");
-  }, [sign.id]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeSign.id]);
 
   const signsOnCurrentPage = allSigns.filter(
     (s) => s.jobFileId === sign.jobFileId && s.pageNumber === pageNumber
@@ -304,16 +315,16 @@ export function SignReviewModal({
               x: loc.x,
               y: loc.y,
               signId: s.id,
-              color: getSignColor(s.signType),
+              color: s.id === activeSign.id ? "#22c55e" : "#eab308",
               label: s.signIdentifier ?? s.signType?.slice(0, 6) ?? "SIGN",
-              isCurrent: s.id === sign.id,
+              isCurrent: s.id === activeSign.id,
             });
-            if (s.id === sign.id) currentSignFound = true;
+            if (s.id === activeSign.id) currentSignFound = true;
           }
         }
 
         setTextMarkers(markers);
-        if (signsOnCurrentPage.some((s) => s.id === sign.id)) {
+        if (signsOnCurrentPage.some((s) => s.id === activeSign.id)) {
           setTextSearchStatus(currentSignFound ? "found" : "not-found");
         } else {
           setTextSearchStatus("idle");
@@ -354,7 +365,7 @@ export function SignReviewModal({
         reviewFlag: form.reviewFlag,
       };
 
-      const res = await fetch(`/api/extracted-signs/${sign.id}`, {
+      const res = await fetch(`/api/extracted-signs/${activeSign.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
@@ -375,7 +386,7 @@ export function SignReviewModal({
     }
   };
 
-  const confidence = Math.round(sign.confidenceScore * 100);
+  const confidence = Math.round(activeSign.confidenceScore * 100);
   const confColor =
     confidence >= 80
       ? "text-accent"
@@ -397,17 +408,17 @@ export function SignReviewModal({
             <p className="text-sm font-display font-semibold text-foreground leading-none">
               {file?.originalName ?? "Unknown file"}
             </p>
-            {sign.sheetNumber && (
+            {activeSign.sheetNumber && (
               <p className="text-xs text-muted-foreground font-mono mt-0.5">
-                Sheet {sign.sheetNumber}
-                {sign.signIdentifier ? ` • ${sign.signIdentifier}` : ""}
+                Sheet {activeSign.sheetNumber}
+                {activeSign.signIdentifier ? ` • ${activeSign.signIdentifier}` : ""}
               </p>
             )}
           </div>
           <div className={`text-xs font-mono font-semibold px-2 py-0.5 rounded border ${confColor} bg-current/10 border-current/20`}>
             {confidence}% confidence
           </div>
-          {sign.reviewFlag && (
+          {activeSign.reviewFlag && (
             <span className="flex items-center gap-1 text-[10px] font-display font-bold uppercase tracking-wider text-primary border border-primary/30 bg-primary/10 px-2 py-0.5 rounded">
               <AlertTriangle className="w-3 h-3" />
               Flagged
@@ -479,22 +490,22 @@ export function SignReviewModal({
               <ZoomIn className="w-4 h-4" />
             </button>
             <div className="w-px h-4 bg-border mx-1" />
-            {sign.pageNumber ? (
+            {activeSign.pageNumber ? (
               <button
-                onClick={() => setPageNumber(sign.pageNumber!)}
+                onClick={() => setPageNumber(activeSign.pageNumber!)}
                 className="text-xs font-mono px-2 py-0.5 rounded transition-colors"
                 style={{
-                  backgroundColor: `${getSignColor(sign.signType)}22`,
-                  color: getSignColor(sign.signType),
-                  border: `1px solid ${getSignColor(sign.signType)}55`,
+                  backgroundColor: "#22c55e22",
+                  color: "#22c55e",
+                  border: "1px solid #22c55e55",
                 }}
                 title="Jump to AI-detected sign page"
               >
-                ● Go to pg {sign.pageNumber}
+                ● Go to pg {activeSign.pageNumber}
               </button>
-            ) : sign.sheetNumber ? (
+            ) : activeSign.sheetNumber ? (
               <span className="text-xs text-muted-foreground">
-                Sheet <span className="font-mono text-foreground">{sign.sheetNumber}</span>
+                Sheet <span className="font-mono text-foreground">{activeSign.sheetNumber}</span>
               </span>
             ) : null}
 
@@ -504,9 +515,9 @@ export function SignReviewModal({
                 onClick={() => setShowOverlay((v) => !v)}
                 className="ml-auto flex items-center gap-1.5 text-[10px] font-display font-semibold uppercase tracking-wide px-2 py-1 rounded transition-colors border"
                 style={showOverlay ? {
-                  background: `${getSignColor(sign.signType)}20`,
-                  color: getSignColor(sign.signType),
-                  borderColor: `${getSignColor(sign.signType)}55`,
+                  background: "#22c55e20",
+                  color: "#22c55e",
+                  borderColor: "#22c55e55",
                 } : {
                   background: "transparent",
                   color: "var(--muted-foreground)",
@@ -519,27 +530,29 @@ export function SignReviewModal({
               </button>
             )}
 
-            {/* Signs on current page chips */}
+            {/* Signs on current page chips — click to switch active sign */}
             {signsOnCurrentPage.length > 0 && (
               <div className="flex items-center gap-1.5 ml-2 overflow-x-auto max-w-[320px]">
                 {signsOnCurrentPage.map((s) => {
-                  const color = getSignColor(s.signType);
-                  const isCurrent = s.id === sign.id;
+                  const isActive = s.id === activeSign.id;
+                  const color = isActive ? "#22c55e" : "#eab308";
                   return (
-                    <span
+                    <button
                       key={s.id}
-                      title={`${s.signType ?? "Sign"} — ${s.location ?? ""}`}
-                      className="flex-shrink-0 text-[10px] font-mono px-1.5 py-0.5 rounded cursor-default whitespace-nowrap"
+                      title={`${s.signType ?? "Sign"} — ${s.location ?? ""}\nClick to edit this sign`}
+                      onClick={() => setActiveSign(s)}
+                      className="flex-shrink-0 text-[10px] font-mono px-1.5 py-0.5 rounded whitespace-nowrap transition-all"
                       style={{
-                        backgroundColor: isCurrent ? color : `${color}25`,
-                        color: isCurrent ? "#fff" : color,
+                        backgroundColor: isActive ? color : `${color}25`,
+                        color: isActive ? "#fff" : color,
                         border: `1px solid ${color}`,
-                        fontWeight: isCurrent ? 700 : 500,
-                        boxShadow: isCurrent ? `0 0 6px ${color}66` : "none",
+                        fontWeight: isActive ? 700 : 500,
+                        boxShadow: isActive ? `0 0 6px ${color}66` : "none",
+                        cursor: "pointer",
                       }}
                     >
                       {s.signIdentifier ?? s.signType?.slice(0, 8) ?? "SIGN"}
-                    </span>
+                    </button>
                   );
                 })}
               </div>
@@ -586,7 +599,6 @@ export function SignReviewModal({
                         left: 0,
                         width: renderedW,
                         height: renderedH,
-                        pointerEvents: "none",
                         overflow: "visible",
                       }}
                       viewBox={`0 0 ${renderedW} ${renderedH}`}
@@ -595,9 +607,16 @@ export function SignReviewModal({
                         const cx = m.x * renderedW;
                         const cy = m.y * renderedH;
                         const r = m.isCurrent ? 18 : 12;
+                        const clickedSign = allSigns.find((s) => s.id === m.signId);
                         return (
-                          <g key={m.signId}>
-                            {/* Outer glow ring for current sign */}
+                          <g
+                            key={m.signId}
+                            style={{ cursor: "pointer" }}
+                            onClick={() => { if (clickedSign) setActiveSign(clickedSign); }}
+                          >
+                            {/* Hit area — invisible but larger for easy clicking */}
+                            <circle cx={cx} cy={cy} r={r + 8} fill="transparent" />
+                            {/* Outer glow ring for active sign */}
                             {m.isCurrent && (
                               <circle
                                 cx={cx}
@@ -607,7 +626,7 @@ export function SignReviewModal({
                                 stroke={m.color}
                                 strokeWidth={1.5}
                                 strokeDasharray="4 3"
-                                opacity={0.6}
+                                opacity={0.7}
                               />
                             )}
                             {/* Filled circle */}
@@ -620,12 +639,7 @@ export function SignReviewModal({
                               strokeWidth={m.isCurrent ? 2.5 : 1.5}
                             />
                             {/* Pin dot */}
-                            <circle
-                              cx={cx}
-                              cy={cy}
-                              r={3}
-                              fill={m.color}
-                            />
+                            <circle cx={cx} cy={cy} r={3} fill={m.color} />
                             {/* Label */}
                             <text
                               x={cx}
@@ -635,7 +649,7 @@ export function SignReviewModal({
                               fontSize={m.isCurrent ? 10 : 8}
                               fontWeight="bold"
                               fontFamily="monospace"
-                              style={{ textShadow: "0 1px 2px rgba(0,0,0,0.8)" }}
+                              style={{ pointerEvents: "none", userSelect: "none" }}
                             >
                               {m.label}
                             </text>
@@ -673,7 +687,7 @@ export function SignReviewModal({
               <div>
                 <span className="font-semibold">Location not found on this page.</span>
                 <br />
-                The text &ldquo;{sign.location ?? sign.messageContent ?? "?"}&rdquo; was not found
+                The text &ldquo;{activeSign.location ?? activeSign.messageContent ?? "?"}&rdquo; was not found
                 in this page&rsquo;s text layer. This sign may have been attributed to the wrong
                 page by the AI. Verify the location and correct it if needed.
               </div>
