@@ -590,7 +590,8 @@ export function SignReviewModal({
                     renderTextLayer={true}
                     renderAnnotationLayer={true}
                   />
-                  {/* SVG marker overlay */}
+
+                  {/* SVG marker overlay — visual only, above react-pdf text layer */}
                   {showOverlay && textMarkers.length > 0 && renderedW && renderedH && (
                     <svg
                       style={{
@@ -600,6 +601,8 @@ export function SignReviewModal({
                         width: renderedW,
                         height: renderedH,
                         overflow: "visible",
+                        pointerEvents: "none",
+                        zIndex: 5,
                       }}
                       viewBox={`0 0 ${renderedW} ${renderedH}`}
                     >
@@ -607,49 +610,32 @@ export function SignReviewModal({
                         const cx = m.x * renderedW;
                         const cy = m.y * renderedH;
                         const r = m.isCurrent ? 18 : 12;
-                        const clickedSign = allSigns.find((s) => s.id === m.signId);
                         return (
-                          <g
-                            key={m.signId}
-                            style={{ cursor: "pointer" }}
-                            onClick={() => { if (clickedSign) setActiveSign(clickedSign); }}
-                          >
-                            {/* Hit area — invisible but larger for easy clicking */}
-                            <circle cx={cx} cy={cy} r={r + 8} fill="transparent" />
+                          <g key={m.signId}>
                             {/* Outer glow ring for active sign */}
                             {m.isCurrent && (
                               <circle
-                                cx={cx}
-                                cy={cy}
-                                r={r + 6}
-                                fill="none"
-                                stroke={m.color}
-                                strokeWidth={1.5}
-                                strokeDasharray="4 3"
+                                cx={cx} cy={cy} r={r + 6}
+                                fill="none" stroke={m.color}
+                                strokeWidth={1.5} strokeDasharray="4 3"
                                 opacity={0.7}
                               />
                             )}
                             {/* Filled circle */}
                             <circle
-                              cx={cx}
-                              cy={cy}
-                              r={r}
-                              fill={`${m.color}33`}
-                              stroke={m.color}
+                              cx={cx} cy={cy} r={r}
+                              fill={`${m.color}33`} stroke={m.color}
                               strokeWidth={m.isCurrent ? 2.5 : 1.5}
                             />
                             {/* Pin dot */}
                             <circle cx={cx} cy={cy} r={3} fill={m.color} />
                             {/* Label */}
                             <text
-                              x={cx}
-                              y={cy - r - 5}
-                              textAnchor="middle"
-                              fill={m.color}
+                              x={cx} y={cy - r - 5}
+                              textAnchor="middle" fill={m.color}
                               fontSize={m.isCurrent ? 10 : 8}
-                              fontWeight="bold"
-                              fontFamily="monospace"
-                              style={{ pointerEvents: "none", userSelect: "none" }}
+                              fontWeight="bold" fontFamily="monospace"
+                              style={{ userSelect: "none" }}
                             >
                               {m.label}
                             </text>
@@ -657,6 +643,42 @@ export function SignReviewModal({
                         );
                       })}
                     </svg>
+                  )}
+
+                  {/* Transparent click-capture overlay — sits above react-pdf's text/annotation
+                      layers so clicks anywhere on the page can select the nearest sign marker */}
+                  {renderedW && renderedH && (
+                    <div
+                      style={{
+                        position: "absolute",
+                        top: 0,
+                        left: 0,
+                        width: renderedW,
+                        height: renderedH,
+                        zIndex: 6,
+                        cursor: textMarkers.length > 0 ? "crosshair" : "default",
+                      }}
+                      onClick={(e) => {
+                        if (textMarkers.length === 0) return;
+                        const rect = e.currentTarget.getBoundingClientRect();
+                        const nx = (e.clientX - rect.left) / renderedW!;
+                        const ny = (e.clientY - rect.top) / renderedH!;
+
+                        // Find the nearest marker to where the user clicked
+                        let best: TextMarker | null = null;
+                        let bestDist = Infinity;
+                        for (const m of textMarkers) {
+                          const d = Math.hypot(m.x - nx, m.y - ny);
+                          if (d < bestDist) { bestDist = d; best = m; }
+                        }
+
+                        // Switch active sign if within ~20% of page width (generous hit area)
+                        if (best && bestDist < 0.20) {
+                          const found = allSigns.find((s) => s.id === best!.signId);
+                          if (found) setActiveSign(found);
+                        }
+                      }}
+                    />
                   )}
                 </div>
               </Document>
