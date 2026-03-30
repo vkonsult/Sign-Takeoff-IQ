@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 import { Document, Page, pdfjs } from "react-pdf";
 import "react-pdf/dist/Page/AnnotationLayer.css";
 import "react-pdf/dist/Page/TextLayer.css";
@@ -12,6 +12,9 @@ import {
   Loader2,
   FileText,
   AlertTriangle,
+  MapPin,
+  Eye,
+  EyeOff,
 } from "lucide-react";
 
 pdfjs.GlobalWorkerOptions.workerSrc = `${import.meta.env.BASE_URL}pdf.worker.min.mjs`;
@@ -66,6 +69,7 @@ const SIGN_TYPE_COLORS: Record<string, string> = {
   monument: "#78716C",
   pylon: "#78716C",
   parking: "#EC4899",
+  "restroom": "#EC4899",
   "channel letter": "#84CC16",
   cabinet: "#14B8A6",
   "dimensional letter": "#A78BFA",
@@ -117,6 +121,91 @@ function signToForm(sign: ExtractedSign): FormState {
   };
 }
 
+// ─── Text-item type from pdfjs ─────────────────────────────────────────────
+
+interface PdfTextItem {
+  str: string;
+  transform: [number, number, number, number, number, number];
+  width: number;
+  height: number;
+}
+
+interface TextMarker {
+  x: number; // 0–1 fraction of page width
+  y: number; // 0–1 fraction of page height (top-down)
+  signId: string;
+  color: string;
+  label: string;
+  isCurrent: boolean;
+}
+
+/** Tokenize a string into searchable words (len ≥ 2, deduplicated) */
+function tokenize(text: string | null | undefined): string[] {
+  if (!text) return [];
+  return [...new Set(
+    text
+      .toLowerCase()
+      .replace(/[^a-z0-9\s]/g, " ")
+      .split(/\s+/)
+      .filter((t) => t.length >= 2)
+  )];
+}
+
+/**
+ * Given the text items from a PDF page and a sign, find the best matching
+ * location on the page. Returns normalized (0–1) coordinates or null.
+ */
+function findSignLocation(
+  items: PdfTextItem[],
+  pageW: number,
+  pageH: number,
+  sign: ExtractedSign
+): { x: number; y: number; matched: string } | null {
+  const targets = [
+    ...(sign.location ? [sign.location] : []),
+    ...(sign.messageContent ? [sign.messageContent] : []),
+    ...(sign.signIdentifier ? [sign.signIdentifier] : []),
+  ];
+
+  // Try to find a text item that best matches the sign's location/message
+  // Strategy: score each item by how many tokens from our targets it contains
+  type Scored = { score: number; item: PdfTextItem; matched: string };
+  const scored: Scored[] = [];
+
+  for (const target of targets) {
+    const targetTokens = tokenize(target);
+    if (targetTokens.length === 0) continue;
+
+    for (const item of items) {
+      if (!item.str.trim()) continue;
+      const itemText = item.str.toLowerCase();
+
+      let matches = 0;
+      for (const tok of targetTokens) {
+        if (itemText.includes(tok)) matches++;
+      }
+
+      if (matches > 0) {
+        const score = matches / targetTokens.length;
+        scored.push({ score, item, matched: target });
+      }
+    }
+  }
+
+  if (scored.length === 0) return null;
+
+  // Pick the highest-scoring item
+  scored.sort((a, b) => b.score - a.score);
+  const best = scored[0]!;
+  const [, , , , tx, ty] = best.item.transform;
+
+  return {
+    x: Math.min(1, Math.max(0, tx / pageW)),
+    y: Math.min(1, Math.max(0, 1 - ty / pageH)), // flip Y: PDF bottom-up → screen top-down
+    matched: best.matched,
+  };
+}
+
 export function SignReviewModal({
   sign,
   jobId,
@@ -126,9 +215,7 @@ export function SignReviewModal({
   onSaved,
 }: SignReviewModalProps) {
   const file = files.find((f) => f.id === sign.jobFileId) ?? null;
-  const pdfUrl = file
-    ? `/api/jobs/${jobId}/files/${file.id}/pdf`
-    : null;
+  const pdfUrl = file ? `/api/jobs/${jobId}/files/${file.id}/pdf` : null;
 
   const [numPages, setNumPages] = useState<number | null>(null);
   const [pageNumber, setPageNumber] = useState(sign.pageNumber ?? 1);
@@ -140,6 +227,13 @@ export function SignReviewModal({
   const [saveError, setSaveError] = useState<string | null>(null);
   const [dirty, setDirty] = useState(false);
 
+  // ── Highlight / marker state ────────────────────────────────────────────
+  const pdfDocRef = useRef<{ getPage: (n: number) => Promise<{ getTextContent: () => Promise<{ items: PdfTextItem[] }>; getViewport: (o: { scale: number }) => { width: number; height: number } }> } | null>(null);
+  const [textMarkers, setTextMarkers] = useState<TextMarker[]>([]);
+  const [nativeSize, setNativeSize] = useState<{ w: number; h: number } | null>(null);
+  const [textSearchStatus, setTextSearchStatus] = useState<"idle" | "found" | "not-found">("idle");
+  const [showOverlay, setShowOverlay] = useState(true);
+
   useEffect(() => {
     setForm(signToForm(sign));
     setDirty(false);
@@ -149,6 +243,73 @@ export function SignReviewModal({
   const signsOnCurrentPage = allSigns.filter(
     (s) => s.jobFileId === sign.jobFileId && s.pageNumber === pageNumber
   );
+
+  // Load PDF document for text extraction (separate from react-pdf rendering)
+  useEffect(() => {
+    if (!pdfUrl) return;
+    let destroyed = false;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const task = (pdfjs as any).getDocument({ url: pdfUrl });
+    task.promise.then((doc: typeof pdfDocRef.current) => {
+      if (!destroyed) pdfDocRef.current = doc;
+    });
+    return () => {
+      destroyed = true;
+      task.destroy?.();
+    };
+  }, [pdfUrl]);
+
+  // Extract text items for the current page and compute markers
+  useEffect(() => {
+    if (!pdfDocRef.current || signsOnCurrentPage.length === 0) {
+      setTextMarkers([]);
+      setTextSearchStatus("idle");
+      return;
+    }
+
+    let cancelled = false;
+
+    pdfDocRef.current.getPage(pageNumber).then((page) => {
+      if (cancelled) return;
+      const viewport = page.getViewport({ scale: 1.0 });
+      const pageW = viewport.width;
+      const pageH = viewport.height;
+
+      if (!cancelled) setNativeSize({ w: pageW, h: pageH });
+
+      page.getTextContent().then((content) => {
+        if (cancelled) return;
+
+        const markers: TextMarker[] = [];
+        let currentSignFound = false;
+
+        for (const s of signsOnCurrentPage) {
+          const loc = findSignLocation(content.items, pageW, pageH, s);
+          if (loc) {
+            markers.push({
+              x: loc.x,
+              y: loc.y,
+              signId: s.id,
+              color: getSignColor(s.signType),
+              label: s.signIdentifier ?? s.signType?.slice(0, 6) ?? "SIGN",
+              isCurrent: s.id === sign.id,
+            });
+            if (s.id === sign.id) currentSignFound = true;
+          }
+        }
+
+        setTextMarkers(markers);
+        // Only report found/not-found for the current sign
+        if (signsOnCurrentPage.some((s) => s.id === sign.id)) {
+          setTextSearchStatus(currentSignFound ? "found" : "not-found");
+        } else {
+          setTextSearchStatus("idle");
+        }
+      });
+    });
+
+    return () => { cancelled = true; };
+  }, [pageNumber, sign.id, signsOnCurrentPage.length]);
 
   const handleField = useCallback(
     (field: keyof FormState, value: string | boolean) => {
@@ -173,7 +334,7 @@ export function SignReviewModal({
         mountingType: form.mountingType || null,
         finishColor: form.finishColor || null,
         illumination: form.illumination || null,
-        materials: form.materials || null,
+        materials: form.materials ?? null,
         messageContent: form.messageContent || null,
         notes: form.notes || null,
         reviewFlag: form.reviewFlag,
@@ -208,6 +369,10 @@ export function SignReviewModal({
       ? "text-primary"
       : "text-destructive";
 
+  // Rendered page size = native size × scale
+  const renderedW = nativeSize ? nativeSize.w * scale : null;
+  const renderedH = nativeSize ? nativeSize.h * scale : null;
+
   return (
     <div className="fixed inset-0 z-50 flex flex-col bg-background/95 backdrop-blur-sm">
       {/* Top bar */}
@@ -232,6 +397,19 @@ export function SignReviewModal({
             <span className="flex items-center gap-1 text-[10px] font-display font-bold uppercase tracking-wider text-primary border border-primary/30 bg-primary/10 px-2 py-0.5 rounded">
               <AlertTriangle className="w-3 h-3" />
               Flagged
+            </span>
+          )}
+          {/* Location found/not-found pill */}
+          {textSearchStatus === "found" && (
+            <span className="flex items-center gap-1 text-[10px] font-display font-bold uppercase tracking-wider text-accent border border-accent/30 bg-accent/10 px-2 py-0.5 rounded">
+              <MapPin className="w-3 h-3" />
+              Located on page
+            </span>
+          )}
+          {textSearchStatus === "not-found" && (
+            <span className="flex items-center gap-1 text-[10px] font-display font-bold uppercase tracking-wider text-destructive border border-destructive/30 bg-destructive/10 px-2 py-0.5 rounded">
+              <AlertTriangle className="w-3 h-3" />
+              Not found on this page
             </span>
           )}
         </div>
@@ -305,8 +483,31 @@ export function SignReviewModal({
                 Sheet <span className="font-mono text-foreground">{sign.sheetNumber}</span>
               </span>
             ) : null}
+
+            {/* Overlay toggle */}
+            {textMarkers.length > 0 && (
+              <button
+                onClick={() => setShowOverlay((v) => !v)}
+                className="ml-auto flex items-center gap-1.5 text-[10px] font-display font-semibold uppercase tracking-wide px-2 py-1 rounded transition-colors border"
+                style={showOverlay ? {
+                  background: `${getSignColor(sign.signType)}20`,
+                  color: getSignColor(sign.signType),
+                  borderColor: `${getSignColor(sign.signType)}55`,
+                } : {
+                  background: "transparent",
+                  color: "var(--muted-foreground)",
+                  borderColor: "var(--border)",
+                }}
+                title={showOverlay ? "Hide markers" : "Show markers"}
+              >
+                {showOverlay ? <Eye className="w-3 h-3" /> : <EyeOff className="w-3 h-3" />}
+                {textMarkers.length} marker{textMarkers.length !== 1 ? "s" : ""}
+              </button>
+            )}
+
+            {/* Signs on current page chips */}
             {signsOnCurrentPage.length > 0 && (
-              <div className="flex items-center gap-1.5 ml-2 overflow-x-auto max-w-[400px]">
+              <div className="flex items-center gap-1.5 ml-2 overflow-x-auto max-w-[320px]">
                 {signsOnCurrentPage.map((s) => {
                   const color = getSignColor(s.signType);
                   const isCurrent = s.id === sign.id;
@@ -331,8 +532,8 @@ export function SignReviewModal({
             )}
           </div>
 
-          {/* PDF canvas */}
-          <div className="flex-1 overflow-auto p-4 flex justify-center">
+          {/* PDF canvas + overlay */}
+          <div className="flex-1 overflow-auto p-4 flex justify-center items-start">
             {pdfUrl ? (
               <Document
                 file={pdfUrl}
@@ -354,13 +555,82 @@ export function SignReviewModal({
                   </div>
                 }
               >
-                <Page
-                  pageNumber={pageNumber}
-                  scale={scale}
-                  renderTextLayer={true}
-                  renderAnnotationLayer={true}
-                  className="shadow-2xl"
-                />
+                {/* Wrap page + overlay in a relative container */}
+                <div className="relative shadow-2xl inline-block">
+                  <Page
+                    pageNumber={pageNumber}
+                    scale={scale}
+                    renderTextLayer={true}
+                    renderAnnotationLayer={true}
+                  />
+                  {/* SVG marker overlay */}
+                  {showOverlay && textMarkers.length > 0 && renderedW && renderedH && (
+                    <svg
+                      style={{
+                        position: "absolute",
+                        top: 0,
+                        left: 0,
+                        width: renderedW,
+                        height: renderedH,
+                        pointerEvents: "none",
+                        overflow: "visible",
+                      }}
+                      viewBox={`0 0 ${renderedW} ${renderedH}`}
+                    >
+                      {textMarkers.map((m) => {
+                        const cx = m.x * renderedW;
+                        const cy = m.y * renderedH;
+                        const r = m.isCurrent ? 18 : 12;
+                        return (
+                          <g key={m.signId}>
+                            {/* Outer glow ring for current sign */}
+                            {m.isCurrent && (
+                              <circle
+                                cx={cx}
+                                cy={cy}
+                                r={r + 6}
+                                fill="none"
+                                stroke={m.color}
+                                strokeWidth={1.5}
+                                strokeDasharray="4 3"
+                                opacity={0.6}
+                              />
+                            )}
+                            {/* Filled circle */}
+                            <circle
+                              cx={cx}
+                              cy={cy}
+                              r={r}
+                              fill={`${m.color}33`}
+                              stroke={m.color}
+                              strokeWidth={m.isCurrent ? 2.5 : 1.5}
+                            />
+                            {/* Pin dot */}
+                            <circle
+                              cx={cx}
+                              cy={cy}
+                              r={3}
+                              fill={m.color}
+                            />
+                            {/* Label */}
+                            <text
+                              x={cx}
+                              y={cy - r - 5}
+                              textAnchor="middle"
+                              fill={m.color}
+                              fontSize={m.isCurrent ? 10 : 8}
+                              fontWeight="bold"
+                              fontFamily="monospace"
+                              style={{ textShadow: "0 1px 2px rgba(0,0,0,0.8)" }}
+                            >
+                              {m.label}
+                            </text>
+                          </g>
+                        );
+                      })}
+                    </svg>
+                  )}
+                </div>
               </Document>
             ) : (
               <div className="flex flex-col items-center justify-center h-64 text-muted-foreground gap-3">
@@ -381,6 +651,20 @@ export function SignReviewModal({
               Correct any fields extracted by AI
             </p>
           </div>
+
+          {/* Location source status banner */}
+          {textSearchStatus === "not-found" && (
+            <div className="mx-5 mt-4 flex items-start gap-2 text-xs bg-destructive/10 border border-destructive/20 rounded-lg px-3 py-2.5 text-destructive">
+              <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" />
+              <div>
+                <span className="font-semibold">Location not found on this page.</span>
+                <br />
+                The text &ldquo;{sign.location ?? sign.messageContent ?? "?"}&rdquo; was not found
+                in this page&rsquo;s text layer. This sign may have been attributed to the wrong
+                page by the AI. Verify the location and correct it if needed.
+              </div>
+            </div>
+          )}
 
           <div className="flex-1 overflow-y-auto px-5 py-4 space-y-4">
             <div className="grid grid-cols-2 gap-3">
