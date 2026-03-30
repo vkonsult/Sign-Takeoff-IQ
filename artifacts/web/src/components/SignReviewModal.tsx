@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useRef } from "react";
+import { useState, useCallback, useEffect } from "react";
 import { Document, Page, pdfjs } from "react-pdf";
 import "react-pdf/dist/Page/AnnotationLayer.css";
 import "react-pdf/dist/Page/TextLayer.css";
@@ -228,7 +228,8 @@ export function SignReviewModal({
   const [dirty, setDirty] = useState(false);
 
   // ── Highlight / marker state ────────────────────────────────────────────
-  const pdfDocRef = useRef<{ getPage: (n: number) => Promise<{ getTextContent: () => Promise<{ items: PdfTextItem[] }>; getViewport: (o: { scale: number }) => { width: number; height: number } }> } | null>(null);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const [pdfDoc, setPdfDoc] = useState<any | null>(null);
   const [textMarkers, setTextMarkers] = useState<TextMarker[]>([]);
   const [nativeSize, setNativeSize] = useState<{ w: number; h: number } | null>(null);
   const [textSearchStatus, setTextSearchStatus] = useState<"idle" | "found" | "not-found">("idle");
@@ -238,20 +239,27 @@ export function SignReviewModal({
     setForm(signToForm(sign));
     setDirty(false);
     setPageNumber(sign.pageNumber ?? 1);
+    setNativeSize(null);
+    setTextMarkers([]);
+    setTextSearchStatus("idle");
   }, [sign.id]);
 
   const signsOnCurrentPage = allSigns.filter(
     (s) => s.jobFileId === sign.jobFileId && s.pageNumber === pageNumber
   );
 
-  // Load PDF document for text extraction (separate from react-pdf rendering)
+  // Load PDF document for text extraction (separate from react-pdf rendering).
+  // Uses state (not a ref) so that the text-extraction effect re-runs once the
+  // async load completes.
   useEffect(() => {
     if (!pdfUrl) return;
+    setPdfDoc(null);
     let destroyed = false;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const task = (pdfjs as any).getDocument({ url: pdfUrl });
-    task.promise.then((doc: typeof pdfDocRef.current) => {
-      if (!destroyed) pdfDocRef.current = doc;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    task.promise.then((doc: any) => {
+      if (!destroyed) setPdfDoc(doc);
     });
     return () => {
       destroyed = true;
@@ -259,9 +267,15 @@ export function SignReviewModal({
     };
   }, [pdfUrl]);
 
-  // Extract text items for the current page and compute markers
+  // Extract text items for the current page and compute markers.
+  // Depends on `pdfDoc` (state) so it re-runs once the async load finishes.
   useEffect(() => {
-    if (!pdfDocRef.current || signsOnCurrentPage.length === 0) {
+    if (!pdfDoc) {
+      setTextMarkers([]);
+      setTextSearchStatus("idle");
+      return;
+    }
+    if (signsOnCurrentPage.length === 0) {
       setTextMarkers([]);
       setTextSearchStatus("idle");
       return;
@@ -269,13 +283,13 @@ export function SignReviewModal({
 
     let cancelled = false;
 
-    pdfDocRef.current.getPage(pageNumber).then((page) => {
+    pdfDoc.getPage(pageNumber).then((page: { getViewport: (o: { scale: number }) => { width: number; height: number }; getTextContent: () => Promise<{ items: PdfTextItem[] }> }) => {
       if (cancelled) return;
       const viewport = page.getViewport({ scale: 1.0 });
       const pageW = viewport.width;
       const pageH = viewport.height;
 
-      if (!cancelled) setNativeSize({ w: pageW, h: pageH });
+      setNativeSize({ w: pageW, h: pageH });
 
       page.getTextContent().then((content) => {
         if (cancelled) return;
@@ -299,7 +313,6 @@ export function SignReviewModal({
         }
 
         setTextMarkers(markers);
-        // Only report found/not-found for the current sign
         if (signsOnCurrentPage.some((s) => s.id === sign.id)) {
           setTextSearchStatus(currentSignFound ? "found" : "not-found");
         } else {
@@ -309,7 +322,8 @@ export function SignReviewModal({
     });
 
     return () => { cancelled = true; };
-  }, [pageNumber, sign.id, signsOnCurrentPage.length]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pdfDoc, pageNumber, sign.id, signsOnCurrentPage.length]);
 
   const handleField = useCallback(
     (field: keyof FormState, value: string | boolean) => {
