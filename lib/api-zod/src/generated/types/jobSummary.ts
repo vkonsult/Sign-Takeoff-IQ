@@ -12,6 +12,10 @@ export interface JobSummary {
   status: JobSummaryStatus;
   fileCount: number;
   error?: string | null;
+  /** Total Gemini input tokens consumed during extraction */
+  inputTokens: number;
+  /** Total Gemini output tokens consumed during extraction */
+  outputTokens: number;
   createdAt: Date;
   updatedAt: Date;
 }

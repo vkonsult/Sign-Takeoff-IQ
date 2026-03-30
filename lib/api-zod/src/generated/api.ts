@@ -52,10 +52,15 @@ export const getJobResponseExtractedSignsItemConfidenceScoreMax = 1;
 export const GetJobResponse = zod.object({
   job: zod.object({
     id: zod.string().uuid(),
-    name: zod.string().nullish(),
     status: zod.enum(["pending", "processing", "completed", "failed"]),
     fileCount: zod.number(),
     error: zod.string().nullish(),
+    inputTokens: zod
+      .number()
+      .describe("Total Gemini input tokens consumed during extraction"),
+    outputTokens: zod
+      .number()
+      .describe("Total Gemini output tokens consumed during extraction"),
     createdAt: zod.date(),
     updatedAt: zod.date(),
   }),
@@ -84,7 +89,6 @@ export const GetJobResponse = zod.object({
       materials: zod.string().nullish(),
       messageContent: zod.string().nullish(),
       notes: zod.string().nullish(),
-      pageNumber: zod.number().int().nullish(),
       confidenceScore: zod
         .number()
         .min(getJobResponseExtractedSignsItemConfidenceScoreMin)
@@ -114,12 +118,123 @@ export const ListJobsResponse = zod.object({
   jobs: zod.array(
     zod.object({
       id: zod.string().uuid(),
-      name: zod.string().nullish(),
       status: zod.enum(["pending", "processing", "completed", "failed"]),
       fileCount: zod.number(),
       error: zod.string().nullish(),
+      inputTokens: zod
+        .number()
+        .describe("Total Gemini input tokens consumed during extraction"),
+      outputTokens: zod
+        .number()
+        .describe("Total Gemini output tokens consumed during extraction"),
       createdAt: zod.date(),
       updatedAt: zod.date(),
     }),
   ),
+});
+
+/**
+ * Reads knowledge files from the knowledge directory, generates embeddings, and stores them in ChromaDB. Optionally filter by collection name or specific file path.
+ * @summary Ingest knowledge files into ChromaDB
+ */
+export const IngestKnowledgeBody = zod.object({
+  collection: zod
+    .enum([
+      "federal_codes",
+      "state_codes",
+      "city_codes",
+      "sign_glossary",
+      "plan_guides",
+      "customer_standards",
+    ])
+    .nullish(),
+  file_path: zod
+    .string()
+    .nullish()
+    .describe(
+      "Optional specific file path to ingest (relative to knowledge directory)",
+    ),
+});
+
+export const IngestKnowledgeResponse = zod.object({
+  success: zod.boolean(),
+  totalChunksAdded: zod.number(),
+  fileCount: zod.number(),
+  results: zod.array(
+    zod.object({
+      file: zod.string(),
+      chunksAdded: zod.number(),
+      errors: zod.array(zod.string()),
+    }),
+  ),
+});
+
+/**
+ * Performs semantic search against ChromaDB collections using text-embedding-004 embeddings. Returns ranked results with citations.
+ * @summary Query the knowledge base
+ */
+export const queryKnowledgeBodyNResultsDefault = 5;
+
+export const QueryKnowledgeBody = zod.object({
+  text: zod.string().describe("The query text for semantic search"),
+  nResults: zod
+    .number()
+    .default(queryKnowledgeBodyNResultsDefault)
+    .describe("Maximum number of results to return"),
+  jurisdiction: zod
+    .string()
+    .nullish()
+    .describe(
+      'Filter results by jurisdiction (e.g. \"federal\", \"CA\", \"Los Angeles, CA\")',
+    ),
+  doc_type: zod
+    .union([
+      zod.enum([
+        "federal_codes",
+        "state_codes",
+        "city_codes",
+        "sign_glossary",
+        "plan_guides",
+        "customer_standards",
+      ]),
+      zod.array(
+        zod.enum([
+          "federal_codes",
+          "state_codes",
+          "city_codes",
+          "sign_glossary",
+          "plan_guides",
+          "customer_standards",
+        ]),
+      ),
+    ])
+    .nullish()
+    .describe("Filter results by collection type(s)"),
+});
+
+export const queryKnowledgeResponseResultsItemScoreMin = 0;
+export const queryKnowledgeResponseResultsItemScoreMax = 1;
+
+export const QueryKnowledgeResponse = zod.object({
+  results: zod.array(
+    zod.object({
+      id: zod.string(),
+      document: zod.string(),
+      score: zod
+        .number()
+        .min(queryKnowledgeResponseResultsItemScoreMin)
+        .max(queryKnowledgeResponseResultsItemScoreMax),
+      metadata: zod.object({
+        source_file: zod.string(),
+        jurisdiction: zod.string(),
+        doc_type: zod.string(),
+        section: zod.string(),
+        effective_date: zod.string(),
+        status: zod.string(),
+        chunk_index: zod.number().nullish(),
+      }),
+    }),
+  ),
+  citations: zod.array(zod.string()),
+  totalResults: zod.number(),
 });

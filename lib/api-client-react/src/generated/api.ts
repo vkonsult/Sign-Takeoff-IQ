@@ -20,6 +20,10 @@ import type {
   ErrorResponse,
   HealthStatus,
   JobDetails,
+  KnowledgeIngestRequest,
+  KnowledgeIngestResponse,
+  KnowledgeQueryRequest,
+  KnowledgeQueryResponse,
   ListJobs200,
   ProcessResponse,
   UploadFilesBody,
@@ -512,3 +516,177 @@ export function useListJobs<
 
   return { ...query, queryKey: queryOptions.queryKey };
 }
+
+/**
+ * Reads knowledge files from the knowledge directory, generates embeddings, and stores them in ChromaDB. Optionally filter by collection name or specific file path.
+ * @summary Ingest knowledge files into ChromaDB
+ */
+export const getIngestKnowledgeUrl = () => {
+  return `/api/knowledge/ingest`;
+};
+
+export const ingestKnowledge = async (
+  knowledgeIngestRequest?: KnowledgeIngestRequest,
+  options?: RequestInit,
+): Promise<KnowledgeIngestResponse> => {
+  return customFetch<KnowledgeIngestResponse>(getIngestKnowledgeUrl(), {
+    ...options,
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...options?.headers },
+    body: JSON.stringify(knowledgeIngestRequest),
+  });
+};
+
+export const getIngestKnowledgeMutationOptions = <
+  TError = ErrorType<ErrorResponse>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof ingestKnowledge>>,
+    TError,
+    { data: BodyType<KnowledgeIngestRequest> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof ingestKnowledge>>,
+  TError,
+  { data: BodyType<KnowledgeIngestRequest> },
+  TContext
+> => {
+  const mutationKey = ["ingestKnowledge"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof ingestKnowledge>>,
+    { data: BodyType<KnowledgeIngestRequest> }
+  > = (props) => {
+    const { data } = props ?? {};
+
+    return ingestKnowledge(data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type IngestKnowledgeMutationResult = NonNullable<
+  Awaited<ReturnType<typeof ingestKnowledge>>
+>;
+export type IngestKnowledgeMutationBody = BodyType<KnowledgeIngestRequest>;
+export type IngestKnowledgeMutationError = ErrorType<ErrorResponse>;
+
+/**
+ * @summary Ingest knowledge files into ChromaDB
+ */
+export const useIngestKnowledge = <
+  TError = ErrorType<ErrorResponse>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof ingestKnowledge>>,
+    TError,
+    { data: BodyType<KnowledgeIngestRequest> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof ingestKnowledge>>,
+  TError,
+  { data: BodyType<KnowledgeIngestRequest> },
+  TContext
+> => {
+  return useMutation(getIngestKnowledgeMutationOptions(options));
+};
+
+/**
+ * Performs semantic search against ChromaDB collections using text-embedding-004 embeddings. Returns ranked results with citations.
+ * @summary Query the knowledge base
+ */
+export const getQueryKnowledgeUrl = () => {
+  return `/api/knowledge/query`;
+};
+
+export const queryKnowledge = async (
+  knowledgeQueryRequest: KnowledgeQueryRequest,
+  options?: RequestInit,
+): Promise<KnowledgeQueryResponse> => {
+  return customFetch<KnowledgeQueryResponse>(getQueryKnowledgeUrl(), {
+    ...options,
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...options?.headers },
+    body: JSON.stringify(knowledgeQueryRequest),
+  });
+};
+
+export const getQueryKnowledgeMutationOptions = <
+  TError = ErrorType<ErrorResponse>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof queryKnowledge>>,
+    TError,
+    { data: BodyType<KnowledgeQueryRequest> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof queryKnowledge>>,
+  TError,
+  { data: BodyType<KnowledgeQueryRequest> },
+  TContext
+> => {
+  const mutationKey = ["queryKnowledge"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof queryKnowledge>>,
+    { data: BodyType<KnowledgeQueryRequest> }
+  > = (props) => {
+    const { data } = props ?? {};
+
+    return queryKnowledge(data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type QueryKnowledgeMutationResult = NonNullable<
+  Awaited<ReturnType<typeof queryKnowledge>>
+>;
+export type QueryKnowledgeMutationBody = BodyType<KnowledgeQueryRequest>;
+export type QueryKnowledgeMutationError = ErrorType<ErrorResponse>;
+
+/**
+ * @summary Query the knowledge base
+ */
+export const useQueryKnowledge = <
+  TError = ErrorType<ErrorResponse>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof queryKnowledge>>,
+    TError,
+    { data: BodyType<KnowledgeQueryRequest> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof queryKnowledge>>,
+  TError,
+  { data: BodyType<KnowledgeQueryRequest> },
+  TContext
+> => {
+  return useMutation(getQueryKnowledgeMutationOptions(options));
+};

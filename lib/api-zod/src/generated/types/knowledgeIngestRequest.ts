@@ -5,16 +5,10 @@
  * Sign Takeoff Portal API
  * OpenAPI spec version: 0.1.0
  */
-
-export type KnowledgeCollectionName =
-  | "federal_codes"
-  | "state_codes"
-  | "city_codes"
-  | "sign_glossary"
-  | "plan_guides"
-  | "customer_standards";
+import type { KnowledgeIngestRequestCollection } from "./knowledgeIngestRequestCollection";
 
 export interface KnowledgeIngestRequest {
-  collection?: KnowledgeCollectionName | null;
+  collection?: KnowledgeIngestRequestCollection;
+  /** Optional specific file path to ingest (relative to knowledge directory) */
   file_path?: string | null;
 }

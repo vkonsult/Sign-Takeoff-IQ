@@ -35,11 +35,16 @@ export async function processJob(jobId: string): Promise<void> {
 
   const allRows: InsertExtractedSign[] = [];
   const parsedResults: Record<string, unknown>[] = [];
+  let totalInputTokens = 0;
+  let totalOutputTokens = 0;
 
   for (const file of files) {
     try {
       logger.info({ jobId, file: file.originalName }, "Extracting signs from file");
-      const { rows, pageCount, rawText } = await extractSignsFromPdf(file.storedPath, ai);
+      const { rows, pageCount, rawText, inputTokens, outputTokens } = await extractSignsFromPdf(file.storedPath, ai);
+
+      totalInputTokens += inputTokens;
+      totalOutputTokens += outputTokens;
 
       await db
         .update(jobFilesTable)
@@ -111,8 +116,8 @@ export async function processJob(jobId: string): Promise<void> {
 
   await db
     .update(jobsTable)
-    .set({ status: "completed", updatedAt: new Date() })
+    .set({ status: "completed", inputTokens: totalInputTokens, outputTokens: totalOutputTokens, updatedAt: new Date() })
     .where(eq(jobsTable.id, jobId));
 
-  logger.info({ jobId, extractedCount: allRows.length, failedCount }, "Job processing complete");
+  logger.info({ jobId, extractedCount: allRows.length, failedCount, totalInputTokens, totalOutputTokens }, "Job processing complete");
 }

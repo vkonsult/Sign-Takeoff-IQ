@@ -5,12 +5,7 @@
  * Sign Takeoff Portal API
  * OpenAPI spec version: 0.1.0
  */
-
-export interface KnowledgeIngestFileResult {
-  file: string;
-  chunksAdded: number;
-  errors: string[];
-}
+import type { KnowledgeIngestFileResult } from "./knowledgeIngestFileResult";
 
 export interface KnowledgeIngestResponse {
   success: boolean;

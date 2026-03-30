@@ -15,10 +15,21 @@ export interface UploadResponse {
   message: string;
 }
 
+export type ProcessResponseStatus =
+  (typeof ProcessResponseStatus)[keyof typeof ProcessResponseStatus];
+
+export const ProcessResponseStatus = {
+  pending: "pending",
+  processing: "processing",
+  completed: "completed",
+  failed: "failed",
+} as const;
+
 export interface ProcessResponse {
   success: boolean;
   message: string;
   extractedCount?: number;
+  status?: ProcessResponseStatus;
 }
 
 export type JobSummaryStatus =
@@ -33,10 +44,13 @@ export const JobSummaryStatus = {
 
 export interface JobSummary {
   id: string;
-  name?: string | null;
   status: JobSummaryStatus;
   fileCount: number;
   error?: string | null;
+  /** Total Gemini input tokens consumed during extraction */
+  inputTokens: number;
+  /** Total Gemini output tokens consumed during extraction */
+  outputTokens: number;
   createdAt: string;
   updatedAt: string;
 }
@@ -64,7 +78,6 @@ export interface ExtractedSign {
   materials?: string | null;
   messageContent?: string | null;
   notes?: string | null;
-  pageNumber?: number | null;
   /**
    * @minimum 0
    * @maximum 1
@@ -81,6 +94,91 @@ export interface JobDetails {
   totalSigns: number;
   flaggedCount: number;
   highConfidenceCount: number;
+}
+
+export type KnowledgeIngestRequestCollection =
+  | (typeof KnowledgeIngestRequestCollection)[keyof typeof KnowledgeIngestRequestCollection]
+  | null;
+
+export const KnowledgeIngestRequestCollection = {
+  federal_codes: "federal_codes",
+  state_codes: "state_codes",
+  city_codes: "city_codes",
+  sign_glossary: "sign_glossary",
+  plan_guides: "plan_guides",
+  customer_standards: "customer_standards",
+} as const;
+
+export interface KnowledgeIngestRequest {
+  collection?: KnowledgeIngestRequestCollection;
+  /** Optional specific file path to ingest (relative to knowledge directory) */
+  file_path?: string | null;
+}
+
+export interface KnowledgeIngestFileResult {
+  file: string;
+  chunksAdded: number;
+  errors: string[];
+}
+
+export interface KnowledgeIngestResponse {
+  success: boolean;
+  totalChunksAdded: number;
+  fileCount: number;
+  results: KnowledgeIngestFileResult[];
+}
+
+export interface KnowledgeQueryRequest {
+  /** The query text for semantic search */
+  text: string;
+  /** Maximum number of results to return */
+  nResults?: number;
+  /** Filter results by jurisdiction (e.g. "federal", "CA", "Los Angeles, CA") */
+  jurisdiction?: string | null;
+  /** Filter results by collection type(s) */
+  doc_type?:
+    | "federal_codes"
+    | "state_codes"
+    | "city_codes"
+    | "sign_glossary"
+    | "plan_guides"
+    | "customer_standards"
+    | (
+        | "federal_codes"
+        | "state_codes"
+        | "city_codes"
+        | "sign_glossary"
+        | "plan_guides"
+        | "customer_standards"
+      )[]
+    | null;
+}
+
+export interface KnowledgeResultMetadata {
+  source_file: string;
+  jurisdiction: string;
+  doc_type: string;
+  section: string;
+  effective_date: string;
+  status: string;
+  chunk_index?: number | null;
+}
+
+export interface KnowledgeResult {
+  id: string;
+  document: string;
+  /**
+   * @minimum 0
+   * @maximum 1
+   */
+  score: number;
+  metadata: KnowledgeResultMetadata;
+}
+
+export interface KnowledgeQueryResponse {
+  results: KnowledgeResult[];
+  citations: string[];
+  totalResults: number;
 }
 
 export interface ErrorResponse {

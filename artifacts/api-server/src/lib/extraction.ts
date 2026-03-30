@@ -462,15 +462,28 @@ export interface GeminiAI {
         temperature?: number;
         thinkingConfig?: { thinkingBudget: number };
       };
-    }) => Promise<{ text: string | undefined }>;
+    }) => Promise<{
+      text: string | undefined;
+      usageMetadata?: {
+        promptTokenCount?: number;
+        candidatesTokenCount?: number;
+        totalTokenCount?: number;
+      };
+    }>;
   };
+}
+
+interface GeminiCallResult {
+  text: string;
+  inputTokens: number;
+  outputTokens: number;
 }
 
 async function callGemini(
   prompt: string,
   ai: GeminiAI,
   label: string
-): Promise<string> {
+): Promise<GeminiCallResult> {
   const MAX_RETRIES = 4;
 
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
@@ -485,8 +498,10 @@ async function callGemini(
         },
       });
       const text = response.text ?? "";
-      logger.info({ label, responseLength: text.length }, "Gemini call complete");
-      return text;
+      const inputTokens = response.usageMetadata?.promptTokenCount ?? 0;
+      const outputTokens = response.usageMetadata?.candidatesTokenCount ?? 0;
+      logger.info({ label, responseLength: text.length, inputTokens, outputTokens }, "Gemini call complete");
+      return { text, inputTokens, outputTokens };
     } catch (err: unknown) {
       const isRateLimit =
         err instanceof Error &&
@@ -514,26 +529,30 @@ async function callGemini(
 export async function extractSignsFromPdf(
   filePath: string,
   ai: GeminiAI
-): Promise<{ rows: ExtractedSignRow[]; pageCount: number; rawText: string }> {
+): Promise<{ rows: ExtractedSignRow[]; pageCount: number; rawText: string; inputTokens: number; outputTokens: number }> {
   const { pages, numPages } = await extractTextFromPdf(filePath);
 
   if (pages.length === 0) {
     logger.warn({ filePath }, "PDF yielded no pages");
-    return { rows: [], pageCount: numPages, rawText: "" };
+    return { rows: [], pageCount: numPages, rawText: "", inputTokens: 0, outputTokens: 0 };
   }
 
   const allRows: ExtractedSignRow[] = [];
+  let totalInputTokens = 0;
+  let totalOutputTokens = 0;
 
   // ── PASS 1: Sign Schedule / Specification Pages ───────────────────────────
   const signScheduleBlock = buildPageBlock(pages, "sign_schedule", 300000, 8000);
 
   if (signScheduleBlock.trim().length > 50) {
     logger.info({ filePath: filePath.split("/").pop() }, "Running sign schedule extraction pass");
-    const scheduleText = await callGemini(
+    const { text: scheduleText, inputTokens: si, outputTokens: so } = await callGemini(
       SIGN_SCHEDULE_PROMPT + signScheduleBlock,
       ai,
       "sign-schedule"
     );
+    totalInputTokens += si;
+    totalOutputTokens += so;
     const scheduleRows = parseGeminiResponse(scheduleText, "sign-schedule");
     logger.info({ count: scheduleRows.length }, "Sign schedule pass complete");
     allRows.push(...scheduleRows);
@@ -587,7 +606,9 @@ export async function extractSignsFromPdf(
       const label = `floor-plan-batch-${batchIdx + 1}-of-${batches.length}`;
       logger.info({ batchPages: batch.length, label }, "Running ADA floor plan pass");
 
-      const fpText = await callGemini(FLOOR_PLAN_ADA_PROMPT + block, ai, label);
+      const { text: fpText, inputTokens: fi, outputTokens: fo } = await callGemini(FLOOR_PLAN_ADA_PROMPT + block, ai, label);
+      totalInputTokens += fi;
+      totalOutputTokens += fo;
       const fpRows = parseGeminiResponse(fpText, label);
       logger.info({ count: fpRows.length, label }, "ADA floor plan pass complete");
       allRows.push(...fpRows);
@@ -606,11 +627,13 @@ export async function extractSignsFromPdf(
     );
 
     if (generalBlock.trim().length > 50) {
-      const fallbackText = await callGemini(
+      const { text: fallbackText, inputTokens: gi, outputTokens: go } = await callGemini(
         SIGN_SCHEDULE_PROMPT + generalBlock,
         ai,
         "general-fallback"
       );
+      totalInputTokens += gi;
+      totalOutputTokens += go;
       const fallbackRows = parseGeminiResponse(fallbackText, "general-fallback");
       allRows.push(...fallbackRows);
     }
@@ -622,9 +645,11 @@ export async function extractSignsFromPdf(
     {
       filePath: filePath.split("/").pop(),
       totalSigns: allRows.length,
+      totalInputTokens,
+      totalOutputTokens,
     },
     "Extraction complete"
   );
 
-  return { rows: allRows, pageCount: numPages, rawText };
+  return { rows: allRows, pageCount: numPages, rawText, inputTokens: totalInputTokens, outputTokens: totalOutputTokens };
 }

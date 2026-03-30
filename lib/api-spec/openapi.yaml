@@ -285,6 +285,12 @@ components:
         error:
           type: string
           nullable: true
+        inputTokens:
+          type: integer
+          description: Total Gemini input tokens consumed during extraction
+        outputTokens:
+          type: integer
+          description: Total Gemini output tokens consumed during extraction
         createdAt:
           type: string
           format: date-time
@@ -295,6 +301,8 @@ components:
         - id
         - status
         - fileCount
+        - inputTokens
+        - outputTokens
         - createdAt
         - updatedAt
 

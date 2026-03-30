@@ -5,10 +5,11 @@
  * Sign Takeoff Portal API
  * OpenAPI spec version: 0.1.0
  */
+import type { ProcessResponseStatus } from "./processResponseStatus";
 
 export interface ProcessResponse {
   success: boolean;
   message: string;
   extractedCount?: number;
-  status?: "pending" | "processing" | "completed" | "failed";
+  status?: ProcessResponseStatus;
 }

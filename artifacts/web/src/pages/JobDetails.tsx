@@ -14,7 +14,8 @@ import {
   Play, 
   Loader2,
   ListFilter,
-  Pencil
+  Pencil,
+  Zap
 } from "lucide-react";
 import { format } from "date-fns";
 import { motion } from "framer-motion";
@@ -206,7 +207,7 @@ export default function JobDetails() {
             </div>
           ) : isCompleted ? (
             <div className="flex flex-col h-full">
-              <div className="flex-none p-4 max-w-7xl mx-auto w-full grid grid-cols-1 md:grid-cols-3 gap-4">
+              <div className="flex-none p-4 max-w-7xl mx-auto w-full grid grid-cols-2 md:grid-cols-4 gap-4">
                 <SummaryCard 
                   title="Total Signs Extracted" 
                   value={totalSigns} 
@@ -223,6 +224,10 @@ export default function JobDetails() {
                   value={flaggedCount} 
                   icon={<AlertTriangle className="w-5 h-5 text-primary" />} 
                   accent="primary"
+                />
+                <CostCard 
+                  inputTokens={job.inputTokens ?? 0}
+                  outputTokens={job.outputTokens ?? 0}
                 />
               </div>
               
@@ -397,6 +402,39 @@ function SummaryCard({ title, value, icon, accent }: { title: string, value: num
       </div>
       {accent === 'primary' && <div className="absolute -bottom-4 -right-4 w-24 h-24 bg-primary/5 rounded-full blur-2xl group-hover:bg-primary/10 transition-colors"></div>}
       {accent === 'accent' && <div className="absolute -bottom-4 -right-4 w-24 h-24 bg-accent/5 rounded-full blur-2xl group-hover:bg-accent/10 transition-colors"></div>}
+    </div>
+  );
+}
+
+function fmtTokens(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(0)}K`;
+  return `${n}`;
+}
+
+function CostCard({ inputTokens, outputTokens }: { inputTokens: number; outputTokens: number }) {
+  const hasData = inputTokens > 0 || outputTokens > 0;
+  // Gemini 2.5 Flash pricing: $0.15/M input, $0.60/M output (thinking disabled)
+  const costUsd = (inputTokens * 0.15 + outputTokens * 0.60) / 1_000_000;
+
+  return (
+    <div className="bg-card border border-border p-4 rounded-xl relative overflow-hidden group hover:border-border/80 transition-colors">
+      <div className="flex justify-between items-start relative z-10">
+        <div className="min-w-0 flex-1">
+          <p className="text-xs font-display font-medium text-muted-foreground uppercase tracking-wider mb-1">AI Cost Est.</p>
+          <p className="text-2xl font-mono font-bold text-foreground">
+            {hasData ? `$${costUsd < 0.01 ? costUsd.toFixed(4) : costUsd.toFixed(3)}` : "—"}
+          </p>
+          {hasData && (
+            <p className="text-[10px] font-mono text-muted-foreground mt-1 leading-relaxed">
+              {fmtTokens(inputTokens)} in · {fmtTokens(outputTokens)} out
+            </p>
+          )}
+        </div>
+        <div className="p-2 bg-secondary rounded-lg flex-shrink-0">
+          <Zap className="w-5 h-5 text-muted-foreground" />
+        </div>
+      </div>
     </div>
   );
 }

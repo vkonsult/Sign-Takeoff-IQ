@@ -5,32 +5,7 @@
  * Sign Takeoff Portal API
  * OpenAPI spec version: 0.1.0
  */
-
-import type { KnowledgeCollectionName } from "./knowledgeIngestRequest";
-
-export interface KnowledgeQueryRequest {
-  text: string;
-  nResults?: number;
-  jurisdiction?: string | null;
-  doc_type?: KnowledgeCollectionName | KnowledgeCollectionName[] | null;
-}
-
-export interface KnowledgeResultMetadata {
-  source_file: string;
-  jurisdiction: string;
-  doc_type: string;
-  section: string;
-  effective_date: string;
-  status: string;
-  chunk_index?: number | null;
-}
-
-export interface KnowledgeResult {
-  id: string;
-  document: string;
-  score: number;
-  metadata: KnowledgeResultMetadata;
-}
+import type { KnowledgeResult } from "./knowledgeResult";
 
 export interface KnowledgeQueryResponse {
   results: KnowledgeResult[];
