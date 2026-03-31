@@ -226,7 +226,7 @@ VIRGINIA-SPECIFIC REQUIREMENTS (Virginia Uniform Statewide Building Code — USB
 
 // ─── FLOOR PLAN ADA + FIRE CODE PROMPT ────────────────────────────────────────
 
-function buildFloorPlanADAPrompt(projectContext?: ProjectInfo): string {
+function buildFloorPlanADAPrompt(projectContext?: ProjectInfo, signScheduleContext?: string): string {
   const locationLine = projectContext?.address || projectContext?.city || projectContext?.state
     ? `\nPROJECT LOCATION: ${[projectContext.address, projectContext.city, projectContext.state, projectContext.zip].filter(Boolean).join(", ")}`
     : "";
@@ -234,6 +234,9 @@ function buildFloorPlanADAPrompt(projectContext?: ProjectInfo): string {
     ? `\nBUILDING OCCUPANCY: ${projectContext.occupancy_type}`
     : "";
   const stateRules = getStateSpecificRules(projectContext?.state ?? null);
+  const scheduleCtx = signScheduleContext
+    ? `\n\nSIGN SCHEDULE / SPECIFICATION CONTEXT (for reference only — do NOT re-list these as output rows; use them to understand sign types, identifiers, and specs defined for this project):\n---\n${signScheduleContext.slice(0, 10000)}\n---\n`
+    : "";
 
   return `You are an expert sign contractor, ADA compliance specialist, and fire/life-safety code consultant performing a comprehensive sign takeoff from architectural floor plans.
 
@@ -458,7 +461,7 @@ CRITICAL RULES:
 - If you cannot read the floor plan, return []
 
 FLOOR PLAN PAGES (with page markers):
----
+${scheduleCtx}---
 `;
 }
 
@@ -950,23 +953,23 @@ export async function extractSignsFromPdf(
   let totalInputTokens = 0;
   let totalOutputTokens = 0;
 
-  // ── PASS 1: Sign Schedule / Specification Pages ───────────────────────────
+  // ── PASS 1: Sign Schedule / Specification Pages — Reference Context Only ─────
+  // We read sign schedule pages for context (sign types, IDs, specs defined by
+  // the architect) but do NOT generate extracted-sign rows from them.  Doing so
+  // causes double-counting because the same signs appear on both the schedule and
+  // the floor plans.  Instead, the raw schedule text is injected into the Pass 2
+  // floor plan prompt so the AI can cross-reference the architect's intent.
   const signScheduleBlock = buildPageBlock(pages, "sign_schedule", 300000, 8000);
+  let signScheduleContext: string | undefined;
 
   if (signScheduleBlock.trim().length > 50) {
-    logger.info({ filePath: filePath.split("/").pop() }, "Running sign schedule extraction pass");
-    const { text: scheduleText, inputTokens: si, outputTokens: so } = await callGemini(
-      SIGN_SCHEDULE_PROMPT + signScheduleBlock,
-      ai,
-      "sign-schedule"
+    signScheduleContext = signScheduleBlock; // raw PDF text — no Gemini call needed
+    logger.info(
+      { filePath: filePath.split("/").pop(), chars: signScheduleContext.length },
+      "Sign schedule text captured as floor-plan context (no row extraction)"
     );
-    totalInputTokens += si;
-    totalOutputTokens += so;
-    const scheduleRows = parseGeminiResponse(scheduleText, "sign-schedule");
-    logger.info({ count: scheduleRows.length }, "Sign schedule pass complete");
-    allRows.push(...scheduleRows);
   } else {
-    logger.info({ filePath: filePath.split("/").pop() }, "No sign schedule pages found — skipping schedule pass");
+    logger.info({ filePath: filePath.split("/").pop() }, "No sign schedule pages found");
   }
 
   // ── PASS 2: Floor Plan Pages — ADA-Required Signs ──────────────────────────
@@ -1015,7 +1018,7 @@ export async function extractSignsFromPdf(
       const label = `floor-plan-batch-${batchIdx + 1}-of-${batches.length}`;
       logger.info({ batchPages: batch.length, label }, "Running ADA floor plan pass");
 
-      const { text: fpText, inputTokens: fi, outputTokens: fo } = await callGemini(buildFloorPlanADAPrompt(projectContext) + block, ai, label);
+      const { text: fpText, inputTokens: fi, outputTokens: fo } = await callGemini(buildFloorPlanADAPrompt(projectContext, signScheduleContext) + block, ai, label);
       totalInputTokens += fi;
       totalOutputTokens += fo;
       const fpRows = parseGeminiResponse(fpText, label);

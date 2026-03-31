@@ -4,6 +4,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { AppShell } from "@/components/layout/Shell";
 import { useJobDetails, useStartExtraction, downloadExport, useUpdateJobName } from "@/hooks/use-takeoff";
 import { SignReviewModal } from "@/components/SignReviewModal";
+import { SignSpecModal } from "@/components/SignSpecModal";
 import { getGetJobQueryKey } from "@workspace/api-client-react";
 import { 
   FileText, 
@@ -33,6 +34,10 @@ export default function JobDetails() {
 
   type SignRow = NonNullable<typeof data>["extractedSigns"][number];
   const [reviewSign, setReviewSign] = useState<SignRow | null>(null);
+
+  type SpecViewer = { fileId: string; fileName: string; specPages: number[] } | null;
+  const [specViewer, setSpecViewer] = useState<SpecViewer>(null);
+
   const [editingName, setEditingName] = useState(false);
   const [nameValue, setNameValue] = useState("");
   const nameInputRef = useRef<HTMLInputElement>(null);
@@ -243,7 +248,7 @@ export default function JobDetails() {
               </div>
               
               {/* Sheets Analysis Panel */}
-              <SheetsPanel files={files} />
+              <SheetsPanel files={files} onOpenSpec={setSpecViewer} />
 
               {/* Data Table Container */}
               <div className="flex-1 overflow-auto bg-card border-t border-border">
@@ -364,6 +369,16 @@ export default function JobDetails() {
           onSaved={handleSignSaved}
         />
       )}
+
+      {specViewer && (
+        <SignSpecModal
+          jobId={jobId}
+          fileId={specViewer.fileId}
+          fileName={specViewer.fileName}
+          specPages={specViewer.specPages}
+          onClose={() => setSpecViewer(null)}
+        />
+      )}
     </AppShell>
   );
 }
@@ -421,8 +436,15 @@ function SummaryCard({ title, value, icon, accent }: { title: string, value: num
 }
 
 type FileWithStats = NonNullable<ReturnType<typeof useJobDetails>["data"]>["files"][number];
+type SpecViewerState = { fileId: string; fileName: string; specPages: number[] };
 
-function SheetsPanel({ files }: { files: FileWithStats[] }) {
+function SheetsPanel({
+  files,
+  onOpenSpec,
+}: {
+  files: FileWithStats[];
+  onOpenSpec: (v: SpecViewerState) => void;
+}) {
   const [open, setOpen] = useState(false);
 
   const hasStats = files.some((f) => f.pageStats != null);
@@ -432,14 +454,17 @@ function SheetsPanel({ files }: { files: FileWithStats[] }) {
   const totalSignSchedule = files.reduce((sum, f) => sum + (f.pageStats?.signSchedulePages?.length ?? 0), 0);
   const totalFloorPlan = files.reduce((sum, f) => sum + (f.pageStats?.floorPlanPages?.length ?? 0), 0);
 
+  // Find the first file that has sign schedule pages (for the quick "Review" button)
+  const firstSpecFile = files.find((f) => (f.pageStats?.signSchedulePages?.length ?? 0) > 0);
+
   return (
     <div className="flex-none border-t border-border/60 bg-background">
       <div className="max-w-7xl mx-auto w-full px-4">
-        <button
-          onClick={() => setOpen((v) => !v)}
-          className="w-full flex items-center justify-between py-2 text-left group"
-        >
-          <div className="flex items-center gap-3">
+        <div className="flex items-center justify-between">
+          <button
+            onClick={() => setOpen((v) => !v)}
+            className="flex-1 flex items-center gap-3 py-2 text-left group"
+          >
             <Layers className="w-3.5 h-3.5 text-muted-foreground" />
             <span className="text-xs font-display font-semibold text-foreground uppercase tracking-wider">Sheets Analysis</span>
             {totalSignSchedule > 0 ? (
@@ -452,9 +477,30 @@ function SheetsPanel({ files }: { files: FileWithStats[] }) {
             <span className="text-[10px] font-mono text-muted-foreground/50">
               {totalFloorPlan} floor plan{totalFloorPlan !== 1 ? "s" : ""} · {totalPages} total pages
             </span>
+          </button>
+          <div className="flex items-center gap-2">
+            {firstSpecFile && firstSpecFile.pageStats?.signSchedulePages && (
+              <button
+                onClick={() =>
+                  onOpenSpec({
+                    fileId: firstSpecFile.id,
+                    fileName: firstSpecFile.originalName,
+                    specPages: firstSpecFile.pageStats!.signSchedulePages!,
+                  })
+                }
+                className="flex-shrink-0 px-3 py-1 rounded text-[10px] font-display font-bold uppercase tracking-wider border bg-accent/10 text-accent border-accent/40 hover:bg-accent/20 transition-colors"
+              >
+                Review Sign Spec →
+              </button>
+            )}
+            <button
+              onClick={() => setOpen((v) => !v)}
+              className="w-7 h-7 flex items-center justify-center text-muted-foreground/50 hover:text-foreground transition-colors"
+            >
+              <ChevronDown className={`w-4 h-4 transition-transform duration-200 ${open ? "rotate-180" : ""}`} />
+            </button>
           </div>
-          <ChevronDown className={`w-4 h-4 text-muted-foreground/50 transition-transform duration-200 ${open ? "rotate-180" : ""}`} />
-        </button>
+        </div>
 
         {open && (
           <div className="pb-3 space-y-2">
@@ -470,7 +516,23 @@ function SheetsPanel({ files }: { files: FileWithStats[] }) {
                 <div key={f.id} className="bg-card border border-border rounded-lg p-3">
                   <div className="flex items-center justify-between mb-2">
                     <span className="text-xs font-mono text-foreground font-medium truncate">{f.originalName}</span>
-                    <span className="text-[10px] font-mono text-muted-foreground ml-2 flex-shrink-0">{total} pages</span>
+                    <div className="flex items-center gap-2 flex-shrink-0 ml-2">
+                      {ssCount > 0 && (
+                        <button
+                          onClick={() =>
+                            onOpenSpec({
+                              fileId: f.id,
+                              fileName: f.originalName,
+                              specPages: stats!.signSchedulePages!,
+                            })
+                          }
+                          className="px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider bg-accent/10 text-accent border border-accent/30 hover:bg-accent/20 transition-colors"
+                        >
+                          Review Spec →
+                        </button>
+                      )}
+                      <span className="text-[10px] font-mono text-muted-foreground">{total} pages</span>
+                    </div>
                   </div>
 
                   {stats ? (
