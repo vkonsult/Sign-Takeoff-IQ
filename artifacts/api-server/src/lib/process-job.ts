@@ -8,7 +8,7 @@ import {
 } from "@workspace/db";
 
 import { ai } from "@workspace/integrations-gemini-ai";
-import { extractSignsFromPdf } from "./extraction";
+import { extractSignsFromPdf, extractProjectInfo, type ProjectInfo } from "./extraction";
 import { saveParsedResult } from "./storage";
 import { logger } from "./logger";
 
@@ -38,10 +38,43 @@ export async function processJob(jobId: string): Promise<void> {
   let totalInputTokens = 0;
   let totalOutputTokens = 0;
 
+  // ── PASS 0: Extract project info from first file ──────────────────────────
+  let projectContext: ProjectInfo | undefined;
+  const firstFile = files[0]!;
+
+  try {
+    logger.info({ jobId, file: firstFile.originalName }, "Extracting project info");
+    const { info, inputTokens: piIn, outputTokens: piOut } = await extractProjectInfo(firstFile.storedPath, ai);
+    projectContext = info;
+    totalInputTokens += piIn;
+    totalOutputTokens += piOut;
+
+    // Persist address/state to job record immediately so UI can show it
+    if (info.address || info.city || info.state) {
+      await db
+        .update(jobsTable)
+        .set({
+          projectAddress: info.address,
+          projectCity: info.city,
+          projectState: info.state,
+          updatedAt: new Date(),
+        })
+        .where(eq(jobsTable.id, jobId));
+      logger.info({ jobId, address: info.address, city: info.city, state: info.state }, "Project location saved");
+    }
+  } catch (err) {
+    logger.warn({ err, jobId }, "Project info extraction failed — continuing without location context");
+  }
+
+  // ── PASSES 1–3: Sign extraction for each file ─────────────────────────────
   for (const file of files) {
     try {
       logger.info({ jobId, file: file.originalName }, "Extracting signs from file");
-      const { rows, pageCount, rawText, inputTokens, outputTokens } = await extractSignsFromPdf(file.storedPath, ai);
+      const { rows, pageCount, rawText, inputTokens, outputTokens } = await extractSignsFromPdf(
+        file.storedPath,
+        ai,
+        projectContext
+      );
 
       totalInputTokens += inputTokens;
       totalOutputTokens += outputTokens;
@@ -116,8 +149,16 @@ export async function processJob(jobId: string): Promise<void> {
 
   await db
     .update(jobsTable)
-    .set({ status: "completed", inputTokens: totalInputTokens, outputTokens: totalOutputTokens, updatedAt: new Date() })
+    .set({
+      status: "completed",
+      inputTokens: totalInputTokens,
+      outputTokens: totalOutputTokens,
+      updatedAt: new Date(),
+    })
     .where(eq(jobsTable.id, jobId));
 
-  logger.info({ jobId, extractedCount: allRows.length, failedCount, totalInputTokens, totalOutputTokens }, "Job processing complete");
+  logger.info(
+    { jobId, extractedCount: allRows.length, failedCount, totalInputTokens, totalOutputTokens },
+    "Job processing complete"
+  );
 }

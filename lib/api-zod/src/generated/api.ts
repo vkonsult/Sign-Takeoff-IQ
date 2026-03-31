@@ -61,6 +61,20 @@ export const GetJobResponse = zod.object({
     outputTokens: zod
       .number()
       .describe("Total Gemini output tokens consumed during extraction"),
+    projectAddress: zod
+      .string()
+      .nullish()
+      .describe("Street address extracted from the plan title block"),
+    projectCity: zod
+      .string()
+      .nullish()
+      .describe("City extracted from the plan title block"),
+    projectState: zod
+      .string()
+      .nullish()
+      .describe(
+        "2-letter state code extracted from the plan (e.g. CA, TX, NY)",
+      ),
     createdAt: zod.date(),
     updatedAt: zod.date(),
   }),
@@ -127,6 +141,20 @@ export const ListJobsResponse = zod.object({
       outputTokens: zod
         .number()
         .describe("Total Gemini output tokens consumed during extraction"),
+      projectAddress: zod
+        .string()
+        .nullish()
+        .describe("Street address extracted from the plan title block"),
+      projectCity: zod
+        .string()
+        .nullish()
+        .describe("City extracted from the plan title block"),
+      projectState: zod
+        .string()
+        .nullish()
+        .describe(
+          "2-letter state code extracted from the plan (e.g. CA, TX, NY)",
+        ),
       createdAt: zod.date(),
       updatedAt: zod.date(),
     }),

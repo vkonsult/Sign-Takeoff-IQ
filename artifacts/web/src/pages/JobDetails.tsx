@@ -15,7 +15,8 @@ import {
   Loader2,
   ListFilter,
   Pencil,
-  Zap
+  Zap,
+  MapPin
 } from "lucide-react";
 import { format } from "date-fns";
 import { motion } from "framer-motion";
@@ -146,10 +147,18 @@ export default function JobDetails() {
                 )}
                 <StatusBadge status={job.status} />
               </div>
-              <p className="text-sm text-muted-foreground font-mono">
-                {job.name && <span className="text-muted-foreground/50 mr-2">{job.id.split('-')[0]}</span>}
-                Created {format(new Date(job.createdAt), "PP pp")} • {files.length} file(s)
-              </p>
+              <div className="flex items-center flex-wrap gap-x-3 gap-y-1">
+                <p className="text-sm text-muted-foreground font-mono">
+                  {job.name && <span className="text-muted-foreground/50 mr-2">{job.id.split('-')[0]}</span>}
+                  Created {format(new Date(job.createdAt), "PP pp")} • {files.length} file(s)
+                </p>
+                {(job.projectAddress || job.projectCity || job.projectState) && (
+                  <span className="flex items-center gap-1 text-sm text-accent font-mono">
+                    <MapPin className="w-3.5 h-3.5 flex-shrink-0" />
+                    {[job.projectAddress, job.projectCity, job.projectState].filter(Boolean).join(", ")}
+                  </span>
+                )}
+              </div>
               
               {isFailed && job.error && (
                 <div className="mt-3 text-sm text-destructive bg-destructive/10 px-3 py-2 rounded border border-destructive/20 inline-block">

@@ -291,6 +291,18 @@ components:
         outputTokens:
           type: integer
           description: Total Gemini output tokens consumed during extraction
+        projectAddress:
+          type: string
+          nullable: true
+          description: Street address extracted from the plan title block
+        projectCity:
+          type: string
+          nullable: true
+          description: City extracted from the plan title block
+        projectState:
+          type: string
+          nullable: true
+          description: 2-letter state code extracted from the plan (e.g. CA, TX, NY)
         createdAt:
           type: string
           format: date-time

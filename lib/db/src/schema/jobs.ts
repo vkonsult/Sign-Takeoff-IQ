@@ -17,6 +17,9 @@ export const jobsTable = pgTable("jobs", {
   error: text("error"),
   inputTokens: integer("input_tokens").notNull().default(0),
   outputTokens: integer("output_tokens").notNull().default(0),
+  projectAddress: text("project_address"),
+  projectCity: text("project_city"),
+  projectState: text("project_state"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });

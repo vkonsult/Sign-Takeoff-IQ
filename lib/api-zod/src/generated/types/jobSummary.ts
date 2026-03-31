@@ -16,6 +16,12 @@ export interface JobSummary {
   inputTokens: number;
   /** Total Gemini output tokens consumed during extraction */
   outputTokens: number;
+  /** Street address extracted from the plan title block */
+  projectAddress?: string | null;
+  /** City extracted from the plan title block */
+  projectCity?: string | null;
+  /** 2-letter state code extracted from the plan (e.g. CA, TX, NY) */
+  projectState?: string | null;
   createdAt: Date;
   updatedAt: Date;
 }
