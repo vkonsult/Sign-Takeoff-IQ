@@ -414,21 +414,50 @@ function fmtTokens(n: number): string {
 
 function CostCard({ inputTokens, outputTokens }: { inputTokens: number; outputTokens: number }) {
   const hasData = inputTokens > 0 || outputTokens > 0;
-  // Gemini 2.5 Flash pricing: $0.15/M input, $0.60/M output (thinking disabled)
-  const costUsd = (inputTokens * 0.15 + outputTokens * 0.60) / 1_000_000;
+  // Gemini 2.5 Flash pricing (thinking disabled): $0.15/M input, $0.60/M output
+  const INPUT_RATE  = 0.15; // $ per million tokens
+  const OUTPUT_RATE = 0.60; // $ per million tokens
+  const inputCost  = (inputTokens  * INPUT_RATE)  / 1_000_000;
+  const outputCost = (outputTokens * OUTPUT_RATE) / 1_000_000;
+  const totalCost  = inputCost + outputCost;
+  const fmt = (c: number) =>
+    c === 0 ? "$0.00" : c < 0.001 ? `$${c.toFixed(5)}` : c < 0.01 ? `$${c.toFixed(4)}` : `$${c.toFixed(3)}`;
 
   return (
     <div className="bg-card border border-border p-4 rounded-xl relative overflow-hidden group hover:border-border/80 transition-colors">
       <div className="flex justify-between items-start relative z-10">
         <div className="min-w-0 flex-1">
-          <p className="text-xs font-display font-medium text-muted-foreground uppercase tracking-wider mb-1">AI Cost Est.</p>
+          <p className="text-xs font-display font-medium text-muted-foreground uppercase tracking-wider mb-1">AI Processing Cost</p>
           <p className="text-2xl font-mono font-bold text-foreground">
-            {hasData ? `$${costUsd < 0.01 ? costUsd.toFixed(4) : costUsd.toFixed(3)}` : "—"}
+            {hasData ? fmt(totalCost) : "—"}
           </p>
-          {hasData && (
-            <p className="text-[10px] font-mono text-muted-foreground mt-1 leading-relaxed">
-              {fmtTokens(inputTokens)} in · {fmtTokens(outputTokens)} out
-            </p>
+          {hasData ? (
+            <div className="mt-2 space-y-1.5">
+              {/* Input row */}
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-[10px] font-mono text-muted-foreground flex items-center gap-1">
+                  <span className="text-blue-400">→</span> Input <span className="text-muted-foreground/50">(PDF text sent to AI)</span>
+                </span>
+                <span className="text-[10px] font-mono text-muted-foreground whitespace-nowrap">
+                  {fmtTokens(inputTokens)} tok · {fmt(inputCost)}
+                </span>
+              </div>
+              {/* Output row */}
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-[10px] font-mono text-muted-foreground flex items-center gap-1">
+                  <span className="text-accent">←</span> Output <span className="text-muted-foreground/50">(AI sign JSON)</span>
+                </span>
+                <span className="text-[10px] font-mono text-muted-foreground whitespace-nowrap">
+                  {fmtTokens(outputTokens)} tok · {fmt(outputCost)}
+                </span>
+              </div>
+              {/* Rate footnote */}
+              <div className="pt-1.5 border-t border-border/40 text-[9px] font-mono text-muted-foreground/50 leading-relaxed">
+                Gemini 2.5 Flash · ${INPUT_RATE}/M input · ${OUTPUT_RATE}/M output
+              </div>
+            </div>
+          ) : (
+            <p className="text-[10px] font-mono text-muted-foreground/50 mt-1">No token data for this job</p>
           )}
         </div>
         <div className="p-2 bg-secondary rounded-lg flex-shrink-0">
