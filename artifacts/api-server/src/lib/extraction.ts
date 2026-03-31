@@ -953,23 +953,28 @@ export async function extractSignsFromPdf(
   let totalInputTokens = 0;
   let totalOutputTokens = 0;
 
-  // ── PASS 1: Sign Schedule / Specification Pages — Reference Context Only ─────
-  // We read sign schedule pages for context (sign types, IDs, specs defined by
-  // the architect) but do NOT generate extracted-sign rows from them.  Doing so
-  // causes double-counting because the same signs appear on both the schedule and
-  // the floor plans.  Instead, the raw schedule text is injected into the Pass 2
-  // floor plan prompt so the AI can cross-reference the architect's intent.
+  // ── PASS 1: Sign Schedule / Specification Pages ───────────────────────────
+  // Extract all signs explicitly listed in sign schedules / specs.  These are
+  // the architect's definitive list of sign types, quantities, and locations.
+  // Pass 2 (floor plans) handles code-required signs not in the schedule.
   const signScheduleBlock = buildPageBlock(pages, "sign_schedule", 300000, 8000);
   let signScheduleContext: string | undefined;
 
   if (signScheduleBlock.trim().length > 50) {
-    signScheduleContext = signScheduleBlock; // raw PDF text — no Gemini call needed
-    logger.info(
-      { filePath: filePath.split("/").pop(), chars: signScheduleContext.length },
-      "Sign schedule text captured as floor-plan context (no row extraction)"
+    signScheduleContext = signScheduleBlock; // also passed as reference context to Pass 2
+    logger.info({ filePath: filePath.split("/").pop() }, "Running sign schedule extraction pass");
+    const { text: scheduleText, inputTokens: si, outputTokens: so } = await callGemini(
+      SIGN_SCHEDULE_PROMPT + signScheduleBlock,
+      ai,
+      "sign-schedule"
     );
+    totalInputTokens += si;
+    totalOutputTokens += so;
+    const scheduleRows = parseGeminiResponse(scheduleText, "sign-schedule");
+    logger.info({ count: scheduleRows.length }, "Sign schedule pass complete");
+    allRows.push(...scheduleRows);
   } else {
-    logger.info({ filePath: filePath.split("/").pop() }, "No sign schedule pages found");
+    logger.info({ filePath: filePath.split("/").pop() }, "No sign schedule pages found — skipping schedule pass");
   }
 
   // ── PASS 2: Floor Plan Pages — ADA-Required Signs ──────────────────────────

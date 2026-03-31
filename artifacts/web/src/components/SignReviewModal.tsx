@@ -40,10 +40,17 @@ interface ExtractedSign {
   reviewFlag: boolean;
 }
 
+interface PageStats {
+  floorPlanPages: number[];
+  signSchedulePages: number[];
+  otherPages: number[];
+}
+
 interface FileInfo {
   id: string;
   originalName: string;
   pageCount?: number | null;
+  pageStats?: PageStats | null;
 }
 
 interface SignReviewModalProps {
@@ -238,6 +245,11 @@ export function SignReviewModal({
   const [nativeSize, setNativeSize] = useState<{ w: number; h: number } | null>(null);
   const [textSearchStatus, setTextSearchStatus] = useState<"idle" | "found" | "not-found">("idle");
   const [showOverlay, setShowOverlay] = useState(true);
+
+  // Suppress marker dots when viewing a sign schedule / spec page — those pages
+  // are tabular data, not spatial floor plans, so dots on them are meaningless.
+  const fileStats = file?.pageStats ?? null;
+  const isSignSchedulePage = fileStats?.signSchedulePages?.includes(pageNumber) ?? false;
 
   // When the parent passes a new sign (user clicked a different row), reset activeSign.
   useEffect(() => {
@@ -591,8 +603,25 @@ export function SignReviewModal({
                     renderAnnotationLayer={true}
                   />
 
+                  {/* Sign schedule page notice — suppress dots on tabular pages */}
+                  {isSignSchedulePage && (
+                    <div
+                      style={{
+                        position: "absolute",
+                        top: 8,
+                        left: "50%",
+                        transform: "translateX(-50%)",
+                        zIndex: 10,
+                        pointerEvents: "none",
+                      }}
+                      className="px-3 py-1.5 rounded-full bg-accent/90 text-background text-[10px] font-bold uppercase tracking-wider shadow-lg whitespace-nowrap"
+                    >
+                      Sign Schedule Page — markers shown on floor plan pages only
+                    </div>
+                  )}
+
                   {/* SVG marker overlay — visual only, above react-pdf text layer */}
-                  {showOverlay && textMarkers.length > 0 && renderedW && renderedH && (
+                  {showOverlay && !isSignSchedulePage && textMarkers.length > 0 && renderedW && renderedH && (
                     <svg
                       style={{
                         position: "absolute",
@@ -646,8 +675,9 @@ export function SignReviewModal({
                   )}
 
                   {/* Transparent click-capture overlay — sits above react-pdf's text/annotation
-                      layers so clicks anywhere on the page can select the nearest sign marker */}
-                  {renderedW && renderedH && (
+                      layers so clicks anywhere on the page can select the nearest sign marker.
+                      Disabled on sign schedule pages where dots are not shown. */}
+                  {renderedW && renderedH && !isSignSchedulePage && (
                     <div
                       style={{
                         position: "absolute",
