@@ -19,10 +19,12 @@ import {
   Zap,
   MapPin,
   ChevronDown,
-  Layers
+  Layers,
+  Stamp,
 } from "lucide-react";
 import { format } from "date-fns";
 import { motion } from "framer-motion";
+import { exportMarkedupPdf } from "@/lib/exportMarkedupPdf";
 
 export default function JobDetails() {
   const [, params] = useRoute("/jobs/:jobId");
@@ -73,6 +75,29 @@ export default function JobDetails() {
   const handleExport = () => {
     if (jobId) {
       downloadExport(jobId);
+    }
+  };
+
+  const [exportingPdf, setExportingPdf] = useState(false);
+
+  const handleExportMarkedPdf = async () => {
+    if (!data || exportingPdf) return;
+    setExportingPdf(true);
+    try {
+      const markedSigns = data.extractedSigns.filter(
+        (s) => s.xPos != null && s.yPos != null && s.pageNumber != null
+      );
+      await exportMarkedupPdf(
+        jobId,
+        data.job.name ?? `Job-${jobId.split("-")[0]}`,
+        data.files,
+        markedSigns
+      );
+    } catch (err) {
+      console.error("PDF export failed:", err);
+      alert("Failed to export marked-up PDF. Please try again.");
+    } finally {
+      setExportingPdf(false);
     }
   };
 
@@ -228,6 +253,19 @@ export default function JobDetails() {
                       <Play className="w-4 h-4 fill-current" />
                     )}
                     Re-extract
+                  </button>
+                  <button
+                    onClick={handleExportMarkedPdf}
+                    disabled={exportingPdf}
+                    title="Download the original PDF with sign markers drawn on each floor plan page"
+                    className="flex items-center gap-2 px-4 py-2.5 bg-secondary border border-border text-muted-foreground font-display font-semibold uppercase tracking-wide text-sm rounded-lg hover:bg-primary/10 hover:text-primary hover:border-primary/40 transition-all active:scale-95 disabled:opacity-50"
+                  >
+                    {exportingPdf ? (
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                    ) : (
+                      <Stamp className="w-4 h-4" />
+                    )}
+                    {exportingPdf ? "Building PDF…" : "Export Marked PDF"}
                   </button>
                   <button
                     onClick={handleExport}
