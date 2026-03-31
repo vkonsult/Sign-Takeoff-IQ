@@ -61,10 +61,21 @@ export interface JobSummary {
   updatedAt: string;
 }
 
+export interface PageStats {
+  /** PDF page numbers classified as floor plans */
+  floorPlanPages: number[];
+  /** PDF page numbers classified as sign schedules or sign specs */
+  signSchedulePages: number[];
+  /** PDF page numbers not matching floor plan or sign schedule patterns */
+  otherPages: number[];
+}
+
 export interface JobFile {
   id: string;
   originalName: string;
   pageCount?: number | null;
+  /** Per-page classification breakdown from the extraction pass */
+  pageStats?: PageStats | null;
   createdAt: string;
 }
 

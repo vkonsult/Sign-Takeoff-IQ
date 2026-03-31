@@ -478,11 +478,34 @@ const FLOOR_PLAN_KEYWORDS = [
 ];
 
 const SIGN_SCHEDULE_KEYWORDS = [
+  // Standard sign schedule terminology
   "sign schedule", "sign type", "signage schedule", "sign legend",
   "sign list", "sign index", "sign matrix", "sign catalog",
   "interior sign", "exterior sign", "room identification",
   "sign number", "sign id", "s-01", "s-1.", "s1.", "sign qty",
   "sign quantity", "sign detail", "sign location",
+  // Architect sign specification / sign program patterns
+  "sign spec", "signage spec", "sign specification", "signage specification",
+  "sign program", "signage program", "signage criteria", "sign criteria",
+  "sign standards", "signage standards",
+  "procure for",          // "PROCURE FOR CS2026" — procurement-tagged schedules
+  "permanent sign",       // "ALL SIGNAGE ON THIS SCHEDULE IS PERMANENT"
+  "all signage",
+  "verify code",          // "VERIFY CODE REQUIREMENTS" — architect spec note
+  "sign no.", "sign no ", // "Sign No." column header in architect schedules
+  "ada sign",             // ADA sign callouts in specs
+  "room sign", "door sign",
+  "building sign", "tenant sign",
+  "directional sign", "wayfinding sign",
+  "sign drawing", "sign detail",
+  "signage drawing",
+  // Sign type code patterns used by architects (SP-1, SN-01, SI-A, etc.)
+  " sp-", " sn-", " si-", " se-", " sd-",
+  "type a ", "type b ", "type c ", "type d ", // "Sign Type A", "Type B sign"
+  // Additional sign schedule column headers
+  "message", "copy", "substrate", "face material",
+  "sign program", "exterior signage", "interior signage",
+  "tenant identification", "suite number",
 ];
 
 function scoreForFloorPlan(text: string): number {
@@ -905,16 +928,22 @@ export async function extractProjectInfo(
 
 // ─── MAIN EXPORT ──────────────────────────────────────────────────────────────
 
+export interface PageStats {
+  floorPlanPages: number[];
+  signSchedulePages: number[];
+  otherPages: number[];
+}
+
 export async function extractSignsFromPdf(
   filePath: string,
   ai: GeminiAI,
   projectContext?: ProjectInfo
-): Promise<{ rows: ExtractedSignRow[]; pageCount: number; rawText: string; inputTokens: number; outputTokens: number }> {
+): Promise<{ rows: ExtractedSignRow[]; pageCount: number; rawText: string; inputTokens: number; outputTokens: number; pageStats: PageStats }> {
   const { pages, numPages } = await extractTextFromPdf(filePath);
 
   if (pages.length === 0) {
     logger.warn({ filePath }, "PDF yielded no pages");
-    return { rows: [], pageCount: numPages, rawText: "", inputTokens: 0, outputTokens: 0 };
+    return { rows: [], pageCount: numPages, rawText: "", inputTokens: 0, outputTokens: 0, pageStats: { floorPlanPages: [], signSchedulePages: [], otherPages: [] } };
   }
 
   const allRows: ExtractedSignRow[] = [];
@@ -1021,15 +1050,26 @@ export async function extractSignsFromPdf(
 
   const rawText = pages.map((p) => `--- PAGE ${p.pageNum} ---\n${p.text}`).slice(0, 10).join("\n\n");
 
+  const pageStats: PageStats = {
+    floorPlanPages:    pages.filter((p) => p.type === "floor_plan").map((p) => p.pageNum).sort((a, b) => a - b),
+    signSchedulePages: pages.filter((p) => p.type === "sign_schedule").map((p) => p.pageNum).sort((a, b) => a - b),
+    otherPages:        pages.filter((p) => p.type === "other").map((p) => p.pageNum).sort((a, b) => a - b),
+  };
+
   logger.info(
     {
       filePath: filePath.split("/").pop(),
       totalSigns: allRows.length,
       totalInputTokens,
       totalOutputTokens,
+      pageStats: {
+        floorPlan: pageStats.floorPlanPages.length,
+        signSchedule: pageStats.signSchedulePages.length,
+        other: pageStats.otherPages.length,
+      },
     },
     "Extraction complete"
   );
 
-  return { rows: allRows, pageCount: numPages, rawText, inputTokens: totalInputTokens, outputTokens: totalOutputTokens };
+  return { rows: allRows, pageCount: numPages, rawText, inputTokens: totalInputTokens, outputTokens: totalOutputTokens, pageStats };
 }

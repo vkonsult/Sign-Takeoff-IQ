@@ -63,6 +63,7 @@ router.get("/jobs/:jobId", async (req, res) => {
         id: f.id,
         originalName: f.originalName,
         pageCount: f.pageCount,
+        pageStats: f.pageStats ?? null,
         createdAt: f.createdAt,
       })),
       extractedSigns,

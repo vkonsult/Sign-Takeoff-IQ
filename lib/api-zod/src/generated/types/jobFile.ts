@@ -5,10 +5,13 @@
  * Sign Takeoff Portal API
  * OpenAPI spec version: 0.1.0
  */
+import type { PageStats } from "./pageStats";
 
 export interface JobFile {
   id: string;
   originalName: string;
   pageCount?: number | null;
+  /** Per-page classification breakdown from the extraction pass */
+  pageStats?: PageStats | null;
   createdAt: Date;
 }

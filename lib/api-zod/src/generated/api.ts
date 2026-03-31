@@ -83,6 +83,24 @@ export const GetJobResponse = zod.object({
       id: zod.string().uuid(),
       originalName: zod.string(),
       pageCount: zod.number().nullish(),
+      pageStats: zod
+        .object({
+          floorPlanPages: zod
+            .array(zod.number())
+            .describe("PDF page numbers classified as floor plans"),
+          signSchedulePages: zod
+            .array(zod.number())
+            .describe(
+              "PDF page numbers classified as sign schedules or sign specs",
+            ),
+          otherPages: zod
+            .array(zod.number())
+            .describe(
+              "PDF page numbers not matching floor plan or sign schedule patterns",
+            ),
+        })
+        .nullish()
+        .describe("Per-page classification breakdown from the extraction pass"),
       createdAt: zod.date(),
     }),
   ),

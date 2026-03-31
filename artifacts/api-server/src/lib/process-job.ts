@@ -70,7 +70,7 @@ export async function processJob(jobId: string): Promise<void> {
   for (const file of files) {
     try {
       logger.info({ jobId, file: file.originalName }, "Extracting signs from file");
-      const { rows, pageCount, rawText, inputTokens, outputTokens } = await extractSignsFromPdf(
+      const { rows, pageCount, rawText, inputTokens, outputTokens, pageStats } = await extractSignsFromPdf(
         file.storedPath,
         ai,
         projectContext
@@ -81,7 +81,7 @@ export async function processJob(jobId: string): Promise<void> {
 
       await db
         .update(jobFilesTable)
-        .set({ pageCount, extractedText: rawText.slice(0, 10000) })
+        .set({ pageCount, extractedText: rawText.slice(0, 10000), pageStats })
         .where(eq(jobFilesTable.id, file.id));
 
       parsedResults.push({

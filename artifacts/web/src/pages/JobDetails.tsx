@@ -16,7 +16,9 @@ import {
   ListFilter,
   Pencil,
   Zap,
-  MapPin
+  MapPin,
+  ChevronDown,
+  Layers
 } from "lucide-react";
 import { format } from "date-fns";
 import { motion } from "framer-motion";
@@ -240,8 +242,11 @@ export default function JobDetails() {
                 />
               </div>
               
+              {/* Sheets Analysis Panel */}
+              <SheetsPanel files={files} />
+
               {/* Data Table Container */}
-              <div className="flex-1 overflow-auto bg-card border-t border-border mt-2">
+              <div className="flex-1 overflow-auto bg-card border-t border-border">
                 <div className="min-w-[max-content] inline-block align-top">
                   <table className="w-full text-left border-collapse border-spacing-0">
                     <thead>
@@ -411,6 +416,129 @@ function SummaryCard({ title, value, icon, accent }: { title: string, value: num
       </div>
       {accent === 'primary' && <div className="absolute -bottom-4 -right-4 w-24 h-24 bg-primary/5 rounded-full blur-2xl group-hover:bg-primary/10 transition-colors"></div>}
       {accent === 'accent' && <div className="absolute -bottom-4 -right-4 w-24 h-24 bg-accent/5 rounded-full blur-2xl group-hover:bg-accent/10 transition-colors"></div>}
+    </div>
+  );
+}
+
+type FileWithStats = NonNullable<ReturnType<typeof useJobDetails>["data"]>["files"][number];
+
+function SheetsPanel({ files }: { files: FileWithStats[] }) {
+  const [open, setOpen] = useState(false);
+
+  const hasStats = files.some((f) => f.pageStats != null);
+  if (!hasStats) return null;
+
+  const totalPages = files.reduce((sum, f) => sum + (f.pageCount ?? 0), 0);
+  const totalSignSchedule = files.reduce((sum, f) => sum + (f.pageStats?.signSchedulePages?.length ?? 0), 0);
+  const totalFloorPlan = files.reduce((sum, f) => sum + (f.pageStats?.floorPlanPages?.length ?? 0), 0);
+
+  return (
+    <div className="flex-none border-t border-border/60 bg-background">
+      <div className="max-w-7xl mx-auto w-full px-4">
+        <button
+          onClick={() => setOpen((v) => !v)}
+          className="w-full flex items-center justify-between py-2 text-left group"
+        >
+          <div className="flex items-center gap-3">
+            <Layers className="w-3.5 h-3.5 text-muted-foreground" />
+            <span className="text-xs font-display font-semibold text-foreground uppercase tracking-wider">Sheets Analysis</span>
+            {totalSignSchedule > 0 ? (
+              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-accent/20 text-accent border border-accent/30 text-[10px] font-bold uppercase tracking-wider">
+                ✓ {totalSignSchedule} Sign Spec {totalSignSchedule === 1 ? "Page" : "Pages"} Found
+              </span>
+            ) : (
+              <span className="text-[10px] text-muted-foreground/50 font-mono">No sign spec pages detected</span>
+            )}
+            <span className="text-[10px] font-mono text-muted-foreground/50">
+              {totalFloorPlan} floor plan{totalFloorPlan !== 1 ? "s" : ""} · {totalPages} total pages
+            </span>
+          </div>
+          <ChevronDown className={`w-4 h-4 text-muted-foreground/50 transition-transform duration-200 ${open ? "rotate-180" : ""}`} />
+        </button>
+
+        {open && (
+          <div className="pb-3 space-y-2">
+            {files.map((f) => {
+              const stats = f.pageStats;
+              const total = f.pageCount ?? 0;
+              const fpCount = stats?.floorPlanPages?.length ?? 0;
+              const ssCount = stats?.signSchedulePages?.length ?? 0;
+              const otherCount = stats?.otherPages?.length ?? 0;
+              const pct = (n: number) => (total > 0 ? Math.round((n / total) * 100) : 0);
+
+              return (
+                <div key={f.id} className="bg-card border border-border rounded-lg p-3">
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-xs font-mono text-foreground font-medium truncate">{f.originalName}</span>
+                    <span className="text-[10px] font-mono text-muted-foreground ml-2 flex-shrink-0">{total} pages</span>
+                  </div>
+
+                  {stats ? (
+                    <>
+                      {/* Stacked proportion bar */}
+                      <div className="h-1.5 rounded-full overflow-hidden flex mb-2 bg-secondary">
+                        {ssCount > 0 && (
+                          <div className="h-full bg-accent/70" style={{ width: `${pct(ssCount)}%` }} title={`Sign specs: ${ssCount} pages`} />
+                        )}
+                        {fpCount > 0 && (
+                          <div className="h-full bg-primary/40" style={{ width: `${pct(fpCount)}%` }} title={`Floor plans: ${fpCount} pages`} />
+                        )}
+                      </div>
+
+                      {/* Legend */}
+                      <div className="flex flex-wrap gap-x-4 gap-y-0.5 text-[10px] font-mono text-muted-foreground mb-2">
+                        <span className="flex items-center gap-1">
+                          <span className="w-2 h-2 rounded-sm bg-accent/70 inline-block" />
+                          Sign Specs/Schedules — {ssCount}
+                        </span>
+                        <span className="flex items-center gap-1">
+                          <span className="w-2 h-2 rounded-sm bg-primary/40 inline-block" />
+                          Floor Plans — {fpCount}
+                        </span>
+                        <span className="flex items-center gap-1">
+                          <span className="w-2 h-2 rounded-sm bg-secondary inline-block border border-border/60" />
+                          Other/Title Sheets — {otherCount}
+                        </span>
+                      </div>
+
+                      {/* Sign spec page chips */}
+                      {ssCount > 0 && (
+                        <div className="flex items-center flex-wrap gap-1 mb-1">
+                          <span className="text-[10px] text-muted-foreground/60 mr-0.5">Sign spec pages:</span>
+                          {stats.signSchedulePages!.map((pg) => (
+                            <span key={pg} className="px-1.5 py-0.5 bg-accent/15 text-accent border border-accent/30 text-[10px] font-mono rounded">
+                              pg {pg}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+
+                      {/* Floor plan page chips (limited) */}
+                      {fpCount > 0 && (
+                        <div className="flex items-center flex-wrap gap-1">
+                          <span className="text-[10px] text-muted-foreground/60 mr-0.5">Floor plan pages:</span>
+                          {stats.floorPlanPages!.slice(0, 24).map((pg) => (
+                            <span key={pg} className="px-1.5 py-0.5 bg-primary/10 text-primary/70 border border-primary/20 text-[10px] font-mono rounded">
+                              pg {pg}
+                            </span>
+                          ))}
+                          {fpCount > 24 && (
+                            <span className="text-[10px] font-mono text-muted-foreground/50">+{fpCount - 24} more</span>
+                          )}
+                        </div>
+                      )}
+                    </>
+                  ) : (
+                    <p className="text-[10px] text-muted-foreground/40 font-mono">
+                      No classification data — re-run extraction to generate sheet breakdown.
+                    </p>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
     </div>
   );
 }

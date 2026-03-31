@@ -318,6 +318,29 @@ components:
         - createdAt
         - updatedAt
 
+    PageStats:
+      type: object
+      properties:
+        floorPlanPages:
+          type: array
+          items:
+            type: integer
+          description: PDF page numbers classified as floor plans
+        signSchedulePages:
+          type: array
+          items:
+            type: integer
+          description: PDF page numbers classified as sign schedules or sign specs
+        otherPages:
+          type: array
+          items:
+            type: integer
+          description: PDF page numbers not matching floor plan or sign schedule patterns
+      required:
+        - floorPlanPages
+        - signSchedulePages
+        - otherPages
+
     JobFile:
       type: object
       properties:
@@ -329,6 +352,10 @@ components:
         pageCount:
           type: integer
           nullable: true
+        pageStats:
+          $ref: '#/components/schemas/PageStats'
+          nullable: true
+          description: Per-page classification breakdown from the extraction pass
         createdAt:
           type: string
           format: date-time

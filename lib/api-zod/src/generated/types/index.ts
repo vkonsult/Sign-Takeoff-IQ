@@ -22,6 +22,7 @@ export * from "./knowledgeQueryResponse";
 export * from "./knowledgeResult";
 export * from "./knowledgeResultMetadata";
 export * from "./listJobs200";
+export * from "./pageStats";
 export * from "./processResponse";
 export * from "./processResponseStatus";
 export * from "./uploadFilesBody";
