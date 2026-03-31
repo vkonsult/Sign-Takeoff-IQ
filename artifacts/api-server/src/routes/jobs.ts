@@ -1,5 +1,5 @@
 import { Router, type IRouter } from "express";
-import { eq, desc } from "drizzle-orm";
+import { eq, desc, inArray } from "drizzle-orm";
 import { db } from "@workspace/db";
 import {
   jobsTable,
@@ -67,6 +67,47 @@ router.delete("/jobs/:jobId", async (req, res) => {
   } catch (err) {
     req.log.error({ err, jobId }, "Failed to delete job");
     res.status(500).json({ error: "Failed to delete job" });
+  }
+});
+
+// ── Batch delete multiple jobs ─────────────────────────────────────────────
+router.delete("/jobs", async (req, res) => {
+  const { jobIds } = req.body as { jobIds?: unknown };
+
+  if (!Array.isArray(jobIds) || jobIds.length === 0 || !jobIds.every((id) => typeof id === "string")) {
+    res.status(400).json({ error: "jobIds must be a non-empty array of strings" });
+    return;
+  }
+
+  const ids = jobIds as string[];
+
+  try {
+    // Collect all stored PDF paths before deletion
+    const files = await db
+      .select({ storedPath: jobFilesTable.storedPath })
+      .from(jobFilesTable)
+      .where(inArray(jobFilesTable.jobId, ids));
+
+    // Cascade delete handles extracted_signs and job_files rows
+    const deleted = await db
+      .delete(jobsTable)
+      .where(inArray(jobsTable.id, ids))
+      .returning({ id: jobsTable.id });
+
+    // Best-effort: clean up PDF files from disk
+    for (const f of files) {
+      try {
+        await fs.unlink(f.storedPath);
+      } catch {
+        // ignore if already gone
+      }
+    }
+
+    req.log.info({ count: deleted.length, ids }, "Batch jobs deleted");
+    res.json({ success: true, deletedCount: deleted.length });
+  } catch (err) {
+    req.log.error({ err }, "Batch job delete failed");
+    res.status(500).json({ error: "Failed to delete jobs" });
   }
 });
 
