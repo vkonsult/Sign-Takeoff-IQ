@@ -6,6 +6,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import Home from "@/pages/Home";
 import JobsList from "@/pages/JobsList";
 import JobDetails from "@/pages/JobDetails";
+import Training from "@/pages/Training";
 import NotFound from "@/pages/not-found";
 
 // Ensure React Query doesn't retry aggressively on 404s for jobs
@@ -26,6 +27,7 @@ function Router() {
       <Route path="/" component={Home} />
       <Route path="/jobs" component={JobsList} />
       <Route path="/jobs/:jobId" component={JobDetails} />
+      <Route path="/training" component={Training} />
       <Route component={NotFound} />
     </Switch>
   );

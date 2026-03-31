@@ -1,5 +1,5 @@
 import { Link, useLocation } from "wouter";
-import { LayoutDashboard, FileUp, FolderOpen, Settings, AlertCircle } from "lucide-react";
+import { FileUp, FolderOpen, Settings, AlertCircle, BookOpen } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useJobsList } from "@/hooks/use-takeoff";
 import { format } from "date-fns";
@@ -11,6 +11,7 @@ export function Sidebar() {
   const navItems = [
     { href: "/", label: "New Upload", icon: FileUp },
     { href: "/jobs", label: "All Jobs", icon: FolderOpen },
+    { href: "/training", label: "Training Import", icon: BookOpen },
   ];
 
   return (
