@@ -29,6 +29,47 @@ router.get("/jobs", async (req, res) => {
   }
 });
 
+router.delete("/jobs/:jobId", async (req, res) => {
+  const { jobId } = req.params;
+  if (!jobId) {
+    res.status(400).json({ error: "Job ID required" });
+    return;
+  }
+
+  try {
+    // Collect stored file paths before cascade-delete removes the rows
+    const files = await db
+      .select({ storedPath: jobFilesTable.storedPath })
+      .from(jobFilesTable)
+      .where(eq(jobFilesTable.jobId, jobId));
+
+    const [deleted] = await db
+      .delete(jobsTable)
+      .where(eq(jobsTable.id, jobId))
+      .returning();
+
+    if (!deleted) {
+      res.status(404).json({ error: "Job not found" });
+      return;
+    }
+
+    // Best-effort: clean up uploaded PDF files from disk
+    for (const f of files) {
+      try {
+        await fs.unlink(f.storedPath);
+      } catch {
+        // ignore if already gone
+      }
+    }
+
+    req.log.info({ jobId }, "Job deleted");
+    res.json({ success: true });
+  } catch (err) {
+    req.log.error({ err, jobId }, "Failed to delete job");
+    res.status(500).json({ error: "Failed to delete job" });
+  }
+});
+
 router.get("/jobs/:jobId", async (req, res) => {
   const { jobId } = req.params;
   if (!jobId) {
