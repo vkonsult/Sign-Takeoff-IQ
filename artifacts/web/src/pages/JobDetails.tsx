@@ -89,6 +89,30 @@ export default function JobDetails() {
     setReviewSign(null);
   };
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const handleSignAdded = (newSign: any) => {
+    queryClient.setQueryData(getGetJobQueryKey(jobId), (old: typeof data) => {
+      if (!old) return old;
+      return {
+        ...old,
+        extractedSigns: [...old.extractedSigns, newSign as SignRow],
+        totalSigns: (old.totalSigns ?? 0) + 1,
+      };
+    });
+  };
+
+  const handleSignDeleted = (signId: string) => {
+    queryClient.setQueryData(getGetJobQueryKey(jobId), (old: typeof data) => {
+      if (!old) return old;
+      const newSigns = old.extractedSigns.filter((s) => s.id !== signId);
+      return {
+        ...old,
+        extractedSigns: newSigns,
+        totalSigns: newSigns.length,
+      };
+    });
+  };
+
   if (isLoading && !data) {
     return (
       <AppShell>
@@ -382,6 +406,8 @@ export default function JobDetails() {
           allSigns={extractedSigns}
           onClose={() => setReviewSign(null)}
           onSaved={handleSignSaved}
+          onSignAdded={handleSignAdded}
+          onSignDeleted={handleSignDeleted}
         />
       )}
 

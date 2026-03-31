@@ -213,6 +213,70 @@ router.get("/jobs/:jobId/files/:fileId/pdf", async (req, res) => {
   }
 });
 
+const CreateSignSchema = z.object({
+  jobId: z.string().uuid(),
+  jobFileId: z.string().uuid().nullable().optional(),
+  pageNumber: z.number().int().positive().nullable().optional(),
+  xPos: z.number().min(0).max(1).nullable().optional(),
+  yPos: z.number().min(0).max(1).nullable().optional(),
+  signType: z.string().nullable().optional(),
+  signIdentifier: z.string().nullable().optional(),
+  location: z.string().nullable().optional(),
+  notes: z.string().nullable().optional(),
+});
+
+router.post("/extracted-signs", async (req, res) => {
+  const parsed = CreateSignSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: "Invalid request body", details: parsed.error.issues });
+    return;
+  }
+
+  try {
+    const [sign] = await db
+      .insert(extractedSignsTable)
+      .values({
+        ...parsed.data,
+        manuallyAdded: true,
+        confidenceScore: 1.0,
+        reviewFlag: false,
+      })
+      .returning();
+
+    res.status(201).json({ sign });
+    req.log.info({ signId: sign?.id }, "Manually added sign created");
+  } catch (err) {
+    req.log.error({ err }, "Failed to create sign");
+    res.status(500).json({ error: "Failed to create sign" });
+  }
+});
+
+router.delete("/extracted-signs/:signId", async (req, res) => {
+  const { signId } = req.params;
+  if (!signId) {
+    res.status(400).json({ error: "Sign ID required" });
+    return;
+  }
+
+  try {
+    const [deleted] = await db
+      .delete(extractedSignsTable)
+      .where(eq(extractedSignsTable.id, signId))
+      .returning();
+
+    if (!deleted) {
+      res.status(404).json({ error: "Sign not found" });
+      return;
+    }
+
+    res.json({ success: true });
+    req.log.info({ signId }, "Sign deleted");
+  } catch (err) {
+    req.log.error({ err, signId }, "Failed to delete sign");
+    res.status(500).json({ error: "Failed to delete sign" });
+  }
+});
+
 const UpdateSignSchema = z.object({
   sheetNumber: z.string().nullable().optional(),
   detailReference: z.string().nullable().optional(),
@@ -228,6 +292,8 @@ const UpdateSignSchema = z.object({
   messageContent: z.string().nullable().optional(),
   notes: z.string().nullable().optional(),
   reviewFlag: z.boolean().optional(),
+  xPos: z.number().min(0).max(1).nullable().optional(),
+  yPos: z.number().min(0).max(1).nullable().optional(),
 });
 
 router.patch("/extracted-signs/:signId", async (req, res) => {

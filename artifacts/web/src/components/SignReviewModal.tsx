@@ -15,12 +15,17 @@ import {
   MapPin,
   Eye,
   EyeOff,
+  PenLine,
+  MousePointer,
+  Trash2,
+  Plus,
 } from "lucide-react";
 
 pdfjs.GlobalWorkerOptions.workerSrc = `${import.meta.env.BASE_URL}pdf.worker.min.mjs`;
 
 interface ExtractedSign {
   id: string;
+  jobId?: string;
   jobFileId?: string | null;
   sheetNumber?: string | null;
   detailReference?: string | null;
@@ -36,6 +41,9 @@ interface ExtractedSign {
   messageContent?: string | null;
   notes?: string | null;
   pageNumber?: number | null;
+  xPos?: number | null;
+  yPos?: number | null;
+  manuallyAdded?: boolean;
   confidenceScore: number;
   reviewFlag: boolean;
 }
@@ -60,6 +68,8 @@ interface SignReviewModalProps {
   allSigns: ExtractedSign[];
   onClose: () => void;
   onSaved: (updated: Record<string, unknown>) => void;
+  onSignAdded?: (sign: ExtractedSign) => void;
+  onSignDeleted?: (signId: string) => void;
 }
 
 const SIGN_TYPE_COLORS: Record<string, string> = {
@@ -217,10 +227,15 @@ export function SignReviewModal({
   sign,
   jobId,
   files,
-  allSigns,
+  allSigns: allSignsProp,
   onClose,
   onSaved,
+  onSignAdded,
+  onSignDeleted,
 }: SignReviewModalProps) {
+  const [localSigns, setLocalSigns] = useState<ExtractedSign[]>(allSignsProp);
+  useEffect(() => { setLocalSigns(allSignsProp); }, [allSignsProp]);
+  const allSigns = localSigns;
   const file = files.find((f) => f.id === sign.jobFileId) ?? null;
   const pdfUrl = file ? `/api/jobs/${jobId}/files/${file.id}/pdf` : null;
 
@@ -245,6 +260,9 @@ export function SignReviewModal({
   const [nativeSize, setNativeSize] = useState<{ w: number; h: number } | null>(null);
   const [textSearchStatus, setTextSearchStatus] = useState<"idle" | "found" | "not-found">("idle");
   const [showOverlay, setShowOverlay] = useState(true);
+  const [drawMode, setDrawMode] = useState(false);
+  const [hoveredMarkerId, setHoveredMarkerId] = useState<string | null>(null);
+  const [addingSign, setAddingSign] = useState(false);
 
   // Suppress marker dots when viewing a sign schedule / spec page — those pages
   // are tabular data, not spatial floor plans, so dots on them are meaningless.
@@ -256,13 +274,14 @@ export function SignReviewModal({
     setActiveSign(sign);
   }, [sign.id]);
 
-  // When activeSign changes (from parent switch or marker click), reset form + page.
+  // When activeSign changes (from parent switch or marker click), reset form + jump page.
+  // Do NOT clear textMarkers here — the text-search effect will re-run (activeSign.id is
+  // in its deps) and recompute colors. Clearing here caused all dots to disappear when
+  // clicking a same-page marker, because the text-search effect wouldn't re-run.
   useEffect(() => {
     setForm(signToForm(activeSign));
     setDirty(false);
-    setPageNumber(activeSign.pageNumber ?? 1);
-    setNativeSize(null);
-    setTextMarkers([]);
+    setPageNumber((prev) => activeSign.pageNumber ?? prev);
     setTextSearchStatus("idle");
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeSign.id]);
@@ -291,7 +310,8 @@ export function SignReviewModal({
   }, [pdfUrl]);
 
   // Extract text items for the current page and compute markers.
-  // Depends on `pdfDoc` (state) so it re-runs once the async load finishes.
+  // activeSign.id is in deps so re-runs when user clicks a marker, recomputing
+  // colors (green for active, yellow for others) without ever clearing them first.
   useEffect(() => {
     if (!pdfDoc) {
       setTextMarkers([]);
@@ -321,17 +341,34 @@ export function SignReviewModal({
         let currentSignFound = false;
 
         for (const s of signsOnCurrentPage) {
+          const isCurrent = s.id === activeSign.id;
+          const color = isCurrent ? "#22c55e" : (s.manuallyAdded ? "#a855f7" : "#eab308");
+
+          // Prefer stored coordinates (manually placed markers) over text search
+          if (s.xPos != null && s.yPos != null) {
+            markers.push({
+              x: s.xPos,
+              y: s.yPos,
+              signId: s.id,
+              color,
+              label: s.signIdentifier ?? s.signType?.slice(0, 6) ?? "NEW",
+              isCurrent,
+            });
+            if (isCurrent) currentSignFound = true;
+            continue;
+          }
+
           const loc = findSignLocation(content.items, pageW, pageH, s);
           if (loc) {
             markers.push({
               x: loc.x,
               y: loc.y,
               signId: s.id,
-              color: s.id === activeSign.id ? "#22c55e" : "#eab308",
+              color,
               label: s.signIdentifier ?? s.signType?.slice(0, 6) ?? "SIGN",
-              isCurrent: s.id === activeSign.id,
+              isCurrent,
             });
-            if (s.id === activeSign.id) currentSignFound = true;
+            if (isCurrent) currentSignFound = true;
           }
         }
 
@@ -346,7 +383,7 @@ export function SignReviewModal({
 
     return () => { cancelled = true; };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pdfDoc, pageNumber, sign.id, signsOnCurrentPage.length]);
+  }, [pdfDoc, pageNumber, sign.id, signsOnCurrentPage.length, activeSign.id]);
 
   const handleField = useCallback(
     (field: keyof FormState, value: string | boolean) => {
@@ -398,6 +435,54 @@ export function SignReviewModal({
     }
   };
 
+  const handleCreateSign = async (nx: number, ny: number) => {
+    if (!file) return;
+    setAddingSign(true);
+    try {
+      const res = await fetch("/api/extracted-signs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          jobId,
+          jobFileId: file.id,
+          pageNumber,
+          xPos: nx,
+          yPos: ny,
+          signType: "Unknown",
+          signIdentifier: null,
+          location: null,
+          notes: "Manually added",
+        }),
+      });
+      if (!res.ok) throw new Error("Failed to create sign");
+      const data = await res.json() as { sign: ExtractedSign };
+      const newSign = data.sign;
+      setLocalSigns((prev) => [...prev, newSign]);
+      setActiveSign(newSign);
+      onSignAdded?.(newSign);
+    } catch (err) {
+      console.error("Create sign failed:", err);
+    } finally {
+      setAddingSign(false);
+    }
+  };
+
+  const handleDeleteSign = async (signId: string) => {
+    try {
+      const res = await fetch(`/api/extracted-signs/${signId}`, { method: "DELETE" });
+      if (!res.ok) throw new Error("Failed to delete sign");
+      setLocalSigns((prev) => prev.filter((s) => s.id !== signId));
+      setHoveredMarkerId(null);
+      if (activeSign.id === signId) {
+        const next = allSigns.find((s) => s.id !== signId);
+        if (next) setActiveSign(next);
+      }
+      onSignDeleted?.(signId);
+    } catch (err) {
+      console.error("Delete sign failed:", err);
+    }
+  };
+
   const confidence = Math.round(activeSign.confidenceScore * 100);
   const confColor =
     confidence >= 80
@@ -430,6 +515,12 @@ export function SignReviewModal({
           <div className={`text-xs font-mono font-semibold px-2 py-0.5 rounded border ${confColor} bg-current/10 border-current/20`}>
             {confidence}% confidence
           </div>
+          {activeSign.manuallyAdded && (
+            <span className="flex items-center gap-1 text-[10px] font-display font-bold uppercase tracking-wider border px-2 py-0.5 rounded" style={{ color: "#a855f7", borderColor: "#a855f755", background: "#a855f710" }}>
+              <Plus className="w-3 h-3" />
+              Manually Added
+            </span>
+          )}
           {activeSign.reviewFlag && (
             <span className="flex items-center gap-1 text-[10px] font-display font-bold uppercase tracking-wider text-primary border border-primary/30 bg-primary/10 px-2 py-0.5 rounded">
               <AlertTriangle className="w-3 h-3" />
@@ -521,26 +612,48 @@ export function SignReviewModal({
               </span>
             ) : null}
 
-            {/* Overlay toggle */}
-            {textMarkers.length > 0 && (
-              <button
-                onClick={() => setShowOverlay((v) => !v)}
-                className="ml-auto flex items-center gap-1.5 text-[10px] font-display font-semibold uppercase tracking-wide px-2 py-1 rounded transition-colors border"
-                style={showOverlay ? {
-                  background: "#22c55e20",
-                  color: "#22c55e",
-                  borderColor: "#22c55e55",
-                } : {
-                  background: "transparent",
-                  color: "var(--muted-foreground)",
-                  borderColor: "var(--border)",
-                }}
-                title={showOverlay ? "Hide markers" : "Show markers"}
-              >
-                {showOverlay ? <Eye className="w-3 h-3" /> : <EyeOff className="w-3 h-3" />}
-                {textMarkers.length} marker{textMarkers.length !== 1 ? "s" : ""}
-              </button>
-            )}
+            {/* Overlay toggle + draw mode — pushed to right */}
+            <div className="ml-auto flex items-center gap-2">
+              {textMarkers.length > 0 && (
+                <button
+                  onClick={() => setShowOverlay((v) => !v)}
+                  className="flex items-center gap-1.5 text-[10px] font-display font-semibold uppercase tracking-wide px-2 py-1 rounded transition-colors border"
+                  style={showOverlay ? {
+                    background: "#22c55e20",
+                    color: "#22c55e",
+                    borderColor: "#22c55e55",
+                  } : {
+                    background: "transparent",
+                    color: "var(--muted-foreground)",
+                    borderColor: "var(--border)",
+                  }}
+                  title={showOverlay ? "Hide markers" : "Show markers"}
+                >
+                  {showOverlay ? <Eye className="w-3 h-3" /> : <EyeOff className="w-3 h-3" />}
+                  {textMarkers.length} marker{textMarkers.length !== 1 ? "s" : ""}
+                </button>
+              )}
+              {/* Draw mode toggle */}
+              {pdfUrl && !isSignSchedulePage && (
+                <button
+                  onClick={() => setDrawMode((v) => !v)}
+                  className="flex items-center gap-1.5 text-[10px] font-display font-semibold uppercase tracking-wide px-2 py-1 rounded transition-colors border"
+                  style={drawMode ? {
+                    background: "#a855f720",
+                    color: "#a855f7",
+                    borderColor: "#a855f755",
+                  } : {
+                    background: "transparent",
+                    color: "var(--muted-foreground)",
+                    borderColor: "var(--border)",
+                  }}
+                  title={drawMode ? "Exit draw mode" : "Enter draw mode: click to add markers, X to delete"}
+                >
+                  {drawMode ? <PenLine className="w-3 h-3" /> : <MousePointer className="w-3 h-3" />}
+                  {drawMode ? "Draw" : "Edit Markers"}
+                </button>
+              )}
+            </div>
 
             {/* Signs on current page chips — click to switch active sign */}
             {signsOnCurrentPage.length > 0 && (
@@ -639,6 +752,7 @@ export function SignReviewModal({
                         const cx = m.x * renderedW;
                         const cy = m.y * renderedH;
                         const r = m.isCurrent ? 18 : 12;
+                        const isHovered = m.signId === hoveredMarkerId;
                         return (
                           <g key={m.signId}>
                             {/* Outer glow ring for active sign */}
@@ -648,6 +762,14 @@ export function SignReviewModal({
                                 fill="none" stroke={m.color}
                                 strokeWidth={1.5} strokeDasharray="4 3"
                                 opacity={0.7}
+                              />
+                            )}
+                            {/* Hover ring */}
+                            {isHovered && !m.isCurrent && (
+                              <circle
+                                cx={cx} cy={cy} r={r + 5}
+                                fill="none" stroke={m.color}
+                                strokeWidth={1} opacity={0.5}
                               />
                             )}
                             {/* Filled circle */}
@@ -674,9 +796,74 @@ export function SignReviewModal({
                     </svg>
                   )}
 
-                  {/* Transparent click-capture overlay — sits above react-pdf's text/annotation
-                      layers so clicks anywhere on the page can select the nearest sign marker.
-                      Disabled on sign schedule pages where dots are not shown. */}
+                  {/* Delete X buttons — shown in draw mode when hovering a marker */}
+                  {drawMode && showOverlay && !isSignSchedulePage && renderedW && renderedH && textMarkers.map((m) => {
+                    if (m.signId !== hoveredMarkerId) return null;
+                    const cx = m.x * renderedW!;
+                    const cy = m.y * renderedH!;
+                    const r = m.isCurrent ? 18 : 12;
+                    return (
+                      <button
+                        key={`del-${m.signId}`}
+                        title="Delete this marker"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleDeleteSign(m.signId);
+                        }}
+                        style={{
+                          position: "absolute",
+                          left: cx + r - 2,
+                          top: cy - r - 2,
+                          zIndex: 20,
+                          width: 18,
+                          height: 18,
+                          borderRadius: "50%",
+                          background: "#ef4444",
+                          color: "#fff",
+                          border: "2px solid #fff",
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          cursor: "pointer",
+                          padding: 0,
+                          pointerEvents: "all",
+                        }}
+                      >
+                        <Trash2 style={{ width: 9, height: 9 }} />
+                      </button>
+                    );
+                  })}
+
+                  {/* Draw mode hint when hovering empty space */}
+                  {drawMode && !isSignSchedulePage && !hoveredMarkerId && renderedW && renderedH && (
+                    <div
+                      style={{
+                        position: "absolute",
+                        bottom: 8,
+                        left: "50%",
+                        transform: "translateX(-50%)",
+                        zIndex: 10,
+                        pointerEvents: "none",
+                        background: "#a855f720",
+                        color: "#a855f7",
+                        border: "1px solid #a855f755",
+                      }}
+                      className="px-3 py-1.5 rounded-full text-[10px] font-bold uppercase tracking-wider shadow-lg whitespace-nowrap flex items-center gap-1"
+                    >
+                      <Plus className="w-3 h-3" />
+                      Click to add a sign marker · hover to delete
+                    </div>
+                  )}
+
+                  {/* Adding sign spinner */}
+                  {addingSign && (
+                    <div style={{ position: "absolute", inset: 0, zIndex: 15, display: "flex", alignItems: "center", justifyContent: "center", background: "#00000033" }}>
+                      <Loader2 className="w-8 h-8 text-white animate-spin" />
+                    </div>
+                  )}
+
+                  {/* Transparent click-capture overlay — handles view mode (select) and
+                      draw mode (create / select). Also tracks hover for delete X. */}
                   {renderedW && renderedH && !isSignSchedulePage && (
                     <div
                       style={{
@@ -686,23 +873,49 @@ export function SignReviewModal({
                         width: renderedW,
                         height: renderedH,
                         zIndex: 6,
-                        cursor: textMarkers.length > 0 ? "crosshair" : "default",
+                        cursor: drawMode
+                          ? (hoveredMarkerId ? "pointer" : "crosshair")
+                          : (textMarkers.length > 0 ? "pointer" : "default"),
                       }}
-                      onClick={(e) => {
-                        if (textMarkers.length === 0) return;
+                      onMouseMove={(e) => {
+                        if (!renderedW || !renderedH) return;
                         const rect = e.currentTarget.getBoundingClientRect();
-                        const nx = (e.clientX - rect.left) / renderedW!;
-                        const ny = (e.clientY - rect.top) / renderedH!;
-
-                        // Find the nearest marker to where the user clicked
+                        const nx = (e.clientX - rect.left) / renderedW;
+                        const ny = (e.clientY - rect.top) / renderedH;
                         let best: TextMarker | null = null;
                         let bestDist = Infinity;
                         for (const m of textMarkers) {
                           const d = Math.hypot(m.x - nx, m.y - ny);
                           if (d < bestDist) { bestDist = d; best = m; }
                         }
+                        setHoveredMarkerId(best && bestDist < 0.06 ? best.signId : null);
+                      }}
+                      onMouseLeave={() => setHoveredMarkerId(null)}
+                      onClick={(e) => {
+                        const rect = e.currentTarget.getBoundingClientRect();
+                        const nx = (e.clientX - rect.left) / renderedW!;
+                        const ny = (e.clientY - rect.top) / renderedH!;
 
-                        // Switch active sign if within ~20% of page width (generous hit area)
+                        if (drawMode) {
+                          if (hoveredMarkerId) {
+                            // Select the hovered marker (don't create a new one)
+                            const found = allSigns.find((s) => s.id === hoveredMarkerId);
+                            if (found) setActiveSign(found);
+                          } else {
+                            // Create new sign at click position
+                            handleCreateSign(nx, ny);
+                          }
+                          return;
+                        }
+
+                        // View mode: select nearest sign
+                        if (textMarkers.length === 0) return;
+                        let best: TextMarker | null = null;
+                        let bestDist = Infinity;
+                        for (const m of textMarkers) {
+                          const d = Math.hypot(m.x - nx, m.y - ny);
+                          if (d < bestDist) { bestDist = d; best = m; }
+                        }
                         if (best && bestDist < 0.20) {
                           const found = allSigns.find((s) => s.id === best!.signId);
                           if (found) setActiveSign(found);
@@ -889,6 +1102,13 @@ export function SignReviewModal({
                 Save Changes
               </button>
             </div>
+            <button
+              onClick={() => handleDeleteSign(activeSign.id)}
+              className="w-full flex items-center justify-center gap-2 px-4 py-2 text-xs font-display font-semibold uppercase tracking-wide rounded-lg text-destructive border border-destructive/20 hover:bg-destructive/10 transition-colors"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+              Delete This Sign Entry
+            </button>
           </div>
         </div>
       </div>
