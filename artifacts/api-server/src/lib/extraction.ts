@@ -226,7 +226,31 @@ VIRGINIA-SPECIFIC REQUIREMENTS (Virginia Uniform Statewide Building Code — USB
 
 // ─── FLOOR PLAN ADA + FIRE CODE PROMPT ────────────────────────────────────────
 
-function buildFloorPlanADAPrompt(projectContext?: ProjectInfo, signScheduleContext?: string): string {
+export interface VerifiedSignSummary {
+  signIdentifier: string | null;
+  signType: string | null;
+  location: string | null;
+  pageNumber: number | null;
+  sheetNumber: string | null;
+  messageContent: string | null;
+}
+
+function buildVerifiedContext(verifiedSigns: VerifiedSignSummary[]): string {
+  if (verifiedSigns.length === 0) return "";
+  const lines = verifiedSigns.map((s) =>
+    [
+      s.signIdentifier ? `ID: ${s.signIdentifier}` : null,
+      s.signType ? `Type: ${s.signType}` : null,
+      s.location ? `Location: ${s.location}` : null,
+      s.pageNumber ? `Page: ${s.pageNumber}` : null,
+      s.sheetNumber ? `Sheet: ${s.sheetNumber}` : null,
+      s.messageContent ? `Copy: "${s.messageContent}"` : null,
+    ].filter(Boolean).join(" | ")
+  );
+  return `\n\nUSER-VERIFIED SIGNS (already confirmed — DO NOT re-output these in your JSON; use them to understand this project's sign conventions and skip duplicates):\n---\n${lines.join("\n")}\n---\n`;
+}
+
+function buildFloorPlanADAPrompt(projectContext?: ProjectInfo, signScheduleContext?: string, verifiedSigns?: VerifiedSignSummary[]): string {
   const locationLine = projectContext?.address || projectContext?.city || projectContext?.state
     ? `\nPROJECT LOCATION: ${[projectContext.address, projectContext.city, projectContext.state, projectContext.zip].filter(Boolean).join(", ")}`
     : "";
@@ -237,6 +261,7 @@ function buildFloorPlanADAPrompt(projectContext?: ProjectInfo, signScheduleConte
   const scheduleCtx = signScheduleContext
     ? `\n\nSIGN SCHEDULE / SPECIFICATION CONTEXT (for reference only — do NOT re-list these as output rows; use them to understand sign types, identifiers, and specs defined for this project):\n---\n${signScheduleContext.slice(0, 10000)}\n---\n`
     : "";
+  const verifiedCtx = verifiedSigns && verifiedSigns.length > 0 ? buildVerifiedContext(verifiedSigns) : "";
 
   return `You are an expert sign contractor, ADA compliance specialist, and fire/life-safety code consultant performing a comprehensive sign takeoff from architectural floor plans.
 
@@ -461,7 +486,7 @@ CRITICAL RULES:
 - If you cannot read the floor plan, return []
 
 FLOOR PLAN PAGES (with page markers):
-${scheduleCtx}---
+${scheduleCtx}${verifiedCtx}---
 `;
 }
 
@@ -940,7 +965,8 @@ export interface PageStats {
 export async function extractSignsFromPdf(
   filePath: string,
   ai: GeminiAI,
-  projectContext?: ProjectInfo
+  projectContext?: ProjectInfo,
+  verifiedSigns?: VerifiedSignSummary[]
 ): Promise<{ rows: ExtractedSignRow[]; pageCount: number; rawText: string; inputTokens: number; outputTokens: number; pageStats: PageStats }> {
   const { pages, numPages } = await extractTextFromPdf(filePath);
 
@@ -1023,7 +1049,7 @@ export async function extractSignsFromPdf(
       const label = `floor-plan-batch-${batchIdx + 1}-of-${batches.length}`;
       logger.info({ batchPages: batch.length, label }, "Running ADA floor plan pass");
 
-      const { text: fpText, inputTokens: fi, outputTokens: fo } = await callGemini(buildFloorPlanADAPrompt(projectContext, signScheduleContext) + block, ai, label);
+      const { text: fpText, inputTokens: fi, outputTokens: fo } = await callGemini(buildFloorPlanADAPrompt(projectContext, signScheduleContext, verifiedSigns) + block, ai, label);
       totalInputTokens += fi;
       totalOutputTokens += fo;
       const fpRows = parseGeminiResponse(fpText, label);

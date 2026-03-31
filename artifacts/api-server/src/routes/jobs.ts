@@ -320,14 +320,15 @@ router.patch("/extracted-signs/:signId", async (req, res) => {
       return;
     }
 
+    // Automatically mark as user-verified when the user saves edits
     const [updated] = await db
       .update(extractedSignsTable)
-      .set(parsed.data)
+      .set({ ...parsed.data, userVerified: true })
       .where(eq(extractedSignsTable.id, signId))
       .returning();
 
     res.json({ sign: updated });
-    req.log.info({ signId }, "Sign updated");
+    req.log.info({ signId, userVerified: true }, "Sign updated and verified");
   } catch (err) {
     req.log.error({ err, signId }, "Failed to update sign");
     res.status(500).json({ error: "Failed to update sign" });

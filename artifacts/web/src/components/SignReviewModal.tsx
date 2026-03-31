@@ -19,6 +19,7 @@ import {
   MousePointer,
   Trash2,
   Plus,
+  CheckCircle,
 } from "lucide-react";
 
 pdfjs.GlobalWorkerOptions.workerSrc = `${import.meta.env.BASE_URL}pdf.worker.min.mjs`;
@@ -44,6 +45,7 @@ interface ExtractedSign {
   xPos?: number | null;
   yPos?: number | null;
   manuallyAdded?: boolean;
+  userVerified?: boolean;
   confidenceScore: number;
   reviewFlag: boolean;
 }
@@ -519,6 +521,12 @@ export function SignReviewModal({
             <span className="flex items-center gap-1 text-[10px] font-display font-bold uppercase tracking-wider border px-2 py-0.5 rounded" style={{ color: "#a855f7", borderColor: "#a855f755", background: "#a855f710" }}>
               <Plus className="w-3 h-3" />
               Manually Added
+            </span>
+          )}
+          {activeSign.userVerified && (
+            <span className="flex items-center gap-1 text-[10px] font-display font-bold uppercase tracking-wider border px-2 py-0.5 rounded" style={{ color: "#22c55e", borderColor: "#22c55e55", background: "#22c55e10" }}>
+              <CheckCircle className="w-3 h-3" />
+              Verified
             </span>
           )}
           {activeSign.reviewFlag && (

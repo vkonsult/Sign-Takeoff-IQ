@@ -419,6 +419,12 @@ components:
           maximum: 1
         reviewFlag:
           type: boolean
+        manuallyAdded:
+          type: boolean
+          description: True if this sign was manually placed by the user (not AI-extracted)
+        userVerified:
+          type: boolean
+          description: True if the user has saved/confirmed this sign entry; preserved across re-extractions
         createdAt:
           type: string
           format: date-time

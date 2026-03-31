@@ -340,12 +340,20 @@ export default function JobDetails() {
                             <ConfidenceBadge score={sign.confidenceScore} />
                           </td>
                           <td className="data-cell text-center">
-                            {sign.reviewFlag && (
-                              <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider bg-primary/20 text-primary border border-primary/30">
-                                <AlertTriangle className="w-3 h-3 mr-1" />
-                                Flag
-                              </span>
-                            )}
+                            <div className="flex flex-col gap-1 items-center">
+                              {sign.userVerified && (
+                                <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider" style={{ background: "#22c55e15", color: "#22c55e", border: "1px solid #22c55e44" }}>
+                                  <CheckCircle2 className="w-3 h-3 mr-1" />
+                                  Verified
+                                </span>
+                              )}
+                              {sign.reviewFlag && (
+                                <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider bg-primary/20 text-primary border border-primary/30">
+                                  <AlertTriangle className="w-3 h-3 mr-1" />
+                                  Flag
+                                </span>
+                              )}
+                            </div>
                           </td>
                           <td className="data-cell text-center">
                             <button

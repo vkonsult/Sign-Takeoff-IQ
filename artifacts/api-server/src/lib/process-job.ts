@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { eq, and, or } from "drizzle-orm";
 import { db } from "@workspace/db";
 import {
   jobsTable,
@@ -8,12 +8,50 @@ import {
 } from "@workspace/db";
 
 import { ai } from "@workspace/integrations-gemini-ai";
-import { extractSignsFromPdf, extractProjectInfo, type ProjectInfo } from "./extraction";
+import { extractSignsFromPdf, extractProjectInfo, type ProjectInfo, type VerifiedSignSummary } from "./extraction";
 import { saveParsedResult } from "./storage";
 import { logger } from "./logger";
 
 export async function processJob(jobId: string): Promise<void> {
-  await db.delete(extractedSignsTable).where(eq(extractedSignsTable.jobId, jobId));
+  // ── Preserve verified + manually-added signs before clearing AI output ───
+  const existingSigns = await db
+    .select()
+    .from(extractedSignsTable)
+    .where(eq(extractedSignsTable.jobId, jobId));
+
+  const preservedSigns = existingSigns.filter((s) => s.userVerified || s.manuallyAdded);
+
+  // Build per-file verified context maps for prompt injection
+  const verifiedByFile: Record<string, VerifiedSignSummary[]> = {};
+  const verifiedGlobal: VerifiedSignSummary[] = [];
+  for (const s of preservedSigns) {
+    const summary: VerifiedSignSummary = {
+      signIdentifier: s.signIdentifier,
+      signType: s.signType,
+      location: s.location,
+      pageNumber: s.pageNumber,
+      sheetNumber: s.sheetNumber,
+      messageContent: s.messageContent,
+    };
+    verifiedGlobal.push(summary);
+    if (s.jobFileId) {
+      if (!verifiedByFile[s.jobFileId]) verifiedByFile[s.jobFileId] = [];
+      verifiedByFile[s.jobFileId]!.push(summary);
+    }
+  }
+
+  logger.info({ jobId, preservedCount: preservedSigns.length }, "Preserved verified/manually-added signs");
+
+  // Delete only AI-extracted, non-verified signs — keep corrections intact
+  await db
+    .delete(extractedSignsTable)
+    .where(
+      and(
+        eq(extractedSignsTable.jobId, jobId),
+        eq(extractedSignsTable.userVerified, false),
+        eq(extractedSignsTable.manuallyAdded, false)
+      )
+    );
 
   await db
     .update(jobsTable)
@@ -70,10 +108,16 @@ export async function processJob(jobId: string): Promise<void> {
   for (const file of files) {
     try {
       logger.info({ jobId, file: file.originalName }, "Extracting signs from file");
+      // Combine file-specific verified signs + global verified signs (de-duped)
+      const fileVerified = verifiedByFile[file.id] ?? [];
+      const otherVerified = verifiedGlobal.filter((v) => !fileVerified.includes(v));
+      const allVerifiedForFile = [...fileVerified, ...otherVerified];
+
       const { rows, pageCount, rawText, inputTokens, outputTokens, pageStats } = await extractSignsFromPdf(
         file.storedPath,
         ai,
-        projectContext
+        projectContext,
+        allVerifiedForFile.length > 0 ? allVerifiedForFile : undefined
       );
 
       totalInputTokens += inputTokens;
