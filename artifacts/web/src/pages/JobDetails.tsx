@@ -191,13 +191,28 @@ export default function JobDetails() {
               )}
 
               {isCompleted && (
-                <button
-                  onClick={handleExport}
-                  className="flex items-center gap-2 px-5 py-2.5 bg-accent text-accent-foreground font-display font-semibold uppercase tracking-wide text-sm rounded-lg hover:bg-accent/90 transition-all shadow-[0_0_15px_rgba(0,240,255,0.15)] active:scale-95"
-                >
-                  <Download className="w-4 h-4" />
-                  Export XLSX
-                </button>
+                <>
+                  <button
+                    onClick={handleStartExtraction}
+                    disabled={extractMutation.isPending}
+                    title="Re-run extraction to get updated sign counts and Sheets Analysis"
+                    className="flex items-center gap-2 px-4 py-2.5 bg-secondary border border-border text-muted-foreground font-display font-semibold uppercase tracking-wide text-sm rounded-lg hover:bg-primary/10 hover:text-primary hover:border-primary/40 transition-all active:scale-95 disabled:opacity-50"
+                  >
+                    {extractMutation.isPending ? (
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                    ) : (
+                      <Play className="w-4 h-4 fill-current" />
+                    )}
+                    Re-extract
+                  </button>
+                  <button
+                    onClick={handleExport}
+                    className="flex items-center gap-2 px-5 py-2.5 bg-accent text-accent-foreground font-display font-semibold uppercase tracking-wide text-sm rounded-lg hover:bg-accent/90 transition-all shadow-[0_0_15px_rgba(0,240,255,0.15)] active:scale-95"
+                  >
+                    <Download className="w-4 h-4" />
+                    Export XLSX
+                  </button>
+                </>
               )}
             </div>
           </div>
