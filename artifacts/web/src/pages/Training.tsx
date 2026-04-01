@@ -13,14 +13,37 @@ import {
   X,
   Sparkles,
   ExternalLink,
+  Download,
+  MapPin,
+  Search,
+  CircleAlert,
 } from "lucide-react";
+import { exportVerificationPdf, type VerificationMarker } from "@/lib/exportVerificationPdf";
+
+interface MissedSign {
+  signIdentifier: string | null;
+  signType: string | null;
+  location: string | null;
+}
+
+interface VerificationResult {
+  extractedCount: number;
+  matchedCount: number;
+  extraCount: number;
+  missedCount: number;
+  matchRate: number;
+  markers: VerificationMarker[];
+  missedSigns: MissedSign[];
+}
 
 interface UploadResult {
   jobId: string;
+  fileId: string;
   jobName: string;
   signCount: number;
   detectedColumns: string[];
   message: string;
+  verification: VerificationResult | null;
 }
 
 type FileSlot = "pdf" | "xlsx";
@@ -141,8 +164,10 @@ export default function Training() {
   const [pdfFile, setPdfFile] = useState<File | null>(null);
   const [xlsxFile, setXlsxFile] = useState<File | null>(null);
   const [uploading, setUploading] = useState(false);
+  const [uploadStage, setUploadStage] = useState<"importing" | "verifying">("importing");
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<UploadResult | null>(null);
+  const [exportingPdf, setExportingPdf] = useState(false);
 
   const handleFile = useCallback((slot: FileSlot, file: File) => {
     if (slot === "pdf") setPdfFile(file);
@@ -159,6 +184,7 @@ export default function Training() {
   const handleImport = async () => {
     if (!pdfFile || !xlsxFile) return;
     setUploading(true);
+    setUploadStage("importing");
     setError(null);
     setResult(null);
 
@@ -167,10 +193,13 @@ export default function Training() {
     form.append("xlsx", xlsxFile);
 
     try {
+      // Fake stage transition: after ~3s move to "verifying" label
+      const stageTimer = setTimeout(() => setUploadStage("verifying"), 3000);
       const res = await fetch("/api/training", {
         method: "POST",
         body: form,
       });
+      clearTimeout(stageTimer);
       const json = await res.json();
       if (!res.ok) {
         setError(json.error ?? "Import failed");
@@ -183,6 +212,24 @@ export default function Training() {
       setError(String(err));
     } finally {
       setUploading(false);
+      setUploadStage("importing");
+    }
+  };
+
+  const handleDownloadVerificationPdf = async () => {
+    if (!result?.verification) return;
+    setExportingPdf(true);
+    try {
+      await exportVerificationPdf(
+        result.jobId,
+        result.fileId,
+        result.jobName,
+        result.verification.markers
+      );
+    } catch (err) {
+      setError(`Could not generate verification PDF: ${String(err)}`);
+    } finally {
+      setExportingPdf(false);
     }
   };
 
@@ -238,31 +285,148 @@ export default function Training() {
 
           {/* Success result */}
           {result && (
-            <div className="mb-8 p-5 rounded-xl bg-accent/10 border border-accent/30">
-              <div className="flex items-start gap-3">
-                <CheckCircle2 className="w-5 h-5 text-accent mt-0.5 flex-shrink-0" />
-                <div className="flex-1 min-w-0">
-                  <p className="font-display font-semibold text-accent text-sm mb-1">
-                    {result.signCount} signs imported successfully
-                  </p>
-                  <p className="text-muted-foreground text-xs mb-3">
-                    <span className="font-medium text-foreground">{result.jobName}</span> — all rows imported as Verified
-                  </p>
-                  <div className="flex flex-wrap gap-1.5 mb-3">
-                    {result.detectedColumns.map((col) => (
-                      <span key={col} className="px-2 py-0.5 rounded-full text-[10px] bg-accent/20 text-accent font-mono border border-accent/30">
-                        {FIELD_LABELS[col] ?? col}
-                      </span>
-                    ))}
+            <div className="mb-8 space-y-4">
+              {/* Import summary */}
+              <div className="p-5 rounded-xl bg-accent/10 border border-accent/30">
+                <div className="flex items-start gap-3">
+                  <CheckCircle2 className="w-5 h-5 text-accent mt-0.5 flex-shrink-0" />
+                  <div className="flex-1 min-w-0">
+                    <p className="font-display font-semibold text-accent text-sm mb-1">
+                      {result.signCount} signs imported as verified training data
+                    </p>
+                    <p className="text-muted-foreground text-xs mb-3">
+                      <span className="font-medium text-foreground">{result.jobName}</span>
+                    </p>
+                    <div className="flex flex-wrap gap-1.5 mb-3">
+                      {result.detectedColumns.map((col) => (
+                        <span key={col} className="px-2 py-0.5 rounded-full text-[10px] bg-accent/20 text-accent font-mono border border-accent/30">
+                          {FIELD_LABELS[col] ?? col}
+                        </span>
+                      ))}
+                    </div>
+                    <button
+                      onClick={() => navigate(`/jobs/${result.jobId}`)}
+                      className="inline-flex items-center gap-1.5 text-xs text-accent hover:underline font-medium"
+                    >
+                      View imported job <ExternalLink className="w-3 h-3" />
+                    </button>
                   </div>
-                  <button
-                    onClick={() => navigate(`/jobs/${result.jobId}`)}
-                    className="inline-flex items-center gap-1.5 text-xs text-accent hover:underline font-medium"
-                  >
-                    View imported job <ExternalLink className="w-3 h-3" />
-                  </button>
                 </div>
               </div>
+
+              {/* Verification results */}
+              {result.verification && (
+                <div className="rounded-xl border border-border bg-card overflow-hidden">
+                  <div className="px-5 py-4 border-b border-border flex items-center gap-2">
+                    <Search className="w-4 h-4 text-primary" />
+                    <h3 className="font-display font-semibold text-sm text-foreground">
+                      AI Verification Results
+                    </h3>
+                    <span className="ml-auto text-xs text-muted-foreground">
+                      How accurately the AI reads your plans
+                    </span>
+                  </div>
+
+                  {/* Match rate bar */}
+                  <div className="px-5 py-4 border-b border-border">
+                    <div className="flex items-center justify-between mb-1.5">
+                      <span className="text-xs font-medium text-foreground">Schedule match rate</span>
+                      <span className="text-xs font-bold text-foreground">
+                        {Math.round(result.verification.matchRate * 100)}%
+                      </span>
+                    </div>
+                    <div className="h-2 rounded-full bg-secondary overflow-hidden">
+                      <div
+                        className="h-full rounded-full transition-all"
+                        style={{
+                          width: `${Math.round(result.verification.matchRate * 100)}%`,
+                          background: result.verification.matchRate >= 0.8
+                            ? "rgb(34,197,94)"
+                            : result.verification.matchRate >= 0.6
+                            ? "rgb(234,179,8)"
+                            : "rgb(239,68,68)",
+                        }}
+                      />
+                    </div>
+                  </div>
+
+                  {/* Stats grid */}
+                  <div className="grid grid-cols-4 divide-x divide-border border-b border-border">
+                    {[
+                      {
+                        icon: MapPin,
+                        label: "Schedule signs",
+                        value: result.signCount,
+                        color: "text-foreground",
+                      },
+                      {
+                        icon: CheckCircle2,
+                        label: "AI matched",
+                        value: result.verification.matchedCount,
+                        color: "text-green-500",
+                      },
+                      {
+                        icon: CircleAlert,
+                        label: "AI missed",
+                        value: result.verification.missedCount,
+                        color: "text-destructive",
+                      },
+                      {
+                        icon: Sparkles,
+                        label: "AI extras",
+                        value: result.verification.extraCount,
+                        color: "text-yellow-500",
+                      },
+                    ].map((stat) => (
+                      <div key={stat.label} className="px-4 py-3 text-center">
+                        <stat.icon className={`w-4 h-4 mx-auto mb-1 ${stat.color}`} />
+                        <p className={`text-lg font-bold font-display ${stat.color}`}>{stat.value}</p>
+                        <p className="text-[10px] text-muted-foreground">{stat.label}</p>
+                      </div>
+                    ))}
+                  </div>
+
+                  {/* Download button */}
+                  <div className="px-5 py-4 flex items-center gap-3">
+                    <button
+                      onClick={handleDownloadVerificationPdf}
+                      disabled={exportingPdf}
+                      className="inline-flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-display font-semibold bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
+                    >
+                      {exportingPdf ? (
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      ) : (
+                        <Download className="w-3.5 h-3.5" />
+                      )}
+                      Download Verification PDF
+                    </button>
+                    <p className="text-[11px] text-muted-foreground">
+                      Green markers = AI found schedule sign here · Yellow = extra sign not in schedule
+                    </p>
+                  </div>
+
+                  {/* Missed signs list */}
+                  {result.verification.missedSigns.length > 0 && (
+                    <div className="border-t border-border px-5 py-4">
+                      <p className="text-xs font-semibold text-destructive mb-2 flex items-center gap-1.5">
+                        <CircleAlert className="w-3.5 h-3.5" />
+                        Signs in schedule the AI did not find ({result.verification.missedCount})
+                      </p>
+                      <div className="space-y-1 max-h-40 overflow-y-auto pr-1">
+                        {result.verification.missedSigns.map((s, i) => (
+                          <div key={i} className="flex items-start gap-2 text-[11px] text-muted-foreground">
+                            <span className="font-mono text-foreground/60 shrink-0 w-14 truncate">
+                              {s.signIdentifier ?? "—"}
+                            </span>
+                            <span className="text-foreground/80 shrink-0">{s.signType ?? "—"}</span>
+                            <span className="truncate">{s.location ?? "—"}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           )}
 
@@ -327,7 +491,9 @@ export default function Training() {
             {uploading ? (
               <>
                 <Loader2 className="w-5 h-5 animate-spin" />
-                Importing Training Data…
+                {uploadStage === "importing"
+                  ? "Importing Training Data…"
+                  : "Running AI Verification on Plans…"}
               </>
             ) : (
               <>
