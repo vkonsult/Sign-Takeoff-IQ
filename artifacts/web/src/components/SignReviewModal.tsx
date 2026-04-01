@@ -642,7 +642,7 @@ export function SignReviewModal({
                 </button>
               )}
               {/* Draw mode toggle */}
-              {pdfUrl && !isSignSchedulePage && (
+              {pdfUrl && (
                 <button
                   onClick={() => setDrawMode((v) => !v)}
                   className="flex items-center gap-1.5 text-[10px] font-display font-semibold uppercase tracking-wide px-2 py-1 rounded transition-colors border"
@@ -724,8 +724,8 @@ export function SignReviewModal({
                     renderAnnotationLayer={true}
                   />
 
-                  {/* Sign schedule page notice — suppress dots on tabular pages */}
-                  {isSignSchedulePage && (
+                  {/* Sign schedule page notice — only show when no markers found AND page is classified as schedule */}
+                  {isSignSchedulePage && textMarkers.length === 0 && (
                     <div
                       style={{
                         position: "absolute",
@@ -737,12 +737,12 @@ export function SignReviewModal({
                       }}
                       className="px-3 py-1.5 rounded-full bg-accent/90 text-background text-[10px] font-bold uppercase tracking-wider shadow-lg whitespace-nowrap"
                     >
-                      Sign Schedule Page — markers shown on floor plan pages only
+                      Sign Schedule Page — use Edit Markers to place manually
                     </div>
                   )}
 
                   {/* SVG marker overlay — visual only, above react-pdf text layer */}
-                  {showOverlay && !isSignSchedulePage && textMarkers.length > 0 && renderedW && renderedH && (
+                  {showOverlay && textMarkers.length > 0 && renderedW && renderedH && (
                     <svg
                       style={{
                         position: "absolute",
@@ -805,7 +805,7 @@ export function SignReviewModal({
                   )}
 
                   {/* Delete X buttons — shown in draw mode when hovering a marker */}
-                  {drawMode && showOverlay && !isSignSchedulePage && renderedW && renderedH && textMarkers.map((m) => {
+                  {drawMode && showOverlay && renderedW && renderedH && textMarkers.map((m) => {
                     if (m.signId !== hoveredMarkerId) return null;
                     const cx = m.x * renderedW!;
                     const cy = m.y * renderedH!;
@@ -843,7 +843,7 @@ export function SignReviewModal({
                   })}
 
                   {/* Draw mode hint when hovering empty space */}
-                  {drawMode && !isSignSchedulePage && !hoveredMarkerId && renderedW && renderedH && (
+                  {drawMode && !hoveredMarkerId && renderedW && renderedH && (
                     <div
                       style={{
                         position: "absolute",
@@ -872,7 +872,7 @@ export function SignReviewModal({
 
                   {/* Transparent click-capture overlay — handles view mode (select) and
                       draw mode (create / select). Also tracks hover for delete X. */}
-                  {renderedW && renderedH && !isSignSchedulePage && (
+                  {renderedW && renderedH && (
                     <div
                       style={{
                         position: "absolute",
