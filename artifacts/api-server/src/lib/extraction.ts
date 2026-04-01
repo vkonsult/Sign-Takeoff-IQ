@@ -250,28 +250,114 @@ function buildVerifiedContext(verifiedSigns: VerifiedSignSummary[]): string {
   return `\n\nUSER-VERIFIED SIGNS FOR THIS JOB (already confirmed — DO NOT re-output these in your JSON; use them to understand this project's sign conventions and skip exact duplicates):\n---\n${lines.join("\n")}\n---\n`;
 }
 
+/**
+ * Analyses all cross-job verified signs and distils them into a compact
+ * "contractor conventions" block.  This is building-type-agnostic: we care
+ * only about *how* this shop formats identifiers, locations, and copy —
+ * not *what kind* of building they came from.
+ *
+ * Output is intentionally small (~300-600 tokens) so it doesn't inflate the
+ * prompt the way raw rows would.
+ */
 function buildTrainingContext(trainingSigns: VerifiedSignSummary[]): string {
   if (trainingSigns.length === 0) return "";
-  // Deduplicate by signType to keep the context concise and show variety
-  const seen = new Set<string>();
-  const deduped: VerifiedSignSummary[] = [];
+
+  const totalSigns = trainingSigns.length;
+
+  // ── 1. Identifier prefix pattern ─────────────────────────────────────────
+  // e.g. "RS-01" → prefix "RS", separator "-", width 2
+  // Collect all identifiers that match [A-Z]{1,4}[-_ ]?\d{1,4}
+  const idPattern = /^([A-Z]{1,4})([-_ ]?)(\d{1,4})$/;
+  const prefixCounts: Record<string, number> = {};
+  let separatorSample = "-";
+  let numberWidthSample = 2;
+  let identifiedCount = 0;
   for (const s of trainingSigns) {
-    const key = `${s.signType ?? ""}|${s.signIdentifier ?? ""}`;
-    if (!seen.has(key)) {
-      seen.add(key);
-      deduped.push(s);
+    const id = (s.signIdentifier ?? "").trim().toUpperCase();
+    const m = id.match(idPattern);
+    if (m) {
+      identifiedCount++;
+      prefixCounts[m[1]] = (prefixCounts[m[1]] ?? 0) + 1;
+      separatorSample = m[2] || "";
+      numberWidthSample = m[3].length;
     }
   }
-  const lines = deduped.map((s) =>
-    [
-      s.signIdentifier ? `ID: ${s.signIdentifier}` : null,
-      s.signType ? `Type: ${s.signType}` : null,
-      s.location ? `Location: ${s.location}` : null,
-      s.sheetNumber ? `Sheet: ${s.sheetNumber}` : null,
-      s.messageContent ? `Copy: "${s.messageContent}"` : null,
-    ].filter(Boolean).join(" | ")
-  );
-  return `\n\nTRAINING EXAMPLES — VERIFIED SIGNS FROM PAST PROJECTS (${deduped.length} examples):\nUse these to understand this contractor's naming conventions, sign identifier formats, typical location descriptions, and message copy patterns. These come from different buildings — DO still identify all signs in the current document normally.\n---\n${lines.join("\n")}\n---\n`;
+  const topPrefixes = Object.entries(prefixCounts)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 10)
+    .map(([p, n]) => `${p}${separatorSample}XX (×${n})`);
+
+  const identifierBlock =
+    identifiedCount > 0
+      ? `Identifier format: [PREFIX]${separatorSample}[${numberWidthSample}-digit number], e.g. ${topPrefixes.slice(0, 4).join(", ")}\nKnown prefixes used: ${topPrefixes.join(", ")}`
+      : null;
+
+  // ── 2. Location description style ────────────────────────────────────────
+  // Detect whether they use "—", "-", or "," as separator; capitalisation; etc.
+  const locSamples = trainingSigns
+    .map((s) => s.location ?? "")
+    .filter((l) => l.length > 3);
+  const emDashCount = locSamples.filter((l) => l.includes("—")).length;
+  const hyphenCount = locSamples.filter((l) => l.includes(" - ")).length;
+  const locSeparator =
+    emDashCount > hyphenCount ? "em-dash (—)" : "hyphen ( - )";
+  const locExamples = locSamples
+    .filter((l) => l.length > 5 && l.length < 60)
+    .slice(0, 5)
+    .map((l) => `"${l}"`);
+  const locationBlock =
+    locExamples.length > 0
+      ? `Location description style: uses ${locSeparator} as separator\nExample formats: ${locExamples.join(", ")}`
+      : null;
+
+  // ── 3. Copy / message conventions per sign type ───────────────────────────
+  // For common sign types, collect the most-used message copy
+  const copyByType: Record<string, Record<string, number>> = {};
+  for (const s of trainingSigns) {
+    const type = (s.signType ?? "Unknown").trim();
+    const copy = (s.messageContent ?? "").trim();
+    if (!copy || copy.length < 2) continue;
+    if (!copyByType[type]) copyByType[type] = {};
+    copyByType[type][copy] = (copyByType[type][copy] ?? 0) + 1;
+  }
+  const copyLines: string[] = [];
+  for (const [type, copies] of Object.entries(copyByType)) {
+    const topCopy = Object.entries(copies)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 2)
+      .map(([c]) => `"${c}"`)
+      .join(" / ");
+    if (topCopy) copyLines.push(`  ${type}: ${topCopy}`);
+  }
+  const copyBlock =
+    copyLines.length > 0
+      ? `Preferred message copy by sign type:\n${copyLines.slice(0, 12).join("\n")}`
+      : null;
+
+  // ── 4. Sign type frequency (tells the AI which types this shop cares about) ─
+  const typeCounts: Record<string, number> = {};
+  for (const s of trainingSigns) {
+    const t = (s.signType ?? "Unknown").trim();
+    typeCounts[t] = (typeCounts[t] ?? 0) + 1;
+  }
+  const topTypes = Object.entries(typeCounts)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 12)
+    .map(([t, n]) => `${t} (${n})`)
+    .join(", ");
+
+  // ── Assemble ──────────────────────────────────────────────────────────────
+  const blocks = [
+    `CONTRACTOR CONVENTIONS (derived from ${totalSigns} verified signs across past projects):`,
+    `These apply across all building types — use them for consistency on every new job.`,
+    identifierBlock,
+    locationBlock,
+    `Most common sign types in this shop's work: ${topTypes}`,
+    copyBlock,
+    `IMPORTANT: Continue identifying ALL signs in the current document normally; these conventions only govern naming format and copy style.`,
+  ].filter(Boolean);
+
+  return `\n\n${blocks.join("\n\n")}\n`;
 }
 
 function buildFloorPlanADAPrompt(projectContext?: ProjectInfo, signScheduleContext?: string, verifiedSigns?: VerifiedSignSummary[], trainingContext?: VerifiedSignSummary[]): string {
