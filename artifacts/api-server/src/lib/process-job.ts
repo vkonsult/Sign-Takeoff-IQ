@@ -1,4 +1,4 @@
-import { eq, and, or } from "drizzle-orm";
+import { eq, and, ne, desc } from "drizzle-orm";
 import { db } from "@workspace/db";
 import {
   jobsTable,
@@ -41,6 +41,31 @@ export async function processJob(jobId: string): Promise<void> {
   }
 
   logger.info({ jobId, preservedCount: preservedSigns.length }, "Preserved verified/manually-added signs");
+
+  // ── Cross-job training context: verified signs from OTHER jobs ──────────────
+  // These are used to teach the AI about this contractor's naming conventions,
+  // sign identifier formats, and typical specifications — without marking them
+  // as "already confirmed" for the current job.
+  const crossJobVerified = await db
+    .select({
+      signIdentifier: extractedSignsTable.signIdentifier,
+      signType: extractedSignsTable.signType,
+      location: extractedSignsTable.location,
+      pageNumber: extractedSignsTable.pageNumber,
+      sheetNumber: extractedSignsTable.sheetNumber,
+      messageContent: extractedSignsTable.messageContent,
+    })
+    .from(extractedSignsTable)
+    .where(
+      and(
+        eq(extractedSignsTable.userVerified, true),
+        ne(extractedSignsTable.jobId, jobId)
+      )
+    )
+    .orderBy(desc(extractedSignsTable.createdAt))
+    .limit(400);
+
+  logger.info({ jobId, trainingCount: crossJobVerified.length }, "Loaded cross-job training context");
 
   // Delete only AI-extracted, non-verified signs — keep corrections intact
   await db
@@ -117,7 +142,8 @@ export async function processJob(jobId: string): Promise<void> {
         file.storedPath,
         ai,
         projectContext,
-        allVerifiedForFile.length > 0 ? allVerifiedForFile : undefined
+        allVerifiedForFile.length > 0 ? allVerifiedForFile : undefined,
+        crossJobVerified.length > 0 ? crossJobVerified : undefined
       );
 
       totalInputTokens += inputTokens;

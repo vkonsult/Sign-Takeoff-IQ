@@ -247,10 +247,34 @@ function buildVerifiedContext(verifiedSigns: VerifiedSignSummary[]): string {
       s.messageContent ? `Copy: "${s.messageContent}"` : null,
     ].filter(Boolean).join(" | ")
   );
-  return `\n\nUSER-VERIFIED SIGNS (already confirmed — DO NOT re-output these in your JSON; use them to understand this project's sign conventions and skip duplicates):\n---\n${lines.join("\n")}\n---\n`;
+  return `\n\nUSER-VERIFIED SIGNS FOR THIS JOB (already confirmed — DO NOT re-output these in your JSON; use them to understand this project's sign conventions and skip exact duplicates):\n---\n${lines.join("\n")}\n---\n`;
 }
 
-function buildFloorPlanADAPrompt(projectContext?: ProjectInfo, signScheduleContext?: string, verifiedSigns?: VerifiedSignSummary[]): string {
+function buildTrainingContext(trainingSigns: VerifiedSignSummary[]): string {
+  if (trainingSigns.length === 0) return "";
+  // Deduplicate by signType to keep the context concise and show variety
+  const seen = new Set<string>();
+  const deduped: VerifiedSignSummary[] = [];
+  for (const s of trainingSigns) {
+    const key = `${s.signType ?? ""}|${s.signIdentifier ?? ""}`;
+    if (!seen.has(key)) {
+      seen.add(key);
+      deduped.push(s);
+    }
+  }
+  const lines = deduped.map((s) =>
+    [
+      s.signIdentifier ? `ID: ${s.signIdentifier}` : null,
+      s.signType ? `Type: ${s.signType}` : null,
+      s.location ? `Location: ${s.location}` : null,
+      s.sheetNumber ? `Sheet: ${s.sheetNumber}` : null,
+      s.messageContent ? `Copy: "${s.messageContent}"` : null,
+    ].filter(Boolean).join(" | ")
+  );
+  return `\n\nTRAINING EXAMPLES — VERIFIED SIGNS FROM PAST PROJECTS (${deduped.length} examples):\nUse these to understand this contractor's naming conventions, sign identifier formats, typical location descriptions, and message copy patterns. These come from different buildings — DO still identify all signs in the current document normally.\n---\n${lines.join("\n")}\n---\n`;
+}
+
+function buildFloorPlanADAPrompt(projectContext?: ProjectInfo, signScheduleContext?: string, verifiedSigns?: VerifiedSignSummary[], trainingContext?: VerifiedSignSummary[]): string {
   const locationLine = projectContext?.address || projectContext?.city || projectContext?.state
     ? `\nPROJECT LOCATION: ${[projectContext.address, projectContext.city, projectContext.state, projectContext.zip].filter(Boolean).join(", ")}`
     : "";
@@ -262,6 +286,7 @@ function buildFloorPlanADAPrompt(projectContext?: ProjectInfo, signScheduleConte
     ? `\n\nSIGN SCHEDULE / SPECIFICATION CONTEXT (for reference only — do NOT re-list these as output rows; use them to understand sign types, identifiers, and specs defined for this project):\n---\n${signScheduleContext.slice(0, 10000)}\n---\n`
     : "";
   const verifiedCtx = verifiedSigns && verifiedSigns.length > 0 ? buildVerifiedContext(verifiedSigns) : "";
+  const trainingCtx = trainingContext && trainingContext.length > 0 ? buildTrainingContext(trainingContext) : "";
 
   return `You are an expert sign contractor, ADA compliance specialist, and fire/life-safety code consultant performing a comprehensive sign takeoff from architectural floor plans.
 
@@ -486,7 +511,7 @@ CRITICAL RULES:
 - If you cannot read the floor plan, return []
 
 FLOOR PLAN PAGES (with page markers):
-${scheduleCtx}${verifiedCtx}---
+${scheduleCtx}${trainingCtx}${verifiedCtx}---
 `;
 }
 
@@ -966,7 +991,8 @@ export async function extractSignsFromPdf(
   filePath: string,
   ai: GeminiAI,
   projectContext?: ProjectInfo,
-  verifiedSigns?: VerifiedSignSummary[]
+  verifiedSigns?: VerifiedSignSummary[],
+  trainingContext?: VerifiedSignSummary[]
 ): Promise<{ rows: ExtractedSignRow[]; pageCount: number; rawText: string; inputTokens: number; outputTokens: number; pageStats: PageStats }> {
   const { pages, numPages } = await extractTextFromPdf(filePath);
 
@@ -1049,7 +1075,7 @@ export async function extractSignsFromPdf(
       const label = `floor-plan-batch-${batchIdx + 1}-of-${batches.length}`;
       logger.info({ batchPages: batch.length, label }, "Running ADA floor plan pass");
 
-      const { text: fpText, inputTokens: fi, outputTokens: fo } = await callGemini(buildFloorPlanADAPrompt(projectContext, signScheduleContext, verifiedSigns) + block, ai, label);
+      const { text: fpText, inputTokens: fi, outputTokens: fo } = await callGemini(buildFloorPlanADAPrompt(projectContext, signScheduleContext, verifiedSigns, trainingContext) + block, ai, label);
       totalInputTokens += fi;
       totalOutputTokens += fo;
       const fpRows = parseGeminiResponse(fpText, label);
