@@ -673,18 +673,58 @@ interface ScoredPage {
   type: PageType;
 }
 
-function classifyPage(pageNum: number, text: string): ScoredPage {
-  const floorPlanScore = scoreForFloorPlan(text);
-  const signScheduleScore = scoreForSignSchedule(text);
+// Keywords in a filename that strongly suggest this is a floor plan PDF.
+const FLOOR_PLAN_FILENAME_SIGNALS = [
+  "floor plan", "floor-plan", "floorplan",
+  "construction plan", "construction-plan",
+  "reflected ceiling", "rcp",
+  "floor level", "ground floor", "first floor", "second floor", "third floor",
+  "mezzanine", "basement", "level ", "level-",
+  " plan ", "-plan-", "_plan_",
+  "architectural plan", "arch plan",
+  "site plan", "roof plan",
+];
+
+const SIGN_SCHEDULE_FILENAME_SIGNALS = [
+  "sign schedule", "sign-schedule", "signage schedule",
+  "signage-schedule", "sign list", "sign index",
+  "sign program", "signage program",
+];
+
+function filenameClassificationBoost(filename: string): { floorPlan: number; signSchedule: number } {
+  const lower = filename.toLowerCase();
+  const fpMatch = FLOOR_PLAN_FILENAME_SIGNALS.some((sig) => lower.includes(sig));
+  const ssMatch = SIGN_SCHEDULE_FILENAME_SIGNALS.some((sig) => lower.includes(sig));
+  return {
+    floorPlan: fpMatch ? 10 : 0,
+    signSchedule: ssMatch ? 10 : 0,
+  };
+}
+
+function classifyPage(pageNum: number, text: string, filenameBoost?: { floorPlan: number; signSchedule: number }): ScoredPage {
+  const textFloorPlanScore = scoreForFloorPlan(text);
+  const textSignScheduleScore = scoreForSignSchedule(text);
+
+  const boost = filenameBoost ?? { floorPlan: 0, signSchedule: 0 };
+  const floorPlanScore = textFloorPlanScore + boost.floorPlan;
+  const signScheduleScore = textSignScheduleScore + boost.signSchedule;
 
   let type: PageType = "other";
-  if (signScheduleScore >= 2) {
+
+  // Floor plan wins if its score meets the threshold AND beats sign schedule score.
+  // Sign schedule needs a higher absolute threshold (4) to avoid false positives from
+  // floor plans that contain incidental sign-related words ("type a", "ada", "exit").
+  if (floorPlanScore >= 4 && floorPlanScore >= signScheduleScore) {
+    type = "floor_plan";
+  } else if (signScheduleScore >= 4 && signScheduleScore > floorPlanScore) {
     type = "sign_schedule";
   } else if (floorPlanScore >= 4) {
     type = "floor_plan";
+  } else if (signScheduleScore >= 4) {
+    type = "sign_schedule";
   }
 
-  return { pageNum, text, floorPlanScore, signScheduleScore, type };
+  return { pageNum, text, floorPlanScore: textFloorPlanScore, signScheduleScore: textSignScheduleScore, type };
 }
 
 // ─── PDF TEXT EXTRACTION ──────────────────────────────────────────────────────
@@ -710,18 +750,23 @@ async function extractTextFromPdf(filePath: string): Promise<{
     const result = await pdfParse(dataBuffer, options as Parameters<typeof pdfParse>[1]);
     const rawPages = pageTexts.length > 0 ? pageTexts : [result.text];
 
-    const pages = rawPages.map((text, i) => classifyPage(i + 1, text));
+    // Derive a classification boost from the filename (e.g. "FIRST-FLOOR-CONSTRUCTION-PLAN" → +10 floor plan)
+    const basename = filePath.split("/").pop() ?? "";
+    const boost = filenameClassificationBoost(basename);
+
+    const pages = rawPages.map((text, i) => classifyPage(i + 1, text, boost));
 
     const fpCount = pages.filter((p) => p.type === "floor_plan").length;
     const ssCount = pages.filter((p) => p.type === "sign_schedule").length;
 
     logger.info(
       {
-        filePath: filePath.split("/").pop(),
+        filePath: basename,
         totalPages: pages.length,
         floorPlanPages: fpCount,
         signSchedulePages: ssCount,
         otherPages: pages.length - fpCount - ssCount,
+        filenameBoost: boost.floorPlan > 0 ? "floor_plan" : boost.signSchedule > 0 ? "sign_schedule" : "none",
       },
       "PDF pages classified"
     );
@@ -799,10 +844,17 @@ const GeminiSignRowSchema = z.object({
   message_content: z.string().nullable().optional().default(null),
   notes: z.string().nullable().optional().default(null),
   page_number: z
-    .union([z.number().int().positive(), z.null()])
+    .union([
+      z.number(),
+      z.string().transform((s) => {
+        const n = parseInt(s, 10);
+        return isNaN(n) ? null : n;
+      }),
+      z.null(),
+    ])
     .optional()
     .default(null)
-    .transform((v) => (v !== null && v !== undefined ? Math.round(v) : null)),
+    .transform((v) => (v !== null && v !== undefined && typeof v === "number" ? Math.round(v) : (v as number | null))),
   confidence_score: z.number().min(0).max(1).optional(),
   review_flag: z.boolean().optional(),
 });
