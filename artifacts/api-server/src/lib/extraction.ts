@@ -711,17 +711,39 @@ function classifyPage(pageNum: number, text: string, filenameBoost?: { floorPlan
 
   let type: PageType = "other";
 
-  // Floor plan wins if its score meets the threshold AND beats sign schedule score.
-  // Sign schedule needs a higher absolute threshold (4) to avoid false positives from
-  // floor plans that contain incidental sign-related words ("type a", "ada", "exit").
-  if (floorPlanScore >= 4 && floorPlanScore >= signScheduleScore) {
-    type = "floor_plan";
-  } else if (signScheduleScore >= 4 && signScheduleScore > floorPlanScore) {
-    type = "sign_schedule";
-  } else if (floorPlanScore >= 4) {
-    type = "floor_plan";
-  } else if (signScheduleScore >= 4) {
-    type = "sign_schedule";
+  // When a filename strongly implies a type (boost ≥ 8), that classification
+  // locks in unless the opposing TEXT score exceeds the boosted score by an
+  // additional half-boost margin.  This prevents high floor-plan text scores
+  // (from dimensions / room labels common to all architectural sheets) from
+  // overriding a clear sign-schedule filename.
+  const STRONG_BOOST = 8;
+  if (boost.signSchedule >= STRONG_BOOST) {
+    // Filename says "sign schedule" — floor plan must be much higher to override
+    if (floorPlanScore >= 4 && floorPlanScore > signScheduleScore + boost.signSchedule * 0.5) {
+      type = "floor_plan";
+    } else {
+      type = "sign_schedule";
+    }
+  } else if (boost.floorPlan >= STRONG_BOOST) {
+    // Filename says "floor plan" — sign schedule must be much higher to override
+    if (signScheduleScore >= 4 && signScheduleScore > floorPlanScore + boost.floorPlan * 0.5) {
+      type = "sign_schedule";
+    } else {
+      type = "floor_plan";
+    }
+  } else {
+    // No strong filename signal — use text scores with standard thresholds.
+    // Sign schedule needs a higher absolute threshold (4) to avoid false
+    // positives from floor plans that contain incidental sign words.
+    if (floorPlanScore >= 4 && floorPlanScore >= signScheduleScore) {
+      type = "floor_plan";
+    } else if (signScheduleScore >= 4 && signScheduleScore > floorPlanScore) {
+      type = "sign_schedule";
+    } else if (floorPlanScore >= 4) {
+      type = "floor_plan";
+    } else if (signScheduleScore >= 4) {
+      type = "sign_schedule";
+    }
   }
 
   return { pageNum, text, floorPlanScore: textFloorPlanScore, signScheduleScore: textSignScheduleScore, type };

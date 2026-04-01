@@ -171,8 +171,89 @@ function tokenize(text: string | null | undefined): string[] {
 }
 
 /**
+ * Build a spatial text index from PDF text items.
+ * CAD PDFs (Revit/AutoCAD) often fragment words into individual characters.
+ * This groups items into "runs" on the same baseline, concatenates them,
+ * and returns a searchable structure with a representative item for position.
+ */
+interface TextRun {
+  text: string;         // concatenated text of the run
+  item: PdfTextItem;    // first item in run (for coordinates)
+  midX: number;         // average X of all items in run
+  midY: number;         // average Y of all items in run
+}
+
+function buildTextRuns(items: PdfTextItem[]): TextRun[] {
+  if (items.length === 0) return [];
+
+  // Sort by Y descending (top of page first), then X ascending
+  const sorted = [...items]
+    .filter((it) => it.str.trim())
+    .sort((a, b) => {
+      const ay = a.transform[5]!;
+      const by_ = b.transform[5]!;
+      if (Math.abs(ay - by_) > 4) return by_ - ay;       // different lines
+      return a.transform[4]! - b.transform[4]!;           // same line → left to right
+    });
+
+  const runs: TextRun[] = [];
+  let current: { text: string; items: PdfTextItem[] } | null = null;
+
+  for (const item of sorted) {
+    if (!current) {
+      current = { text: item.str, items: [item] };
+      continue;
+    }
+
+    const prevY = current.items[current.items.length - 1]!.transform[5]!;
+    const prevX = current.items[current.items.length - 1]!.transform[4]!;
+    const prevW = current.items[current.items.length - 1]!.width ?? 8;
+    const currY = item.transform[5]!;
+    const currX = item.transform[4]!;
+
+    // Same baseline (within 3 pts) and horizontally adjacent (gap < 3× prev char width)
+    const sameLine = Math.abs(currY - prevY) <= 3;
+    const adjacent = currX - (prevX + prevW) < prevW * 3;
+
+    if (sameLine && adjacent) {
+      current.text += item.str;
+      current.items.push(item);
+    } else {
+      // Flush current run
+      const xs = current.items.map((i) => i.transform[4]!);
+      const ys = current.items.map((i) => i.transform[5]!);
+      runs.push({
+        text: current.text,
+        item: current.items[0]!,
+        midX: xs.reduce((a, b) => a + b, 0) / xs.length,
+        midY: ys.reduce((a, b) => a + b, 0) / ys.length,
+      });
+      current = { text: item.str, items: [item] };
+    }
+  }
+
+  if (current) {
+    const xs = current.items.map((i) => i.transform[4]!);
+    const ys = current.items.map((i) => i.transform[5]!);
+    runs.push({
+      text: current.text,
+      item: current.items[0]!,
+      midX: xs.reduce((a, b) => a + b, 0) / xs.length,
+      midY: ys.reduce((a, b) => a + b, 0) / ys.length,
+    });
+  }
+
+  return runs;
+}
+
+/**
  * Given the text items from a PDF page and a sign, find the best matching
  * location on the page. Returns normalized (0–1) coordinates or null.
+ *
+ * Handles two common CAD PDF formats:
+ *  1. Word-per-item  — standard PDF text; matched via token search on each item
+ *  2. Char-per-item  — Revit/AutoCAD fragmentation; matched by first grouping
+ *                      adjacent glyphs into runs, then searching within runs
  */
 function findSignLocation(
   items: PdfTextItem[],
@@ -184,12 +265,13 @@ function findSignLocation(
     ...(sign.location ? [sign.location] : []),
     ...(sign.messageContent ? [sign.messageContent] : []),
     ...(sign.signIdentifier ? [sign.signIdentifier] : []),
-  ];
+  ].filter(Boolean) as string[];
 
-  // Try to find a text item that best matches the sign's location/message
-  // Strategy: score each item by how many tokens from our targets it contains
-  type Scored = { score: number; item: PdfTextItem; matched: string };
-  const scored: Scored[] = [];
+  if (targets.length === 0) return null;
+
+  // ── Pass 1: search individual items (fast path for well-formed PDFs) ──────
+  type Scored = { score: number; x: number; y: number; matched: string };
+  const candidates: Scored[] = [];
 
   for (const target of targets) {
     const targetTokens = tokenize(target);
@@ -198,31 +280,80 @@ function findSignLocation(
     for (const item of items) {
       if (!item.str.trim()) continue;
       const itemText = item.str.toLowerCase();
-
       let matches = 0;
       for (const tok of targetTokens) {
         if (itemText.includes(tok)) matches++;
       }
-
       if (matches > 0) {
-        const score = matches / targetTokens.length;
-        scored.push({ score, item, matched: target });
+        const [, , , , tx, ty] = item.transform;
+        candidates.push({
+          score: matches / targetTokens.length,
+          x: Math.min(1, Math.max(0, tx / pageW)),
+          y: Math.min(1, Math.max(0, 1 - ty / pageH)),
+          matched: target,
+        });
       }
     }
   }
 
-  if (scored.length === 0) return null;
+  if (candidates.length > 0) {
+    candidates.sort((a, b) => b.score - a.score);
+    const { x, y, matched } = candidates[0]!;
+    return { x, y, matched };
+  }
 
-  // Pick the highest-scoring item
-  scored.sort((a, b) => b.score - a.score);
-  const best = scored[0]!;
-  const [, , , , tx, ty] = best.item.transform;
+  // ── Pass 2: reconstruct text runs (handles per-character fragmentation) ───
+  const runs = buildTextRuns(items);
 
-  return {
-    x: Math.min(1, Math.max(0, tx / pageW)),
-    y: Math.min(1, Math.max(0, 1 - ty / pageH)), // flip Y: PDF bottom-up → screen top-down
-    matched: best.matched,
-  };
+  for (const target of targets) {
+    const needle = target.toLowerCase().replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim();
+    if (!needle) continue;
+
+    // Search within individual runs
+    for (const run of runs) {
+      const haystack = run.text.toLowerCase().replace(/[^a-z0-9\s]/g, " ");
+      if (haystack.includes(needle) || needle.split(" ").some((word) => word.length >= 3 && haystack.includes(word))) {
+        return {
+          x: Math.min(1, Math.max(0, run.midX / pageW)),
+          y: Math.min(1, Math.max(0, 1 - run.midY / pageH)),
+          matched: target,
+        };
+      }
+    }
+
+    // Sliding window over adjacent runs on the same line
+    for (let i = 0; i < runs.length; i++) {
+      let combined = "";
+      const windowRuns: TextRun[] = [];
+
+      for (let j = i; j < Math.min(i + 6, runs.length); j++) {
+        const r = runs[j]!;
+        // Only extend window if same baseline
+        if (windowRuns.length > 0) {
+          const lastY = windowRuns[windowRuns.length - 1]!.midY;
+          if (Math.abs(r.midY - lastY) > 6) break;
+        }
+        combined += r.text;
+        windowRuns.push(r);
+
+        const haystack = combined.toLowerCase().replace(/[^a-z0-9\s]/g, " ");
+        if (haystack.includes(needle)) {
+          // Use position midpoint of the window
+          const allX = windowRuns.map((r2) => r2.midX);
+          const allY = windowRuns.map((r2) => r2.midY);
+          const avgX = allX.reduce((a, b) => a + b, 0) / allX.length;
+          const avgY = allY.reduce((a, b) => a + b, 0) / allY.length;
+          return {
+            x: Math.min(1, Math.max(0, avgX / pageW)),
+            y: Math.min(1, Math.max(0, 1 - avgY / pageH)),
+            matched: target,
+          };
+        }
+      }
+    }
+  }
+
+  return null;
 }
 
 export function SignReviewModal({
@@ -288,8 +419,10 @@ export function SignReviewModal({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeSign.id]);
 
+  // Treat null pageNumber as page 1 — single-page PDFs often have null when
+  // the AI didn't explicitly output the field.
   const signsOnCurrentPage = allSigns.filter(
-    (s) => s.jobFileId === sign.jobFileId && s.pageNumber === pageNumber
+    (s) => s.jobFileId === sign.jobFileId && (s.pageNumber ?? 1) === pageNumber
   );
 
   // Load PDF document for text extraction (separate from react-pdf rendering).
