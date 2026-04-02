@@ -1,6 +1,7 @@
 import { useState, useCallback, useEffect } from "react";
 import { Document, Page, pdfjs } from "react-pdf";
 import { apiFetch } from "@/lib/apiClient";
+import { usePdfBlob } from "@/hooks/use-pdf-blob";
 import "react-pdf/dist/Page/AnnotationLayer.css";
 import "react-pdf/dist/Page/TextLayer.css";
 import {
@@ -380,7 +381,8 @@ export function SignReviewModal({
   useEffect(() => { setLocalSigns(allSignsProp); }, [allSignsProp]);
   const allSigns = localSigns;
   const file = files.find((f) => f.id === sign.jobFileId) ?? null;
-  const pdfUrl = file ? `/api/jobs/${jobId}/files/${file.id}/pdf` : null;
+  const rawPdfApiUrl = file ? `/api/jobs/${jobId}/files/${file.id}/pdf` : null;
+  const { blobUrl: pdfUrl } = usePdfBlob(rawPdfApiUrl);
 
   const [numPages, setNumPages] = useState<number | null>(null);
   const [pageNumber, setPageNumber] = useState(sign.pageNumber ?? 1);
@@ -837,6 +839,11 @@ export function SignReviewModal({
 
           {/* PDF canvas + overlay */}
           <div className="flex-1 overflow-auto p-4 flex justify-center items-start">
+            {rawPdfApiUrl && !pdfUrl && (
+              <div className="flex items-center justify-center h-64">
+                <Loader2 className="w-8 h-8 text-primary animate-spin" />
+              </div>
+            )}
             {pdfUrl ? (
               <Document
                 file={pdfUrl}
