@@ -261,10 +261,12 @@ function findSignLocation(
   pageH: number,
   sign: ExtractedSign
 ): { x: number; y: number; matched: string } | null {
+  // Priority: signIdentifier first (unique callout code, most precise),
+  // then location (room name), then message content (sign text)
   const targets = [
+    ...(sign.signIdentifier ? [sign.signIdentifier] : []),
     ...(sign.location ? [sign.location] : []),
     ...(sign.messageContent ? [sign.messageContent] : []),
-    ...(sign.signIdentifier ? [sign.signIdentifier] : []),
   ].filter(Boolean) as string[];
 
   if (targets.length === 0) return null;
@@ -296,10 +298,17 @@ function findSignLocation(
     }
   }
 
+  // ── Pass 0.5: if any candidate has score 1.0 (all tokens matched), return immediately ──
+  const perfectMatch = candidates.find((c) => c.score === 1.0);
+  if (perfectMatch) {
+    return { x: perfectMatch.x, y: perfectMatch.y, matched: perfectMatch.matched };
+  }
+
   if (candidates.length > 0) {
     candidates.sort((a, b) => b.score - a.score);
-    const { x, y, matched } = candidates[0]!;
-    return { x, y, matched };
+    // Only return partial matches if they score reasonably well (>= 0.6)
+    const best = candidates[0]!;
+    if (best.score >= 0.6) return { x: best.x, y: best.y, matched: best.matched };
   }
 
   // ── Pass 2: reconstruct text runs (handles per-character fragmentation) ───
@@ -1086,21 +1095,20 @@ export function SignReviewModal({
             </p>
           </div>
 
-          {/* Location source status banner */}
-          {textSearchStatus === "not-found" && (
-            <div className="mx-5 mt-4 flex items-start gap-2 text-xs bg-destructive/10 border border-destructive/20 rounded-lg px-3 py-2.5 text-destructive">
-              <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" />
-              <div>
-                <span className="font-semibold">Location not found on this page.</span>
-                <br />
-                The text &ldquo;{activeSign.location ?? activeSign.messageContent ?? "?"}&rdquo; was not found
-                in this page&rsquo;s text layer. This sign may have been attributed to the wrong
-                page by the AI. Verify the location and correct it if needed.
+          <div className="flex-1 overflow-y-auto px-5 py-4 space-y-3">
+            {/* Location source status banner — inside scroll so it doesn't compress the form */}
+            {textSearchStatus === "not-found" && (
+              <div className="flex items-start gap-2 text-xs bg-destructive/10 border border-destructive/20 rounded-lg px-3 py-2.5 text-destructive">
+                <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" />
+                <div>
+                  <span className="font-semibold">Location not found on this page.</span>
+                  <br />
+                  The text &ldquo;{activeSign.location ?? activeSign.messageContent ?? "?"}&rdquo; was not found
+                  in this page&rsquo;s text layer. This sign may have been attributed to the wrong
+                  page by the AI. Verify the location and correct it if needed.
+                </div>
               </div>
-            </div>
-          )}
-
-          <div className="flex-1 overflow-y-auto px-5 py-4 space-y-4">
+            )}
             <div className="grid grid-cols-2 gap-3">
               <Field
                 label="Sheet Number"

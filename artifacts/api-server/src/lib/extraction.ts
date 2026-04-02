@@ -1215,6 +1215,18 @@ IMPORTANT RULES:
 - Each entry must include x_position and y_position as numbers between 0 and 1.
 - If no signs are visible in the document, return an empty array: []
 
+CRITICAL — READ NUMBERS WITH EXTREME CARE:
+- Room numbers, sign IDs, and reference codes are highly precise. A single wrong digit changes the meaning entirely (e.g. "SHOP 113" ≠ "SHOP 118", "RI-105" ≠ "RI-106").
+- Zoom in mentally on each number before transcribing it. Do not guess or round.
+- Visually similar digits to watch for: 1 vs I vs l, 3 vs 8, 0 vs 6 vs 8, 5 vs 6, 7 vs 1.
+- If you cannot confidently read a number or room label, set confidence_score ≤ 0.6 and review_flag = true, and report the digits you can see.
+- For x_position and y_position: place the coordinate at the sign callout bubble or leader-line endpoint — NOT at the center of the room. The callout is typically at the edge of the labeled space.
+
+MARKER ACCURACY:
+- x_position and y_position must point to the exact callout label or bubble for the sign, not to the room centroid.
+- If the sign has a visible bubble or triangle marker with a reference code, place your coordinate at that symbol.
+- Do not place the coordinate at the room name text block — use the sign callout itself.
+
 LEGEND / SYMBOL KEY EXCLUSION (critical):
 - Architectural plans often contain a "Life Safety Legend", "Signage Legend", "Symbol Key", or "Drawing Legend" box — typically a bordered table in the corner of the page that lists what each symbol means.
 - DO NOT extract any entries from these legend or symbol-key boxes. They are definitions, not actual sign locations.
