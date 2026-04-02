@@ -271,7 +271,7 @@ export default function OnboardingPage() {
               </div>
 
               <p className="text-xs text-muted-foreground text-center">
-                Supported formats: PNG, JPG, SVG, WebP · Max 5 MB
+                Supported formats: PNG, JPG, WebP, GIF · Max 5 MB
               </p>
 
               {error && (

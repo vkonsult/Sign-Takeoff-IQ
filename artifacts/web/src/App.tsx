@@ -131,7 +131,10 @@ function AdminRoute({ component: Component }: { component: React.ComponentType }
   if (!isSignedIn) {
     return <Redirect to="/sign-in" />;
   }
-  if (isLoaded && !isTenantAdmin) {
+  if (!isLoaded) {
+    return null;
+  }
+  if (!isTenantAdmin) {
     return <Redirect to="/jobs" />;
   }
   if (orgQuery.isLoading) {
@@ -158,7 +161,10 @@ function SuperAdminRoute({ component: Component }: { component: React.ComponentT
   if (!isSignedIn) {
     return <Redirect to="/sign-in" />;
   }
-  if (isLoaded && !isSuperAdmin) {
+  if (!isLoaded) {
+    return null;
+  }
+  if (!isSuperAdmin) {
     return <Redirect to="/jobs" />;
   }
   return <Component />;
