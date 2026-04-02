@@ -11,9 +11,9 @@ export default function LandingPage() {
   const [tokenError, setTokenError] = useState("");
 
   useEffect(() => {
-    fetch("/api/auth/guest-available")
+    fetch("/api/healthz")
       .then((r) => r.json())
-      .then((d: { available?: boolean }) => setGuestAvailable(!!d.available))
+      .then((d: { guestAvailable?: boolean }) => setGuestAvailable(!!d.guestAvailable))
       .catch(() => {});
   }, []);
 

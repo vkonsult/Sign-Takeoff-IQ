@@ -70,6 +70,12 @@ router.post("/upload", (req, res, next) => {
     return;
   }
 
+  const orgId = req.authUser?.organizationId ?? null;
+  if (!orgId && !req.authUser?.isSuperAdmin) {
+    res.status(403).json({ error: "No organization context. Please contact your administrator." });
+    return;
+  }
+
   try {
     const firstName = files[0]?.originalname ?? "Untitled Job";
     const jobName = firstName.replace(/\.pdf$/i, "").replace(/[_-]/g, " ").trim();
@@ -80,7 +86,7 @@ router.post("/upload", (req, res, next) => {
         name: jobName,
         status: "pending",
         fileCount: files.length,
-        organizationId: req.authUser?.organizationId ?? null,
+        organizationId: orgId,
       })
       .returning();
 
