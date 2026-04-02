@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from "react";
 import { useRoute } from "wouter";
 import { useQueryClient } from "@tanstack/react-query";
 import { AppShell } from "@/components/layout/Shell";
+import { apiFetch } from "@/lib/apiClient";
 import { useJobDetails, useStartExtraction, downloadExport, useUpdateJobName } from "@/hooks/use-takeoff";
 import { SignReviewModal } from "@/components/SignReviewModal";
 import { SignSpecModal } from "@/components/SignSpecModal";
@@ -153,7 +154,7 @@ export default function JobDetails() {
     });
     // Persist to server; revert optimistic update on any failure
     try {
-      const res = await fetch(`/api/extracted-signs/${signId}`, {
+      const res = await apiFetch(`/api/extracted-signs/${signId}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ hidden: next }),

@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider, useQueryClient } from "@tanstack/reac
 import { ClerkProvider, SignIn, SignUp, Show, useClerk } from "@clerk/react";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { isGuestMode } from "@/lib/apiClient";
 
 import Home from "@/pages/Home";
 import LandingPage from "@/pages/LandingPage";
@@ -83,6 +84,9 @@ function SignUpPage() {
 }
 
 function ProtectedRoute({ component: Component }: { component: React.ComponentType }) {
+  if (isGuestMode()) {
+    return <Component />;
+  }
   return (
     <>
       <Show when="signed-in">
@@ -96,6 +100,9 @@ function ProtectedRoute({ component: Component }: { component: React.ComponentTy
 }
 
 function HomeRoute() {
+  if (isGuestMode()) {
+    return <Redirect to="/jobs" />;
+  }
   return (
     <>
       <Show when="signed-in">

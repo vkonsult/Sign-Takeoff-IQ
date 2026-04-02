@@ -1,5 +1,6 @@
 import { useState, useCallback, useEffect } from "react";
 import { Document, Page, pdfjs } from "react-pdf";
+import { apiFetch } from "@/lib/apiClient";
 import "react-pdf/dist/Page/AnnotationLayer.css";
 import "react-pdf/dist/Page/TextLayer.css";
 import {
@@ -558,7 +559,7 @@ export function SignReviewModal({
         reviewFlag: form.reviewFlag,
       };
 
-      const res = await fetch(`/api/extracted-signs/${activeSign.id}`, {
+      const res = await apiFetch(`/api/extracted-signs/${activeSign.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
@@ -583,7 +584,7 @@ export function SignReviewModal({
     if (!file) return;
     setAddingSign(true);
     try {
-      const res = await fetch("/api/extracted-signs", {
+      const res = await apiFetch("/api/extracted-signs", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -613,7 +614,7 @@ export function SignReviewModal({
 
   const handleDeleteSign = async (signId: string) => {
     try {
-      const res = await fetch(`/api/extracted-signs/${signId}`, { method: "DELETE" });
+      const res = await apiFetch(`/api/extracted-signs/${signId}`, { method: "DELETE" });
       if (!res.ok) throw new Error("Failed to delete sign");
       setLocalSigns((prev) => prev.filter((s) => s.id !== signId));
       setHoveredMarkerId(null);

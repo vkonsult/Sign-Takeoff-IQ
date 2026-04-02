@@ -7,6 +7,7 @@ import {
   getGetJobQueryKey,
   getListJobsQueryKey
 } from "@workspace/api-client-react";
+import { apiFetch } from "@/lib/apiClient";
 
 export function useJobsList() {
   const queryKey = getListJobsQueryKey();
@@ -57,7 +58,7 @@ export function useStartExtraction() {
 export function useUpdateJobName(jobId: string) {
   const queryClient = useQueryClient();
   return async (name: string) => {
-    const res = await fetch(`/api/jobs/${jobId}`, {
+    const res = await apiFetch(`/api/jobs/${jobId}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ name }),

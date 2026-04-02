@@ -118,22 +118,28 @@ router.delete("/jobs", async (req, res) => {
           : isNull(jobsTable.organizationId))
       : undefined;
 
-    const files = await db
-      .select({ storedPath: jobFilesTable.storedPath })
-      .from(jobFilesTable)
-      .where(inArray(jobFilesTable.jobId, ids));
-
+    // Delete first — only rows the caller is authorized to touch are removed.
+    // The returned IDs are the authoritative list of what was actually deleted.
     const deleted = await db
       .delete(jobsTable)
       .where(and(inArray(jobsTable.id, ids), orgCondition))
       .returning({ id: jobsTable.id });
 
-    // Best-effort: clean up PDF files from disk
-    for (const f of files) {
-      try {
-        await fs.unlink(f.storedPath);
-      } catch {
-        // ignore if already gone
+    const deletedIds = deleted.map((r) => r.id);
+
+    // Only clean up files for jobs that were actually deleted (org-scoped).
+    if (deletedIds.length > 0) {
+      const files = await db
+        .select({ storedPath: jobFilesTable.storedPath })
+        .from(jobFilesTable)
+        .where(inArray(jobFilesTable.jobId, deletedIds));
+
+      for (const f of files) {
+        try {
+          await fs.unlink(f.storedPath);
+        } catch {
+          // ignore if already gone
+        }
       }
     }
 

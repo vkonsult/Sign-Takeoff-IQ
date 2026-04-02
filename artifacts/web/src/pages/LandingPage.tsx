@@ -1,7 +1,18 @@
-import { Link } from "wouter";
+import { Link, useLocation } from "wouter";
 import { Zap, FileSearch, BarChart3, Download } from "lucide-react";
+import { setGuestToken } from "@/lib/apiClient";
+
+const GUEST_TOKEN = import.meta.env.VITE_SUPER_ADMIN_GUEST_TOKEN as string | undefined;
 
 export default function LandingPage() {
+  const [, setLocation] = useLocation();
+
+  function handleGuestAccess() {
+    if (!GUEST_TOKEN) return;
+    setGuestToken(GUEST_TOKEN);
+    setLocation("/jobs");
+  }
+
   return (
     <div className="min-h-screen bg-background flex flex-col">
       {/* Header */}
@@ -20,6 +31,14 @@ export default function LandingPage() {
           </div>
         </div>
         <div className="flex items-center gap-3">
+          {GUEST_TOKEN && (
+            <button
+              onClick={handleGuestAccess}
+              className="px-4 py-2 text-sm font-medium text-muted-foreground hover:text-foreground transition-colors"
+            >
+              Continue as Guest
+            </button>
+          )}
           <Link
             href="/sign-in"
             className="px-4 py-2 text-sm font-medium text-muted-foreground hover:text-foreground transition-colors"
@@ -62,6 +81,14 @@ export default function LandingPage() {
           >
             Sign In
           </Link>
+          {GUEST_TOKEN && (
+            <button
+              onClick={handleGuestAccess}
+              className="px-6 py-3 rounded-lg border border-border text-muted-foreground font-display font-semibold uppercase tracking-wider text-sm hover:bg-secondary/50 transition-all"
+            >
+              Continue as Guest
+            </button>
+          )}
         </div>
       </main>
 

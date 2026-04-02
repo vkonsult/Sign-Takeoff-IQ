@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { AppShell } from "@/components/layout/Shell";
 import { useJobsList } from "@/hooks/use-takeoff";
+import { apiFetch } from "@/lib/apiClient";
 import { useQueryClient } from "@tanstack/react-query";
 import { getListJobsQueryKey } from "@workspace/api-client-react";
 import { format } from "date-fns";
@@ -61,7 +62,7 @@ export default function JobsList() {
     }
     setDeletingSingle(jobId);
     try {
-      const res = await fetch(`/api/jobs/${jobId}`, { method: "DELETE" });
+      const res = await apiFetch(`/api/jobs/${jobId}`, { method: "DELETE" });
       if (!res.ok) throw new Error("Delete failed");
       await queryClient.invalidateQueries({ queryKey: getListJobsQueryKey() });
       setSelected((prev) => { const n = new Set(prev); n.delete(jobId); return n; });
@@ -86,7 +87,7 @@ export default function JobsList() {
     }
     setBulkDeleting(true);
     try {
-      const res = await fetch("/api/jobs", {
+      const res = await apiFetch("/api/jobs", {
         method: "DELETE",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ jobIds: Array.from(selected) }),

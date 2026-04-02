@@ -116,13 +116,28 @@ export function requireAuth(req: Request, res: Response, next: NextFunction): vo
     });
 }
 
+const ROLE_RANK: Record<UserRole, number> = {
+  GUEST: 0,
+  SALES: 1,
+  ESTIMATOR: 1,
+  PROJECT_MANAGER: 1,
+  ADMIN: 2,
+  SUPER_ADMIN: 3,
+};
+
+function meetsRole(userRole: UserRole, required: UserRole): boolean {
+  return ROLE_RANK[userRole] >= ROLE_RANK[required];
+}
+
 export function requireRole(...roles: UserRole[]) {
   return (req: Request, res: Response, next: NextFunction): void => {
     if (!req.authUser) {
       res.status(401).json({ error: "Unauthorized" });
       return;
     }
-    if (!roles.includes(req.authUser.role)) {
+    const userRole = req.authUser.role;
+    const allowed = roles.some((r) => meetsRole(userRole, r));
+    if (!allowed) {
       res.status(403).json({ error: "Forbidden — insufficient role" });
       return;
     }
