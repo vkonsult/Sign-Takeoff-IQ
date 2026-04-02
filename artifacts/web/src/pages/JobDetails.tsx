@@ -19,6 +19,8 @@ import {
   Zap,
   MapPin,
   ChevronDown,
+  ChevronUp,
+  ChevronsUpDown,
   Layers,
   Stamp,
   ShieldCheck,
@@ -108,6 +110,17 @@ export default function JobDetails() {
   };
 
   const [showHidden, setShowHidden] = useState(false);
+  const [sortField, setSortField] = useState<string | null>(null);
+  const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
+
+  const handleSort = (field: string) => {
+    if (sortField === field) {
+      setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+    } else {
+      setSortField(field);
+      setSortDir("asc");
+    }
+  };
 
   const toggleHidden = async (signId: string, currentlyHidden: boolean) => {
     const next = !currentlyHidden;
@@ -214,6 +227,40 @@ export default function JobDetails() {
   // Paired image signs are excluded by the API (their data is in the paired text row).
   const extractedSigns = data.extractedSigns;
   const hiddenSigns = (data as typeof data & { hiddenSigns?: typeof data.extractedSigns }).hiddenSigns ?? [];
+
+  // Derive a source sort key matching the SourceBadge priority order
+  function sourceKey(s: typeof extractedSigns[number]): string {
+    const r = s as Record<string, unknown>;
+    if (r.manuallyAdded) return "0_manual";
+    if (r.extractionMethod === "text" && r.pairedSignId) return "1_both";
+    if (r.extractionMethod === "image" && !r.pairedSignId) return "2_visual";
+    return "3_text";
+  }
+
+  const sortedSigns = sortField
+    ? [...extractedSigns].sort((a, b) => {
+        let av: string | number = "";
+        let bv: string | number = "";
+        const ar = a as Record<string, unknown>;
+        const br = b as Record<string, unknown>;
+        switch (sortField) {
+          case "sheet":      av = (ar.sheetNumber as string) ?? ""; bv = (br.sheetNumber as string) ?? ""; break;
+          case "signType":   av = (ar.signType as string) ?? ""; bv = (br.signType as string) ?? ""; break;
+          case "quantity":   av = (ar.quantity as number) ?? 0;  bv = (br.quantity as number) ?? 0;  break;
+          case "location":   av = (ar.location as string) ?? ""; bv = (br.location as string) ?? ""; break;
+          case "dimensions": av = (ar.dimensions as string) ?? ""; bv = (br.dimensions as string) ?? ""; break;
+          case "mounting":   av = (ar.mountingType as string) ?? ""; bv = (br.mountingType as string) ?? ""; break;
+          case "finish":     av = (ar.finishColor as string) ?? ""; bv = (br.finishColor as string) ?? ""; break;
+          case "message":    av = (ar.messageContent as string) ?? ""; bv = (br.messageContent as string) ?? ""; break;
+          case "confidence": av = (ar.confidenceScore as number) ?? 0;  bv = (br.confidenceScore as number) ?? 0;  break;
+          case "source":     av = sourceKey(a); bv = sourceKey(b); break;
+        }
+        const cmp = typeof av === "number" && typeof bv === "number"
+          ? av - bv
+          : String(av).localeCompare(String(bv));
+        return sortDir === "asc" ? cmp : -cmp;
+      })
+    : extractedSigns;
   const isProcessing = job.status === "processing" || extractMutation.isPending;
   const isCompleted = job.status === "completed";
   const isPending = job.status === "pending";
@@ -412,22 +459,22 @@ export default function JobDetails() {
                   <table className="w-full text-left border-collapse border-spacing-0">
                     <thead>
                       <tr>
-                        <th className="data-header sticky left-0 z-20 shadow-[2px_0_5px_-2px_rgba(0,0,0,0.3)]">Sheet / ID</th>
-                        <th className="data-header">Sign Type</th>
-                        <th className="data-header w-16 text-center">Qty</th>
-                        <th className="data-header">Location</th>
-                        <th className="data-header">Dimensions</th>
-                        <th className="data-header">Mounting</th>
-                        <th className="data-header">Finish / Color</th>
-                        <th className="data-header">Message</th>
-                        <th className="data-header text-center">Confidence</th>
-                        <th className="data-header text-center">Source</th>
+                        <SortableHeader field="sheet"      label="Sheet / ID"    sortField={sortField} sortDir={sortDir} onSort={handleSort} className="sticky left-0 z-30 shadow-[2px_0_5px_-2px_rgba(0,0,0,0.3)]" />
+                        <SortableHeader field="signType"   label="Sign Type"     sortField={sortField} sortDir={sortDir} onSort={handleSort} />
+                        <SortableHeader field="quantity"   label="Qty"           sortField={sortField} sortDir={sortDir} onSort={handleSort} className="w-16 text-center" />
+                        <SortableHeader field="location"   label="Location"      sortField={sortField} sortDir={sortDir} onSort={handleSort} />
+                        <SortableHeader field="dimensions" label="Dimensions"    sortField={sortField} sortDir={sortDir} onSort={handleSort} />
+                        <SortableHeader field="mounting"   label="Mounting"      sortField={sortField} sortDir={sortDir} onSort={handleSort} />
+                        <SortableHeader field="finish"     label="Finish / Color" sortField={sortField} sortDir={sortDir} onSort={handleSort} />
+                        <SortableHeader field="message"    label="Message"       sortField={sortField} sortDir={sortDir} onSort={handleSort} />
+                        <SortableHeader field="confidence" label="Confidence"    sortField={sortField} sortDir={sortDir} onSort={handleSort} className="text-center" />
+                        <SortableHeader field="source"     label="Source"        sortField={sortField} sortDir={sortDir} onSort={handleSort} className="text-center" />
                         <th className="data-header text-center">Status</th>
                         <th className="data-header text-center w-24">Actions</th>
                       </tr>
                     </thead>
                     <tbody className="bg-background">
-                      {extractedSigns.map((sign, idx) => (
+                      {sortedSigns.map((sign, idx) => (
                         <tr 
                           key={sign.id} 
                           className={`
@@ -616,6 +663,37 @@ export default function JobDetails() {
         />
       )}
     </AppShell>
+  );
+}
+
+function SortableHeader({
+  field, label, sortField, sortDir, onSort, className,
+}: {
+  field: string;
+  label: string;
+  sortField: string | null;
+  sortDir: "asc" | "desc";
+  onSort: (field: string) => void;
+  className?: string;
+}) {
+  const active = sortField === field;
+  return (
+    <th
+      className={`data-header cursor-pointer select-none group hover:text-foreground ${className ?? ""}`}
+      onClick={() => onSort(field)}
+    >
+      <div className="flex items-center gap-1">
+        <span>{label}</span>
+        <span className={`flex-shrink-0 ${active ? "text-primary" : "text-muted-foreground/25 group-hover:text-muted-foreground/50"}`}>
+          {active
+            ? sortDir === "asc"
+              ? <ChevronUp className="w-3 h-3" />
+              : <ChevronDown className="w-3 h-3" />
+            : <ChevronsUpDown className="w-3 h-3" />
+          }
+        </span>
+      </div>
+    </th>
   );
 }
 
