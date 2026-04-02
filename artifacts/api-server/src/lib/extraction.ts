@@ -1184,7 +1184,7 @@ async function callGeminiMultimodal(
 
 const IMAGE_EXTRACTION_PROMPT = `You are an expert sign contractor performing a visual sign takeoff from architectural plan documents.
 
-You are viewing the actual PDF pages as images. Your task is to identify ALL sign-related elements visible in these documents by looking at the visual content — callout bubbles, leader lines, room tag balloons, ADA symbols, sign schedule tables, sign type legends, and any text labeling sign locations.
+You are viewing the actual PDF pages as images. Your task is to identify ALL sign-related elements visible in these documents by looking at the visual content — callout bubbles, leader lines, room tag balloons, ADA symbols, sign schedule tables, and any text labeling actual sign locations on the floor plan.
 
 For each unique sign or sign entry you can visually identify, extract these fields. Use null if not visible:
 
