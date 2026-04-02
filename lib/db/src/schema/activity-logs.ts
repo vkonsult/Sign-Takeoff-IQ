@@ -1,4 +1,4 @@
-import { pgTable, uuid, text, timestamp, pgEnum } from "drizzle-orm/pg-core";
+import { pgTable, uuid, text, timestamp, pgEnum, index } from "drizzle-orm/pg-core";
 import { organizationsTable } from "./organizations";
 import { jobsTable } from "./jobs";
 
@@ -20,7 +20,11 @@ export const activityLogsTable = pgTable("activity_logs", {
   jobName: text("job_name"),
   eventType: activityEventTypeEnum("event_type").notNull(),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-});
+}, (t) => [
+  index("activity_logs_job_id_created_at_idx").on(t.jobId, t.createdAt),
+  index("activity_logs_org_id_created_at_idx").on(t.organizationId, t.createdAt),
+  index("activity_logs_user_id_created_at_idx").on(t.userId, t.createdAt),
+]);
 
 export type ActivityLog = typeof activityLogsTable.$inferSelect;
 export type ActivityEventType = typeof activityEventTypeEnum.enumValues[number];
