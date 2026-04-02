@@ -1,5 +1,5 @@
 import { Router, type IRouter, type Request, type Response } from "express";
-import { eq, desc, inArray, and, or, ne, isNotNull, not, SQL } from "drizzle-orm";
+import { eq, desc, inArray, and, or, ne, isNull, isNotNull, not, SQL } from "drizzle-orm";
 import { db } from "@workspace/db";
 import {
   jobsTable,
@@ -118,12 +118,15 @@ router.delete("/jobs", async (req, res) => {
 
   const ids = jobIds as string[];
 
+  const user = req.authUser;
+  if (user && !user.isSuperAdmin && !user.organizationId) {
+    res.status(403).json({ error: "No organization context" });
+    return;
+  }
+
   try {
-    const user = req.authUser;
     const orgCondition = user && !user.isSuperAdmin
-      ? (user.organizationId
-          ? eq(jobsTable.organizationId, user.organizationId)
-          : isNull(jobsTable.organizationId))
+      ? eq(jobsTable.organizationId, user.organizationId)
       : undefined;
 
     // Delete first — only rows the caller is authorized to touch are removed.

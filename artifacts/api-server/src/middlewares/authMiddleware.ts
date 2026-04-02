@@ -177,3 +177,12 @@ export function requireRole(...roles: UserRole[]) {
     next();
   };
 }
+
+export function getUserRole(req: Request): { role: UserRole; organizationId: string | null; isSuperAdmin: boolean } | null {
+  if (!req.authUser) return null;
+  return {
+    role: req.authUser.role,
+    organizationId: req.authUser.organizationId,
+    isSuperAdmin: req.authUser.isSuperAdmin,
+  };
+}
