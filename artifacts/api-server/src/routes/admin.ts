@@ -32,8 +32,10 @@ const uploadLogo = multer({
   limits: { fileSize: 5 * 1024 * 1024 }, // 5 MB
   fileFilter: (_req, file, cb) => {
     // SVG excluded — it may embed scripts (XSS risk when served publicly)
-    const allowed = ["image/png", "image/jpeg", "image/webp", "image/gif"];
-    if (allowed.includes(file.mimetype)) {
+    const allowedMimes = ["image/png", "image/jpeg", "image/webp", "image/gif"];
+    const allowedExts = [".png", ".jpg", ".jpeg", ".webp", ".gif"];
+    const ext = path.extname(file.originalname).toLowerCase();
+    if (allowedMimes.includes(file.mimetype) && allowedExts.includes(ext)) {
       cb(null, true);
     } else {
       cb(new Error("Only PNG, JPEG, WebP, or GIF images are allowed for logos"));
