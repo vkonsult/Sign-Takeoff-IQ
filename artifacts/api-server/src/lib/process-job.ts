@@ -182,6 +182,7 @@ export async function processJob(jobId: string): Promise<void> {
           pageNumber: row.page_number,
           confidenceScore: row.confidence_score,
           reviewFlag: row.review_flag,
+          extractionMethod: "text",
           rawJson: row as unknown as Record<string, unknown>,
         });
       }

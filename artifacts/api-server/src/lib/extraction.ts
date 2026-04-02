@@ -18,6 +18,8 @@ export interface ExtractedSignRow {
   message_content: string | null;
   notes: string | null;
   page_number: number | null;
+  x_pos?: number | null;
+  y_pos?: number | null;
   confidence_score: number;
   review_flag: boolean;
 }
@@ -1004,11 +1006,13 @@ function parseGeminiResponse(raw: string, source: string): ExtractedSignRow[] {
 
 // ─── GEMINI CALL WITH RETRY ───────────────────────────────────────────────────
 
+type GeminiPart = { text: string } | { inlineData: { mimeType: string; data: string } };
+
 export interface GeminiAI {
   models: {
     generateContent: (opts: {
       model: string;
-      contents: { role: string; parts: { text: string }[] }[];
+      contents: { role: string; parts: GeminiPart[] }[];
       config?: {
         maxOutputTokens?: number;
         temperature?: number;
@@ -1049,6 +1053,7 @@ async function callGemini(
           thinkingConfig: { thinkingBudget: 0 },
         },
       });
+
       const text = response.text ?? "";
       const inputTokens = response.usageMetadata?.promptTokenCount ?? 0;
       const outputTokens = response.usageMetadata?.candidatesTokenCount ?? 0;
@@ -1074,6 +1079,240 @@ async function callGemini(
   }
 
   throw new Error(`Gemini call exhausted all retries for: ${label}`);
+}
+
+// ─── MULTIMODAL GEMINI CALL (IMAGE / PDF) ─────────────────────────────────────
+
+async function callGeminiMultimodal(
+  prompt: string,
+  pdfBase64: string,
+  ai: GeminiAI,
+  label: string
+): Promise<GeminiCallResult> {
+  const MAX_RETRIES = 4;
+
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      const response = await ai.models.generateContent({
+        model: "gemini-2.5-flash",
+        contents: [
+          {
+            role: "user",
+            parts: [
+              { inlineData: { mimeType: "application/pdf", data: pdfBase64 } },
+              { text: prompt },
+            ],
+          },
+        ],
+        config: {
+          maxOutputTokens: 65536,
+          temperature: 0.1,
+          thinkingConfig: { thinkingBudget: 0 },
+        },
+      });
+
+      const text = response.text ?? "";
+      const inputTokens = response.usageMetadata?.promptTokenCount ?? 0;
+      const outputTokens = response.usageMetadata?.candidatesTokenCount ?? 0;
+      logger.info({ label, responseLength: text.length, inputTokens, outputTokens }, "Gemini multimodal call complete");
+      return { text, inputTokens, outputTokens };
+    } catch (err: unknown) {
+      const isRateLimit =
+        err instanceof Error &&
+        (err.message.includes("RATELIMIT_EXCEEDED") ||
+          err.message.includes("429") ||
+          (err as { status?: number }).status === 429);
+
+      if (isRateLimit && attempt < MAX_RETRIES) {
+        const delayMs = Math.min(60000, 8000 * Math.pow(2, attempt));
+        logger.warn({ attempt, delayMs, label }, "Gemini rate limit (multimodal) — retrying after delay");
+        await new Promise((r) => setTimeout(r, delayMs));
+        continue;
+      }
+
+      logger.error({ err, label }, "Gemini multimodal call failed");
+      throw err;
+    }
+  }
+
+  throw new Error(`Gemini multimodal call exhausted all retries for: ${label}`);
+}
+
+// ─── IMAGE EXTRACTION PROMPT ──────────────────────────────────────────────────
+
+const IMAGE_EXTRACTION_PROMPT = `You are an expert sign contractor performing a visual sign takeoff from architectural plan documents.
+
+You are viewing the actual PDF pages as images. Your task is to identify ALL sign-related elements visible in these documents by looking at the visual content — callout bubbles, leader lines, room tag balloons, ADA symbols, sign schedule tables, sign type legends, and any text labeling sign locations.
+
+For each unique sign or sign entry you can visually identify, extract these fields. Use null if not visible:
+
+- sheet_number: The plan sheet number from the title block or page header (e.g. "A-101", "S-1")
+- detail_reference: Any callout number or reference bubble visible (e.g. "1", "A", "SN-01")
+- sign_type: The type of sign (e.g. "Room ID", "Exit", "ADA Restroom", "Wayfinding", "Building ID", "Fire Extinguisher")
+- sign_identifier: The sign code or label that uniquely identifies it (e.g. "S-01", "EX-1", "TYPE A")
+- quantity: Number of signs of this type visible (integer). Default to 1.
+- location: Where the sign is located — use the visible room label, space name, or positional description (e.g. "Room 101", "Main Lobby", "North Stairwell Level 2")
+- dimensions: Physical dimensions if shown in the legend or schedule (e.g. '6" x 8"', '24" x 36"')
+- mounting_type: Mounting method if visible or implied (e.g. "Wall Mounted", "Post Mounted")
+- finish_color: Finish or color if visible in the legend
+- illumination: Lighting type if specified
+- materials: Materials if specified
+- message_content: The text content of the sign if visible (e.g. "EXIT", "RESTROOMS", "ELECTRICAL ROOM")
+- notes: Any special notes visible in callouts or legends
+- page_number: The page number (1-indexed) where you see this sign. The PDF is provided in page order.
+- x_position: Normalized horizontal position (0.0 = left edge, 1.0 = right edge) of where this sign callout appears on its page. Estimate visually.
+- y_position: Normalized vertical position (0.0 = top edge, 1.0 = bottom edge) of where this sign callout appears on its page. Estimate visually.
+- confidence_score: 0.9 = clearly visible callout; 0.7 = visible but partially obscured; 0.5 = inferred from context
+- review_flag: true if confidence_score < 0.7
+
+IMPORTANT RULES:
+- Focus on what you can SEE in the document, not what you infer from code requirements
+- Include every visible sign callout, symbol, and schedule row
+- Do NOT fabricate signs — only report what is visible
+- Return ONLY a valid JSON array. No markdown, no code blocks, no explanation.
+- Each entry must include x_position and y_position as numbers between 0 and 1.
+- If no signs are visible in the document, return an empty array: []
+
+IMPORTANT: Return ONLY the JSON array. No markdown fences, no explanation.`;
+
+const ImageSignRowSchema = z.object({
+  sheet_number: z.string().nullable().optional().default(null),
+  detail_reference: z.string().nullable().optional().default(null),
+  sign_type: z.string().nullable().optional().default(null),
+  sign_identifier: z.string().nullable().optional().default(null),
+  quantity: z
+    .union([z.number().int().positive(), z.null()])
+    .optional()
+    .default(null)
+    .transform((v) => (v !== null && v !== undefined ? Math.max(1, Math.round(v)) : null)),
+  location: z.string().nullable().optional().default(null),
+  dimensions: z.string().nullable().optional().default(null),
+  mounting_type: z.string().nullable().optional().default(null),
+  finish_color: z.string().nullable().optional().default(null),
+  illumination: z.string().nullable().optional().default(null),
+  materials: z.string().nullable().optional().default(null),
+  message_content: z.string().nullable().optional().default(null),
+  notes: z.string().nullable().optional().default(null),
+  page_number: z
+    .union([z.number(), z.string().transform((s) => { const n = parseInt(s, 10); return isNaN(n) ? null : n; }), z.null()])
+    .optional()
+    .default(null)
+    .transform((v) => (v !== null && v !== undefined && typeof v === "number" ? Math.round(v) : (v as number | null))),
+  x_position: z.number().min(0).max(1).nullable().optional().default(null),
+  y_position: z.number().min(0).max(1).nullable().optional().default(null),
+  confidence_score: z.number().min(0).max(1).optional(),
+  review_flag: z.boolean().optional(),
+});
+
+const ImageResponseSchema = z.array(ImageSignRowSchema);
+
+function parseImageExtractionResponse(raw: string, source: string): ExtractedSignRow[] {
+  let text = raw.trim();
+  if (text.startsWith("```")) {
+    text = text.replace(/^```[a-z]*\n?/i, "").replace(/\n?```[\s\S]*$/, "").trim();
+  }
+
+  const arrayStart = text.indexOf("[");
+  const arrayEnd = text.lastIndexOf("]");
+
+  if (arrayStart === -1) {
+    logger.info({ source, responsePreview: text.slice(0, 200) }, "Image extraction: no JSON array returned");
+    return [];
+  }
+
+  let parsed: unknown = null;
+  if (arrayEnd !== -1 && arrayEnd > arrayStart) {
+    try {
+      parsed = JSON.parse(text.slice(arrayStart, arrayEnd + 1));
+    } catch {
+      parsed = repairTruncatedJson(text);
+    }
+  }
+
+  if (parsed === null) {
+    parsed = repairTruncatedJson(text);
+  }
+
+  if (parsed === null) {
+    logger.warn({ source }, "Image extraction: JSON parse failed");
+    return [];
+  }
+
+  const result = ImageResponseSchema.safeParse(parsed);
+  if (!result.success) {
+    logger.warn({ issues: result.error.issues, source }, "Image extraction response schema validation failed");
+    return [];
+  }
+
+  return result.data.map((item) => {
+    const score =
+      item.confidence_score !== undefined
+        ? Math.min(1, Math.max(0, item.confidence_score))
+        : computeConfidence(item as unknown as Record<string, unknown>);
+
+    return {
+      sheet_number: item.sheet_number ?? null,
+      detail_reference: item.detail_reference ?? null,
+      sign_type: item.sign_type ?? null,
+      sign_identifier: item.sign_identifier ?? null,
+      quantity: item.quantity ?? null,
+      location: item.location ?? null,
+      dimensions: item.dimensions ?? null,
+      mounting_type: item.mounting_type ?? null,
+      finish_color: item.finish_color ?? null,
+      illumination: item.illumination ?? null,
+      materials: item.materials ?? null,
+      message_content: item.message_content ?? null,
+      notes: item.notes ?? null,
+      page_number: item.page_number ?? null,
+      x_pos: item.x_position ?? null,
+      y_pos: item.y_position ?? null,
+      confidence_score: score,
+      review_flag: item.review_flag ?? computeReviewFlag(item as unknown as Record<string, unknown>, score),
+    };
+  });
+}
+
+// Max PDF size for inline base64 upload (20 MB)
+const MAX_INLINE_PDF_BYTES = 20 * 1024 * 1024;
+
+export async function extractSignsFromPdfImage(
+  filePath: string,
+  ai: GeminiAI
+): Promise<{ rows: ExtractedSignRow[]; inputTokens: number; outputTokens: number }> {
+  let fileBuffer: Buffer;
+  try {
+    fileBuffer = await fs.readFile(filePath);
+  } catch (err) {
+    logger.error({ err, filePath }, "Image extraction: could not read PDF file");
+    return { rows: [], inputTokens: 0, outputTokens: 0 };
+  }
+
+  if (fileBuffer.length > MAX_INLINE_PDF_BYTES) {
+    logger.warn({ filePath, sizeBytes: fileBuffer.length }, "Image extraction: PDF too large for inline upload (>20 MB) — skipping");
+    return { rows: [], inputTokens: 0, outputTokens: 0 };
+  }
+
+  const pdfBase64 = fileBuffer.toString("base64");
+  const label = `image-extraction-${filePath.split("/").pop()}`;
+
+  logger.info({ filePath: filePath.split("/").pop(), sizeBytes: fileBuffer.length }, "Starting image-based extraction");
+
+  try {
+    const { text, inputTokens, outputTokens } = await callGeminiMultimodal(
+      IMAGE_EXTRACTION_PROMPT,
+      pdfBase64,
+      ai,
+      label
+    );
+
+    const rows = parseImageExtractionResponse(text, label);
+    logger.info({ rows: rows.length, inputTokens, outputTokens }, "Image extraction complete");
+    return { rows, inputTokens, outputTokens };
+  } catch (err) {
+    logger.error({ err, filePath }, "Image extraction call failed");
+    return { rows: [], inputTokens: 0, outputTokens: 0 };
+  }
 }
 
 // ─── PROJECT INFO EXTRACTION ──────────────────────────────────────────────────

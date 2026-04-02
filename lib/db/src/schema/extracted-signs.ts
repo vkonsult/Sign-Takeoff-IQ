@@ -33,6 +33,7 @@ export const extractedSignsTable = pgTable("extracted_signs", {
   pageNumber: integer("page_number"),
   xPos: real("x_pos"),
   yPos: real("y_pos"),
+  extractionMethod: text("extraction_method").default("text"),
   manuallyAdded: boolean("manually_added").notNull().default(false),
   userVerified: boolean("user_verified").notNull().default(false),
   confidenceScore: real("confidence_score").notNull().default(0),

@@ -1,5 +1,5 @@
 import { Router, type IRouter } from "express";
-import { eq, desc, inArray } from "drizzle-orm";
+import { eq, desc, inArray, and } from "drizzle-orm";
 import { db } from "@workspace/db";
 import {
   jobsTable,
@@ -9,6 +9,8 @@ import {
 import { buildExcelExport } from "../lib/export";
 import { getJobExportPath } from "../lib/storage";
 import { processJob } from "../lib/process-job";
+import { extractSignsFromPdfImage } from "../lib/extraction";
+import { ai } from "@workspace/integrations-gemini-ai";
 import fs from "fs/promises";
 import fsSync from "fs";
 import { z } from "zod/v4";
@@ -235,6 +237,204 @@ router.post("/jobs/:jobId/process", async (req, res) => {
       .set({ status: "failed", error: String(err), updatedAt: new Date() })
       .where(eq(jobsTable.id, jobId)).catch(() => {});
     res.status(500).json({ error: "Job processing failed", details: String(err) });
+  }
+});
+
+// ── Compare: image vs text extraction ─────────────────────────────────────────
+router.post("/jobs/:jobId/compare", async (req, res) => {
+  const { jobId } = req.params;
+  if (!jobId) {
+    res.status(400).json({ error: "Job ID required" });
+    return;
+  }
+
+  try {
+    const [job] = await db.select().from(jobsTable).where(eq(jobsTable.id, jobId));
+    if (!job) {
+      res.status(404).json({ error: "Job not found" });
+      return;
+    }
+
+    if (job.status !== "completed") {
+      res.status(422).json({ error: "Job must be completed before running comparison" });
+      return;
+    }
+
+    const files = await db.select().from(jobFilesTable).where(eq(jobFilesTable.jobId, jobId));
+    if (files.length === 0) {
+      res.status(404).json({ error: "No files found for this job" });
+      return;
+    }
+
+    // Delete previous image-extraction results for this job (re-run semantics)
+    const { count: deletedCount } = await db
+      .delete(extractedSignsTable)
+      .where(
+        and(
+          eq(extractedSignsTable.jobId, jobId),
+          eq(extractedSignsTable.extractionMethod, "image")
+        )
+      )
+      .returning()
+      .then((rows) => ({ count: rows.length }));
+
+    req.log.info({ jobId, deletedCount }, "Cleared previous image-extraction results");
+
+    // Run image extraction for each file
+    let totalImageInputTokens = 0;
+    let totalImageOutputTokens = 0;
+    const imageRows: typeof extractedSignsTable.$inferInsert[] = [];
+
+    for (const file of files) {
+      try {
+        const { rows, inputTokens, outputTokens } = await extractSignsFromPdfImage(
+          file.storedPath,
+          ai
+        );
+
+        totalImageInputTokens += inputTokens;
+        totalImageOutputTokens += outputTokens;
+
+        for (const row of rows) {
+          imageRows.push({
+            jobId,
+            jobFileId: file.id,
+            sheetNumber: row.sheet_number,
+            detailReference: row.detail_reference,
+            signType: row.sign_type,
+            signIdentifier: row.sign_identifier,
+            quantity: row.quantity,
+            location: row.location,
+            dimensions: row.dimensions,
+            mountingType: row.mounting_type,
+            finishColor: row.finish_color,
+            illumination: row.illumination,
+            materials: row.materials,
+            messageContent: row.message_content,
+            notes: row.notes,
+            pageNumber: row.page_number,
+            xPos: row.x_pos ?? null,
+            yPos: row.y_pos ?? null,
+            confidenceScore: row.confidence_score,
+            reviewFlag: row.review_flag,
+            extractionMethod: "image",
+          });
+        }
+      } catch (err) {
+        req.log.error({ err, fileId: file.id }, "Image extraction failed for file");
+      }
+    }
+
+    if (imageRows.length > 0) {
+      await db.insert(extractedSignsTable).values(imageRows);
+    }
+
+    // Save image token counts to job
+    await db
+      .update(jobsTable)
+      .set({ imageInputTokens: totalImageInputTokens, imageOutputTokens: totalImageOutputTokens, updatedAt: new Date() })
+      .where(eq(jobsTable.id, jobId));
+
+    // ── Matching pass ─────────────────────────────────────────────────────────
+    // For each image sign, look for a text sign with overlapping location or sign_type.
+    // Matching criteria: case-insensitive substring overlap on (sign_type or location).
+
+    function normalize(s: string | null): string {
+      return (s ?? "").toLowerCase().replace(/[^a-z0-9 ]/g, "").trim();
+    }
+
+    function hasOverlap(a: string | null, b: string | null): boolean {
+      const na = normalize(a);
+      const nb = normalize(b);
+      if (!na || !nb) return false;
+      const wordsA = na.split(/\s+/).filter((w) => w.length > 3);
+      const wordsB = new Set(nb.split(/\s+/).filter((w) => w.length > 3));
+      return wordsA.some((w) => wordsB.has(w));
+    }
+
+    // Re-fetch after insert so we have real DB rows with IDs
+    const allSignsAfter = await db
+      .select()
+      .from(extractedSignsTable)
+      .where(eq(extractedSignsTable.jobId, jobId));
+
+    const textSignsAfter = allSignsAfter.filter(
+      (s) => !s.manuallyAdded && !s.userVerified && (s.extractionMethod === "text" || s.extractionMethod === null)
+    );
+    const imageSignsAfter = allSignsAfter.filter((s) => s.extractionMethod === "image");
+
+    // Build match sets
+    const matchedTextIds = new Set<string>();
+    const matchedImageIds = new Set<string>();
+
+    for (const imgSign of imageSignsAfter) {
+      for (const txtSign of textSignsAfter) {
+        if (matchedTextIds.has(txtSign.id)) continue;
+        const typeMatch = hasOverlap(imgSign.signType, txtSign.signType);
+        const locMatch = hasOverlap(imgSign.location, txtSign.location);
+        if (typeMatch || locMatch) {
+          matchedTextIds.add(txtSign.id);
+          matchedImageIds.add(imgSign.id);
+          break;
+        }
+      }
+    }
+
+    // Boost confidence for matched text signs
+    for (const txtSignId of matchedTextIds) {
+      const txtSign = textSignsAfter.find((s) => s.id === txtSignId)!;
+      const boostedScore = Math.min(1.0, (txtSign.confidenceScore ?? 0) + 0.15);
+      await db
+        .update(extractedSignsTable)
+        .set({ confidenceScore: boostedScore, reviewFlag: boostedScore >= 0.6 ? false : true })
+        .where(eq(extractedSignsTable.id, txtSignId));
+    }
+
+    // Build response buckets
+    const textOnly = textSignsAfter
+      .filter((s) => !matchedTextIds.has(s.id))
+      .map((s) => ({ ...s }));
+
+    const both = textSignsAfter
+      .filter((s) => matchedTextIds.has(s.id))
+      .map((s) => ({ ...s, confidenceScore: Math.min(1.0, (s.confidenceScore ?? 0) + 0.15) }));
+
+    const imageOnly = imageSignsAfter
+      .filter((s) => !matchedImageIds.has(s.id))
+      .map((s) => ({ ...s }));
+
+    // Gemini 2.5 Flash pricing
+    const INPUT_RATE = 0.15;
+    const OUTPUT_RATE = 0.60;
+    const imageCost =
+      ((totalImageInputTokens * INPUT_RATE) + (totalImageOutputTokens * OUTPUT_RATE)) / 1_000_000;
+
+    req.log.info(
+      {
+        jobId,
+        imageSignsFound: imageRows.length,
+        textSignsTotal: textSignsAfter.length,
+        matched: matchedTextIds.size,
+        textOnly: textOnly.length,
+        imageOnly: imageOnly.length,
+        totalImageInputTokens,
+        totalImageOutputTokens,
+      },
+      "Comparison complete"
+    );
+
+    res.json({
+      success: true,
+      textOnly,
+      both,
+      imageOnly,
+      imageInputTokens: totalImageInputTokens,
+      imageOutputTokens: totalImageOutputTokens,
+      imageCost,
+    });
+  } catch (err) {
+    req.log.error({ err, jobId }, "Comparison failed");
+    res.status(500).json({ error: "Comparison failed", details: String(err) });
   }
 });
 
