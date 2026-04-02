@@ -3,6 +3,7 @@ import { getAuth } from "@clerk/express";
 import { db, organizationMembershipsTable } from "@workspace/db";
 import { eq, and } from "drizzle-orm";
 import { logger } from "../lib/logger";
+import { getDefaultOrgId } from "../lib/seed";
 import crypto from "crypto";
 
 const SUPER_ADMIN_GUEST_TOKEN = process.env.SUPER_ADMIN_GUEST_TOKEN ?? "";
@@ -107,13 +108,25 @@ export function requireAuth(req: Request, res: Response, next: NextFunction): vo
   const bearerToken = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : null;
 
   if (bearerToken && isValidGuestToken(bearerToken)) {
-    req.authUser = {
-      userId: "guest-super-admin",
-      role: "SUPER_ADMIN",
-      organizationId: null,
-      isSuperAdmin: true,
-    };
-    next();
+    getDefaultOrgId()
+      .then((defaultOrgId) => {
+        req.authUser = {
+          userId: "guest-super-admin",
+          role: "SUPER_ADMIN",
+          organizationId: defaultOrgId,
+          isSuperAdmin: true,
+        };
+        next();
+      })
+      .catch(() => {
+        req.authUser = {
+          userId: "guest-super-admin",
+          role: "SUPER_ADMIN",
+          organizationId: null,
+          isSuperAdmin: true,
+        };
+        next();
+      });
     return;
   }
 
