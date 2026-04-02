@@ -5,6 +5,7 @@ import jobsRouter from "./jobs";
 import knowledgeRouter from "./knowledge";
 import trainingRouter from "./training";
 import adminRouter from "./admin";
+import activityRouter from "./activity";
 import { requireAuth } from "../middlewares/authMiddleware";
 import { LOGOS_DIR } from "../lib/storage";
 
@@ -21,5 +22,6 @@ router.use(jobsRouter);
 router.use(knowledgeRouter);
 router.use(trainingRouter);
 router.use(adminRouter);
+router.use(activityRouter);
 
 export default router;

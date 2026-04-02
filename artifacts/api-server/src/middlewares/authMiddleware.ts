@@ -33,6 +33,8 @@ export interface AuthUser {
   role: UserRole;
   organizationId: string | null;
   isSuperAdmin: boolean;
+  userName: string;
+  userInitials: string;
 }
 
 declare global {
@@ -44,11 +46,17 @@ declare global {
   }
 }
 
+function deriveInitials(fullName: string): string {
+  const parts = fullName.trim().split(/\s+/);
+  if (parts.length >= 2) return ((parts[0]![0] ?? "") + (parts[parts.length - 1]![0] ?? "")).toUpperCase();
+  return (fullName.slice(0, 2) || "??").toUpperCase();
+}
+
 async function resolveMembership(
   clerkUserId: string,
   jwtOrgId: string | null,
   jwtRole: UserRole,
-): Promise<{ role: UserRole; organizationId: string | null }> {
+): Promise<{ role: UserRole; organizationId: string | null; userName: string; userInitials: string }> {
   if (jwtOrgId) {
     const [membership] = await db
       .select()
@@ -62,12 +70,15 @@ async function resolveMembership(
       .limit(1);
 
     if (membership) {
+      const userName = membership.fullName ?? membership.email ?? "Unknown";
       return {
         role: membership.role as UserRole,
         organizationId: membership.organizationId,
+        userName,
+        userInitials: deriveInitials(userName),
       };
     }
-    return { role: jwtRole, organizationId: jwtOrgId };
+    return { role: jwtRole, organizationId: jwtOrgId, userName: "Unknown", userInitials: "??" };
   }
 
   const [membership] = await db
@@ -77,13 +88,16 @@ async function resolveMembership(
     .limit(1);
 
   if (membership) {
+    const userName = membership.fullName ?? membership.email ?? "Unknown";
     return {
       role: membership.role as UserRole,
       organizationId: membership.organizationId,
+      userName,
+      userInitials: deriveInitials(userName),
     };
   }
 
-  return { role: jwtRole, organizationId: null };
+  return { role: jwtRole, organizationId: null, userName: "Unknown", userInitials: "??" };
 }
 
 function extractFromJwt(req: Request): { role: UserRole; orgId: string | null } {
@@ -115,6 +129,8 @@ export function requireAuth(req: Request, res: Response, next: NextFunction): vo
           role: "SUPER_ADMIN",
           organizationId: defaultOrgId,
           isSuperAdmin: true,
+          userName: "Super Admin",
+          userInitials: "SA",
         };
         next();
       })
@@ -124,6 +140,8 @@ export function requireAuth(req: Request, res: Response, next: NextFunction): vo
           role: "SUPER_ADMIN",
           organizationId: null,
           isSuperAdmin: true,
+          userName: "Super Admin",
+          userInitials: "SA",
         };
         next();
       });
@@ -141,12 +159,14 @@ export function requireAuth(req: Request, res: Response, next: NextFunction): vo
   const { role: jwtRole, orgId: jwtOrgId } = extractFromJwt(req);
 
   resolveMembership(userId, jwtOrgId, jwtRole)
-    .then(({ role, organizationId }) => {
+    .then(({ role, organizationId, userName, userInitials }) => {
       req.authUser = {
         userId,
         role,
         organizationId,
         isSuperAdmin: role === "SUPER_ADMIN",
+        userName,
+        userInitials,
       };
       next();
     })
@@ -157,6 +177,8 @@ export function requireAuth(req: Request, res: Response, next: NextFunction): vo
         role: jwtRole,
         organizationId: jwtOrgId,
         isSuperAdmin: jwtRole === "SUPER_ADMIN",
+        userName: "Unknown",
+        userInitials: "??",
       };
       next();
     });

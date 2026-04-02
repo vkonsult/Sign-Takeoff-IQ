@@ -1,5 +1,5 @@
 import { Router, type IRouter, type Request, type Response } from "express";
-import { eq, desc, inArray, and, or, ne, isNull, isNotNull, not, SQL } from "drizzle-orm";
+import { eq, desc, inArray, and, or, ne, isNull, isNotNull, not, SQL, sql, getTableColumns } from "drizzle-orm";
 import { db } from "@workspace/db";
 import {
   jobsTable,
@@ -15,6 +15,7 @@ import fs from "fs/promises";
 import fsSync from "fs";
 import { z } from "zod/v4";
 import { requireRole } from "../middlewares/authMiddleware";
+import { recordActivity } from "../lib/record-activity";
 
 const router: IRouter = Router();
 
@@ -53,7 +54,13 @@ router.get("/jobs", async (req, res) => {
       return;
     }
     const jobs = await db
-      .select()
+      .select({
+        ...getTableColumns(jobsTable),
+        lastActivityAt: sql<string | null>`(SELECT created_at FROM activity_logs WHERE job_id = ${jobsTable.id} ORDER BY created_at DESC LIMIT 1)`.as("last_activity_at"),
+        lastActivityUser: sql<string | null>`(SELECT user_name FROM activity_logs WHERE job_id = ${jobsTable.id} ORDER BY created_at DESC LIMIT 1)`.as("last_activity_user"),
+        lastActivityInitials: sql<string | null>`(SELECT user_initials FROM activity_logs WHERE job_id = ${jobsTable.id} ORDER BY created_at DESC LIMIT 1)`.as("last_activity_initials"),
+        lastActivityType: sql<string | null>`(SELECT event_type FROM activity_logs WHERE job_id = ${jobsTable.id} ORDER BY created_at DESC LIMIT 1)`.as("last_activity_type"),
+      })
       .from(jobsTable)
       .where(filter)
       .orderBy(desc(jobsTable.createdAt));
@@ -232,6 +239,8 @@ router.get("/jobs/:jobId", async (req, res) => {
     const combinedOutputTokens = (job.outputTokens ?? 0) + (job.imageOutputTokens ?? 0);
     const combinedCost = combinedInputTokens * COST_INPUT + combinedOutputTokens * COST_OUTPUT;
 
+    recordActivity(req, "job_opened", jobId);
+
     res.json({
       job,
       files: files.map((f) => ({
@@ -251,8 +260,6 @@ router.get("/jobs/:jobId", async (req, res) => {
         outputTokens: combinedOutputTokens,
         totalCost: combinedCost,
       },
-      // All signs that have x/y coordinates (includes image-pass signs);
-      // used by floor-plan marker overlays and "Export Marked PDF".
       markerSigns,
     });
   } catch (err) {
@@ -322,6 +329,8 @@ router.post("/jobs/:jobId/process", async (req, res) => {
 
     const [updated] = await db.select().from(jobsTable).where(eq(jobsTable.id, jobId));
     const extractedCount = (await db.select().from(extractedSignsTable).where(eq(extractedSignsTable.jobId, jobId))).length;
+    recordActivity(req, "scan_run", jobId);
+
     res.json({
       success: true,
       status: updated?.status,
@@ -850,6 +859,8 @@ router.patch("/extracted-signs/:signId", async (req, res) => {
       .where(eq(extractedSignsTable.id, signId))
       .returning();
 
+    recordActivity(req, "sign_updated", existing.jobId);
+
     res.json({ sign: updated });
     req.log.info({ signId, userVerified: hasContentEdit }, "Sign updated");
   } catch (err) {
@@ -902,6 +913,7 @@ router.get("/jobs/:jobId/export", async (req, res) => {
     const fileBuffer = await fs.readFile(exportPath);
     res.send(fileBuffer);
 
+    recordActivity(req, "xlsx_exported", jobId);
     req.log.info({ jobId, signCount: signs.length, fileName }, "Export served");
   } catch (err) {
     req.log.error({ err, jobId }, "Export failed");

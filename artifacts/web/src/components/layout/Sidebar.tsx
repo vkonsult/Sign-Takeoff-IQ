@@ -5,6 +5,7 @@ import {
   FolderOpen,
   AlertCircle,
   BookOpen,
+  Clock,
   ChevronLeft,
   ChevronRight,
   LogOut,
@@ -34,6 +35,7 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
   const mainNavItems = [
     { href: "/new-upload", label: "New Upload", icon: FileUp },
     { href: "/jobs", label: "All Jobs", icon: FolderOpen },
+    { href: "/activity", label: "Activity", icon: Clock },
     { href: "/training", label: "Training Import", icon: BookOpen },
   ];
 

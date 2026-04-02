@@ -19,6 +19,7 @@ import AdminUsers from "@/pages/AdminUsers";
 import OnboardingPage from "@/pages/OnboardingPage";
 import SettingsCompany from "@/pages/SettingsCompany";
 import SettingsUsers from "@/pages/SettingsUsers";
+import ActivityPage from "@/pages/ActivityPage";
 
 const clerkPubKey = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY as string;
 const clerkProxyUrl = import.meta.env.VITE_CLERK_PROXY_URL as string | undefined;
@@ -279,6 +280,9 @@ function Router() {
       </Route>
       <Route path="/training">
         {() => <OnboardingGuard component={Training} />}
+      </Route>
+      <Route path="/activity">
+        {() => <OnboardingGuard component={ActivityPage} />}
       </Route>
       <Route path="/settings">
         {() => <AdminRoute component={SettingsCompany} />}

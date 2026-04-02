@@ -224,6 +224,23 @@ PDF pages are classified into three types: floor_plan, sign_schedule, or other.
 - XLSX export uses `exceljs` with conditional formatting (colored confidence cells, flagged row highlighting)
 - Vite proxy forwards `/api` requests to Express API server at port 8080
 
+## Activity Tracking
+
+All significant user actions are recorded to the `activity_logs` table (fire-and-forget, never blocks responses):
+
+- `job_opened` — when a user opens a job's detail page (`GET /jobs/:jobId`)
+- `scan_run` — when a scan/process is triggered (`POST /jobs/:jobId/process`)
+- `sign_updated` — when a sign field is edited (`PATCH /extracted-signs/:signId`)
+- `xlsx_exported` — when XLSX export is downloaded (`GET /jobs/:jobId/export`)
+
+**Role-scoped visibility**: SUPER_ADMIN sees all tenants + org filter; ADMIN sees own org; SALES/PM/Estimator sees own activity only.
+
+**`GET /activity`** — paginated activity feed (page size 50), filterable by `jobId`, `eventType`, `orgId` (SUPER_ADMIN only), `from` (ISO date).
+
+**`GET /jobs`** — includes `lastActivityAt`, `lastActivityUser`, `lastActivityInitials`, `lastActivityType` scalar subquery columns. The Jobs list renders a user initials badge with a tooltip showing who last touched the plan and when.
+
+**Frontend**: `/activity` route → `ActivityPage.tsx` (filterable table, event badges, user initials display, relative timestamps). Activity sidebar link added between "All Jobs" and "Training Import".
+
 ## Development Commands
 
 ```bash
