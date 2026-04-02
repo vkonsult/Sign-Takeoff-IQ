@@ -3,6 +3,7 @@ import { getAuth } from "@clerk/express";
 import { db, organizationMembershipsTable } from "@workspace/db";
 import { eq } from "drizzle-orm";
 import { logger } from "../lib/logger";
+import { verifyGuestToken } from "../routes/auth";
 
 export type UserRole =
   | "SUPER_ADMIN"
@@ -27,8 +28,6 @@ declare global {
     }
   }
 }
-
-const SUPER_ADMIN_GUEST_TOKEN = process.env.SUPER_ADMIN_GUEST_TOKEN;
 
 async function resolveMembership(
   clerkUserId: string,
@@ -69,19 +68,18 @@ function extractFromJwt(req: Request): { role: UserRole; orgId: string | null } 
 }
 
 export function requireAuth(req: Request, res: Response, next: NextFunction): void {
-  if (SUPER_ADMIN_GUEST_TOKEN) {
-    const authHeader = req.headers.authorization ?? "";
-    const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : null;
-    if (token && token === SUPER_ADMIN_GUEST_TOKEN) {
-      req.authUser = {
-        userId: "guest-super-admin",
-        role: "SUPER_ADMIN",
-        organizationId: null,
-        isSuperAdmin: true,
-      };
-      next();
-      return;
-    }
+  const authHeader = req.headers.authorization ?? "";
+  const bearerToken = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : null;
+
+  if (bearerToken && verifyGuestToken(bearerToken)) {
+    req.authUser = {
+      userId: "guest-super-admin",
+      role: "SUPER_ADMIN",
+      organizationId: null,
+      isSuperAdmin: true,
+    };
+    next();
+    return;
   }
 
   const auth = getAuth(req);

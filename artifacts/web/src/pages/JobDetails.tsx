@@ -81,7 +81,7 @@ export default function JobDetails() {
 
   const handleExport = () => {
     if (jobId) {
-      downloadExport(jobId);
+      downloadExport(jobId).catch((err) => console.error("Export failed:", err));
     }
   };
 

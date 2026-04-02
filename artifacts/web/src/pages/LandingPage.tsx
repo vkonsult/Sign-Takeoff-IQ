@@ -1,16 +1,33 @@
 import { Link, useLocation } from "wouter";
 import { Zap, FileSearch, BarChart3, Download } from "lucide-react";
 import { setGuestToken } from "@/lib/apiClient";
-
-const GUEST_TOKEN = import.meta.env.VITE_SUPER_ADMIN_GUEST_TOKEN as string | undefined;
+import { useEffect, useState } from "react";
 
 export default function LandingPage() {
   const [, setLocation] = useLocation();
+  const [guestAvailable, setGuestAvailable] = useState(false);
+  const [guestLoading, setGuestLoading] = useState(false);
 
-  function handleGuestAccess() {
-    if (!GUEST_TOKEN) return;
-    setGuestToken(GUEST_TOKEN);
-    setLocation("/jobs");
+  useEffect(() => {
+    fetch("/api/auth/guest-available")
+      .then((r) => r.json())
+      .then((d: { available?: boolean }) => setGuestAvailable(!!d.available))
+      .catch(() => {});
+  }, []);
+
+  async function handleGuestAccess() {
+    setGuestLoading(true);
+    try {
+      const res = await fetch("/api/auth/guest", { method: "POST" });
+      if (!res.ok) return;
+      const { token } = await res.json() as { token: string };
+      setGuestToken(token);
+      setLocation("/jobs");
+    } catch {
+      // ignore
+    } finally {
+      setGuestLoading(false);
+    }
   }
 
   return (
@@ -31,12 +48,13 @@ export default function LandingPage() {
           </div>
         </div>
         <div className="flex items-center gap-3">
-          {GUEST_TOKEN && (
+          {guestAvailable && (
             <button
               onClick={handleGuestAccess}
-              className="px-4 py-2 text-sm font-medium text-muted-foreground hover:text-foreground transition-colors"
+              disabled={guestLoading}
+              className="px-4 py-2 text-sm font-medium text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50"
             >
-              Continue as Guest
+              {guestLoading ? "Loading…" : "Continue as Guest"}
             </button>
           )}
           <Link
@@ -81,12 +99,13 @@ export default function LandingPage() {
           >
             Sign In
           </Link>
-          {GUEST_TOKEN && (
+          {guestAvailable && (
             <button
               onClick={handleGuestAccess}
-              className="px-6 py-3 rounded-lg border border-border text-muted-foreground font-display font-semibold uppercase tracking-wider text-sm hover:bg-secondary/50 transition-all"
+              disabled={guestLoading}
+              className="px-6 py-3 rounded-lg border border-border text-muted-foreground font-display font-semibold uppercase tracking-wider text-sm hover:bg-secondary/50 transition-all disabled:opacity-50"
             >
-              Continue as Guest
+              {guestLoading ? "Loading…" : "Continue as Guest"}
             </button>
           )}
         </div>

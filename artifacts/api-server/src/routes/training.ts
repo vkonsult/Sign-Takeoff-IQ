@@ -213,6 +213,7 @@ router.post(
           name: jobName,
           status: "completed",
           fileCount: 1,
+          organizationId: req.authUser?.organizationId ?? null,
         })
         .returning();
 
