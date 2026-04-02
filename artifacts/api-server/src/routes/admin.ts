@@ -18,7 +18,7 @@ const router: IRouter = Router();
 
 const clerk = createClerkClient({ secretKey: process.env.CLERK_SECRET_KEY! });
 
-// ── Logo upload multer ────────────────────────────────────────────────────────
+// Logo upload — multer storage
 const logoStorage = multer.diskStorage({
   destination: (_req, _file, cb) => cb(null, LOGOS_DIR),
   filename: (_req, file, cb) => {
@@ -29,9 +29,9 @@ const logoStorage = multer.diskStorage({
 
 const uploadLogo = multer({
   storage: logoStorage,
-  limits: { fileSize: 5 * 1024 * 1024 }, // 5 MB
+  limits: { fileSize: 5 * 1024 * 1024 },
   fileFilter: (_req, file, cb) => {
-    // SVG excluded — it may embed scripts (XSS risk when served publicly)
+    // SVG excluded: may embed scripts (XSS risk when served publicly)
     const allowedMimes = ["image/png", "image/jpeg", "image/webp", "image/gif"];
     const allowedExts = [".png", ".jpg", ".jpeg", ".webp", ".gif"];
     const ext = path.extname(file.originalname).toLowerCase();
@@ -43,7 +43,7 @@ const uploadLogo = multer({
   },
 });
 
-// ── Logo upload endpoint (ADMIN+) ─────────────────────────────────────────────
+// POST /admin/logo — upload a logo image (ADMIN+)
 router.post("/admin/logo", requireRole("ADMIN"), uploadLogo.single("logo"), (req, res) => {
   if (!req.file) {
     res.status(400).json({ error: "No logo file provided" });
@@ -53,7 +53,7 @@ router.post("/admin/logo", requireRole("ADMIN"), uploadLogo.single("logo"), (req
   res.json({ url });
 });
 
-// ── SUPER ADMIN: List all organizations (with job count + last activity) ──────
+// GET /admin/organizations — list all orgs with job count + last activity (SUPER_ADMIN)
 router.get("/admin/organizations", requireRole("SUPER_ADMIN"), async (req, res) => {
   try {
     const orgs = await db
@@ -83,7 +83,7 @@ router.get("/admin/organizations", requireRole("SUPER_ADMIN"), async (req, res) 
   }
 });
 
-// ── SUPER ADMIN: Create organization (with optional owner invitation) ─────────
+// POST /admin/organizations — create org; optionally send owner invite (SUPER_ADMIN)
 const CreateOrgSchema = z.object({
   name: z.string().min(1).max(200),
   slug: z.string().min(1).max(100).regex(/^[a-z0-9-]+$/, "Slug: lowercase letters, numbers, hyphens only"),
@@ -109,11 +109,10 @@ router.post("/admin/organizations", requireRole("SUPER_ADMIN"), async (req, res)
 
     let ownerInvitationSent = false;
     let ownerInvitationError: string | null = null;
-    let ownerMembershipId: string | null = null;
 
     if (ownerEmail && ownerFirstName && ownerLastName) {
+      let placeholderMembershipId: string | null = null;
       try {
-        // Create org membership placeholder (will be linked when invitation is accepted)
         const [mem] = await db.insert(organizationMembershipsTable).values({
           organizationId: org.id,
           clerkUserId: `pending-${crypto.randomBytes(8).toString("hex")}`,
@@ -121,9 +120,8 @@ router.post("/admin/organizations", requireRole("SUPER_ADMIN"), async (req, res)
           email: ownerEmail,
           role: "ADMIN",
         }).returning();
-        ownerMembershipId = mem.id;
+        placeholderMembershipId = mem.id;
 
-        // Send Clerk invitation so owner sets their own password
         await clerk.invitations.createInvitation({
           emailAddress: ownerEmail,
           publicMetadata: { role: "ADMIN", organizationId: org.id } as Record<string, unknown>,
@@ -133,10 +131,14 @@ router.post("/admin/organizations", requireRole("SUPER_ADMIN"), async (req, res)
       } catch (ownerErr: unknown) {
         req.log.warn({ ownerErr, orgId: org.id }, "Org created but owner invitation failed");
         ownerInvitationError = String((ownerErr as { message?: string })?.message ?? "Unknown error");
-        // Clean up placeholder membership if invitation failed
-        if (ownerMembershipId) {
-          await db.delete(organizationMembershipsTable).where(eq(organizationMembershipsTable.id, ownerMembershipId)).catch(() => {});
-          ownerMembershipId = null;
+        if (placeholderMembershipId) {
+          try {
+            await db.delete(organizationMembershipsTable).where(
+              eq(organizationMembershipsTable.id, placeholderMembershipId),
+            );
+          } catch (cleanupErr) {
+            req.log.warn({ cleanupErr }, "Failed to clean up placeholder membership after invite error");
+          }
         }
       }
     }
@@ -158,7 +160,7 @@ router.post("/admin/organizations", requireRole("SUPER_ADMIN"), async (req, res)
   }
 });
 
-// ── SUPER ADMIN: Update any org ───────────────────────────────────────────────
+// PATCH /admin/organizations/:orgId — update any org (SUPER_ADMIN)
 const SuperUpdateOrgSchema = z.object({
   name: z.string().min(1).max(200).optional(),
   email: z.string().email().optional().nullable(),
@@ -193,7 +195,7 @@ router.patch("/admin/organizations/:orgId", requireRole("SUPER_ADMIN"), async (r
   }
 });
 
-// ── SUPER ADMIN: Get org members ──────────────────────────────────────────────
+// GET /admin/organizations/:orgId/members — list members of any org (SUPER_ADMIN)
 router.get("/admin/organizations/:orgId/members", requireRole("SUPER_ADMIN"), async (req, res) => {
   const { orgId } = req.params;
   try {
@@ -209,7 +211,7 @@ router.get("/admin/organizations/:orgId/members", requireRole("SUPER_ADMIN"), as
   }
 });
 
-// ── SUPER ADMIN: List all users across all orgs ───────────────────────────────
+// GET /admin/users — list all users across all orgs, enriched with Clerk last-login (SUPER_ADMIN)
 router.get("/admin/users", requireRole("SUPER_ADMIN"), async (req, res) => {
   try {
     const rows = await db
@@ -228,7 +230,6 @@ router.get("/admin/users", requireRole("SUPER_ADMIN"), async (req, res) => {
       .leftJoin(organizationsTable, eq(organizationMembershipsTable.organizationId, organizationsTable.id))
       .orderBy(desc(organizationMembershipsTable.createdAt));
 
-    // Fetch last-login from Clerk for real users (skip pending placeholders)
     const realUserIds = rows
       .map((r) => r.clerkUserId)
       .filter((id) => !id.startsWith("pending-"));
@@ -241,7 +242,7 @@ router.get("/admin/users", requireRole("SUPER_ADMIN"), async (req, res) => {
           lastLoginMap.set(cu.id, cu.lastSignInAt ? new Date(cu.lastSignInAt).toISOString() : null);
         }
       } catch (clerkErr) {
-        req.log.warn({ clerkErr }, "Could not fetch last-login from Clerk");
+        req.log.warn({ clerkErr }, "Could not fetch last-login from Clerk — lastLoginAt will be null");
       }
     }
 
@@ -257,7 +258,7 @@ router.get("/admin/users", requireRole("SUPER_ADMIN"), async (req, res) => {
   }
 });
 
-// ── SUPER ADMIN: Platform stats for dashboard ─────────────────────────────────
+// GET /admin/stats — platform-wide counts for super admin dashboard (SUPER_ADMIN)
 router.get("/admin/stats", requireRole("SUPER_ADMIN"), async (req, res) => {
   try {
     const [orgCount] = await db.select({ count: count() }).from(organizationsTable);
@@ -274,7 +275,7 @@ router.get("/admin/stats", requireRole("SUPER_ADMIN"), async (req, res) => {
   }
 });
 
-// ── TENANT ADMIN: Get own org ────────────────────────────────────────────────
+// GET /admin/org — get calling user's own org (ADMIN)
 router.get("/admin/org", requireRole("ADMIN"), async (req, res) => {
   const { organizationId } = req.authUser!;
   if (!organizationId) {
@@ -297,7 +298,7 @@ router.get("/admin/org", requireRole("ADMIN"), async (req, res) => {
   }
 });
 
-// ── TENANT ADMIN: Update own org ─────────────────────────────────────────────
+// PATCH /admin/org — update calling user's own org (ADMIN)
 const UpdateOrgSchema = z.object({
   name: z.string().min(1).max(200).optional(),
   email: z.string().email().optional().nullable(),
@@ -336,7 +337,7 @@ router.patch("/admin/org", requireRole("ADMIN"), async (req, res) => {
   }
 });
 
-// ── TENANT ADMIN: List own org members ───────────────────────────────────────
+// GET /admin/org/members — list org members, enriched with Clerk last-login (ADMIN)
 router.get("/admin/org/members", requireRole("ADMIN"), async (req, res) => {
   const { organizationId } = req.authUser!;
   if (!organizationId) {
@@ -350,7 +351,6 @@ router.get("/admin/org/members", requireRole("ADMIN"), async (req, res) => {
       .where(eq(organizationMembershipsTable.organizationId, organizationId))
       .orderBy(desc(organizationMembershipsTable.createdAt));
 
-    // Enrich with Clerk last-login for real users
     const realUserIds = rows
       .map((r) => r.clerkUserId)
       .filter((id) => !id.startsWith("pending-"));
@@ -363,7 +363,7 @@ router.get("/admin/org/members", requireRole("ADMIN"), async (req, res) => {
           lastLoginMap.set(cu.id, cu.lastSignInAt ? new Date(cu.lastSignInAt).toISOString() : null);
         }
       } catch (clerkErr) {
-        req.log.warn({ clerkErr }, "Could not fetch last-login from Clerk for members");
+        req.log.warn({ clerkErr }, "Could not fetch last-login from Clerk for members — lastLoginAt will be null");
       }
     }
 
@@ -379,8 +379,8 @@ router.get("/admin/org/members", requireRole("ADMIN"), async (req, res) => {
   }
 });
 
-// ── TENANT ADMIN: Create user in own org ──────────────────────────────────────
-// Admin provides the initial password; ADMIN callers cannot create ADMIN-role users.
+// POST /admin/users — create a user in the caller's org (ADMIN)
+// Tenant ADMINs cannot create ADMIN-role users; SUPER_ADMIN callers can.
 const CreateUserSchema = z.object({
   firstName: z.string().min(1).max(100),
   lastName: z.string().min(1).max(100),
@@ -403,7 +403,6 @@ router.post("/admin/users", requireRole("ADMIN"), async (req, res) => {
   }
   const { firstName, lastName, email, phone, password, role } = parsed.data;
 
-  // Tenant ADMINs may not create or assign the ADMIN role
   if (callerRole !== "SUPER_ADMIN" && role === "ADMIN") {
     res.status(403).json({ error: "Tenant admins cannot create Admin-level users" });
     return;
@@ -440,7 +439,8 @@ router.post("/admin/users", requireRole("ADMIN"), async (req, res) => {
   }
 });
 
-// ── TENANT ADMIN: Update member role ─────────────────────────────────────────
+// PATCH /admin/users/:membershipId — update member role (ADMIN)
+// Tenant ADMINs cannot promote to ADMIN or modify ADMIN/SUPER_ADMIN accounts.
 const UpdateMemberSchema = z.object({
   role: z.enum(["SALES", "ESTIMATOR", "PROJECT_MANAGER", "ADMIN"]),
 });
@@ -457,7 +457,6 @@ router.patch("/admin/users/:membershipId", requireRole("ADMIN"), async (req, res
     res.status(400).json({ error: "Invalid request body", details: parsed.error.issues });
     return;
   }
-  // Tenant ADMINs may not promote to ADMIN
   if (callerRole !== "SUPER_ADMIN" && parsed.data.role === "ADMIN") {
     res.status(403).json({ error: "Tenant admins cannot promote users to the Admin role" });
     return;
@@ -489,7 +488,6 @@ router.patch("/admin/users/:membershipId", requireRole("ADMIN"), async (req, res
       .set({ role: parsed.data.role, updatedAt: new Date() })
       .where(eq(organizationMembershipsTable.id, membershipId))
       .returning();
-    // Only sync Clerk metadata if clerkUserId is not a placeholder
     if (!membership.clerkUserId.startsWith("pending-")) {
       await clerk.users.updateUserMetadata(membership.clerkUserId, {
         publicMetadata: { role: parsed.data.role, organizationId },
@@ -502,7 +500,8 @@ router.patch("/admin/users/:membershipId", requireRole("ADMIN"), async (req, res
   }
 });
 
-// ── TENANT ADMIN: Remove member ───────────────────────────────────────────────
+// DELETE /admin/users/:membershipId — remove member from org (ADMIN)
+// Cannot remove SUPER_ADMIN or (for tenant admins) ADMIN accounts, or yourself.
 router.delete("/admin/users/:membershipId", requireRole("ADMIN"), async (req, res) => {
   const { organizationId, userId: callerUserId, role: callerRole } = req.authUser!;
   const { membershipId } = req.params;

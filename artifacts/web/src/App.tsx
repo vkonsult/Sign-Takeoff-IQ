@@ -106,10 +106,13 @@ function ProtectedRoute({ component: Component }: { component: React.ComponentTy
   );
 }
 
+/** Tenant-ADMIN only: requires signed-in ADMIN (not SUPER_ADMIN) with completed onboarding. */
 function AdminRoute({ component: Component }: { component: React.ComponentType }) {
   const { isLoaded, isAdmin, isSuperAdmin } = useUserRole();
   const { isSignedIn } = useUser();
   const [location] = useLocation();
+
+  const isTenantAdmin = isAdmin && !isSuperAdmin;
 
   const orgQuery = useQuery({
     queryKey: ["admin-org-onboarding-check"],
@@ -118,7 +121,7 @@ function AdminRoute({ component: Component }: { component: React.ComponentType }
       if (!res.ok) return null;
       return res.json() as Promise<{ organization: { onboardingComplete: boolean } }>;
     },
-    enabled: !isGuestMode() && isLoaded && isAdmin && !isSuperAdmin && !!isSignedIn,
+    enabled: !isGuestMode() && isLoaded && isTenantAdmin && !!isSignedIn,
     staleTime: 30_000,
   });
 
@@ -128,15 +131,13 @@ function AdminRoute({ component: Component }: { component: React.ComponentType }
   if (!isSignedIn) {
     return <Redirect to="/sign-in" />;
   }
-  if (isLoaded && !isAdmin) {
+  if (isLoaded && !isTenantAdmin) {
     return <Redirect to="/jobs" />;
   }
-  if (isAdmin && !isSuperAdmin && orgQuery.isLoading) {
+  if (orgQuery.isLoading) {
     return null;
   }
   if (
-    isAdmin &&
-    !isSuperAdmin &&
     orgQuery.data !== undefined &&
     orgQuery.data !== null &&
     !orgQuery.data.organization.onboardingComplete &&
