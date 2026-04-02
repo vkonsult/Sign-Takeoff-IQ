@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { Link, useLocation } from "wouter";
+import { formatDistanceToNow } from "date-fns";
 import {
   FileUp,
   FolderOpen,
@@ -229,7 +230,7 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
                             {recentUsers.map((u, i) => (
                               <span
                                 key={u.userName + i}
-                                title={`Last touched by ${u.userName}`}
+                                title={`${u.userName} — ${formatDistanceToNow(new Date(u.at), { addSuffix: true })}`}
                                 className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-primary/15 text-primary text-[9px] font-bold flex-shrink-0 ring-1 ring-card"
                                 style={{ marginLeft: i > 0 ? "-5px" : undefined }}
                               >
