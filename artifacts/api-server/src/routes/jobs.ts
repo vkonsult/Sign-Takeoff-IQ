@@ -1,5 +1,5 @@
 import { Router, type IRouter, type Request, type Response } from "express";
-import { eq, desc, inArray, and, or, ne, isNull, isNotNull, not, SQL, sql, getTableColumns } from "drizzle-orm";
+import { eq, desc, inArray, and, or, ne, isNull, isNotNull, not, SQL, getTableColumns } from "drizzle-orm";
 import { db } from "@workspace/db";
 import {
   jobsTable,
@@ -68,11 +68,12 @@ router.get("/jobs", async (req, res) => {
 
     const jobIds = jobs.map((j) => j.id);
 
-    // For each job, find up to 2 most recently active distinct users
-    const recentUsersByJob = new Map<string, { userId: string; userName: string; userInitials: string; at: Date; eventType: string }[]>();
+    // DISTINCT ON (job_id, user_id) gets the most recent event per user per job in one query.
+    // JS then takes the top 2 per job (already deduplicated).
+    const recentUsersByJob = new Map<string, { userName: string; userInitials: string; at: Date; eventType: string }[]>();
     if (jobIds.length > 0) {
-      const recentActivity = await db
-        .select({
+      const perUserRows = await db
+        .selectDistinctOn([activityLogsTable.jobId, activityLogsTable.userId], {
           jobId: activityLogsTable.jobId,
           userId: activityLogsTable.userId,
           userName: activityLogsTable.userName,
@@ -82,13 +83,15 @@ router.get("/jobs", async (req, res) => {
         })
         .from(activityLogsTable)
         .where(inArray(activityLogsTable.jobId, jobIds))
-        .orderBy(desc(activityLogsTable.createdAt));
+        .orderBy(activityLogsTable.jobId, activityLogsTable.userId, desc(activityLogsTable.createdAt));
 
-      for (const row of recentActivity) {
+      // Sort by most-recently-active across all users, then pick top 2 per job
+      perUserRows.sort((a, b) => b.at.getTime() - a.at.getTime());
+      for (const row of perUserRows) {
         if (!row.jobId) continue;
         const list = recentUsersByJob.get(row.jobId) ?? [];
-        if (list.length < 2 && !list.find((u) => u.userId === row.userId)) {
-          list.push({ userId: row.userId, userName: row.userName, userInitials: row.userInitials, at: row.at, eventType: row.eventType });
+        if (list.length < 2) {
+          list.push({ userName: row.userName, userInitials: row.userInitials, at: row.at, eventType: row.eventType });
           recentUsersByJob.set(row.jobId, list);
         }
       }
