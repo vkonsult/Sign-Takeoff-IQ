@@ -43,6 +43,7 @@ export const extractedSignsTable = pgTable("extracted_signs", {
   ),
   manuallyAdded: boolean("manually_added").notNull().default(false),
   userVerified: boolean("user_verified").notNull().default(false),
+  hidden: boolean("hidden").notNull().default(false),
   confidenceScore: real("confidence_score").notNull().default(0),
   reviewFlag: boolean("review_flag").notNull().default(false),
   rawJson: json("raw_json"),

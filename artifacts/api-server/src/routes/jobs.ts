@@ -1,5 +1,5 @@
 import { Router, type IRouter } from "express";
-import { eq, desc, inArray, and, or, ne, isNull, isNotNull } from "drizzle-orm";
+import { eq, desc, inArray, and, or, ne, isNull, isNotNull, not } from "drizzle-orm";
 import { db } from "@workspace/db";
 import {
   jobsTable,
@@ -132,20 +132,33 @@ router.get("/jobs/:jobId", async (req, res) => {
       .from(jobFilesTable)
       .where(eq(jobFilesTable.jobId, jobId));
 
-    // Show text/manual signs PLUS image-only signs (those with no pair).
-    // Exclude only paired image signs — their data is already represented by
-    // the matching text sign (shown with a "Both" source badge).
+    // Unified display filter:
+    // - Show text/manual signs PLUS image-only signs (those with no pair).
+    // - Exclude paired image signs (already merged into the text row with "Both" badge).
+    // - Exclude hidden signs (soft-deleted); they are returned separately as hiddenSigns.
+    const visibleFilter = and(
+      eq(extractedSignsTable.jobId, jobId),
+      not(extractedSignsTable.hidden),
+      or(
+        isNull(extractedSignsTable.extractionMethod),
+        ne(extractedSignsTable.extractionMethod, "image"),
+        isNull(extractedSignsTable.pairedSignId)
+      )
+    );
+
     const extractedSigns = await db
+      .select()
+      .from(extractedSignsTable)
+      .where(visibleFilter);
+
+    // Hidden signs — returned separately so the UI can offer a "Show hidden" panel.
+    const hiddenSigns = await db
       .select()
       .from(extractedSignsTable)
       .where(
         and(
           eq(extractedSignsTable.jobId, jobId),
-          or(
-            isNull(extractedSignsTable.extractionMethod),
-            ne(extractedSignsTable.extractionMethod, "image"),
-            isNull(extractedSignsTable.pairedSignId)
-          )
+          extractedSignsTable.hidden
         )
       );
 
@@ -183,6 +196,7 @@ router.get("/jobs/:jobId", async (req, res) => {
         createdAt: f.createdAt,
       })),
       extractedSigns,
+      hiddenSigns,
       totalSigns,
       flaggedCount,
       highConfidenceCount,
@@ -724,6 +738,7 @@ const UpdateSignSchema = z.object({
   messageContent: z.string().nullable().optional(),
   notes: z.string().nullable().optional(),
   reviewFlag: z.boolean().optional(),
+  hidden: z.boolean().optional(),
   xPos: z.number().min(0).max(1).nullable().optional(),
   yPos: z.number().min(0).max(1).nullable().optional(),
 });
@@ -752,15 +767,26 @@ router.patch("/extracted-signs/:signId", async (req, res) => {
       return;
     }
 
-    // Automatically mark as user-verified when the user saves edits
+    // Only auto-verify when the user edits actual sign content fields.
+    // Status-flag-only updates (hidden, reviewFlag) should not trigger verification.
+    const contentFields: (keyof typeof parsed.data)[] = [
+      "sheetNumber", "detailReference", "signType", "signIdentifier", "quantity",
+      "location", "dimensions", "mountingType", "finishColor", "illumination",
+      "materials", "messageContent", "notes", "xPos", "yPos",
+    ];
+    const hasContentEdit = contentFields.some((f) => parsed.data[f] !== undefined);
+    const updatePayload = hasContentEdit
+      ? { ...parsed.data, userVerified: true }
+      : { ...parsed.data };
+
     const [updated] = await db
       .update(extractedSignsTable)
-      .set({ ...parsed.data, userVerified: true })
+      .set(updatePayload)
       .where(eq(extractedSignsTable.id, signId))
       .returning();
 
     res.json({ sign: updated });
-    req.log.info({ signId, userVerified: true }, "Sign updated and verified");
+    req.log.info({ signId, userVerified: hasContentEdit }, "Sign updated");
   } catch (err) {
     req.log.error({ err, signId }, "Failed to update sign");
     res.status(500).json({ error: "Failed to update sign" });
@@ -789,7 +815,12 @@ router.get("/jobs/:jobId/export", async (req, res) => {
     const signs = await db
       .select()
       .from(extractedSignsTable)
-      .where(eq(extractedSignsTable.jobId, jobId));
+      .where(
+        and(
+          eq(extractedSignsTable.jobId, jobId),
+          not(extractedSignsTable.hidden)
+        )
+      );
 
     if (signs.length === 0) {
       res.status(404).json({ error: "No extracted signs found for this job" });

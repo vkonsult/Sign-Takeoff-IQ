@@ -23,6 +23,7 @@ import {
   Stamp,
   ShieldCheck,
   Eye,
+  EyeOff,
   RefreshCw,
 } from "lucide-react";
 import { format } from "date-fns";
@@ -106,6 +107,49 @@ export default function JobDetails() {
     }
   };
 
+  const [showHidden, setShowHidden] = useState(false);
+
+  const toggleHidden = async (signId: string, currentlyHidden: boolean) => {
+    const next = !currentlyHidden;
+    // Optimistic update: move sign between extractedSigns and hiddenSigns
+    queryClient.setQueryData(getGetJobQueryKey(jobId), (old: typeof data) => {
+      if (!old) return old;
+      const castOld = old as typeof old & { hiddenSigns?: typeof old.extractedSigns };
+      const allVisible = castOld.extractedSigns ?? [];
+      const allHidden = castOld.hiddenSigns ?? [];
+      if (next) {
+        // Hiding: move from visible → hidden
+        const sign = allVisible.find((s) => s.id === signId);
+        return {
+          ...old,
+          extractedSigns: allVisible.filter((s) => s.id !== signId),
+          hiddenSigns: sign ? [...allHidden, { ...sign, hidden: true }] : allHidden,
+          totalSigns: Math.max(0, (old.totalSigns ?? 0) - 1),
+        };
+      } else {
+        // Restoring: move from hidden → visible
+        const sign = allHidden.find((s) => s.id === signId);
+        return {
+          ...old,
+          extractedSigns: sign ? [...allVisible, { ...sign, hidden: false }] : allVisible,
+          hiddenSigns: allHidden.filter((s) => s.id !== signId),
+          totalSigns: (old.totalSigns ?? 0) + 1,
+        };
+      }
+    });
+    // Persist to server (fire-and-forget; server will reflect on next full fetch)
+    try {
+      await fetch(`/api/extracted-signs/${signId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ hidden: next }),
+      });
+    } catch {
+      // Revert on failure by invalidating the query
+      queryClient.invalidateQueries({ queryKey: getGetJobQueryKey(jobId) });
+    }
+  };
+
   const handleSignSaved = (updatedSign: Record<string, unknown>) => {
     queryClient.setQueryData(getGetJobQueryKey(jobId), (old: typeof data) => {
       if (!old) return old;
@@ -167,6 +211,7 @@ export default function JobDetails() {
   // Show all signs: text, manual, and image-only (visual-only finds).
   // Paired image signs are excluded by the API (their data is in the paired text row).
   const extractedSigns = data.extractedSigns;
+  const hiddenSigns = (data as typeof data & { hiddenSigns?: typeof data.extractedSigns }).hiddenSigns ?? [];
   const isProcessing = job.status === "processing" || extractMutation.isPending;
   const isCompleted = job.status === "completed";
   const isPending = job.status === "pending";
@@ -337,6 +382,30 @@ export default function JobDetails() {
 
               {/* Data Table Container */}
               <div className="flex-1 overflow-auto bg-card border-t border-border">
+                {/* Show Hidden toggle bar — only visible when there are hidden signs */}
+                {hiddenSigns.length > 0 && (
+                  <div className="flex items-center gap-3 px-4 py-2 bg-secondary/60 border-b border-border/60">
+                    <button
+                      onClick={() => setShowHidden((v) => !v)}
+                      className={`flex items-center gap-2 px-3 py-1 rounded-md text-[11px] font-display font-semibold uppercase tracking-wide border transition-all ${
+                        showHidden
+                          ? "bg-muted-foreground/10 text-muted-foreground border-border/80"
+                          : "bg-secondary text-muted-foreground border-border hover:text-foreground hover:border-border/80"
+                      }`}
+                    >
+                      {showHidden ? (
+                        <Eye className="w-3 h-3" />
+                      ) : (
+                        <EyeOff className="w-3 h-3" />
+                      )}
+                      {showHidden ? "Hide hidden rows" : `Show hidden (${hiddenSigns.length})`}
+                    </button>
+                    <span className="text-[10px] text-muted-foreground/50 font-mono">
+                      {hiddenSigns.length} sign{hiddenSigns.length !== 1 ? "s" : ""} hidden from table and export
+                    </span>
+                  </div>
+                )}
+
                 <div className="min-w-[max-content] inline-block align-top">
                   <table className="w-full text-left border-collapse border-spacing-0">
                     <thead>
@@ -352,7 +421,7 @@ export default function JobDetails() {
                         <th className="data-header text-center">Confidence</th>
                         <th className="data-header text-center">Source</th>
                         <th className="data-header text-center">Status</th>
-                        <th className="data-header text-center w-20">Review</th>
+                        <th className="data-header text-center w-24">Actions</th>
                       </tr>
                     </thead>
                     <tbody className="bg-background">
@@ -406,20 +475,86 @@ export default function JobDetails() {
                             </div>
                           </td>
                           <td className="data-cell text-center">
+                            <div className="flex items-center justify-center gap-1.5">
+                              <button
+                                onClick={() => setReviewSign(sign)}
+                                className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-display font-semibold uppercase tracking-wide bg-secondary hover:bg-primary/20 hover:text-primary border border-border hover:border-primary/40 text-muted-foreground transition-all"
+                              >
+                                <Pencil className="w-3 h-3" />
+                                Edit
+                              </button>
+                              <button
+                                onClick={() => toggleHidden(sign.id, false)}
+                                title="Hide this row"
+                                className="inline-flex items-center justify-center w-7 h-7 rounded-md bg-secondary hover:bg-muted-foreground/20 hover:text-foreground border border-border text-muted-foreground/50 transition-all"
+                              >
+                                <EyeOff className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+
+                      {/* Hidden rows — shown only when "Show hidden" is toggled on */}
+                      {showHidden && hiddenSigns.map((sign) => (
+                        <tr
+                          key={sign.id}
+                          className="opacity-40 bg-muted/30 hover:opacity-60 transition-opacity"
+                        >
+                          <td className="data-cell sticky left-0 z-10 bg-inherit shadow-[2px_0_5px_-2px_rgba(0,0,0,0.3)]">
+                            <div className="flex items-center gap-1.5 mb-1">
+                              <span className="font-mono text-xs text-muted-foreground line-through">{sign.sheetNumber || '—'}</span>
+                              {sign.pageNumber != null && (
+                                <span className="text-[10px] font-mono px-1 py-0 rounded bg-secondary text-muted-foreground border border-border">
+                                  pg {sign.pageNumber}
+                                </span>
+                              )}
+                            </div>
+                            <div className="font-medium text-muted-foreground line-through">{sign.signIdentifier || sign.detailReference || 'Unknown'}</div>
+                          </td>
+                          <td className="data-cell text-muted-foreground line-through">{sign.signType || '—'}</td>
+                          <td className="data-cell text-center font-mono font-medium text-muted-foreground line-through">{sign.quantity || 1}</td>
+                          <td className="data-cell truncate max-w-[200px] text-muted-foreground line-through">{sign.location || '—'}</td>
+                          <td className="data-cell font-mono text-xs text-muted-foreground">{sign.dimensions || '—'}</td>
+                          <td className="data-cell text-muted-foreground">{sign.mountingType || '—'}</td>
+                          <td className="data-cell text-xs text-muted-foreground">{sign.finishColor || '—'}</td>
+                          <td className="data-cell truncate max-w-[250px] text-muted-foreground">{sign.messageContent || '—'}</td>
+                          <td className="data-cell text-center">
+                            <ConfidenceBadge score={sign.confidenceScore} />
+                          </td>
+                          <td className="data-cell text-center">
+                            <SourceBadge sign={sign as Record<string, unknown>} />
+                          </td>
+                          <td className="data-cell text-center">
+                            <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider bg-muted/50 text-muted-foreground border border-border/50">
+                              <EyeOff className="w-3 h-3 mr-1" />
+                              Hidden
+                            </span>
+                          </td>
+                          <td className="data-cell text-center">
                             <button
-                              onClick={() => setReviewSign(sign)}
-                              className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-display font-semibold uppercase tracking-wide bg-secondary hover:bg-primary/20 hover:text-primary border border-border hover:border-primary/40 text-muted-foreground transition-all"
+                              onClick={() => toggleHidden(sign.id, true)}
+                              title="Restore this row"
+                              className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-display font-semibold uppercase tracking-wide bg-secondary hover:bg-accent/20 hover:text-accent border border-border hover:border-accent/40 text-muted-foreground transition-all"
                             >
-                              <Pencil className="w-3 h-3" />
-                              Edit
+                              <Eye className="w-3 h-3" />
+                              Restore
                             </button>
                           </td>
                         </tr>
                       ))}
-                      {extractedSigns.length === 0 && (
+
+                      {extractedSigns.length === 0 && hiddenSigns.length === 0 && (
                         <tr>
                           <td colSpan={12} className="p-8 text-center text-muted-foreground">
                             No signs were extracted from these documents.
+                          </td>
+                        </tr>
+                      )}
+                      {extractedSigns.length === 0 && hiddenSigns.length > 0 && !showHidden && (
+                        <tr>
+                          <td colSpan={12} className="p-8 text-center text-muted-foreground">
+                            All signs are hidden. Click "Show hidden ({hiddenSigns.length})" above to view them.
                           </td>
                         </tr>
                       )}
