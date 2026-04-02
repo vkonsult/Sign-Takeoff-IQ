@@ -132,8 +132,8 @@ router.get("/jobs/:jobId", async (req, res) => {
       .from(jobFilesTable)
       .where(eq(jobFilesTable.jobId, jobId));
 
-    // Exclude comparison-run signs (text_compare / image) from the main job view;
-    // those are surfaced only via the /compare endpoint.
+    // Exclude image-method signs from the main job view;
+    // image signs are surfaced only via the /compare endpoint response.
     const extractedSigns = await db
       .select()
       .from(extractedSignsTable)
@@ -142,10 +142,7 @@ router.get("/jobs/:jobId", async (req, res) => {
           eq(extractedSignsTable.jobId, jobId),
           or(
             isNull(extractedSignsTable.extractionMethod),
-            and(
-              ne(extractedSignsTable.extractionMethod, "text_compare"),
-              ne(extractedSignsTable.extractionMethod, "image")
-            )
+            ne(extractedSignsTable.extractionMethod, "image")
           )
         )
       );
@@ -279,123 +276,127 @@ router.post("/jobs/:jobId/compare", async (req, res) => {
       return;
     }
 
-    // Clear all previous comparison-run signs (text_compare + image), keep original text + manual/verified
+    // Clear all previous comparison signs (text + image, excluding manual/verified)
     await db
       .delete(extractedSignsTable)
       .where(
         and(
           eq(extractedSignsTable.jobId, jobId),
-          or(
-            eq(extractedSignsTable.extractionMethod, "image"),
-            eq(extractedSignsTable.extractionMethod, "text_compare")
-          )
+          eq(extractedSignsTable.manuallyAdded, false),
+          eq(extractedSignsTable.userVerified, false)
         )
       );
 
-    req.log.info({ jobId }, "Cleared previous comparison-run signs");
+    req.log.info({ jobId }, "Cleared previous non-manual signs for comparison re-run");
 
-    // ── Fresh text extraction pass ────────────────────────────────────────────
-    let totalTextInputTokens = 0;
-    let totalTextOutputTokens = 0;
-    const textCompareRows: typeof extractedSignsTable.$inferInsert[] = [];
-
-    for (const file of files) {
-      try {
-        const { rows, inputTokens, outputTokens } = await extractSignsFromPdf(
-          file.storedPath,
-          ai
-        );
-        totalTextInputTokens += inputTokens;
-        totalTextOutputTokens += outputTokens;
-        for (const row of rows) {
-          textCompareRows.push({
-            jobId,
-            jobFileId: file.id,
-            sheetNumber: row.sheet_number,
-            detailReference: row.detail_reference,
-            signType: row.sign_type,
-            signIdentifier: row.sign_identifier,
-            quantity: row.quantity,
-            location: row.location,
-            dimensions: row.dimensions,
-            mountingType: row.mounting_type,
-            finishColor: row.finish_color,
-            illumination: row.illumination,
-            materials: row.materials,
-            messageContent: row.message_content,
-            notes: row.notes,
-            pageNumber: row.page_number,
-            xPos: null,
-            yPos: null,
-            confidenceScore: row.confidence_score,
-            reviewFlag: row.review_flag,
-            extractionMethod: "text_compare",
-          });
-        }
-      } catch (err) {
-        req.log.error({ err, fileId: file.id }, "Text-compare extraction failed for file");
-      }
+    // ── Run text and image extraction passes in parallel ──────────────────────
+    function buildTextRow(row: Awaited<ReturnType<typeof extractSignsFromPdf>>["rows"][number], file: typeof files[number]) {
+      return {
+        jobId,
+        jobFileId: file.id,
+        sheetNumber: row.sheet_number,
+        detailReference: row.detail_reference,
+        signType: row.sign_type,
+        signIdentifier: row.sign_identifier,
+        quantity: row.quantity,
+        location: row.location,
+        dimensions: row.dimensions,
+        mountingType: row.mounting_type,
+        finishColor: row.finish_color,
+        illumination: row.illumination,
+        materials: row.materials,
+        messageContent: row.message_content,
+        notes: row.notes,
+        pageNumber: row.page_number,
+        xPos: null as number | null,
+        yPos: null as number | null,
+        confidenceScore: row.confidence_score,
+        reviewFlag: row.review_flag,
+        extractionMethod: "text",
+      };
     }
 
-    if (textCompareRows.length > 0) {
-      await db.insert(extractedSignsTable).values(textCompareRows);
+    function buildImageRow(row: Awaited<ReturnType<typeof extractSignsFromPdfImage>>["rows"][number], file: typeof files[number]) {
+      return {
+        jobId,
+        jobFileId: file.id,
+        sheetNumber: row.sheet_number,
+        detailReference: row.detail_reference,
+        signType: row.sign_type,
+        signIdentifier: row.sign_identifier,
+        quantity: row.quantity,
+        location: row.location,
+        dimensions: row.dimensions,
+        mountingType: row.mounting_type,
+        finishColor: row.finish_color,
+        illumination: row.illumination,
+        materials: row.materials,
+        messageContent: row.message_content,
+        notes: row.notes,
+        pageNumber: row.page_number,
+        xPos: row.x_pos ?? null,
+        yPos: row.y_pos ?? null,
+        confidenceScore: row.confidence_score,
+        reviewFlag: row.review_flag,
+        extractionMethod: "image",
+      };
     }
 
-    // ── Fresh image extraction pass ───────────────────────────────────────────
-    let totalImageInputTokens = 0;
-    let totalImageOutputTokens = 0;
-    const imageRows: typeof extractedSignsTable.$inferInsert[] = [];
+    // Run both extraction passes in parallel across all files
+    const [textResults, imageResults] = await Promise.all([
+      Promise.all(
+        files.map(async (file) => {
+          try {
+            const result = await extractSignsFromPdf(file.storedPath, ai);
+            return { file, ...result };
+          } catch (err) {
+            req.log.error({ err, fileId: file.id }, "Text extraction failed for file in compare pass");
+            return { file, rows: [], inputTokens: 0, outputTokens: 0, pageCount: 0, rawText: "", pageStats: { floorPlanPages: [], signSchedulePages: [], otherPages: [] } };
+          }
+        })
+      ),
+      Promise.all(
+        files.map(async (file) => {
+          try {
+            const result = await extractSignsFromPdfImage(file.storedPath, ai);
+            return { file, ...result };
+          } catch (err) {
+            req.log.error({ err, fileId: file.id }, "Image extraction failed for file in compare pass");
+            return { file, rows: [], inputTokens: 0, outputTokens: 0 };
+          }
+        })
+      ),
+    ]);
 
-    for (const file of files) {
-      try {
-        const { rows, inputTokens, outputTokens } = await extractSignsFromPdfImage(
-          file.storedPath,
-          ai
-        );
-        totalImageInputTokens += inputTokens;
-        totalImageOutputTokens += outputTokens;
-        for (const row of rows) {
-          imageRows.push({
-            jobId,
-            jobFileId: file.id,
-            sheetNumber: row.sheet_number,
-            detailReference: row.detail_reference,
-            signType: row.sign_type,
-            signIdentifier: row.sign_identifier,
-            quantity: row.quantity,
-            location: row.location,
-            dimensions: row.dimensions,
-            mountingType: row.mounting_type,
-            finishColor: row.finish_color,
-            illumination: row.illumination,
-            materials: row.materials,
-            messageContent: row.message_content,
-            notes: row.notes,
-            pageNumber: row.page_number,
-            xPos: row.x_pos ?? null,
-            yPos: row.y_pos ?? null,
-            confidenceScore: row.confidence_score,
-            reviewFlag: row.review_flag,
-            extractionMethod: "image",
-          });
-        }
-      } catch (err) {
-        req.log.error({ err, fileId: file.id }, "Image extraction failed for file");
-      }
+    const totalTextInputTokens = textResults.reduce((sum, r) => sum + r.inputTokens, 0);
+    const totalTextOutputTokens = textResults.reduce((sum, r) => sum + r.outputTokens, 0);
+    const totalImageInputTokens = imageResults.reduce((sum, r) => sum + r.inputTokens, 0);
+    const totalImageOutputTokens = imageResults.reduce((sum, r) => sum + r.outputTokens, 0);
+
+    const textRows = textResults.flatMap((r) => r.rows.map((row) => buildTextRow(row, r.file)));
+    const imageRows = imageResults.flatMap((r) => r.rows.map((row) => buildImageRow(row, r.file)));
+
+    if (textRows.length > 0) {
+      await db.insert(extractedSignsTable).values(textRows);
     }
-
     if (imageRows.length > 0) {
       await db.insert(extractedSignsTable).values(imageRows);
     }
 
-    // Save image token counts to job
+    // Persist token counts for both passes on the job
     await db
       .update(jobsTable)
-      .set({ imageInputTokens: totalImageInputTokens, imageOutputTokens: totalImageOutputTokens, updatedAt: new Date() })
+      .set({
+        imageInputTokens: totalImageInputTokens,
+        imageOutputTokens: totalImageOutputTokens,
+        compareTextInputTokens: totalTextInputTokens,
+        compareTextOutputTokens: totalTextOutputTokens,
+        updatedAt: new Date(),
+      })
       .where(eq(jobsTable.id, jobId));
 
     // ── Matching pass ─────────────────────────────────────────────────────────
-    // Match text_compare signs against image signs. Require BOTH sign_type AND location
+    // Match text signs against image signs. Require BOTH sign_type AND location
     // similarity. Fall back to single-field if the other field is missing on either side.
 
     function normalize(s: string | null | undefined): string {
@@ -444,7 +445,7 @@ router.post("/jobs/:jobId/compare", async (req, res) => {
       .from(extractedSignsTable)
       .where(eq(extractedSignsTable.jobId, jobId));
 
-    const textCompareSigns = allSignsAfter.filter((s) => s.extractionMethod === "text_compare");
+    const textCompareSigns = allSignsAfter.filter((s) => s.extractionMethod === "text" && !s.manuallyAdded && !s.userVerified);
     const imageSigns = allSignsAfter.filter((s) => s.extractionMethod === "image");
 
     // Greedy best-match pairing
@@ -498,11 +499,11 @@ router.post("/jobs/:jobId/compare", async (req, res) => {
       .from(extractedSignsTable)
       .where(eq(extractedSignsTable.jobId, jobId));
 
-    const finalTextCompare = finalSigns.filter((s) => s.extractionMethod === "text_compare");
+    const finalTextSigns = finalSigns.filter((s) => s.extractionMethod === "text" && !s.manuallyAdded && !s.userVerified);
     const finalImage = finalSigns.filter((s) => s.extractionMethod === "image");
 
-    const both = finalTextCompare.filter((s) => s.pairedSignId != null);
-    const textOnly = finalTextCompare.filter((s) => s.pairedSignId == null);
+    const both = finalTextSigns.filter((s) => s.pairedSignId != null);
+    const textOnly = finalTextSigns.filter((s) => s.pairedSignId == null);
     const imageOnly = finalImage.filter((s) => s.pairedSignId == null);
 
     const INPUT_RATE = 0.15;
@@ -515,7 +516,7 @@ router.post("/jobs/:jobId/compare", async (req, res) => {
     req.log.info(
       {
         jobId,
-        textCompareFound: textCompareRows.length,
+        textFound: textRows.length,
         imageFound: imageRows.length,
         matched: pairs.length,
         textOnly: textOnly.length,
@@ -627,6 +628,7 @@ router.post("/extracted-signs", async (req, res) => {
       .values({
         ...parsed.data,
         manuallyAdded: true,
+        extractionMethod: "manual",
         confidenceScore: 1.0,
         reviewFlag: false,
       })

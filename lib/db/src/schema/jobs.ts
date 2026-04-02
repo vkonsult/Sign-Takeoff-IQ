@@ -19,6 +19,8 @@ export const jobsTable = pgTable("jobs", {
   outputTokens: integer("output_tokens").notNull().default(0),
   imageInputTokens: integer("image_input_tokens").notNull().default(0),
   imageOutputTokens: integer("image_output_tokens").notNull().default(0),
+  compareTextInputTokens: integer("compare_text_input_tokens").notNull().default(0),
+  compareTextOutputTokens: integer("compare_text_output_tokens").notNull().default(0),
   projectAddress: text("project_address"),
   projectCity: text("project_city"),
   projectState: text("project_state"),

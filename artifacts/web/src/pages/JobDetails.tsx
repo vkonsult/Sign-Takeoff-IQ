@@ -191,12 +191,11 @@ export default function JobDetails() {
   }
 
   const { job, files, totalSigns, flaggedCount, highConfidenceCount } = data;
-  // Exclude comparison-run signs (text_compare and image) from the main table;
-  // those only appear in the ComparisonPanel.
+  // Exclude image-method signs from the main table; they appear only in the ComparisonPanel.
   const extractedSigns = data.extractedSigns.filter(
     (s: SignRow) => {
       const method = (s as Record<string, unknown>).extractionMethod as string | null | undefined;
-      return method !== "text_compare" && method !== "image";
+      return method !== "image";
     }
   );
   const isProcessing = job.status === "processing" || extractMutation.isPending;
