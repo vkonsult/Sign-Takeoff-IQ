@@ -129,28 +129,28 @@ router.delete("/jobs", async (req, res) => {
       ? eq(jobsTable.organizationId, user.organizationId)
       : undefined;
 
-    // Delete first — only rows the caller is authorized to touch are removed.
-    // The returned IDs are the authoritative list of what was actually deleted.
+    // Collect file paths BEFORE deleting so ON DELETE CASCADE doesn't wipe them first.
+    const filesToDelete = await db
+      .select({ storedPath: jobFilesTable.storedPath, jobId: jobFilesTable.jobId })
+      .from(jobFilesTable)
+      .innerJoin(jobsTable, eq(jobFilesTable.jobId, jobsTable.id))
+      .where(and(inArray(jobsTable.id, ids), orgCondition));
+
+    // Delete jobs — org-scoped; only authorized rows are removed.
     const deleted = await db
       .delete(jobsTable)
       .where(and(inArray(jobsTable.id, ids), orgCondition))
       .returning({ id: jobsTable.id });
 
-    const deletedIds = deleted.map((r) => r.id);
+    const deletedIds = new Set(deleted.map((r) => r.id));
 
-    // Only clean up files for jobs that were actually deleted (org-scoped).
-    if (deletedIds.length > 0) {
-      const files = await db
-        .select({ storedPath: jobFilesTable.storedPath })
-        .from(jobFilesTable)
-        .where(inArray(jobFilesTable.jobId, deletedIds));
-
-      for (const f of files) {
-        try {
-          await fs.unlink(f.storedPath);
-        } catch {
-          // ignore if already gone
-        }
+    // Only unlink disk files for jobs that were actually deleted.
+    for (const f of filesToDelete) {
+      if (!deletedIds.has(f.jobId)) continue;
+      try {
+        await fs.unlink(f.storedPath);
+      } catch {
+        // ignore if already gone
       }
     }
 
