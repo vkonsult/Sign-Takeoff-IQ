@@ -107,8 +107,20 @@ function ProtectedRoute({ component: Component }: { component: React.ComponentTy
 }
 
 function AdminRoute({ component: Component }: { component: React.ComponentType }) {
-  const { isLoaded, isAdmin } = useUserRole();
+  const { isLoaded, isAdmin, isSuperAdmin } = useUserRole();
   const { isSignedIn } = useUser();
+  const [location] = useLocation();
+
+  const orgQuery = useQuery({
+    queryKey: ["admin-org-onboarding-check"],
+    queryFn: async () => {
+      const res = await apiFetch("/api/admin/org");
+      if (!res.ok) return null;
+      return res.json() as Promise<{ organization: { onboardingComplete: boolean } }>;
+    },
+    enabled: !isGuestMode() && isLoaded && isAdmin && !isSuperAdmin && !!isSignedIn,
+    staleTime: 30_000,
+  });
 
   if (isGuestMode()) {
     return <Component />;
@@ -118,6 +130,19 @@ function AdminRoute({ component: Component }: { component: React.ComponentType }
   }
   if (isLoaded && !isAdmin) {
     return <Redirect to="/jobs" />;
+  }
+  if (isAdmin && !isSuperAdmin && orgQuery.isLoading) {
+    return null;
+  }
+  if (
+    isAdmin &&
+    !isSuperAdmin &&
+    orgQuery.data !== undefined &&
+    orgQuery.data !== null &&
+    !orgQuery.data.organization.onboardingComplete &&
+    location !== "/onboarding"
+  ) {
+    return <Redirect to="/onboarding" />;
   }
   return <Component />;
 }

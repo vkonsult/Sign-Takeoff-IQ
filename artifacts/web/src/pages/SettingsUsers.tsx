@@ -21,6 +21,7 @@ type Member = {
   role: string;
   organizationId: string;
   createdAt: string;
+  lastLoginAt: string | null;
 };
 
 // Roles that a TENANT ADMIN can create/assign
@@ -305,6 +306,7 @@ export default function SettingsUsers() {
                 <tr className="border-b border-border bg-secondary/30">
                   <th className="px-4 py-3 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wider">Member</th>
                   <th className="px-4 py-3 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wider">Role</th>
+                  <th className="px-4 py-3 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wider">Last Login</th>
                   <th className="px-4 py-3 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wider">Joined</th>
                   <th className="px-4 py-3 text-right text-xs font-semibold text-muted-foreground uppercase tracking-wider">Actions</th>
                 </tr>
@@ -362,6 +364,9 @@ export default function SettingsUsers() {
                             {(updateRoleMutation.error as Error).message}
                           </p>
                         )}
+                      </td>
+                      <td className="px-4 py-3 text-xs text-muted-foreground">
+                        {m.lastLoginAt ? format(new Date(m.lastLoginAt), "MMM d, yyyy") : "—"}
                       </td>
                       <td className="px-4 py-3 text-xs text-muted-foreground">
                         {format(new Date(m.createdAt), "MMM d, yyyy")}

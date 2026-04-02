@@ -166,6 +166,12 @@ function NewOrgModal({ onClose, onCreated }: { onClose: () => void; onCreated: (
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
+    // Validate: if any owner field is filled, require all three
+    const ownerAny = form.ownerEmail || form.ownerFirstName || form.ownerLastName;
+    if (ownerAny && (!form.ownerEmail || !form.ownerFirstName || !form.ownerLastName)) {
+      setError("Please fill in all three owner fields (first name, last name, and email) or leave all empty.");
+      return;
+    }
     setLoading(true);
     try {
       const body: Record<string, string | null> = {
@@ -177,10 +183,10 @@ function NewOrgModal({ onClose, onCreated }: { onClose: () => void; onCreated: (
         website: form.website || null,
         logoUrl: form.logoUrl || null,
       };
-      if (form.ownerEmail) {
-        body.ownerFirstName = form.ownerFirstName || null;
-        body.ownerLastName = form.ownerLastName || null;
-        body.ownerEmail = form.ownerEmail || null;
+      if (form.ownerEmail && form.ownerFirstName && form.ownerLastName) {
+        body.ownerFirstName = form.ownerFirstName;
+        body.ownerLastName = form.ownerLastName;
+        body.ownerEmail = form.ownerEmail;
       }
       const res = await apiFetch("/api/admin/organizations", {
         method: "POST",
