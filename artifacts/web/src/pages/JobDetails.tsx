@@ -137,15 +137,17 @@ export default function JobDetails() {
         };
       }
     });
-    // Persist to server (fire-and-forget; server will reflect on next full fetch)
+    // Persist to server; revert optimistic update on any failure
     try {
-      await fetch(`/api/extracted-signs/${signId}`, {
+      const res = await fetch(`/api/extracted-signs/${signId}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ hidden: next }),
       });
+      if (!res.ok) {
+        queryClient.invalidateQueries({ queryKey: getGetJobQueryKey(jobId) });
+      }
     } catch {
-      // Revert on failure by invalidating the query
       queryClient.invalidateQueries({ queryKey: getGetJobQueryKey(jobId) });
     }
   };
