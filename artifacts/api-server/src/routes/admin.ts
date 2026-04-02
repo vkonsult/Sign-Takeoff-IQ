@@ -31,11 +31,12 @@ const uploadLogo = multer({
   storage: logoStorage,
   limits: { fileSize: 5 * 1024 * 1024 }, // 5 MB
   fileFilter: (_req, file, cb) => {
-    const allowed = ["image/png", "image/jpeg", "image/gif", "image/svg+xml", "image/webp"];
+    // SVG excluded — it may embed scripts (XSS risk when served publicly)
+    const allowed = ["image/png", "image/jpeg", "image/webp", "image/gif"];
     if (allowed.includes(file.mimetype)) {
       cb(null, true);
     } else {
-      cb(new Error("Only image files are allowed for logos"));
+      cb(new Error("Only PNG, JPEG, WebP, or GIF images are allowed for logos"));
     }
   },
 });

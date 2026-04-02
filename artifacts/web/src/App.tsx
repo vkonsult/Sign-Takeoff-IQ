@@ -202,6 +202,40 @@ function OnboardingGuard({ component: Component }: { component: React.ComponentT
   return <Component />;
 }
 
+/** Guard for /onboarding: must be signed-in ADMIN; redirect away if already complete. */
+function OnboardingRoute({ component: Component }: { component: React.ComponentType }) {
+  const { isLoaded, isAdmin, isSuperAdmin } = useUserRole();
+  const { isSignedIn } = useUser();
+
+  const orgQuery = useQuery({
+    queryKey: ["admin-org-onboarding-check"],
+    queryFn: async () => {
+      const res = await apiFetch("/api/admin/org");
+      if (!res.ok) return null;
+      return res.json() as Promise<{ organization: { onboardingComplete: boolean } }>;
+    },
+    enabled: !isGuestMode() && isLoaded && isAdmin && !isSuperAdmin && !!isSignedIn,
+    staleTime: 30_000,
+  });
+
+  if (!isSignedIn) {
+    return <Redirect to="/sign-in" />;
+  }
+  if (!isLoaded) {
+    return null;
+  }
+  if (!isAdmin || isSuperAdmin) {
+    return <Redirect to="/jobs" />;
+  }
+  if (orgQuery.isLoading) {
+    return null;
+  }
+  if (orgQuery.data?.organization?.onboardingComplete) {
+    return <Redirect to="/jobs" />;
+  }
+  return <Component />;
+}
+
 function HomeRoute() {
   if (isGuestMode()) {
     return <Redirect to="/jobs" />;
@@ -224,7 +258,9 @@ function Router() {
       <Route path="/" component={HomeRoute} />
       <Route path="/sign-in/*?" component={SignInPage} />
       <Route path="/sign-up/*?" component={SignUpPage} />
-      <Route path="/onboarding" component={OnboardingPage} />
+      <Route path="/onboarding">
+        {() => <OnboardingRoute component={OnboardingPage} />}
+      </Route>
       <Route path="/new-upload">
         {() => <OnboardingGuard component={Home} />}
       </Route>
