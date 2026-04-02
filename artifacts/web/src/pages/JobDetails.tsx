@@ -327,8 +327,8 @@ export default function JobDetails() {
                   accent="primary"
                 />
                 <CostCard 
-                  inputTokens={(job.inputTokens ?? 0) + ((job as Record<string, unknown>).imageInputTokens as number ?? 0)}
-                  outputTokens={(job.outputTokens ?? 0) + ((job as Record<string, unknown>).imageOutputTokens as number ?? 0)}
+                  inputTokens={(data as Record<string, unknown> & { processingCost?: { inputTokens?: number } }).processingCost?.inputTokens ?? (job.inputTokens ?? 0)}
+                  outputTokens={(data as Record<string, unknown> & { processingCost?: { outputTokens?: number } }).processingCost?.outputTokens ?? (job.outputTokens ?? 0)}
                 />
               </div>
               

@@ -259,7 +259,7 @@ export async function processJob(jobId: string): Promise<void> {
           xPos: row.x_pos ?? null,
           yPos: row.y_pos ?? null,
           confidenceScore: row.confidence_score,
-          reviewFlag: row.review_flag,
+          reviewFlag: true,
           extractionMethod: "image",
           rawJson: row as unknown as Record<string, unknown>,
         });

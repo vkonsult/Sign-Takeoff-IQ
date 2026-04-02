@@ -166,12 +166,12 @@ router.get("/jobs/:jobId", async (req, res) => {
     const flaggedCount = extractedSigns.filter((s) => s.reviewFlag).length;
     const highConfidenceCount = extractedSigns.filter((s) => s.confidenceScore >= 0.8).length;
 
-    // Derive comparison run costs from stored token counts (Gemini 2.5 Flash pricing)
+    // Unified processing cost: combines text-pass tokens + visual-scan tokens
     const COST_INPUT = 0.15 / 1_000_000;
     const COST_OUTPUT = 0.60 / 1_000_000;
-    const compareImageCost = job.imageInputTokens * COST_INPUT + job.imageOutputTokens * COST_OUTPUT;
-    const compareTextCost = job.compareTextInputTokens * COST_INPUT + job.compareTextOutputTokens * COST_OUTPUT;
-    const compareTotalCost = compareImageCost + compareTextCost;
+    const combinedInputTokens = (job.inputTokens ?? 0) + (job.imageInputTokens ?? 0);
+    const combinedOutputTokens = (job.outputTokens ?? 0) + (job.imageOutputTokens ?? 0);
+    const combinedCost = combinedInputTokens * COST_INPUT + combinedOutputTokens * COST_OUTPUT;
 
     res.json({
       job,
@@ -186,14 +186,10 @@ router.get("/jobs/:jobId", async (req, res) => {
       totalSigns,
       flaggedCount,
       highConfidenceCount,
-      compareMetrics: {
-        imageInputTokens: job.imageInputTokens,
-        imageOutputTokens: job.imageOutputTokens,
-        textInputTokens: job.compareTextInputTokens,
-        textOutputTokens: job.compareTextOutputTokens,
-        imageCost: compareImageCost,
-        textCost: compareTextCost,
-        totalCost: compareTotalCost,
+      processingCost: {
+        inputTokens: combinedInputTokens,
+        outputTokens: combinedOutputTokens,
+        totalCost: combinedCost,
       },
       // All signs that have x/y coordinates (includes image-pass signs);
       // used by floor-plan marker overlays and "Export Marked PDF".
