@@ -1,12 +1,14 @@
 import { Link, useLocation } from "wouter";
-import { Zap, FileSearch, BarChart3, Download } from "lucide-react";
+import { Zap, FileSearch, BarChart3, Download, Key } from "lucide-react";
 import { setGuestToken } from "@/lib/apiClient";
 import { useEffect, useState } from "react";
 
 export default function LandingPage() {
   const [, setLocation] = useLocation();
   const [guestAvailable, setGuestAvailable] = useState(false);
-  const [guestLoading, setGuestLoading] = useState(false);
+  const [showTokenInput, setShowTokenInput] = useState(false);
+  const [tokenInput, setTokenInput] = useState("");
+  const [tokenError, setTokenError] = useState("");
 
   useEffect(() => {
     fetch("/api/auth/guest-available")
@@ -15,19 +17,21 @@ export default function LandingPage() {
       .catch(() => {});
   }, []);
 
-  async function handleGuestAccess() {
-    setGuestLoading(true);
-    try {
-      const res = await fetch("/api/auth/guest", { method: "POST" });
-      if (!res.ok) return;
-      const { token } = await res.json() as { token: string };
-      setGuestToken(token);
-      setLocation("/jobs");
-    } catch {
-      // ignore
-    } finally {
-      setGuestLoading(false);
+  async function handleTokenSubmit() {
+    if (!tokenInput.trim()) {
+      setTokenError("Please enter the guest access token.");
+      return;
     }
+    const token = tokenInput.trim();
+    const testRes = await fetch("/api/jobs", {
+      headers: { Authorization: `Bearer ${token}` },
+    }).catch(() => null);
+    if (!testRes || testRes.status === 401 || testRes.status === 403) {
+      setTokenError("Invalid token. Please check with your administrator.");
+      return;
+    }
+    setGuestToken(token);
+    setLocation("/jobs");
   }
 
   return (
@@ -50,11 +54,10 @@ export default function LandingPage() {
         <div className="flex items-center gap-3">
           {guestAvailable && (
             <button
-              onClick={handleGuestAccess}
-              disabled={guestLoading}
-              className="px-4 py-2 text-sm font-medium text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50"
+              onClick={() => { setShowTokenInput(true); setTokenError(""); }}
+              className="px-4 py-2 text-sm font-medium text-muted-foreground hover:text-foreground transition-colors"
             >
-              {guestLoading ? "Loading…" : "Continue as Guest"}
+              Continue as Guest
             </button>
           )}
           <Link
@@ -71,6 +74,45 @@ export default function LandingPage() {
           </Link>
         </div>
       </header>
+
+      {/* Guest token modal */}
+      {showTokenInput && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+          <div className="bg-background border border-border rounded-xl shadow-xl p-8 w-full max-w-sm flex flex-col gap-4">
+            <div className="flex items-center gap-3">
+              <Key className="w-5 h-5 text-primary" />
+              <h2 className="font-display font-bold text-foreground text-lg">Guest Access</h2>
+            </div>
+            <p className="text-sm text-muted-foreground">
+              Enter the access token provided by your administrator to continue as a guest.
+            </p>
+            <input
+              type="password"
+              value={tokenInput}
+              onChange={(e) => { setTokenInput(e.target.value); setTokenError(""); }}
+              onKeyDown={(e) => e.key === "Enter" && handleTokenSubmit()}
+              placeholder="Paste token here…"
+              className="w-full px-3 py-2 rounded-lg bg-secondary border border-border text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/50"
+              autoFocus
+            />
+            {tokenError && <p className="text-xs text-red-500">{tokenError}</p>}
+            <div className="flex gap-3 justify-end">
+              <button
+                onClick={() => { setShowTokenInput(false); setTokenInput(""); setTokenError(""); }}
+                className="px-4 py-2 text-sm text-muted-foreground hover:text-foreground transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleTokenSubmit}
+                className="px-4 py-2 rounded-lg bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 transition-colors"
+              >
+                Continue
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Hero */}
       <main className="flex-1 flex flex-col items-center justify-center px-8 py-20 text-center max-w-4xl mx-auto w-full">
@@ -101,11 +143,10 @@ export default function LandingPage() {
           </Link>
           {guestAvailable && (
             <button
-              onClick={handleGuestAccess}
-              disabled={guestLoading}
-              className="px-6 py-3 rounded-lg border border-border text-muted-foreground font-display font-semibold uppercase tracking-wider text-sm hover:bg-secondary/50 transition-all disabled:opacity-50"
+              onClick={() => { setShowTokenInput(true); setTokenError(""); }}
+              className="px-6 py-3 rounded-lg border border-border text-muted-foreground font-display font-semibold uppercase tracking-wider text-sm hover:bg-secondary/50 transition-all"
             >
-              {guestLoading ? "Loading…" : "Continue as Guest"}
+              Continue as Guest
             </button>
           )}
         </div>

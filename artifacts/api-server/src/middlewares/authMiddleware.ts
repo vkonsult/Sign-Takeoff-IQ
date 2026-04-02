@@ -3,7 +3,21 @@ import { getAuth } from "@clerk/express";
 import { db, organizationMembershipsTable } from "@workspace/db";
 import { eq } from "drizzle-orm";
 import { logger } from "../lib/logger";
-import { verifyGuestToken } from "../routes/auth";
+import crypto from "crypto";
+
+const SUPER_ADMIN_GUEST_TOKEN = process.env.SUPER_ADMIN_GUEST_TOKEN ?? "";
+
+function isValidGuestToken(token: string): boolean {
+  if (!SUPER_ADMIN_GUEST_TOKEN || !token) return false;
+  const expected = Buffer.from(SUPER_ADMIN_GUEST_TOKEN, "utf8");
+  const provided = Buffer.from(token, "utf8");
+  if (expected.length !== provided.length) return false;
+  try {
+    return crypto.timingSafeEqual(expected, provided);
+  } catch {
+    return false;
+  }
+}
 
 export type UserRole =
   | "SUPER_ADMIN"
@@ -71,7 +85,7 @@ export function requireAuth(req: Request, res: Response, next: NextFunction): vo
   const authHeader = req.headers.authorization ?? "";
   const bearerToken = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : null;
 
-  if (bearerToken && verifyGuestToken(bearerToken)) {
+  if (bearerToken && isValidGuestToken(bearerToken)) {
     req.authUser = {
       userId: "guest-super-admin",
       role: "SUPER_ADMIN",
