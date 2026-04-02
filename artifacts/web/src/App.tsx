@@ -1,10 +1,11 @@
 import { useEffect, useRef } from "react";
 import { Switch, Route, Redirect, useLocation, Router as WouterRouter } from "wouter";
-import { QueryClient, QueryClientProvider, useQueryClient } from "@tanstack/react-query";
-import { ClerkProvider, SignIn, SignUp, Show, useClerk } from "@clerk/react";
+import { QueryClient, QueryClientProvider, useQueryClient, useQuery } from "@tanstack/react-query";
+import { ClerkProvider, SignIn, SignUp, Show, useClerk, useUser } from "@clerk/react";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import { isGuestMode } from "@/lib/apiClient";
+import { isGuestMode, apiFetch } from "@/lib/apiClient";
+import { useUserRole } from "@/hooks/use-user-role";
 
 import Home from "@/pages/Home";
 import LandingPage from "@/pages/LandingPage";
@@ -12,6 +13,10 @@ import JobsList from "@/pages/JobsList";
 import JobDetails from "@/pages/JobDetails";
 import Training from "@/pages/Training";
 import NotFound from "@/pages/not-found";
+import AdminPanel from "@/pages/AdminPanel";
+import OnboardingPage from "@/pages/OnboardingPage";
+import SettingsCompany from "@/pages/SettingsCompany";
+import SettingsUsers from "@/pages/SettingsUsers";
 
 const clerkPubKey = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY as string;
 const clerkProxyUrl = import.meta.env.VITE_CLERK_PROXY_URL as string | undefined;
@@ -99,6 +104,77 @@ function ProtectedRoute({ component: Component }: { component: React.ComponentTy
   );
 }
 
+function AdminRoute({ component: Component }: { component: React.ComponentType }) {
+  const { isLoaded, isAdmin } = useUserRole();
+  const { isSignedIn } = useUser();
+
+  if (isGuestMode()) {
+    return <Component />;
+  }
+  if (!isSignedIn) {
+    return <Redirect to="/sign-in" />;
+  }
+  if (isLoaded && !isAdmin) {
+    return <Redirect to="/jobs" />;
+  }
+  return <Component />;
+}
+
+function SuperAdminRoute({ component: Component }: { component: React.ComponentType }) {
+  const { isLoaded, isSuperAdmin } = useUserRole();
+  const { isSignedIn } = useUser();
+
+  if (isGuestMode()) {
+    return <Component />;
+  }
+  if (!isSignedIn) {
+    return <Redirect to="/sign-in" />;
+  }
+  if (isLoaded && !isSuperAdmin) {
+    return <Redirect to="/jobs" />;
+  }
+  return <Component />;
+}
+
+/** For ADMIN users, check onboarding_complete; if false, redirect to /onboarding. */
+function OnboardingGuard({ component: Component }: { component: React.ComponentType }) {
+  const { isAdmin, isSuperAdmin, isLoaded } = useUserRole();
+  const { isSignedIn } = useUser();
+  const [location] = useLocation();
+
+  const orgQuery = useQuery({
+    queryKey: ["admin-org-onboarding-check"],
+    queryFn: async () => {
+      const res = await apiFetch("/api/admin/org");
+      if (!res.ok) return null;
+      return res.json() as Promise<{ organization: { onboardingComplete: boolean } }>;
+    },
+    enabled: !isGuestMode() && isLoaded && isAdmin && !isSuperAdmin && !!isSignedIn,
+    staleTime: 30_000,
+  });
+
+  if (isGuestMode()) {
+    return <Component />;
+  }
+  if (!isSignedIn) {
+    return <Redirect to="/sign-in" />;
+  }
+  if (!isLoaded || (isAdmin && !isSuperAdmin && orgQuery.isLoading)) {
+    return null;
+  }
+  if (
+    isAdmin &&
+    !isSuperAdmin &&
+    orgQuery.data !== undefined &&
+    orgQuery.data !== null &&
+    !orgQuery.data.organization.onboardingComplete &&
+    location !== "/onboarding"
+  ) {
+    return <Redirect to="/onboarding" />;
+  }
+  return <Component />;
+}
+
 function HomeRoute() {
   if (isGuestMode()) {
     return <Redirect to="/jobs" />;
@@ -121,17 +197,27 @@ function Router() {
       <Route path="/" component={HomeRoute} />
       <Route path="/sign-in/*?" component={SignInPage} />
       <Route path="/sign-up/*?" component={SignUpPage} />
+      <Route path="/onboarding" component={OnboardingPage} />
       <Route path="/new-upload">
-        {() => <ProtectedRoute component={Home} />}
+        {() => <OnboardingGuard component={Home} />}
       </Route>
       <Route path="/jobs">
-        {() => <ProtectedRoute component={JobsList} />}
+        {() => <OnboardingGuard component={JobsList} />}
       </Route>
       <Route path="/jobs/:jobId">
-        {() => <ProtectedRoute component={JobDetails} />}
+        {() => <OnboardingGuard component={JobDetails} />}
       </Route>
       <Route path="/training">
-        {() => <ProtectedRoute component={Training} />}
+        {() => <OnboardingGuard component={Training} />}
+      </Route>
+      <Route path="/settings">
+        {() => <AdminRoute component={SettingsCompany} />}
+      </Route>
+      <Route path="/settings/users">
+        {() => <AdminRoute component={SettingsUsers} />}
+      </Route>
+      <Route path="/admin">
+        {() => <SuperAdminRoute component={AdminPanel} />}
       </Route>
       <Route component={NotFound} />
     </Switch>

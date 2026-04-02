@@ -52,12 +52,34 @@ lib/
 └── integrations-gemini-ai/ # Gemini AI wrapper (Replit-managed, no user API key)
 ```
 
-## Authentication
+## Authentication & Multi-Tenancy
 
 Clerk is used for authentication. All API routes except `/api/healthz` require a valid Clerk session (cookie-based for web). Role hierarchy: `SUPER_ADMIN` → `ADMIN` → `SALES/ESTIMATOR/PROJECT_MANAGER`.
 
 - **`VITE_CLERK_PUBLISHABLE_KEY`**, **`CLERK_SECRET_KEY`**, **`CLERK_PUBLISHABLE_KEY`** — auto-provisioned secrets
 - **`SUPER_ADMIN_GUEST_TOKEN`** — optional secret; when set, `Authorization: Bearer <token>` bypasses Clerk for SUPER_ADMIN access
+
+### Admin Portals (Task #9 — complete)
+
+**Super Admin** (`/admin`) — platform-wide management:
+- View/create organizations (POST `/api/admin/organizations`)
+- List all users across all orgs (GET `/api/admin/users`)
+- Inline member list per org (GET `/api/admin/organizations/:orgId/members`)
+
+**Tenant Admin** (Settings sidebar section):
+- Company settings (`/settings`) — GET/PATCH `/api/admin/org`
+- User management (`/settings/users`) — GET/POST/PATCH/DELETE `/api/admin/org/members` / `/api/admin/org/users/:id`
+- User creation uses Clerk backend `createUser` + DB membership row; temp password returned to admin
+
+**Onboarding wizard** (`/onboarding`):
+- Multi-step form triggered when ADMIN's org has `onboarding_complete = false`
+- `OnboardingGuard` wraps all standard routes; redirects ADMIN users until wizard is done
+- Completing the wizard PATCHes `onboarding_complete: true`
+
+**Frontend role detection** (`hooks/use-user-role.ts`):
+- Reads `user.publicMetadata.role` + `.organizationId` from Clerk JWT
+- Falls back to "SUPER_ADMIN" in guest (token) mode
+- Sidebar shows role-appropriate nav sections automatically
 - Frontend: `ClerkProvider` in `App.tsx`; `/sign-in` and `/sign-up` routes; `<Show>` guards on protected pages
 - API: `clerkMiddleware()` in `app.ts`; `requireAuth` middleware from `src/middlewares/authMiddleware.ts`; `requireRole(...)` factory for role-based guards
 
