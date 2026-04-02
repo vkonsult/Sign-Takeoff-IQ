@@ -61,27 +61,28 @@ Clerk is used for authentication. All API routes except `/api/healthz` require a
 
 ### Admin Portals (Task #9 — complete)
 
-**Super Admin** (`/admin`) — platform-wide management:
-- View/create organizations (POST `/api/admin/organizations`)
-- List all users across all orgs (GET `/api/admin/users`)
-- Inline member list per org (GET `/api/admin/organizations/:orgId/members`)
+**Super Admin** routes (`/admin/*`) — platform-wide management, `requireRole("SUPER_ADMIN")` on all backend routes:
+- `/admin` → Dashboard (stats: org count, user count, job count via `GET /api/admin/stats`)
+- `/admin/organizations` → Org list with job count + last activity (`GET /api/admin/organizations`), create org with optional owner Clerk invitation (`POST /api/admin/organizations`), update org (`PATCH /api/admin/organizations/:orgId`), list members (`GET /api/admin/organizations/:orgId/members`)
+- `/admin/users` → All users across all orgs enriched with Clerk `lastSignInAt` (`GET /api/admin/users`)
+- Logo upload: `POST /api/admin/logo` (ADMIN+), served statically at `/api/logos/:filename` before auth
 
-**Tenant Admin** (Settings sidebar section):
-- Company settings (`/settings`) — GET/PATCH `/api/admin/org`
-- User management (`/settings/users`) — GET/POST/PATCH/DELETE `/api/admin/org/members` / `/api/admin/org/users/:id`
-- User creation uses Clerk backend `createUser` + DB membership row; temp password returned to admin
+**Tenant Admin** (settings sidebar — ADMIN only, not SUPER_ADMIN):
+- `/settings` → Company profile (`GET /PATCH /api/admin/org`)
+- `/settings/users` → Team members with last-login column (`GET /api/admin/org/members` enriched with Clerk `lastSignInAt`); create user (`POST /api/admin/users`), update role (`PATCH /api/admin/users/:membershipId`), remove (`DELETE /api/admin/users/:membershipId`)
+- User creation: admin sets password directly; Clerk `createUser` + DB membership row; no temp password returned
 
 **Onboarding wizard** (`/onboarding`):
-- Multi-step form triggered when ADMIN's org has `onboarding_complete = false`
-- `OnboardingGuard` wraps all standard routes; redirects ADMIN users until wizard is done
-- Completing the wizard PATCHes `onboarding_complete: true`
+- 2-step form: Step 1 = company info (PATCHes org fields), Step 2 = logo upload (PATCHes logoUrl + `onboardingComplete: true`, then redirects to `/jobs`)
+- `AdminRoute` and `OnboardingRoute` redirect tenant ADMINs to `/onboarding` when `onboardingComplete = false`
+- Completing the wizard auto-redirects to `/jobs`
 
 **Frontend role detection** (`hooks/use-user-role.ts`):
 - Reads `user.publicMetadata.role` + `.organizationId` from Clerk JWT
 - Falls back to "SUPER_ADMIN" in guest (token) mode
 - Sidebar shows role-appropriate nav sections automatically
 - Frontend: `ClerkProvider` in `App.tsx`; `/sign-in` and `/sign-up` routes; `<Show>` guards on protected pages
-- API: `clerkMiddleware()` in `app.ts`; `requireAuth` middleware from `src/middlewares/authMiddleware.ts`; `requireRole(...)` factory for role-based guards
+- API: `clerkMiddleware()` in `app.ts`; `requireAuth` from `src/middlewares/authMiddleware.ts`; `requireRole(...)` factory for role-based guards
 
 ## Database Schema
 
