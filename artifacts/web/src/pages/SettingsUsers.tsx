@@ -9,7 +9,6 @@ import {
   Trash2,
   AlertCircle,
   X,
-  Copy,
   CheckCircle2,
 } from "lucide-react";
 import { useUserRole } from "@/hooks/use-user-role";
@@ -54,15 +53,13 @@ function RoleBadge({ role }: { role: string }) {
   );
 }
 
-type NewUserResult = { membership: Member; tempPassword: string };
-
 function NewUserModal({
   onClose,
   onCreated,
   isSuperAdmin,
 }: {
   onClose: () => void;
-  onCreated: (result: NewUserResult) => void;
+  onCreated: (member: Member) => void;
   isSuperAdmin: boolean;
 }) {
   const roleOptions = isSuperAdmin ? ALL_ROLES : TENANT_ROLES;
@@ -70,10 +67,14 @@ function NewUserModal({
     firstName: "",
     lastName: "",
     email: "",
+    phone: "",
+    password: "",
     role: roleOptions[0].value as string,
   });
+  const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [success, setSuccess] = useState(false);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -83,20 +84,46 @@ function NewUserModal({
       const res = await apiFetch("/api/admin/users", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(form),
+        body: JSON.stringify({
+          firstName: form.firstName,
+          lastName: form.lastName,
+          email: form.email,
+          phone: form.phone || undefined,
+          password: form.password,
+          role: form.role,
+        }),
       });
       const data = await res.json();
       if (!res.ok) {
         setError(data.error ?? "Failed to create user");
         return;
       }
-      onCreated(data as NewUserResult);
+      setSuccess(true);
+      setTimeout(() => {
+        onCreated(data.membership as Member);
+      }, 1200);
     } catch {
       setError("Network error");
     } finally {
       setLoading(false);
     }
   };
+
+  if (success) {
+    return (
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+        <div className="bg-card border border-border rounded-xl shadow-2xl w-full max-w-sm p-6 text-center space-y-3">
+          <div className="w-12 h-12 rounded-full bg-green-900/30 flex items-center justify-center mx-auto">
+            <CheckCircle2 className="w-6 h-6 text-green-400" />
+          </div>
+          <h2 className="font-display font-semibold text-foreground">User Created!</h2>
+          <p className="text-sm text-muted-foreground">
+            <strong className="text-foreground">{form.firstName} {form.lastName}</strong> has been added and can sign in with the password you set.
+          </p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
@@ -114,7 +141,7 @@ function NewUserModal({
               {error}
             </div>
           )}
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1">
               <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">First Name *</label>
               <input required value={form.firstName} onChange={(e) => setForm((p) => ({ ...p, firstName: e.target.value }))}
@@ -133,6 +160,28 @@ function NewUserModal({
               placeholder="name@company.com" />
           </div>
           <div className="space-y-1">
+            <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Phone <span className="font-normal normal-case">(optional)</span></label>
+            <input type="tel" value={form.phone} onChange={(e) => setForm((p) => ({ ...p, phone: e.target.value }))}
+              className="w-full px-3 py-2 rounded-lg bg-secondary border border-border text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary/50"
+              placeholder="+1 555-000-0000" />
+          </div>
+          <div className="space-y-1">
+            <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Password *</label>
+            <div className="relative">
+              <input required minLength={8} type={showPassword ? "text" : "password"} value={form.password}
+                onChange={(e) => setForm((p) => ({ ...p, password: e.target.value }))}
+                className="w-full px-3 py-2 pr-16 rounded-lg bg-secondary border border-border text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary/50"
+                placeholder="Min 8 characters" />
+              <button type="button" onClick={() => setShowPassword((v) => !v)}
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-muted-foreground hover:text-foreground transition-colors px-1">
+                {showPassword ? "Hide" : "Show"}
+              </button>
+            </div>
+            <p className="text-[10px] text-muted-foreground">
+              The user will sign in with this password. Share it with them securely.
+            </p>
+          </div>
+          <div className="space-y-1">
             <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Role *</label>
             <select value={form.role} onChange={(e) => setForm((p) => ({ ...p, role: e.target.value }))}
               className="w-full px-3 py-2 rounded-lg bg-secondary border border-border text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary/50">
@@ -146,9 +195,6 @@ function NewUserModal({
               </p>
             )}
           </div>
-          <p className="text-xs text-muted-foreground">
-            A temporary password will be generated and shown once. Share it securely.
-          </p>
           <div className="flex gap-3 pt-1">
             <button type="button" onClick={onClose}
               className="flex-1 px-4 py-2 rounded-lg border border-border text-sm font-medium text-muted-foreground hover:bg-secondary transition-colors">
@@ -165,50 +211,10 @@ function NewUserModal({
   );
 }
 
-function TempPasswordModal({ result, onClose }: { result: NewUserResult; onClose: () => void }) {
-  const [copied, setCopied] = useState(false);
-  const copy = () => {
-    navigator.clipboard.writeText(result.tempPassword).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    });
-  };
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
-      <div className="bg-card border border-border rounded-xl shadow-2xl w-full max-w-sm">
-        <div className="p-6 text-center space-y-4">
-          <div className="w-12 h-12 rounded-full bg-green-900/30 flex items-center justify-center mx-auto">
-            <CheckCircle2 className="w-6 h-6 text-green-400" />
-          </div>
-          <h2 className="font-display font-semibold text-foreground">User Created!</h2>
-          <p className="text-sm text-muted-foreground">
-            <strong className="text-foreground">{result.membership.fullName}</strong> has been added.
-            Share this temporary password securely:
-          </p>
-          <div className="flex items-center gap-2 bg-secondary rounded-lg px-3 py-2">
-            <code className="flex-1 text-sm font-mono text-foreground text-left break-all">
-              {result.tempPassword}
-            </code>
-            <button onClick={copy} className="text-muted-foreground hover:text-foreground flex-shrink-0">
-              {copied ? <CheckCircle2 className="w-4 h-4 text-green-400" /> : <Copy className="w-4 h-4" />}
-            </button>
-          </div>
-          <p className="text-xs text-amber-400">This password will not be shown again.</p>
-          <button onClick={onClose}
-            className="w-full px-4 py-2.5 bg-primary text-primary-foreground rounded-lg text-sm font-medium hover:bg-primary/90 transition-colors">
-            Done
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
 export default function SettingsUsers() {
   const { isSuperAdmin } = useUserRole();
   const queryClient = useQueryClient();
   const [showNewUser, setShowNewUser] = useState(false);
-  const [newUserResult, setNewUserResult] = useState<NewUserResult | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
   const [roleEditing, setRoleEditing] = useState<string | null>(null);
   const [roleValue, setRoleValue] = useState<string>("");
@@ -252,7 +258,6 @@ export default function SettingsUsers() {
 
   const members = membersQuery.data?.members ?? [];
 
-  // Role options available when editing — ADMIN callers cannot assign ADMIN role
   const editRoleOptions = isSuperAdmin ? ALL_ROLES : TENANT_ROLES;
 
   return (
@@ -306,7 +311,6 @@ export default function SettingsUsers() {
               </thead>
               <tbody>
                 {members.map((m) => {
-                  // ADMIN cannot modify/remove SUPER_ADMIN or another ADMIN
                   const isProtected =
                     m.role === "SUPER_ADMIN" ||
                     (!isSuperAdmin && m.role === "ADMIN");
@@ -404,15 +408,11 @@ export default function SettingsUsers() {
         <NewUserModal
           isSuperAdmin={isSuperAdmin}
           onClose={() => setShowNewUser(false)}
-          onCreated={(result) => {
+          onCreated={(_member) => {
             setShowNewUser(false);
-            setNewUserResult(result);
             queryClient.invalidateQueries({ queryKey: ["admin-org-members-settings"] });
           }}
         />
-      )}
-      {newUserResult && (
-        <TempPasswordModal result={newUserResult} onClose={() => setNewUserResult(null)} />
       )}
     </AdminShell>
   );

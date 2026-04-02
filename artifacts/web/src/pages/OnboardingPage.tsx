@@ -16,19 +16,20 @@ export default function OnboardingPage() {
   const [, navigate] = useLocation();
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const [step, setStep] = useState<1 | 2>(1);
-  const [form, setForm] = useState({
+  const [step, setStep] = useState<1 | 2 | 3>(1);
+  const [companyInfo, setCompanyInfo] = useState({
     name: "",
     email: "",
     phone: "",
     address: "",
     website: "",
-    logoUrl: "",
   });
+  const [logoUrl, setLogoUrl] = useState("");
   const [logoPreview, setLogoPreview] = useState<string | null>(null);
   const [logoUploading, setLogoUploading] = useState(false);
   const [logoError, setLogoError] = useState<string | null>(null);
-  const [saving, setSaving] = useState(false);
+  const [savingInfo, setSavingInfo] = useState(false);
+  const [savingLogo, setSavingLogo] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const handleLogoFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -38,7 +39,7 @@ export default function OnboardingPage() {
     setLogoUploading(true);
     try {
       const url = await uploadLogoFile(file);
-      setForm((p) => ({ ...p, logoUrl: url }));
+      setLogoUrl(url);
       setLogoPreview(url);
     } catch (err) {
       setLogoError((err as Error).message);
@@ -48,34 +49,59 @@ export default function OnboardingPage() {
     }
   };
 
-  const handleSave = async () => {
-    setSaving(true);
+  // Step 1 → Step 2: Save company info (not complete yet)
+  const handleSaveInfo = async () => {
+    if (!companyInfo.name.trim()) return;
+    setSavingInfo(true);
     setError(null);
     try {
       const res = await apiFetch("/api/admin/org", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          name: form.name || undefined,
-          email: form.email || null,
-          phone: form.phone || null,
-          address: form.address || null,
-          website: form.website || null,
-          logoUrl: form.logoUrl || null,
-          onboardingComplete: true,
+          name: companyInfo.name,
+          email: companyInfo.email || null,
+          phone: companyInfo.phone || null,
+          address: companyInfo.address || null,
+          website: companyInfo.website || null,
         }),
       });
       const data = await res.json();
       if (!res.ok) {
-        setError(data.error ?? "Failed to save");
-        setSaving(false);
+        setError(data.error ?? "Failed to save company info");
         return;
       }
       setStep(2);
     } catch {
       setError("Network error");
     } finally {
-      setSaving(false);
+      setSavingInfo(false);
+    }
+  };
+
+  // Step 2 → Done: Save logo + mark onboarding complete
+  const handleFinish = async (skipLogo = false) => {
+    setSavingLogo(true);
+    setError(null);
+    try {
+      const res = await apiFetch("/api/admin/org", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          logoUrl: skipLogo ? null : (logoUrl || null),
+          onboardingComplete: true,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setError(data.error ?? "Failed to complete setup");
+        return;
+      }
+      setStep(3);
+    } catch {
+      setError("Network error");
+    } finally {
+      setSavingLogo(false);
     }
   };
 
@@ -102,9 +128,10 @@ export default function OnboardingPage() {
           ))}
         </div>
 
+        {/* ── Step 1: Company Info ── */}
         {step === 1 && (
           <div className="bg-card border border-border rounded-2xl shadow-lg overflow-hidden">
-            <div className="px-8 pt-8 pb-6 border-b border-border">
+            <div className="px-8 pt-8 pb-5 border-b border-border">
               <div className="flex items-center gap-3 mb-1">
                 <div className="w-8 h-8 rounded bg-primary flex items-center justify-center flex-shrink-0">
                   <svg viewBox="0 0 24 24" fill="none" className="w-4 h-4 stroke-white" strokeWidth="2">
@@ -114,66 +141,17 @@ export default function OnboardingPage() {
                   </svg>
                 </div>
                 <div>
-                  <h1 className="text-lg font-display font-bold text-foreground">Set Up Your Company</h1>
-                  <p className="text-xs text-muted-foreground">Step 1 of 2 — Company profile</p>
+                  <h1 className="text-lg font-display font-bold text-foreground">Company Info</h1>
+                  <p className="text-xs text-muted-foreground">Step 1 of 2 — Tell us about your company</p>
                 </div>
               </div>
             </div>
 
-            <div className="p-8 space-y-5">
-              {/* Logo */}
-              <div>
-                <label className="block text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3">
-                  Company Logo
-                </label>
-                <div className="flex items-center gap-4">
-                  <div className="w-14 h-14 rounded-xl border border-border bg-secondary flex items-center justify-center flex-shrink-0 overflow-hidden">
-                    {logoPreview ? (
-                      <img src={logoPreview} alt="Logo" className="w-full h-full object-contain p-1" />
-                    ) : (
-                      <span className="text-xl font-display font-bold text-muted-foreground">
-                        {(form.name || "?")[0]?.toUpperCase()}
-                      </span>
-                    )}
-                  </div>
-                  <div className="flex-1 space-y-2">
-                    <div className="flex items-center gap-2">
-                      <button
-                        type="button"
-                        onClick={() => fileInputRef.current?.click()}
-                        disabled={logoUploading}
-                        className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-border text-xs font-medium text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors disabled:opacity-50"
-                      >
-                        <Upload className="w-3.5 h-3.5" />
-                        {logoUploading ? "Uploading…" : "Upload Logo"}
-                      </button>
-                      {form.logoUrl && (
-                        <button type="button"
-                          onClick={() => { setForm((p) => ({ ...p, logoUrl: "" })); setLogoPreview(null); }}
-                          className="p-1 rounded text-muted-foreground hover:text-destructive transition-colors">
-                          <X className="w-3 h-3" />
-                        </button>
-                      )}
-                    </div>
-                    <input
-                      value={form.logoUrl}
-                      onChange={(e) => { setForm((p) => ({ ...p, logoUrl: e.target.value })); setLogoPreview(e.target.value || null); }}
-                      className="w-full px-2 py-1.5 rounded-lg bg-secondary border border-border text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-primary/50"
-                      placeholder="or paste a logo URL…"
-                    />
-                    {logoError && <p className="text-xs text-destructive">{logoError}</p>}
-                    <input ref={fileInputRef} type="file" accept="image/*" onChange={handleLogoFileChange} className="hidden" />
-                  </div>
-                </div>
-              </div>
-
-              {/* Company name */}
+            <div className="p-8 space-y-4">
               <div className="space-y-1">
-                <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
-                  Company Name *
-                </label>
-                <input required value={form.name}
-                  onChange={(e) => setForm((p) => ({ ...p, name: e.target.value }))}
+                <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Company Name *</label>
+                <input required value={companyInfo.name}
+                  onChange={(e) => setCompanyInfo((p) => ({ ...p, name: e.target.value }))}
                   className="w-full px-3 py-2.5 rounded-lg bg-secondary border border-border text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary/50"
                   placeholder="Acme Sign & Display" />
               </div>
@@ -181,30 +159,30 @@ export default function OnboardingPage() {
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-1">
                   <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Email</label>
-                  <input type="email" value={form.email}
-                    onChange={(e) => setForm((p) => ({ ...p, email: e.target.value }))}
+                  <input type="email" value={companyInfo.email}
+                    onChange={(e) => setCompanyInfo((p) => ({ ...p, email: e.target.value }))}
                     className="w-full px-3 py-2.5 rounded-lg bg-secondary border border-border text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary/50"
                     placeholder="contact@co.com" />
                 </div>
                 <div className="space-y-1">
                   <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Phone</label>
-                  <input value={form.phone}
-                    onChange={(e) => setForm((p) => ({ ...p, phone: e.target.value }))}
+                  <input value={companyInfo.phone}
+                    onChange={(e) => setCompanyInfo((p) => ({ ...p, phone: e.target.value }))}
                     className="w-full px-3 py-2.5 rounded-lg bg-secondary border border-border text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary/50"
                     placeholder="+1 555-000-0000" />
                 </div>
               </div>
               <div className="space-y-1">
                 <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Address</label>
-                <input value={form.address}
-                  onChange={(e) => setForm((p) => ({ ...p, address: e.target.value }))}
+                <input value={companyInfo.address}
+                  onChange={(e) => setCompanyInfo((p) => ({ ...p, address: e.target.value }))}
                   className="w-full px-3 py-2.5 rounded-lg bg-secondary border border-border text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary/50"
                   placeholder="123 Main St, City, ST 00000" />
               </div>
               <div className="space-y-1">
                 <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Website</label>
-                <input value={form.website}
-                  onChange={(e) => setForm((p) => ({ ...p, website: e.target.value }))}
+                <input value={companyInfo.website}
+                  onChange={(e) => setCompanyInfo((p) => ({ ...p, website: e.target.value }))}
                   className="w-full px-3 py-2.5 rounded-lg bg-secondary border border-border text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary/50"
                   placeholder="https://company.com" />
               </div>
@@ -216,18 +194,113 @@ export default function OnboardingPage() {
               )}
 
               <button
-                onClick={handleSave}
-                disabled={saving || !form.name.trim() || logoUploading}
+                onClick={handleSaveInfo}
+                disabled={savingInfo || !companyInfo.name.trim()}
                 className="w-full flex items-center justify-center gap-2 py-3 bg-primary text-primary-foreground rounded-xl text-sm font-semibold hover:bg-primary/90 transition-colors disabled:opacity-50 mt-2"
               >
-                {saving ? "Saving…" : "Continue"}
-                {!saving && <ArrowRight className="w-4 h-4" />}
+                {savingInfo ? "Saving…" : "Continue"}
+                {!savingInfo && <ArrowRight className="w-4 h-4" />}
               </button>
             </div>
           </div>
         )}
 
+        {/* ── Step 2: Logo Upload ── */}
         {step === 2 && (
+          <div className="bg-card border border-border rounded-2xl shadow-lg overflow-hidden">
+            <div className="px-8 pt-8 pb-5 border-b border-border">
+              <div className="flex items-center gap-3 mb-1">
+                <div className="w-8 h-8 rounded bg-primary flex items-center justify-center flex-shrink-0">
+                  <Upload className="w-4 h-4 text-white" />
+                </div>
+                <div>
+                  <h1 className="text-lg font-display font-bold text-foreground">Company Logo</h1>
+                  <p className="text-xs text-muted-foreground">Step 2 of 2 — Upload your logo (optional)</p>
+                </div>
+              </div>
+            </div>
+
+            <div className="p-8 space-y-5">
+              {/* Logo preview */}
+              <div className="flex flex-col items-center gap-4">
+                <div className="w-24 h-24 rounded-2xl border-2 border-dashed border-border bg-secondary flex items-center justify-center overflow-hidden">
+                  {logoPreview ? (
+                    <img src={logoPreview} alt="Logo preview" className="w-full h-full object-contain p-2" />
+                  ) : (
+                    <div className="text-center">
+                      <Upload className="w-6 h-6 text-muted-foreground mx-auto mb-1" />
+                      <p className="text-[10px] text-muted-foreground">No logo</p>
+                    </div>
+                  )}
+                </div>
+
+                <div className="space-y-3 w-full">
+                  <div className="flex items-center justify-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => fileInputRef.current?.click()}
+                      disabled={logoUploading}
+                      className="flex items-center gap-1.5 px-4 py-2 rounded-lg border border-border text-sm font-medium text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors disabled:opacity-50"
+                    >
+                      <Upload className="w-3.5 h-3.5" />
+                      {logoUploading ? "Uploading…" : "Choose File"}
+                    </button>
+                    {logoPreview && (
+                      <button type="button"
+                        onClick={() => { setLogoUrl(""); setLogoPreview(null); }}
+                        className="flex items-center gap-1 px-2 py-2 text-muted-foreground hover:text-destructive text-sm transition-colors">
+                        <X className="w-3.5 h-3.5" /> Remove
+                      </button>
+                    )}
+                    <input ref={fileInputRef} type="file" accept="image/*" onChange={handleLogoFileChange} className="hidden" />
+                  </div>
+
+                  <div className="space-y-1">
+                    <p className="text-xs text-muted-foreground text-center">or paste a URL</p>
+                    <input
+                      value={logoUrl}
+                      onChange={(e) => { setLogoUrl(e.target.value); setLogoPreview(e.target.value || null); }}
+                      className="w-full px-3 py-2 rounded-lg bg-secondary border border-border text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary/50"
+                      placeholder="https://…/logo.png"
+                    />
+                  </div>
+
+                  {logoError && <p className="text-xs text-destructive text-center">{logoError}</p>}
+                </div>
+              </div>
+
+              <p className="text-xs text-muted-foreground text-center">
+                Supported formats: PNG, JPG, SVG, WebP · Max 5 MB
+              </p>
+
+              {error && (
+                <p className="text-sm text-destructive bg-destructive/10 border border-destructive/20 rounded-lg px-3 py-2 text-center">
+                  {error}
+                </p>
+              )}
+
+              <div className="flex gap-3">
+                <button
+                  onClick={() => handleFinish(true)}
+                  disabled={savingLogo || logoUploading}
+                  className="flex-1 px-4 py-3 border border-border rounded-xl text-sm font-medium text-muted-foreground hover:bg-secondary transition-colors disabled:opacity-50"
+                >
+                  Skip
+                </button>
+                <button
+                  onClick={() => handleFinish(false)}
+                  disabled={savingLogo || logoUploading}
+                  className="flex-1 flex items-center justify-center gap-2 py-3 bg-primary text-primary-foreground rounded-xl text-sm font-semibold hover:bg-primary/90 transition-colors disabled:opacity-50"
+                >
+                  {savingLogo ? "Finishing…" : "Finish Setup"}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ── Done ── */}
+        {step === 3 && (
           <div className="bg-card border border-border rounded-2xl shadow-lg p-8 text-center space-y-5">
             <div className="w-14 h-14 rounded-full bg-green-900/30 flex items-center justify-center mx-auto">
               <CheckCircle2 className="w-7 h-7 text-green-400" />
@@ -235,7 +308,7 @@ export default function OnboardingPage() {
             <div>
               <h2 className="text-xl font-display font-bold text-foreground mb-1">You're all set!</h2>
               <p className="text-sm text-muted-foreground">
-                {form.name || "Your company"} is ready to start processing sign takeoffs.
+                {companyInfo.name || "Your company"} is ready to start processing sign takeoffs.
               </p>
             </div>
             <div className="bg-secondary/50 rounded-xl border border-border p-4 text-left space-y-2">

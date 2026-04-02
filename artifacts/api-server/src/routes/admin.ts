@@ -5,7 +5,7 @@ import {
   organizationMembershipsTable,
   jobsTable,
 } from "@workspace/db";
-import { desc, eq, and, count, sql } from "drizzle-orm";
+import { desc, eq, and, count, max } from "drizzle-orm";
 import { requireRole } from "../middlewares/authMiddleware";
 import { createClerkClient } from "@clerk/express";
 import { z } from "zod/v4";
@@ -50,7 +50,7 @@ router.post("/admin/logo", requireRole("ADMIN"), uploadLogo.single("logo"), (req
   res.json({ url });
 });
 
-// ── SUPER ADMIN: List all organizations (with job count) ─────────────────────
+// ── SUPER ADMIN: List all organizations (with job count + last activity) ──────
 router.get("/admin/organizations", requireRole("SUPER_ADMIN"), async (req, res) => {
   try {
     const orgs = await db
@@ -66,7 +66,8 @@ router.get("/admin/organizations", requireRole("SUPER_ADMIN"), async (req, res) 
         onboardingComplete: organizationsTable.onboardingComplete,
         createdAt: organizationsTable.createdAt,
         updatedAt: organizationsTable.updatedAt,
-        jobCount: count(jobsTable.id).as("job_count"),
+        jobCount: count(jobsTable.id),
+        lastActivity: max(jobsTable.createdAt),
       })
       .from(organizationsTable)
       .leftJoin(jobsTable, eq(jobsTable.organizationId, organizationsTable.id))
@@ -79,7 +80,7 @@ router.get("/admin/organizations", requireRole("SUPER_ADMIN"), async (req, res) 
   }
 });
 
-// ── SUPER ADMIN: Create organization (with optional owner provisioning) ────────
+// ── SUPER ADMIN: Create organization (with optional owner invitation) ─────────
 const CreateOrgSchema = z.object({
   name: z.string().min(1).max(200),
   slug: z.string().min(1).max(100).regex(/^[a-z0-9-]+$/, "Slug: lowercase letters, numbers, hyphens only"),
@@ -103,34 +104,46 @@ router.post("/admin/organizations", requireRole("SUPER_ADMIN"), async (req, res)
   try {
     const [org] = await db.insert(organizationsTable).values(orgFields).returning();
 
-    let ownerMembership = null;
-    let ownerTempPassword: string | null = null;
+    let ownerInvitationSent = false;
+    let ownerInvitationError: string | null = null;
+    let ownerMembershipId: string | null = null;
 
     if (ownerEmail && ownerFirstName && ownerLastName) {
       try {
-        ownerTempPassword = crypto.randomBytes(12).toString("base64url");
-        const clerkUser = await clerk.users.createUser({
-          emailAddress: [ownerEmail],
-          password: ownerTempPassword,
-          firstName: ownerFirstName,
-          lastName: ownerLastName,
-          publicMetadata: { role: "ADMIN", organizationId: org.id },
-        });
+        // Create org membership placeholder (will be linked when invitation is accepted)
         const [mem] = await db.insert(organizationMembershipsTable).values({
           organizationId: org.id,
-          clerkUserId: clerkUser.id,
+          clerkUserId: `pending-${crypto.randomBytes(8).toString("hex")}`,
           fullName: `${ownerFirstName} ${ownerLastName}`,
           email: ownerEmail,
           role: "ADMIN",
         }).returning();
-        ownerMembership = mem;
+        ownerMembershipId = mem.id;
+
+        // Send Clerk invitation so owner sets their own password
+        await clerk.invitations.createInvitation({
+          emailAddress: ownerEmail,
+          publicMetadata: { role: "ADMIN", organizationId: org.id } as Record<string, unknown>,
+          redirectUrl: process.env.CLERK_INVITATION_REDIRECT_URL ?? undefined,
+        });
+        ownerInvitationSent = true;
       } catch (ownerErr: unknown) {
-        req.log.warn({ ownerErr, orgId: org.id }, "Org created but owner provisioning failed");
-        ownerTempPassword = null;
+        req.log.warn({ ownerErr, orgId: org.id }, "Org created but owner invitation failed");
+        ownerInvitationError = String((ownerErr as { message?: string })?.message ?? "Unknown error");
+        // Clean up placeholder membership if invitation failed
+        if (ownerMembershipId) {
+          await db.delete(organizationMembershipsTable).where(eq(organizationMembershipsTable.id, ownerMembershipId)).catch(() => {});
+          ownerMembershipId = null;
+        }
       }
     }
 
-    res.status(201).json({ organization: org, ownerMembership, ownerTempPassword });
+    res.status(201).json({
+      organization: org,
+      ownerInvitationSent,
+      ownerInvitationError,
+      ownerEmail: ownerInvitationSent ? ownerEmail : null,
+    });
   } catch (err: unknown) {
     const msg = String((err as { message?: string })?.message ?? "");
     if (msg.includes("unique") || msg.includes("duplicate")) {
@@ -218,6 +231,23 @@ router.get("/admin/users", requireRole("SUPER_ADMIN"), async (req, res) => {
   }
 });
 
+// ── SUPER ADMIN: Platform stats for dashboard ─────────────────────────────────
+router.get("/admin/stats", requireRole("SUPER_ADMIN"), async (req, res) => {
+  try {
+    const [orgCount] = await db.select({ count: count() }).from(organizationsTable);
+    const [userCount] = await db.select({ count: count() }).from(organizationMembershipsTable);
+    const [jobCount] = await db.select({ count: count() }).from(jobsTable);
+    res.json({
+      organizations: orgCount.count,
+      users: userCount.count,
+      jobs: jobCount.count,
+    });
+  } catch (err) {
+    req.log.error({ err }, "Failed to fetch stats");
+    res.status(500).json({ error: "Failed to fetch stats" });
+  }
+});
+
 // ── TENANT ADMIN: Get own org ────────────────────────────────────────────────
 router.get("/admin/org", requireRole("ADMIN"), async (req, res) => {
   const { organizationId } = req.authUser!;
@@ -301,12 +331,13 @@ router.get("/admin/org/members", requireRole("ADMIN"), async (req, res) => {
 });
 
 // ── TENANT ADMIN: Create user in own org ──────────────────────────────────────
-// ADMIN callers: may create SALES/ESTIMATOR/PROJECT_MANAGER only (not ADMIN)
-// SUPER_ADMIN callers: may create any role up to ADMIN
+// Admin provides the initial password; ADMIN callers cannot create ADMIN-role users.
 const CreateUserSchema = z.object({
   firstName: z.string().min(1).max(100),
   lastName: z.string().min(1).max(100),
   email: z.string().email(),
+  phone: z.string().max(50).optional(),
+  password: z.string().min(8).max(200),
   role: z.enum(["SALES", "ESTIMATOR", "PROJECT_MANAGER", "ADMIN"]),
 });
 
@@ -321,7 +352,7 @@ router.post("/admin/users", requireRole("ADMIN"), async (req, res) => {
     res.status(400).json({ error: "Invalid request body", details: parsed.error.issues });
     return;
   }
-  const { firstName, lastName, email, role } = parsed.data;
+  const { firstName, lastName, email, phone, password, role } = parsed.data;
 
   // Tenant ADMINs may not create or assign the ADMIN role
   if (callerRole !== "SUPER_ADMIN" && role === "ADMIN") {
@@ -330,12 +361,12 @@ router.post("/admin/users", requireRole("ADMIN"), async (req, res) => {
   }
 
   try {
-    const tempPassword = crypto.randomBytes(12).toString("base64url");
     const clerkUser = await clerk.users.createUser({
       emailAddress: [email],
-      password: tempPassword,
+      password,
       firstName,
       lastName,
+      ...(phone ? { phoneNumber: [phone] } : {}),
       publicMetadata: { role, organizationId },
     });
     const [membership] = await db
@@ -348,7 +379,7 @@ router.post("/admin/users", requireRole("ADMIN"), async (req, res) => {
         role,
       })
       .returning();
-    res.status(201).json({ membership, tempPassword });
+    res.status(201).json({ membership });
   } catch (err: unknown) {
     const errAny = err as { errors?: Array<{ code: string; message: string }> };
     if (errAny?.errors?.some((e) => e.code === "form_identifier_exists")) {
@@ -400,7 +431,6 @@ router.patch("/admin/users/:membershipId", requireRole("ADMIN"), async (req, res
       res.status(403).json({ error: "Cannot modify a Super Admin" });
       return;
     }
-    // Prevent ADMIN from modifying another ADMIN unless caller is SUPER_ADMIN
     if (callerRole !== "SUPER_ADMIN" && membership.role === "ADMIN") {
       res.status(403).json({ error: "Tenant admins cannot modify other Admin accounts" });
       return;
@@ -410,9 +440,12 @@ router.patch("/admin/users/:membershipId", requireRole("ADMIN"), async (req, res
       .set({ role: parsed.data.role, updatedAt: new Date() })
       .where(eq(organizationMembershipsTable.id, membershipId))
       .returning();
-    await clerk.users.updateUserMetadata(membership.clerkUserId, {
-      publicMetadata: { role: parsed.data.role, organizationId },
-    });
+    // Only sync Clerk metadata if clerkUserId is not a placeholder
+    if (!membership.clerkUserId.startsWith("pending-")) {
+      await clerk.users.updateUserMetadata(membership.clerkUserId, {
+        publicMetadata: { role: parsed.data.role, organizationId },
+      });
+    }
     res.json({ membership: updated });
   } catch (err) {
     req.log.error({ err, membershipId }, "Failed to update member role");
@@ -446,7 +479,6 @@ router.delete("/admin/users/:membershipId", requireRole("ADMIN"), async (req, re
       res.status(403).json({ error: "Cannot remove a Super Admin" });
       return;
     }
-    // Prevent ADMIN from removing another ADMIN
     if (callerRole !== "SUPER_ADMIN" && membership.role === "ADMIN") {
       res.status(403).json({ error: "Tenant admins cannot remove other Admin accounts" });
       return;

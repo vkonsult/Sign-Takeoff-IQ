@@ -2,7 +2,8 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { AdminShell } from "@/components/layout/AdminShell";
 import { apiFetch } from "@/lib/apiClient";
 import { format } from "date-fns";
-import { AlertCircle, RefreshCw } from "lucide-react";
+import { AlertCircle, RefreshCw, ChevronLeft, ChevronRight } from "lucide-react";
+import { useState } from "react";
 
 type UserRow = {
   id: string;
@@ -33,8 +34,11 @@ function RoleBadge({ role }: { role: string }) {
   );
 }
 
+const PAGE_SIZE = 25;
+
 export default function AdminUsers() {
   const queryClient = useQueryClient();
+  const [page, setPage] = useState(1);
 
   const usersQuery = useQuery({
     queryKey: ["admin-all-users"],
@@ -45,7 +49,9 @@ export default function AdminUsers() {
     },
   });
 
-  const users = usersQuery.data?.users ?? [];
+  const allUsers = usersQuery.data?.users ?? [];
+  const totalPages = Math.max(1, Math.ceil(allUsers.length / PAGE_SIZE));
+  const users = allUsers.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
 
   return (
     <AdminShell section="super">
@@ -54,7 +60,7 @@ export default function AdminUsers() {
           <div className="flex items-center justify-between">
             <div>
               <h1 className="text-xl font-display font-bold text-foreground">All Users</h1>
-              <p className="text-sm text-muted-foreground">{users.length} total across all organizations</p>
+              <p className="text-sm text-muted-foreground">{allUsers.length} total across all organizations</p>
             </div>
             <button
               onClick={() => queryClient.invalidateQueries({ queryKey: ["admin-all-users"] })}
@@ -74,48 +80,70 @@ export default function AdminUsers() {
               <AlertCircle className="w-4 h-4" /> Failed to load users
             </div>
           ) : (
-            <table className="w-full">
-              <thead>
-                <tr className="border-b border-border bg-secondary/30">
-                  <th className="px-4 py-3 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wider">Name</th>
-                  <th className="px-4 py-3 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wider">Email</th>
-                  <th className="px-4 py-3 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wider">Role</th>
-                  <th className="px-4 py-3 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wider">Organization</th>
-                  <th className="px-4 py-3 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wider">Joined</th>
-                </tr>
-              </thead>
-              <tbody>
-                {users.length === 0 ? (
-                  <tr>
-                    <td colSpan={5} className="px-4 py-8 text-center text-sm text-muted-foreground italic">
-                      No users found
-                    </td>
+            <>
+              <table className="w-full">
+                <thead>
+                  <tr className="border-b border-border bg-secondary/30">
+                    <th className="px-4 py-3 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wider">Name</th>
+                    <th className="px-4 py-3 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wider">Email</th>
+                    <th className="px-4 py-3 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wider">Role</th>
+                    <th className="px-4 py-3 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wider">Organization</th>
+                    <th className="px-4 py-3 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wider">Last Login</th>
+                    <th className="px-4 py-3 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wider">Joined</th>
                   </tr>
-                ) : (
-                  users.map((u) => (
-                    <tr key={u.id} className="border-b border-border last:border-0 hover:bg-secondary/20 transition-colors">
-                      <td className="px-4 py-3">
-                        <div className="flex items-center gap-2">
-                          <div className="w-7 h-7 rounded-full bg-primary/20 text-primary text-xs font-bold flex items-center justify-center flex-shrink-0">
-                            {(u.fullName ?? u.email ?? "?")[0]?.toUpperCase()}
-                          </div>
-                          <span className="text-sm text-foreground">{u.fullName ?? "—"}</span>
-                        </div>
-                      </td>
-                      <td className="px-4 py-3 text-xs text-muted-foreground">{u.email ?? "—"}</td>
-                      <td className="px-4 py-3"><RoleBadge role={u.role} /></td>
-                      <td className="px-4 py-3">
-                        <p className="text-xs text-foreground">{u.orgName ?? "—"}</p>
-                        {u.orgSlug && <p className="text-[10px] font-mono text-muted-foreground">{u.orgSlug}</p>}
-                      </td>
-                      <td className="px-4 py-3 text-xs text-muted-foreground">
-                        {format(new Date(u.createdAt), "MMM d, yyyy")}
+                </thead>
+                <tbody>
+                  {users.length === 0 ? (
+                    <tr>
+                      <td colSpan={6} className="px-4 py-8 text-center text-sm text-muted-foreground italic">
+                        No users found
                       </td>
                     </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
+                  ) : (
+                    users.map((u) => (
+                      <tr key={u.id} className="border-b border-border last:border-0 hover:bg-secondary/20 transition-colors">
+                        <td className="px-4 py-3">
+                          <div className="flex items-center gap-2">
+                            <div className="w-7 h-7 rounded-full bg-primary/20 text-primary text-xs font-bold flex items-center justify-center flex-shrink-0">
+                              {(u.fullName ?? u.email ?? "?")[0]?.toUpperCase()}
+                            </div>
+                            <span className="text-sm text-foreground">{u.fullName ?? "—"}</span>
+                          </div>
+                        </td>
+                        <td className="px-4 py-3 text-xs text-muted-foreground">{u.email ?? "—"}</td>
+                        <td className="px-4 py-3"><RoleBadge role={u.role} /></td>
+                        <td className="px-4 py-3">
+                          <p className="text-xs text-foreground">{u.orgName ?? "—"}</p>
+                          {u.orgSlug && <p className="text-[10px] font-mono text-muted-foreground">{u.orgSlug}</p>}
+                        </td>
+                        <td className="px-4 py-3 text-xs text-muted-foreground">—</td>
+                        <td className="px-4 py-3 text-xs text-muted-foreground">
+                          {format(new Date(u.createdAt), "MMM d, yyyy")}
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+
+              {totalPages > 1 && (
+                <div className="flex items-center justify-between px-4 py-3 border-t border-border">
+                  <p className="text-xs text-muted-foreground">
+                    Page {page} of {totalPages} &middot; {allUsers.length} users
+                  </p>
+                  <div className="flex items-center gap-1">
+                    <button onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={page === 1}
+                      className="p-1.5 rounded text-muted-foreground hover:bg-secondary disabled:opacity-30 transition-colors">
+                      <ChevronLeft className="w-3.5 h-3.5" />
+                    </button>
+                    <button onClick={() => setPage((p) => Math.min(totalPages, p + 1))} disabled={page === totalPages}
+                      className="p-1.5 rounded text-muted-foreground hover:bg-secondary disabled:opacity-30 transition-colors">
+                      <ChevronRight className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                </div>
+              )}
+            </>
           )}
         </div>
       </div>

@@ -19,7 +19,8 @@ export function AdminShell({ children, section }: AdminShellProps) {
   const guestMode = isGuestMode();
 
   const superNavItems = [
-    { href: "/admin", label: "Organizations", icon: Building2 },
+    { href: "/admin", label: "Dashboard", icon: Shield },
+    { href: "/admin/organizations", label: "Organizations", icon: Building2 },
     { href: "/admin/users", label: "All Users", icon: Users },
   ];
 

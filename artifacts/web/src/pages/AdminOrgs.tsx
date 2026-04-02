@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useRef } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { AdminShell } from "@/components/layout/AdminShell";
 import { apiFetch } from "@/lib/apiClient";
@@ -13,8 +13,10 @@ import {
   AlertCircle,
   RefreshCw,
   Users,
-  Copy,
+  Upload,
   CheckCircle2,
+  ChevronLeft,
+  ChevronRight,
 } from "lucide-react";
 
 type Organization = {
@@ -28,6 +30,7 @@ type Organization = {
   logoUrl: string | null;
   onboardingComplete: boolean;
   jobCount: number;
+  lastActivity: string | null;
   createdAt: string;
 };
 
@@ -59,18 +62,12 @@ function RoleBadge({ role }: { role: string }) {
 
 type NewOrgResult = {
   organization: Organization;
-  ownerMembership: Member | null;
-  ownerTempPassword: string | null;
+  ownerInvitationSent: boolean;
+  ownerInvitationError: string | null;
+  ownerEmail: string | null;
 };
 
-function TempPasswordModal({ result, onClose }: { result: NewOrgResult; onClose: () => void }) {
-  const [copied, setCopied] = useState(false);
-  const copy = (text: string) => {
-    navigator.clipboard.writeText(text).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    });
-  };
+function InvitationSentModal({ result, onClose }: { result: NewOrgResult; onClose: () => void }) {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
       <div className="bg-card border border-border rounded-xl shadow-2xl w-full max-w-sm">
@@ -84,21 +81,18 @@ function TempPasswordModal({ result, onClose }: { result: NewOrgResult; onClose:
           <p className="text-sm text-muted-foreground text-center">
             <strong className="text-foreground">{result.organization.name}</strong> is ready.
           </p>
-          {result.ownerTempPassword && result.ownerMembership && (
-            <div className="space-y-2">
-              <p className="text-xs text-muted-foreground">
-                Owner <strong className="text-foreground">{result.ownerMembership.email}</strong> was provisioned.
-                Share this temporary password:
+          {result.ownerInvitationSent && result.ownerEmail && (
+            <div className="bg-secondary/50 rounded-lg border border-border p-3 text-xs text-muted-foreground space-y-1">
+              <p className="font-medium text-foreground">Invitation sent</p>
+              <p>
+                An email was sent to <strong className="text-foreground">{result.ownerEmail}</strong>.
+                They can set their own password when they accept the invite.
               </p>
-              <div className="flex items-center gap-2 bg-secondary rounded-lg px-3 py-2">
-                <code className="flex-1 text-sm font-mono text-foreground break-all">
-                  {result.ownerTempPassword}
-                </code>
-                <button onClick={() => copy(result.ownerTempPassword!)} className="text-muted-foreground hover:text-foreground flex-shrink-0">
-                  {copied ? <CheckCircle2 className="w-4 h-4 text-green-400" /> : <Copy className="w-4 h-4" />}
-                </button>
-              </div>
-              <p className="text-xs text-amber-400">This password will not be shown again.</p>
+            </div>
+          )}
+          {result.ownerInvitationError && (
+            <div className="bg-destructive/10 border border-destructive/20 rounded-lg p-3 text-xs text-destructive">
+              Owner invitation failed: {result.ownerInvitationError}
             </div>
           )}
           <button
@@ -113,7 +107,17 @@ function TempPasswordModal({ result, onClose }: { result: NewOrgResult; onClose:
   );
 }
 
+async function uploadLogoFile(file: File): Promise<string> {
+  const formData = new FormData();
+  formData.append("logo", file);
+  const res = await apiFetch("/api/admin/logo", { method: "POST", body: formData });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error ?? "Logo upload failed");
+  return data.url as string;
+}
+
 function NewOrgModal({ onClose, onCreated }: { onClose: () => void; onCreated: (result: NewOrgResult) => void }) {
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const [form, setForm] = useState({
     name: "",
     slug: "",
@@ -126,6 +130,9 @@ function NewOrgModal({ onClose, onCreated }: { onClose: () => void; onCreated: (
     ownerLastName: "",
     ownerEmail: "",
   });
+  const [logoPreview, setLogoPreview] = useState<string | null>(null);
+  const [logoUploading, setLogoUploading] = useState(false);
+  const [logoError, setLogoError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -137,6 +144,23 @@ function NewOrgModal({ onClose, onCreated }: { onClose: () => void; onCreated: (
       .replace(/-+/g, "-")
       .slice(0, 60);
     setForm((prev) => ({ ...prev, name, slug }));
+  };
+
+  const handleLogoFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setLogoError(null);
+    setLogoUploading(true);
+    try {
+      const url = await uploadLogoFile(file);
+      setForm((p) => ({ ...p, logoUrl: url }));
+      setLogoPreview(url);
+    } catch (err) {
+      setLogoError((err as Error).message);
+    } finally {
+      setLogoUploading(false);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    }
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -193,10 +217,43 @@ function NewOrgModal({ onClose, onCreated }: { onClose: () => void; onCreated: (
             </div>
           )}
 
+          {/* Logo */}
           <div>
-            <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3">
-              Organization Info
-            </h3>
+            <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3">Logo</h3>
+            <div className="flex items-center gap-3">
+              <div className="w-12 h-12 rounded-lg border border-border bg-secondary flex items-center justify-center flex-shrink-0 overflow-hidden">
+                {logoPreview ? (
+                  <img src={logoPreview} alt="Logo" className="w-full h-full object-contain p-1" />
+                ) : (
+                  <Building2 className="w-4 h-4 text-muted-foreground" />
+                )}
+              </div>
+              <div className="flex-1 space-y-1.5">
+                <div className="flex items-center gap-2">
+                  <button type="button" onClick={() => fileInputRef.current?.click()} disabled={logoUploading}
+                    className="flex items-center gap-1 px-2.5 py-1 rounded border border-border text-xs text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors disabled:opacity-50">
+                    <Upload className="w-3 h-3" />
+                    {logoUploading ? "Uploading…" : "Upload"}
+                  </button>
+                  {form.logoUrl && (
+                    <button type="button" onClick={() => { setForm((p) => ({ ...p, logoUrl: "" })); setLogoPreview(null); }}
+                      className="p-0.5 text-muted-foreground hover:text-destructive">
+                      <X className="w-3 h-3" />
+                    </button>
+                  )}
+                </div>
+                <input value={form.logoUrl} onChange={(e) => { setForm((p) => ({ ...p, logoUrl: e.target.value })); setLogoPreview(e.target.value || null); }}
+                  className="w-full px-2 py-1 rounded bg-secondary border border-border text-xs text-foreground focus:outline-none"
+                  placeholder="or paste URL…" />
+                {logoError && <p className="text-xs text-destructive">{logoError}</p>}
+                <input ref={fileInputRef} type="file" accept="image/*" onChange={handleLogoFileChange} className="hidden" />
+              </div>
+            </div>
+          </div>
+
+          {/* Org info */}
+          <div>
+            <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3">Organization Info</h3>
             <div className="grid grid-cols-2 gap-3">
               <div className="col-span-2 space-y-1">
                 <label className="text-xs font-medium text-muted-foreground">Company Name *</label>
@@ -222,18 +279,13 @@ function NewOrgModal({ onClose, onCreated }: { onClose: () => void; onCreated: (
                   className="w-full px-3 py-2 rounded-lg bg-secondary border border-border text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary/50"
                   placeholder="+1 555 000 0000" />
               </div>
-              <div className="col-span-2 space-y-1">
-                <label className="text-xs font-medium text-muted-foreground">Logo URL</label>
-                <input value={form.logoUrl} onChange={(e) => setForm((p) => ({ ...p, logoUrl: e.target.value }))}
-                  className="w-full px-3 py-2 rounded-lg bg-secondary border border-border text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary/50"
-                  placeholder="https://…/logo.png" />
-              </div>
             </div>
           </div>
 
+          {/* Owner */}
           <div className="border-t border-border pt-4">
             <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3">
-              Owner Account <span className="font-normal normal-case">(optional)</span>
+              Owner Account <span className="font-normal normal-case">(optional — sends invitation email)</span>
             </h3>
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1">
@@ -253,9 +305,6 @@ function NewOrgModal({ onClose, onCreated }: { onClose: () => void; onCreated: (
                 <input type="email" value={form.ownerEmail} onChange={(e) => setForm((p) => ({ ...p, ownerEmail: e.target.value }))}
                   className="w-full px-3 py-2 rounded-lg bg-secondary border border-border text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary/50"
                   placeholder="owner@acme.com" />
-                <p className="text-[10px] text-muted-foreground">
-                  If provided, a Clerk account will be created with ADMIN role and a temporary password returned.
-                </p>
               </div>
             </div>
           </div>
@@ -275,6 +324,8 @@ function NewOrgModal({ onClose, onCreated }: { onClose: () => void; onCreated: (
     </div>
   );
 }
+
+const PAGE_SIZE = 20;
 
 function OrgRow({ org }: { org: Organization }) {
   const [expanded, setExpanded] = useState(false);
@@ -309,6 +360,9 @@ function OrgRow({ org }: { org: Organization }) {
         </td>
         <td className="px-4 py-3 text-xs text-muted-foreground">{org.email ?? "—"}</td>
         <td className="px-4 py-3 text-xs text-muted-foreground font-mono">{org.jobCount ?? 0}</td>
+        <td className="px-4 py-3 text-xs text-muted-foreground">
+          {org.lastActivity ? format(new Date(org.lastActivity), "MMM d, yyyy") : "—"}
+        </td>
         <td className="px-4 py-3">
           {org.onboardingComplete ? (
             <span className="inline-flex items-center gap-1 text-xs text-green-400">
@@ -333,7 +387,7 @@ function OrgRow({ org }: { org: Organization }) {
       </tr>
       {expanded && (
         <tr className="border-b border-border bg-secondary/10">
-          <td colSpan={6} className="px-8 py-3">
+          <td colSpan={7} className="px-8 py-3">
             {membersQuery.isLoading ? (
               <p className="text-xs text-muted-foreground">Loading…</p>
             ) : membersQuery.isError ? (
@@ -364,6 +418,7 @@ function OrgRow({ org }: { org: Organization }) {
 export default function AdminOrgs() {
   const [showNewOrg, setShowNewOrg] = useState(false);
   const [newOrgResult, setNewOrgResult] = useState<NewOrgResult | null>(null);
+  const [page, setPage] = useState(1);
   const queryClient = useQueryClient();
 
   const orgsQuery = useQuery({
@@ -375,7 +430,9 @@ export default function AdminOrgs() {
     },
   });
 
-  const orgs = orgsQuery.data?.organizations ?? [];
+  const allOrgs = orgsQuery.data?.organizations ?? [];
+  const totalPages = Math.max(1, Math.ceil(allOrgs.length / PAGE_SIZE));
+  const orgs = allOrgs.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
 
   return (
     <AdminShell section="super">
@@ -384,7 +441,7 @@ export default function AdminOrgs() {
           <div className="flex items-center justify-between">
             <div>
               <h1 className="text-xl font-display font-bold text-foreground">Organizations</h1>
-              <p className="text-sm text-muted-foreground">{orgs.length} tenant{orgs.length !== 1 ? "s" : ""}</p>
+              <p className="text-sm text-muted-foreground">{allOrgs.length} tenant{allOrgs.length !== 1 ? "s" : ""}</p>
             </div>
             <div className="flex items-center gap-2">
               <button
@@ -405,26 +462,6 @@ export default function AdminOrgs() {
           </div>
         </header>
 
-        {/* Stats row */}
-        <div className="grid grid-cols-3 gap-4 mb-6">
-          <div className="bg-card border border-border rounded-xl p-4">
-            <p className="text-xs text-muted-foreground mb-1">Total Tenants</p>
-            <p className="text-2xl font-display font-bold text-foreground">{orgs.length}</p>
-          </div>
-          <div className="bg-card border border-border rounded-xl p-4">
-            <p className="text-xs text-muted-foreground mb-1">Onboarded</p>
-            <p className="text-2xl font-display font-bold text-foreground">
-              {orgs.filter((o) => o.onboardingComplete).length}
-            </p>
-          </div>
-          <div className="bg-card border border-border rounded-xl p-4">
-            <p className="text-xs text-muted-foreground mb-1">Total Jobs</p>
-            <p className="text-2xl font-display font-bold text-foreground">
-              {orgs.reduce((s, o) => s + (o.jobCount ?? 0), 0)}
-            </p>
-          </div>
-        </div>
-
         <div className="bg-card border border-border rounded-xl overflow-hidden">
           {orgsQuery.isLoading ? (
             <div className="p-8 text-center text-muted-foreground text-sm">Loading…</div>
@@ -433,29 +470,51 @@ export default function AdminOrgs() {
               <AlertCircle className="w-4 h-4" /> Failed to load organizations
             </div>
           ) : (
-            <table className="w-full">
-              <thead>
-                <tr className="border-b border-border bg-secondary/30">
-                  <th className="px-4 py-3 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wider">Organization</th>
-                  <th className="px-4 py-3 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wider">Email</th>
-                  <th className="px-4 py-3 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wider">Jobs</th>
-                  <th className="px-4 py-3 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wider">Onboarding</th>
-                  <th className="px-4 py-3 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wider">Created</th>
-                  <th className="px-4 py-3 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wider">Members</th>
-                </tr>
-              </thead>
-              <tbody>
-                {orgs.length === 0 ? (
-                  <tr>
-                    <td colSpan={6} className="px-4 py-8 text-center text-sm text-muted-foreground italic">
-                      No organizations yet. Create the first one above.
-                    </td>
+            <>
+              <table className="w-full">
+                <thead>
+                  <tr className="border-b border-border bg-secondary/30">
+                    <th className="px-4 py-3 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wider">Organization</th>
+                    <th className="px-4 py-3 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wider">Email</th>
+                    <th className="px-4 py-3 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wider">Jobs</th>
+                    <th className="px-4 py-3 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wider">Last Activity</th>
+                    <th className="px-4 py-3 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wider">Onboarding</th>
+                    <th className="px-4 py-3 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wider">Created</th>
+                    <th className="px-4 py-3 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wider">Members</th>
                   </tr>
-                ) : (
-                  orgs.map((org) => <OrgRow key={org.id} org={org} />)
-                )}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {orgs.length === 0 ? (
+                    <tr>
+                      <td colSpan={7} className="px-4 py-8 text-center text-sm text-muted-foreground italic">
+                        No organizations yet.
+                      </td>
+                    </tr>
+                  ) : (
+                    orgs.map((org) => <OrgRow key={org.id} org={org} />)
+                  )}
+                </tbody>
+              </table>
+
+              {/* Pagination */}
+              {totalPages > 1 && (
+                <div className="flex items-center justify-between px-4 py-3 border-t border-border">
+                  <p className="text-xs text-muted-foreground">
+                    Page {page} of {totalPages} &middot; {allOrgs.length} orgs
+                  </p>
+                  <div className="flex items-center gap-1">
+                    <button onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={page === 1}
+                      className="p-1.5 rounded text-muted-foreground hover:bg-secondary disabled:opacity-30 transition-colors">
+                      <ChevronLeft className="w-3.5 h-3.5" />
+                    </button>
+                    <button onClick={() => setPage((p) => Math.min(totalPages, p + 1))} disabled={page === totalPages}
+                      className="p-1.5 rounded text-muted-foreground hover:bg-secondary disabled:opacity-30 transition-colors">
+                      <ChevronRight className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                </div>
+              )}
+            </>
           )}
         </div>
       </div>
@@ -467,11 +526,12 @@ export default function AdminOrgs() {
             setShowNewOrg(false);
             setNewOrgResult(result);
             queryClient.invalidateQueries({ queryKey: ["admin-organizations"] });
+            queryClient.invalidateQueries({ queryKey: ["admin-stats"] });
           }}
         />
       )}
       {newOrgResult && (
-        <TempPasswordModal result={newOrgResult} onClose={() => setNewOrgResult(null)} />
+        <InvitationSentModal result={newOrgResult} onClose={() => setNewOrgResult(null)} />
       )}
     </AdminShell>
   );

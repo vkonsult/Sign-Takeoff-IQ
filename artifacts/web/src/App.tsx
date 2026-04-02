@@ -13,6 +13,7 @@ import JobsList from "@/pages/JobsList";
 import JobDetails from "@/pages/JobDetails";
 import Training from "@/pages/Training";
 import NotFound from "@/pages/not-found";
+import AdminDashboard from "@/pages/AdminDashboard";
 import AdminOrgs from "@/pages/AdminOrgs";
 import AdminUsers from "@/pages/AdminUsers";
 import OnboardingPage from "@/pages/OnboardingPage";
@@ -218,6 +219,9 @@ function Router() {
         {() => <AdminRoute component={SettingsUsers} />}
       </Route>
       <Route path="/admin">
+        {() => <SuperAdminRoute component={AdminDashboard} />}
+      </Route>
+      <Route path="/admin/organizations">
         {() => <SuperAdminRoute component={AdminOrgs} />}
       </Route>
       <Route path="/admin/users">
