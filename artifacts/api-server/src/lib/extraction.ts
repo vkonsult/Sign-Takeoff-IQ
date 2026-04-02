@@ -1356,6 +1356,279 @@ const MAX_INLINE_PDF_BYTES = 19 * 1024 * 1024; // 19 MB — leaves headroom for 
 // Max pages per image-extraction batch (keeps each batch under 20 MB for most plans)
 const IMAGE_BATCH_PAGES = 25;
 
+// ─── VERIFICATION-MODE VISUAL PASS ────────────────────────────────────────────
+// Instead of asking Gemini to independently discover all signs (hallucination-
+// prone), we give it the text-pass results and ask:
+//   TASK 1 — Verify: Can you see each of these signs in the image?
+//   TASK 2 — Discover: Any high-confidence signs clearly not in the list?
+
+export interface TextContextSign {
+  sign_identifier: string | null;
+  location: string | null;
+  sign_type: string | null;
+  sheet_number: string | null;
+  page_number: number | null;
+}
+
+export interface VerificationItem {
+  sign_identifier: string | null;
+  location: string | null;
+  page_number: number | null;
+  status: "CONFIRMED" | "UNCERTAIN" | "NOT_FOUND";
+  confidence: number;
+}
+
+export interface VerifyResult {
+  verifications: VerificationItem[];
+  discoveries: ExtractedSignRow[];
+  inputTokens: number;
+  outputTokens: number;
+  skipped: boolean;
+  skipReason?: string;
+}
+
+const VerificationItemSchema = z.object({
+  sign_identifier: z.string().nullable().optional().default(null),
+  location: z.string().nullable().optional().default(null),
+  page_number: z
+    .union([z.number(), z.string().transform((s) => { const n = parseInt(s, 10); return isNaN(n) ? null : n; }), z.null()])
+    .optional()
+    .default(null),
+  status: z.enum(["CONFIRMED", "UNCERTAIN", "NOT_FOUND"]).default("UNCERTAIN"),
+  confidence: z.number().min(0).max(1).optional().default(0.7),
+});
+
+const DiscoveryItemSchema = z.object({
+  sheet_number: z.string().nullable().optional().default(null),
+  sign_identifier: z.string().nullable().optional().default(null),
+  sign_type: z.string().nullable().optional().default(null),
+  location: z.string().nullable().optional().default(null),
+  detail_reference: z.string().nullable().optional().default(null),
+  message_content: z.string().nullable().optional().default(null),
+  page_number: z
+    .union([z.number(), z.string().transform((s) => { const n = parseInt(s, 10); return isNaN(n) ? null : n; }), z.null()])
+    .optional()
+    .default(null),
+  confidence: z.number().min(0).max(1).optional().default(0.8),
+});
+
+const VerificationResponseSchema = z.object({
+  verifications: z.array(VerificationItemSchema).default([]),
+  discoveries: z.array(DiscoveryItemSchema).default([]),
+});
+
+function buildVerificationPrompt(textSignsByPage: Map<number, TextContextSign[]>): string {
+  const pages = Array.from(textSignsByPage.entries()).sort(([a], [b]) => a - b);
+  const signListLines: string[] = [];
+
+  for (const [pageNum, signs] of pages) {
+    if (signs.length === 0) continue;
+    signListLines.push(`\n--- PAGE ${pageNum} ---`);
+    for (const s of signs) {
+      const parts: string[] = [];
+      if (s.sign_identifier) parts.push(`ID: "${s.sign_identifier}"`);
+      if (s.sign_type) parts.push(`Type: ${s.sign_type}`);
+      if (s.location) parts.push(`Location: "${s.location}"`);
+      signListLines.push(`  • ${parts.join(" | ")}`);
+    }
+  }
+
+  const totalSigns = Array.from(textSignsByPage.values()).reduce((n, v) => n + v.length, 0);
+
+  return `You are verifying architectural floor plan signs found by a text-extraction pass.
+
+TEXT EXTRACTION FOUND ${totalSigns} SIGN(S) ACROSS ${pages.length} PAGE(S):
+${signListLines.join("\n")}
+
+TASK 1 — VERIFY (required for every sign listed above):
+For each sign, look at the corresponding page image and determine:
+• CONFIRMED  — You can clearly see a sign callout, identifier, or room label at/near this location
+• UNCERTAIN  — Something is probably there but you cannot read it clearly
+• NOT_FOUND  — You genuinely cannot see any evidence of this sign on the image
+
+TASK 2 — DISCOVER (optional, high-confidence only):
+Are there any clearly visible sign callouts in the images that are NOT in the list above?
+Only include discoveries where you are ≥ 0.80 confident it is a real, placed sign callout (not a legend definition or symbol key entry). If uncertain, omit it. False positives are worse than missed signs.
+
+Return ONLY valid JSON in exactly this format — no markdown fences, no extra text:
+{
+  "verifications": [
+    {"sign_identifier": "B101", "location": "LOBBY", "page_number": 1, "status": "CONFIRMED", "confidence": 0.95},
+    {"sign_identifier": "B102", "location": "TENANT STOR", "page_number": 1, "status": "CONFIRMED", "confidence": 0.90}
+  ],
+  "discoveries": [
+    {"sheet_number": "A1", "sign_identifier": "EX-1", "sign_type": "Exit", "location": "Stair A", "page_number": 1, "confidence": 0.85}
+  ]
+}`;
+}
+
+function parseVerificationResponse(raw: string, label: string): { verifications: VerificationItem[]; discoveries: ExtractedSignRow[] } {
+  let cleaned = raw.trim();
+  const fenceMatch = cleaned.match(/```(?:json)?\n?([\s\S]*?)```/);
+  if (fenceMatch) cleaned = fenceMatch[1]!.trim();
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(cleaned);
+  } catch {
+    logger.warn({ label, raw: cleaned.slice(0, 500) }, "Verification response not valid JSON — trying to extract JSON object");
+    const objMatch = cleaned.match(/\{[\s\S]*\}/);
+    if (!objMatch) {
+      logger.error({ label }, "Could not extract JSON from verification response");
+      return { verifications: [], discoveries: [] };
+    }
+    try {
+      parsed = JSON.parse(objMatch[0]);
+    } catch {
+      logger.error({ label }, "Failed to parse extracted JSON from verification response");
+      return { verifications: [], discoveries: [] };
+    }
+  }
+
+  const result = VerificationResponseSchema.safeParse(parsed);
+  if (!result.success) {
+    logger.warn({ label, errors: result.error.flatten() }, "Verification schema validation failed — using defaults");
+    return { verifications: [], discoveries: [] };
+  }
+
+  const verifications: VerificationItem[] = result.data.verifications.map((v) => ({
+    sign_identifier: v.sign_identifier,
+    location: v.location,
+    page_number: v.page_number as number | null,
+    status: v.status,
+    confidence: v.confidence,
+  }));
+
+  const discoveries: ExtractedSignRow[] = result.data.discoveries
+    .filter((d) => (d.confidence ?? 0) >= 0.80)
+    .map((d) => ({
+      sheet_number: d.sheet_number ?? null,
+      detail_reference: d.detail_reference ?? null,
+      sign_type: d.sign_type ?? null,
+      sign_identifier: d.sign_identifier ?? null,
+      quantity: null,
+      location: d.location ?? null,
+      dimensions: null,
+      mounting_type: null,
+      finish_color: null,
+      illumination: null,
+      materials: null,
+      message_content: d.message_content ?? null,
+      notes: "Discovered by visual verification pass",
+      page_number: d.page_number as number | null,
+      x_pos: null,
+      y_pos: null,
+      confidence_score: Math.min(0.85, d.confidence ?? 0.80),
+      review_flag: true, // visual-only discoveries always need review
+    }));
+
+  logger.info({ label, verifications: verifications.length, confirmed: verifications.filter(v => v.status === "CONFIRMED").length, discoveries: discoveries.length }, "Verification response parsed");
+  return { verifications, discoveries };
+}
+
+export async function extractSignsFromPdfImageVerify(
+  filePath: string,
+  ai: GeminiAI,
+  textSignsByPage: Map<number, TextContextSign[]>
+): Promise<VerifyResult> {
+  if (textSignsByPage.size === 0) {
+    return { verifications: [], discoveries: [], inputTokens: 0, outputTokens: 0, skipped: true, skipReason: "No text signs to verify" };
+  }
+
+  let fileBuffer: Buffer;
+  try {
+    fileBuffer = await fs.readFile(filePath);
+  } catch (err) {
+    logger.error({ err, filePath }, "Verification: could not read PDF file");
+    return { verifications: [], discoveries: [], inputTokens: 0, outputTokens: 0, skipped: true, skipReason: "Could not read PDF file" };
+  }
+
+  const fileName = filePath.split("/").pop() ?? "file.pdf";
+  const prompt = buildVerificationPrompt(textSignsByPage);
+
+  if (fileBuffer.length <= MAX_INLINE_PDF_BYTES) {
+    const pdfBase64 = fileBuffer.toString("base64");
+    const label = `verify-${fileName}`;
+    logger.info({ fileName, sizeBytes: fileBuffer.length, totalSigns: Array.from(textSignsByPage.values()).reduce((n, v) => n + v.length, 0) }, "Visual verification: single-pass");
+    try {
+      const { text, inputTokens, outputTokens } = await callGeminiMultimodal(prompt, pdfBase64, ai, label);
+      const { verifications, discoveries } = parseVerificationResponse(text, label);
+      logger.info({ verifications: verifications.length, discoveries: discoveries.length, inputTokens, outputTokens }, "Visual verification complete (single-pass)");
+      return { verifications, discoveries, inputTokens, outputTokens, skipped: false };
+    } catch (err) {
+      logger.error({ err, fileName }, "Visual verification call failed");
+      return { verifications: [], discoveries: [], inputTokens: 0, outputTokens: 0, skipped: true, skipReason: "Gemini call failed" };
+    }
+  }
+
+  // Large PDF: batch by pages, filter text signs for each batch
+  logger.info({ fileName, sizeBytes: fileBuffer.length }, "Visual verification: PDF too large — splitting into batches");
+  let { PDFDocument } = await import("pdf-lib");
+  let srcDoc: import("pdf-lib").PDFDocument;
+  try {
+    srcDoc = await PDFDocument.load(fileBuffer, { ignoreEncryption: true });
+  } catch (err) {
+    logger.error({ err, fileName }, "Verification: pdf-lib failed to load PDF");
+    return { verifications: [], discoveries: [], inputTokens: 0, outputTokens: 0, skipped: true, skipReason: "PDF could not be parsed" };
+  }
+
+  const totalPages = srcDoc.getPageCount();
+  const allVerifications: VerificationItem[] = [];
+  const allDiscoveries: ExtractedSignRow[] = [];
+  let totalIn = 0;
+  let totalOut = 0;
+
+  for (let startPage = 0; startPage < totalPages; startPage += IMAGE_BATCH_PAGES) {
+    const endPage = Math.min(startPage + IMAGE_BATCH_PAGES, totalPages);
+    const pageIndices = Array.from({ length: endPage - startPage }, (_, i) => startPage + i);
+
+    // Build a sub-map containing only signs for these pages (1-indexed)
+    const batchMap = new Map<number, TextContextSign[]>();
+    for (let p = startPage + 1; p <= endPage; p++) {
+      const signs = textSignsByPage.get(p);
+      if (signs && signs.length > 0) batchMap.set(p, signs);
+    }
+    if (batchMap.size === 0) continue; // no signs on these pages — skip visual call
+
+    let batchPdfBytes: Uint8Array;
+    try {
+      const batchDoc = await PDFDocument.create();
+      const copiedPages = await batchDoc.copyPages(srcDoc, pageIndices);
+      for (const page of copiedPages) batchDoc.addPage(page);
+      batchPdfBytes = await batchDoc.save();
+    } catch (err) {
+      logger.warn({ err, startPage, endPage }, "Verification: failed to create batch PDF — skipping batch");
+      continue;
+    }
+
+    if (batchPdfBytes.length > MAX_INLINE_PDF_BYTES) {
+      logger.warn({ startPage, endPage }, "Verification: batch too large — skipping");
+      continue;
+    }
+
+    const batchPrompt = buildVerificationPrompt(batchMap);
+    const pdfBase64 = Buffer.from(batchPdfBytes).toString("base64");
+    const label = `verify-${fileName}-p${startPage + 1}-${endPage}`;
+
+    try {
+      const { text, inputTokens, outputTokens } = await callGeminiMultimodal(batchPrompt, pdfBase64, ai, label);
+      const { verifications, discoveries } = parseVerificationResponse(text, label);
+      // Offset page numbers for discoveries back to full-doc coordinates
+      for (const d of discoveries) {
+        if (d.page_number != null) d.page_number = d.page_number + startPage;
+      }
+      allVerifications.push(...verifications);
+      allDiscoveries.push(...discoveries);
+      totalIn += inputTokens;
+      totalOut += outputTokens;
+    } catch (err) {
+      logger.warn({ err, label }, "Verification batch call failed — skipping batch");
+    }
+  }
+
+  return { verifications: allVerifications, discoveries: allDiscoveries, inputTokens: totalIn, outputTokens: totalOut, skipped: false };
+}
+
 export async function extractSignsFromPdfImage(
   filePath: string,
   ai: GeminiAI

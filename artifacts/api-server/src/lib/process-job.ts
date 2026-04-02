@@ -8,7 +8,7 @@ import {
 } from "@workspace/db";
 
 import { ai } from "@workspace/integrations-gemini-ai";
-import { extractSignsFromPdf, extractSignsFromPdfImage, extractProjectInfo, type ProjectInfo, type VerifiedSignSummary } from "./extraction";
+import { extractSignsFromPdf, extractSignsFromPdfImageVerify, extractProjectInfo, type ProjectInfo, type VerifiedSignSummary, type TextContextSign, type VerificationItem } from "./extraction";
 import { saveParsedResult } from "./storage";
 import { logger } from "./logger";
 
@@ -137,6 +137,7 @@ export async function processJob(jobId: string): Promise<void> {
 
   const allTextRows: InsertExtractedSign[] = [];
   const allImageRows: InsertExtractedSign[] = [];
+  const allVerifications: (VerificationItem & { fileId: string })[] = [];
   const parsedResults: Record<string, unknown>[] = [];
   let totalInputTokens = 0;
   let totalOutputTokens = 0;
@@ -178,20 +179,34 @@ export async function processJob(jobId: string): Promise<void> {
       const otherVerified = verifiedGlobal.filter((v) => !fileVerified.includes(v));
       const allVerifiedForFile = [...fileVerified, ...otherVerified];
 
-      // Run text and image extraction in parallel
-      const [textResult, imageResult] = await Promise.all([
-        extractSignsFromPdf(
-          file.storedPath,
-          ai,
-          projectContext,
-          allVerifiedForFile.length > 0 ? allVerifiedForFile : undefined,
-          crossJobVerified.length > 0 ? crossJobVerified : undefined
-        ),
-        extractSignsFromPdfImage(file.storedPath, ai).catch((err) => {
-          logger.warn({ err, fileId: file.id }, "Image extraction threw unexpectedly — using empty result");
-          return { rows: [], inputTokens: 0, outputTokens: 0, skipped: true as const, skipReason: "Internal error" };
-        }),
-      ]);
+      // Run text extraction FIRST, then use those results to drive the
+      // visual verification pass (text signs → context → verify/discover).
+      const textResult = await extractSignsFromPdf(
+        file.storedPath,
+        ai,
+        projectContext,
+        allVerifiedForFile.length > 0 ? allVerifiedForFile : undefined,
+        crossJobVerified.length > 0 ? crossJobVerified : undefined
+      );
+
+      // Build page → text-sign context map for the verification prompt
+      const textSignsByPage = new Map<number, TextContextSign[]>();
+      for (const row of textResult.rows) {
+        const pg = row.page_number ?? 1;
+        if (!textSignsByPage.has(pg)) textSignsByPage.set(pg, []);
+        textSignsByPage.get(pg)!.push({
+          sign_identifier: row.sign_identifier,
+          location: row.location,
+          sign_type: row.sign_type,
+          sheet_number: row.sheet_number,
+          page_number: row.page_number,
+        });
+      }
+
+      const imageResult = await extractSignsFromPdfImageVerify(file.storedPath, ai, textSignsByPage).catch((err) => {
+        logger.warn({ err, fileId: file.id }, "Visual verification threw unexpectedly — skipping");
+        return { verifications: [] as VerificationItem[], discoveries: [], inputTokens: 0, outputTokens: 0, skipped: true as const, skipReason: "Internal error" };
+      });
 
       totalInputTokens += textResult.inputTokens;
       totalOutputTokens += textResult.outputTokens;
@@ -208,7 +223,7 @@ export async function processJob(jobId: string): Promise<void> {
         fileName: file.originalName,
         pageCount: textResult.pageCount,
         rowCount: textResult.rows.length,
-        imageRowCount: imageResult.rows.length,
+        imageRowCount: imageResult.discoveries.length,
         imageSkipped: imageResult.skipped ?? false,
         rows: textResult.rows,
       });
@@ -238,7 +253,9 @@ export async function processJob(jobId: string): Promise<void> {
         });
       }
 
-      for (const row of imageResult.rows) {
+      // Visual-verification discoveries: signs the visual pass found that the
+      // text pass missed. Store as supplementary with reviewFlag=true.
+      for (const row of imageResult.discoveries) {
         allImageRows.push({
           jobId,
           jobFileId: file.id,
@@ -256,8 +273,6 @@ export async function processJob(jobId: string): Promise<void> {
           messageContent: row.message_content,
           notes: row.notes,
           pageNumber: row.page_number,
-          // Do NOT store visual-extraction x/y — Gemini's position guesses are
-          // unreliable. Marker positions come from the PDF text layer search instead.
           xPos: null,
           yPos: null,
           confidenceScore: row.confidence_score,
@@ -267,10 +282,22 @@ export async function processJob(jobId: string): Promise<void> {
         });
       }
 
+      // Store verifications so the matching pass can apply confidence/flag updates
+      for (const v of imageResult.verifications) {
+        allVerifications.push({ ...v, fileId: file.id });
+      }
+
       if (imageResult.skipped) {
-        logger.info({ jobId, file: file.originalName, reason: imageResult.skipReason }, "Visual scan skipped for file");
+        logger.info({ jobId, file: file.originalName, reason: imageResult.skipReason }, "Visual verification skipped for file");
       } else {
-        logger.info({ jobId, file: file.originalName, imageRows: imageResult.rows.length }, "Visual scan complete for file");
+        logger.info({
+          jobId,
+          file: file.originalName,
+          verifications: imageResult.verifications.length,
+          confirmed: imageResult.verifications.filter(v => v.status === "CONFIRMED").length,
+          notFound: imageResult.verifications.filter(v => v.status === "NOT_FOUND").length,
+          discoveries: imageResult.discoveries.length,
+        }, "Visual verification complete for file");
       }
     } catch (err) {
       logger.error({ err, fileId: file.id, fileName: file.originalName }, "File extraction failed");
@@ -290,87 +317,82 @@ export async function processJob(jobId: string): Promise<void> {
     await db.insert(extractedSignsTable).values(allImageRows);
   }
 
-  // ── Matching pass: pair text signs with image signs ───────────────────────
-  // Re-fetch all signs for this job to get real DB IDs, then run greedy matching.
-  if (allImageRows.length > 0) {
+  // ── Verification pass: apply Gemini's confirm/not-found signals to text signs ─
+  // Unlike the old fuzzy image-vs-text matching, we now have explicit CONFIRMED /
+  // UNCERTAIN / NOT_FOUND labels for each text sign from the verification prompt.
+  if (allVerifications.length > 0) {
     const allInserted = await db
       .select()
       .from(extractedSignsTable)
       .where(eq(extractedSignsTable.jobId, jobId));
 
     const textSigns = allInserted.filter((s) => s.extractionMethod === "text" && !s.manuallyAdded && !s.userVerified);
-    const imageSigns = allInserted.filter((s) => s.extractionMethod === "image");
+    const confirmedIds = new Set<string>();
+    const notFoundIds = new Set<string>();
 
-    const matchedTextIds = new Set<string>();
-    const matchedImageIds = new Set<string>();
-    const pairs: Array<{ textId: string; imageId: string }> = [];
+    for (const v of allVerifications) {
+      // Find best matching text sign: prefer exact signIdentifier match on same page,
+      // fall back to location overlap.
+      let best: DbSign | null = null;
 
-    for (const imgSign of imageSigns) {
-      let bestTextSign: DbSign | null = null;
-      let bestTypeScore = 0;
-
-      for (const txtSign of textSigns) {
-        if (matchedTextIds.has(txtSign.id)) continue;
-        if (!isMatch(imgSign, txtSign)) continue;
-        const ts = wordOverlapScore(imgSign.signType, txtSign.signType);
-        if (ts > bestTypeScore) {
-          bestTypeScore = ts;
-          bestTextSign = txtSign;
-        }
+      // Pass 1: exact sign_identifier + page
+      if (v.sign_identifier) {
+        best = textSigns.find(
+          (s) => s.signIdentifier?.toLowerCase() === v.sign_identifier!.toLowerCase() &&
+                 (v.page_number == null || s.pageNumber === v.page_number)
+        ) ?? null;
       }
 
-      if (bestTextSign) {
-        matchedTextIds.add(bestTextSign.id);
-        matchedImageIds.add(imgSign.id);
-        pairs.push({ textId: bestTextSign.id, imageId: imgSign.id });
+      // Pass 2: location word overlap + page
+      if (!best && v.location) {
+        const vLoc = v.location.toLowerCase();
+        best = textSigns.find(
+          (s) => s.location?.toLowerCase().includes(vLoc) &&
+                 (v.page_number == null || s.pageNumber === v.page_number)
+        ) ?? null;
+      }
+
+      if (!best) continue; // verification item couldn't be matched to a DB sign
+
+      if (v.status === "CONFIRMED") {
+        confirmedIds.add(best.id);
+      } else if (v.status === "NOT_FOUND") {
+        notFoundIds.add(best.id);
+      }
+      // UNCERTAIN: leave sign unchanged (text pass confidence/flag already set)
+    }
+
+    // Boost confirmed text signs
+    if (confirmedIds.size > 0) {
+      for (const id of confirmedIds) {
+        const sign = textSigns.find((s) => s.id === id)!;
+        const boosted = Math.min(1.0, (sign.confidenceScore ?? 0) + 0.15);
+        await db
+          .update(extractedSignsTable)
+          .set({ confidenceScore: boosted, reviewFlag: boosted < 0.75 })
+          .where(eq(extractedSignsTable.id, id));
       }
     }
 
-    // Persist pairings: boost confidence on confirmed pairs, flag unmatched text signs
-    for (const { textId, imageId } of pairs) {
-      const txtSign = textSigns.find((s) => s.id === textId)!;
-      const imgSign = imageSigns.find((s) => s.id === imageId)!;
-
-      // Both passes confirmed this sign → bigger confidence boost
-      const txtBoosted = Math.min(1.0, (txtSign.confidenceScore ?? 0) + 0.15);
-      const imgBoosted = Math.min(1.0, (imgSign.confidenceScore ?? 0) + 0.15);
-
-      await db
-        .update(extractedSignsTable)
-        .set({ pairedSignId: imageId, confidenceScore: txtBoosted, reviewFlag: txtBoosted < 0.75 })
-        .where(eq(extractedSignsTable.id, textId));
-
-      await db
-        .update(extractedSignsTable)
-        .set({ pairedSignId: textId, confidenceScore: imgBoosted, reviewFlag: imgBoosted < 0.75 })
-        .where(eq(extractedSignsTable.id, imageId));
-    }
-
-    // Flag unmatched text signs: visual pass did not confirm them → set review_flag
-    const unmatchedTextIds = textSigns
-      .filter((s) => !matchedTextIds.has(s.id))
-      .map((s) => s.id);
-
-    if (unmatchedTextIds.length > 0) {
+    // Flag NOT_FOUND text signs for human review
+    const notFoundOnly = [...notFoundIds].filter((id) => !confirmedIds.has(id));
+    if (notFoundOnly.length > 0) {
       await db
         .update(extractedSignsTable)
         .set({ reviewFlag: true })
-        .where(inArray(extractedSignsTable.id, unmatchedTextIds));
+        .where(inArray(extractedSignsTable.id, notFoundOnly));
     }
-
-    // Flag unmatched image signs: text pass did not confirm them → keep review_flag=true (already set)
-    const unmatchedImageCount = imageSigns.filter((s) => !matchedImageIds.has(s.id)).length;
 
     logger.info(
       {
         jobId,
         textSigns: textSigns.length,
-        imageSigns: imageSigns.length,
-        pairs: pairs.length,
-        unmatchedText: unmatchedTextIds.length,
-        unmatchedImage: unmatchedImageCount,
+        verifications: allVerifications.length,
+        confirmed: confirmedIds.size,
+        notFound: notFoundOnly.length,
+        discoveries: allImageRows.length,
       },
-      "Sign matching complete"
+      "Verification matching complete"
     );
   }
 
