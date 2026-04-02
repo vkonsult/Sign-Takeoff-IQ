@@ -1273,46 +1273,101 @@ function parseImageExtractionResponse(raw: string, source: string): ExtractedSig
   });
 }
 
-// Max PDF size for inline base64 upload (20 MB)
-const MAX_INLINE_PDF_BYTES = 20 * 1024 * 1024;
+// Max PDF size for a single inline base64 Gemini call (Gemini Flash limit)
+const MAX_INLINE_PDF_BYTES = 19 * 1024 * 1024; // 19 MB — leaves headroom for base64 overhead
+// Max pages per image-extraction batch (keeps each batch under 20 MB for most plans)
+const IMAGE_BATCH_PAGES = 25;
 
 export async function extractSignsFromPdfImage(
   filePath: string,
   ai: GeminiAI
-): Promise<{ rows: ExtractedSignRow[]; inputTokens: number; outputTokens: number }> {
+): Promise<{ rows: ExtractedSignRow[]; inputTokens: number; outputTokens: number; skipped: boolean; skipReason?: string }> {
   let fileBuffer: Buffer;
   try {
     fileBuffer = await fs.readFile(filePath);
   } catch (err) {
     logger.error({ err, filePath }, "Image extraction: could not read PDF file");
-    return { rows: [], inputTokens: 0, outputTokens: 0 };
+    return { rows: [], inputTokens: 0, outputTokens: 0, skipped: true, skipReason: "Could not read PDF file" };
   }
 
-  if (fileBuffer.length > MAX_INLINE_PDF_BYTES) {
-    logger.warn({ filePath, sizeBytes: fileBuffer.length }, "Image extraction: PDF too large for inline upload (>20 MB) — skipping");
-    return { rows: [], inputTokens: 0, outputTokens: 0 };
+  const fileName = filePath.split("/").pop() ?? "file.pdf";
+
+  // If PDF fits in a single call, send it directly (fast path)
+  if (fileBuffer.length <= MAX_INLINE_PDF_BYTES) {
+    const pdfBase64 = fileBuffer.toString("base64");
+    const label = `image-${fileName}`;
+    logger.info({ fileName, sizeBytes: fileBuffer.length }, "Image extraction: single-pass");
+    try {
+      const { text, inputTokens, outputTokens } = await callGeminiMultimodal(IMAGE_EXTRACTION_PROMPT, pdfBase64, ai, label);
+      const rows = parseImageExtractionResponse(text, label);
+      logger.info({ rows: rows.length, inputTokens, outputTokens }, "Image extraction complete (single-pass)");
+      return { rows, inputTokens, outputTokens, skipped: false };
+    } catch (err) {
+      logger.error({ err, fileName }, "Image extraction call failed");
+      return { rows: [], inputTokens: 0, outputTokens: 0, skipped: true, skipReason: "Gemini call failed" };
+    }
   }
 
-  const pdfBase64 = fileBuffer.toString("base64");
-  const label = `image-extraction-${filePath.split("/").pop()}`;
-
-  logger.info({ filePath: filePath.split("/").pop(), sizeBytes: fileBuffer.length }, "Starting image-based extraction");
-
+  // Large PDF: split into page batches using pdf-lib, process each batch separately.
+  logger.info({ fileName, sizeBytes: fileBuffer.length }, "Image extraction: PDF too large for single pass — splitting into page batches");
+  let { PDFDocument } = await import("pdf-lib");
+  let srcDoc: import("pdf-lib").PDFDocument;
   try {
-    const { text, inputTokens, outputTokens } = await callGeminiMultimodal(
-      IMAGE_EXTRACTION_PROMPT,
-      pdfBase64,
-      ai,
-      label
-    );
-
-    const rows = parseImageExtractionResponse(text, label);
-    logger.info({ rows: rows.length, inputTokens, outputTokens }, "Image extraction complete");
-    return { rows, inputTokens, outputTokens };
+    srcDoc = await PDFDocument.load(fileBuffer, { ignoreEncryption: true });
   } catch (err) {
-    logger.error({ err, filePath }, "Image extraction call failed");
-    return { rows: [], inputTokens: 0, outputTokens: 0 };
+    logger.error({ err, fileName }, "Image extraction: pdf-lib failed to load PDF");
+    return { rows: [], inputTokens: 0, outputTokens: 0, skipped: true, skipReason: "PDF could not be parsed for image extraction" };
   }
+
+  const totalPages = srcDoc.getPageCount();
+  const allRows: ExtractedSignRow[] = [];
+  let totalInputTokens = 0;
+  let totalOutputTokens = 0;
+  let batchCount = 0;
+
+  for (let startPage = 0; startPage < totalPages; startPage += IMAGE_BATCH_PAGES) {
+    const endPage = Math.min(startPage + IMAGE_BATCH_PAGES, totalPages);
+    const pageIndices = Array.from({ length: endPage - startPage }, (_, i) => startPage + i);
+    batchCount++;
+    const label = `image-${fileName}-batch${batchCount}`;
+
+    let batchPdfBytes: Uint8Array;
+    try {
+      const batchDoc = await PDFDocument.create();
+      const copiedPages = await batchDoc.copyPages(srcDoc, pageIndices);
+      for (const page of copiedPages) batchDoc.addPage(page);
+      batchPdfBytes = await batchDoc.save();
+    } catch (err) {
+      logger.warn({ err, label, startPage, endPage }, "Image extraction: failed to create batch PDF — skipping batch");
+      continue;
+    }
+
+    if (batchPdfBytes.length > MAX_INLINE_PDF_BYTES) {
+      logger.warn({ label, batchSizeBytes: batchPdfBytes.length }, "Image extraction: batch still >19 MB after splitting — skipping batch");
+      continue;
+    }
+
+    const pdfBase64 = Buffer.from(batchPdfBytes).toString("base64");
+    logger.info({ label, pages: `${startPage + 1}-${endPage}`, batchSizeBytes: batchPdfBytes.length }, "Image extraction: processing batch");
+
+    try {
+      const { text, inputTokens, outputTokens } = await callGeminiMultimodal(IMAGE_EXTRACTION_PROMPT, pdfBase64, ai, label);
+      const batchRows = parseImageExtractionResponse(text, label);
+      // Adjust page_number to be relative to the full document (not the batch)
+      for (const row of batchRows) {
+        if (row.page_number != null) row.page_number = row.page_number + startPage;
+      }
+      allRows.push(...batchRows);
+      totalInputTokens += inputTokens;
+      totalOutputTokens += outputTokens;
+      logger.info({ label, rows: batchRows.length, inputTokens, outputTokens }, "Image extraction batch complete");
+    } catch (err) {
+      logger.error({ err, label }, "Image extraction batch call failed — continuing with next batch");
+    }
+  }
+
+  logger.info({ fileName, totalRows: allRows.length, batchCount, totalInputTokens, totalOutputTokens }, "Image extraction complete (batched)");
+  return { rows: allRows, inputTokens: totalInputTokens, outputTokens: totalOutputTokens, skipped: false };
 }
 
 // ─── PROJECT INFO EXTRACTION ──────────────────────────────────────────────────

@@ -148,7 +148,7 @@ export default function JobDetails() {
   const [compareLoading, setCompareLoading] = useState(false);
   const [compareResult, setCompareResult] = useState<ComparisonResult | null>(null);
   const [compareError, setCompareError] = useState<string | null>(null);
-  const [compareTab, setCompareTab] = useState<"both" | "textOnly" | "imageOnly">("both");
+  const [compareTab, setCompareTab] = useState<"both" | "imageOnly">("both");
 
   const handleRunComparison = async () => {
     if (!jobId || compareLoading) return;
@@ -773,6 +773,8 @@ type ComparisonResult = {
   textCompareOutputTokens: number;
   textCompareCost: number;
   totalCost: number;
+  imageSkipped?: boolean;
+  imageSkipReason?: string | null;
 };
 
 function ComparisonPanel({
@@ -786,21 +788,17 @@ function ComparisonPanel({
   loading: boolean;
   result: ComparisonResult | null;
   error: string | null;
-  activeTab: "both" | "textOnly" | "imageOnly";
-  onTabChange: (t: "both" | "textOnly" | "imageOnly") => void;
+  activeTab: "both" | "imageOnly";
+  onTabChange: (t: "both" | "imageOnly") => void;
   onDismiss: () => void;
-  onReviewSign?: (sign: ComparisonSign | null) => void;
 }) {
   const fmt = (c: number) =>
     c === 0 ? "$0.00" : c < 0.001 ? `$${c.toFixed(5)}` : c < 0.01 ? `$${c.toFixed(4)}` : `$${c.toFixed(3)}`;
 
-  const tabs: { key: "both" | "textOnly" | "imageOnly"; label: string; icon: typeof ShieldCheck; count?: number; color: string }[] = [
-    { key: "both", label: "Validated (Both)", icon: ShieldCheck, count: result?.both.length, color: "text-accent border-accent/40 bg-accent/10" },
-    { key: "textOnly", label: "Text Only", icon: Eye, count: result?.textOnly.length, color: "text-primary border-primary/40 bg-primary/10" },
-    { key: "imageOnly", label: "Image Only", icon: GitCompare, count: result?.imageOnly.length, color: "text-muted-foreground border-border bg-secondary" },
-  ];
-
-  const activeSignList = result ? (activeTab === "both" ? result.both : activeTab === "textOnly" ? result.textOnly : result.imageOnly) : [];
+  const hasImageResults = result && !result.imageSkipped && (result.imageOnly.length > 0 || result.both.length > 0);
+  const activeSignList = result
+    ? activeTab === "both" ? result.both : result.imageOnly
+    : [];
 
   return (
     <div className="flex-none border-t border-border bg-card/50">
@@ -809,32 +807,20 @@ function ComparisonPanel({
         <div className="flex items-center justify-between mb-3">
           <div className="flex items-center gap-2">
             <GitCompare className="w-4 h-4 text-primary" />
-            <span className="text-sm font-display font-semibold text-foreground uppercase tracking-wider">Image vs Text Comparison</span>
+            <span className="text-sm font-display font-semibold text-foreground uppercase tracking-wider">
+              Image vs Text Comparison
+            </span>
             {loading && <Loader2 className="w-3.5 h-3.5 animate-spin text-muted-foreground" />}
           </div>
-          {result && (
-            <div className="flex items-center gap-3">
-              <span className="text-[10px] font-mono text-muted-foreground">
-                Text: {fmtTokens((result.textCompareInputTokens ?? 0) + (result.textCompareOutputTokens ?? 0))} tok · Image: {fmtTokens(result.imageInputTokens + result.imageOutputTokens)} tok · Total: {fmt(result.totalCost ?? result.imageCost)}
-              </span>
-              <button onClick={onDismiss} className="text-muted-foreground hover:text-foreground transition-colors">
-                <X className="w-3.5 h-3.5" />
-              </button>
-            </div>
-          )}
-          {!result && !loading && (
-            <button onClick={onDismiss} className="text-muted-foreground hover:text-foreground transition-colors">
-              <X className="w-3.5 h-3.5" />
-            </button>
-          )}
+          <button onClick={onDismiss} className="text-muted-foreground hover:text-foreground transition-colors">
+            <X className="w-3.5 h-3.5" />
+          </button>
         </div>
 
         {/* Loading state */}
         {loading && (
-          <div className="flex items-center gap-3 py-4 text-center">
-            <div className="flex-1 text-sm text-muted-foreground font-mono text-center">
-              Running dual-pass extraction (text + image) — this may take 30–60 seconds…
-            </div>
+          <div className="py-4 text-sm text-muted-foreground font-mono text-center">
+            Running dual-pass extraction — text &amp; visual scan in parallel. This may take 1–3 minutes for large files…
           </div>
         )}
 
@@ -848,109 +834,166 @@ function ComparisonPanel({
         {/* Results */}
         {result && (
           <>
-            {/* Tabs */}
-            <div className="flex items-center gap-2 mb-3">
-              {tabs.map((tab) => (
-                <button
-                  key={tab.key}
-                  onClick={() => onTabChange(tab.key)}
-                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-display font-semibold uppercase tracking-wide border transition-all ${
-                    activeTab === tab.key ? tab.color : "text-muted-foreground border-border bg-transparent hover:bg-secondary"
-                  }`}
-                >
-                  <tab.icon className="w-3 h-3" />
-                  {tab.label}
-                  <span className={`ml-1 inline-flex items-center justify-center w-4 h-4 rounded text-[9px] font-bold ${activeTab === tab.key ? "bg-current/20" : "bg-secondary"}`}>
-                    {tab.count ?? 0}
-                  </span>
-                </button>
-              ))}
-            </div>
-
-            {/* Tab description */}
-            {activeTab === "both" && (
-              <p className="text-[10px] font-mono text-muted-foreground mb-2">
-                These signs were found by both text and image extraction — high confidence. Confidence scores have been boosted.
-              </p>
-            )}
-            {activeTab === "textOnly" && (
-              <p className="text-[10px] font-mono text-muted-foreground mb-2">
-                Found only by text extraction. May be code-required signs inferred from floor plans, or signs the image pipeline missed.
-              </p>
-            )}
-            {activeTab === "imageOnly" && (
-              <p className="text-[10px] font-mono text-muted-foreground mb-2">
-                Found only by visual image analysis. May be signs in CAD graphics that the text parser couldn't read. Review these manually.
-              </p>
-            )}
-
-            {/* Sign mini-table */}
-            {activeSignList.length === 0 ? (
-              <p className="text-[11px] text-muted-foreground/50 font-mono py-2">No signs in this bucket.</p>
-            ) : (
-              <div className="overflow-x-auto rounded-lg border border-border max-h-52 overflow-y-auto">
-                <table className="w-full text-left text-[11px]">
-                  <thead>
-                    <tr className="border-b border-border bg-secondary/50 text-[10px] font-display uppercase tracking-wider text-muted-foreground">
-                      <th className="px-3 py-1.5">Sheet / ID</th>
-                      <th className="px-3 py-1.5">Sign Type</th>
-                      <th className="px-3 py-1.5">Location</th>
-                      <th className="px-3 py-1.5 text-center">Qty</th>
-                      <th className="px-3 py-1.5 text-center">Confidence</th>
-                      {activeTab === "both" && <th className="px-3 py-1.5 text-center">Validated</th>}
-                      {activeTab === "imageOnly" && <th className="px-3 py-1.5 text-center">Position</th>}
-                    </tr>
-                  </thead>
-                  <tbody className="bg-background divide-y divide-border/40">
-                    {activeSignList.map((sign, idx) => {
-                      const score = typeof sign.confidenceScore === "number" ? sign.confidenceScore : 0;
-                      const scoreColor = score >= 0.8 ? "text-accent" : score >= 0.6 ? "text-primary" : "text-destructive";
-                      return (
-                        <tr key={idx} className="hover:bg-secondary/30 transition-colors">
-                          <td className="px-3 py-1.5">
-                            <span className="font-mono text-muted-foreground">{String(sign.sheetNumber ?? "—") || "—"}</span>
-                            {sign.signIdentifier != null && (
-                              <span className="ml-2 text-foreground font-medium">{String(sign.signIdentifier)}</span>
-                            )}
-                          </td>
-                          <td className="px-3 py-1.5 text-foreground">{(sign.signType as string) || "—"}</td>
-                          <td className="px-3 py-1.5 text-muted-foreground truncate max-w-[180px]">{(sign.location as string) || "—"}</td>
-                          <td className="px-3 py-1.5 text-center font-mono">{(sign.quantity as number) || 1}</td>
-                          <td className={`px-3 py-1.5 text-center font-mono font-semibold ${scoreColor}`}>
-                            {Math.round(score * 100)}%
-                          </td>
-                          {activeTab === "both" && (
-                            <td className="px-3 py-1.5 text-center">
-                              <span className="inline-flex items-center gap-1 text-[10px] font-bold text-accent">
-                                <ShieldCheck className="w-3 h-3" />
-                                ✓
-                              </span>
-                            </td>
-                          )}
-                          {activeTab === "imageOnly" && (
-                            <td className="px-3 py-1.5 text-center font-mono text-muted-foreground text-[10px]">
-                              {sign.xPos != null ? `${Math.round((sign.xPos as number) * 100)}%, ${Math.round((sign.yPos as number) * 100)}%` : "—"}
-                            </td>
-                          )}
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
+            {/* Image skipped warning */}
+            {result.imageSkipped && (
+              <div className="flex items-start gap-2.5 bg-yellow-500/10 border border-yellow-500/30 rounded-lg px-3 py-2.5 mb-3">
+                <AlertTriangle className="w-4 h-4 text-yellow-500 flex-shrink-0 mt-0.5" />
+                <div>
+                  <p className="text-[12px] font-semibold text-yellow-500 mb-0.5">Visual scan unavailable</p>
+                  <p className="text-[11px] text-muted-foreground font-mono">
+                    {result.imageSkipReason
+                      ? result.imageSkipReason
+                      : "Image extraction could not run on this file."}
+                    {" "}The text extraction pass completed normally — your signs above are from the text-only pass.
+                  </p>
+                </div>
               </div>
             )}
 
-            {/* Summary footer */}
-            <div className="mt-3 flex items-center gap-4 text-[10px] font-mono text-muted-foreground/60 border-t border-border/40 pt-2">
-              <span>
-                <span className="text-accent font-semibold">{result.both.length}</span> validated ·{" "}
-                <span className="text-primary font-semibold">{result.textOnly.length}</span> text-only ·{" "}
-                <span className="text-muted-foreground font-semibold">{result.imageOnly.length}</span> image-only
-              </span>
-              <span className="ml-auto">
-                Text: {fmt(result.textCompareCost ?? 0)} · Image: {fmt(result.imageCost)} · Total: {fmt(result.totalCost ?? result.imageCost)}
-              </span>
-            </div>
+            {/* Text-only re-run summary (shown when image unavailable) */}
+            {result.imageSkipped && (
+              <div className="flex items-center gap-6 text-[11px] font-mono text-muted-foreground bg-secondary/40 rounded-lg px-4 py-2.5 border border-border">
+                <span>
+                  <span className="text-foreground font-semibold">{result.textOnly.length}</span> signs found by text re-scan
+                </span>
+                <span className="text-muted-foreground/50">·</span>
+                <span>
+                  Text cost: <span className="text-foreground font-semibold">{fmt(result.textCompareCost ?? 0)}</span>
+                </span>
+                <span className="text-muted-foreground/50">·</span>
+                <span className="text-muted-foreground/60">Results merged into your main sign table above</span>
+              </div>
+            )}
+
+            {/* Full comparison results (when image extraction worked) */}
+            {!result.imageSkipped && (
+              <>
+                {/* Stats summary row */}
+                <div className="flex items-center gap-4 mb-3">
+                  <div className="flex items-center gap-1.5 bg-accent/10 border border-accent/30 rounded-lg px-3 py-1.5">
+                    <ShieldCheck className="w-3.5 h-3.5 text-accent" />
+                    <span className="text-[12px] font-semibold text-accent">{result.both.length}</span>
+                    <span className="text-[10px] text-muted-foreground">validated by both</span>
+                  </div>
+                  <div className="flex items-center gap-1.5 bg-secondary border border-border rounded-lg px-3 py-1.5">
+                    <Eye className="w-3.5 h-3.5 text-muted-foreground" />
+                    <span className="text-[12px] font-semibold text-foreground">{result.imageOnly.length}</span>
+                    <span className="text-[10px] text-muted-foreground">visual-only finds</span>
+                  </div>
+                  <div className="flex items-center gap-1.5 bg-secondary border border-border rounded-lg px-3 py-1.5">
+                    <FileText className="w-3.5 h-3.5 text-muted-foreground" />
+                    <span className="text-[12px] font-semibold text-foreground">{result.textOnly.length}</span>
+                    <span className="text-[10px] text-muted-foreground">text-only (in main table)</span>
+                  </div>
+                  <span className="ml-auto text-[10px] font-mono text-muted-foreground/60">
+                    Total cost: {fmt(result.totalCost ?? result.imageCost)}
+                  </span>
+                </div>
+
+                {/* No image results at all */}
+                {!hasImageResults && (
+                  <div className="text-[11px] text-muted-foreground/60 font-mono py-2 text-center">
+                    Visual scan found no sign callouts or ADA symbols. All {result.textOnly.length} signs came from text extraction and are in your main table above.
+                  </div>
+                )}
+
+                {/* Tabs for when we have image results */}
+                {hasImageResults && (
+                  <>
+                    <div className="flex items-center gap-2 mb-2">
+                      <button
+                        onClick={() => onTabChange("both")}
+                        className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-display font-semibold uppercase tracking-wide border transition-all ${
+                          activeTab === "both"
+                            ? "text-accent border-accent/40 bg-accent/10"
+                            : "text-muted-foreground border-border bg-transparent hover:bg-secondary"
+                        }`}
+                      >
+                        <ShieldCheck className="w-3 h-3" />
+                        Validated by Both
+                        <span className="ml-1 inline-flex items-center justify-center w-4 h-4 rounded text-[9px] font-bold bg-current/20">
+                          {result.both.length}
+                        </span>
+                      </button>
+                      <button
+                        onClick={() => onTabChange("imageOnly")}
+                        className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-display font-semibold uppercase tracking-wide border transition-all ${
+                          activeTab === "imageOnly"
+                            ? "text-primary border-primary/40 bg-primary/10"
+                            : "text-muted-foreground border-border bg-transparent hover:bg-secondary"
+                        }`}
+                      >
+                        <GitCompare className="w-3 h-3" />
+                        Visual-Only Finds
+                        <span className="ml-1 inline-flex items-center justify-center w-4 h-4 rounded text-[9px] font-bold bg-current/20">
+                          {result.imageOnly.length}
+                        </span>
+                      </button>
+                    </div>
+
+                    <p className="text-[10px] font-mono text-muted-foreground mb-2">
+                      {activeTab === "both"
+                        ? "Found by both passes — confidence boosted. Signs in your main table above."
+                        : "Found visually but not in text — may be CAD callouts or ADA symbols. Review and add to table if needed."}
+                    </p>
+
+                    {activeSignList.length === 0 ? (
+                      <p className="text-[11px] text-muted-foreground/50 font-mono py-2">No signs in this bucket.</p>
+                    ) : (
+                      <div className="overflow-x-auto rounded-lg border border-border max-h-52 overflow-y-auto">
+                        <table className="w-full text-left text-[11px]">
+                          <thead>
+                            <tr className="border-b border-border bg-secondary/50 text-[10px] font-display uppercase tracking-wider text-muted-foreground">
+                              <th className="px-3 py-1.5">Sheet / ID</th>
+                              <th className="px-3 py-1.5">Sign Type</th>
+                              <th className="px-3 py-1.5">Location</th>
+                              <th className="px-3 py-1.5 text-center">Qty</th>
+                              <th className="px-3 py-1.5 text-center">Confidence</th>
+                              {activeTab === "both" && <th className="px-3 py-1.5 text-center">Validated</th>}
+                              {activeTab === "imageOnly" && <th className="px-3 py-1.5 text-center">Position</th>}
+                            </tr>
+                          </thead>
+                          <tbody className="bg-background divide-y divide-border/40">
+                            {activeSignList.map((sign, idx) => {
+                              const score = typeof sign.confidenceScore === "number" ? sign.confidenceScore : 0;
+                              const scoreColor = score >= 0.8 ? "text-accent" : score >= 0.6 ? "text-primary" : "text-destructive";
+                              return (
+                                <tr key={idx} className="hover:bg-secondary/30 transition-colors">
+                                  <td className="px-3 py-1.5">
+                                    <span className="font-mono text-muted-foreground">{String(sign.sheetNumber ?? "—") || "—"}</span>
+                                    {sign.signIdentifier != null && (
+                                      <span className="ml-2 text-foreground font-medium">{String(sign.signIdentifier)}</span>
+                                    )}
+                                  </td>
+                                  <td className="px-3 py-1.5 text-foreground">{(sign.signType as string) || "—"}</td>
+                                  <td className="px-3 py-1.5 text-muted-foreground truncate max-w-[180px]">{(sign.location as string) || "—"}</td>
+                                  <td className="px-3 py-1.5 text-center font-mono">{(sign.quantity as number) || 1}</td>
+                                  <td className={`px-3 py-1.5 text-center font-mono font-semibold ${scoreColor}`}>
+                                    {Math.round(score * 100)}%
+                                  </td>
+                                  {activeTab === "both" && (
+                                    <td className="px-3 py-1.5 text-center">
+                                      <span className="inline-flex items-center gap-1 text-[10px] font-bold text-accent">
+                                        <ShieldCheck className="w-3 h-3" /> ✓
+                                      </span>
+                                    </td>
+                                  )}
+                                  {activeTab === "imageOnly" && (
+                                    <td className="px-3 py-1.5 text-center font-mono text-muted-foreground text-[10px]">
+                                      {sign.xPos != null ? `${Math.round((sign.xPos as number) * 100)}%, ${Math.round((sign.yPos as number) * 100)}%` : "—"}
+                                    </td>
+                                  )}
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </>
+                )}
+              </>
+            )}
           </>
         )}
       </div>

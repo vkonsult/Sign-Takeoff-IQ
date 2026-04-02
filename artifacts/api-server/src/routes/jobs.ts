@@ -394,7 +394,7 @@ router.post("/jobs/:jobId/compare", async (req, res) => {
             return { file, ...result };
           } catch (err) {
             req.log.error({ err, fileId: file.id }, "Image extraction failed for file in compare pass");
-            return { file, rows: [], inputTokens: 0, outputTokens: 0 };
+            return { file, rows: [], inputTokens: 0, outputTokens: 0, skipped: true, skipReason: "Internal error" };
           }
         })
       ),
@@ -404,6 +404,10 @@ router.post("/jobs/:jobId/compare", async (req, res) => {
     const totalTextOutputTokens = textResults.reduce((sum, r) => sum + r.outputTokens, 0);
     const totalImageInputTokens = imageResults.reduce((sum, r) => sum + r.inputTokens, 0);
     const totalImageOutputTokens = imageResults.reduce((sum, r) => sum + r.outputTokens, 0);
+    // Determine if all image passes were skipped (e.g. all files failed or were too large)
+    const imageSkipped = imageResults.every((r) => r.skipped === true);
+    const imageSkipReasons = [...new Set(imageResults.flatMap((r) => r.skipReason ? [r.skipReason] : []))];
+    const imageSkipReason = imageSkipReasons.length > 0 ? imageSkipReasons.join("; ") : null;
 
     const textRows = textResults.flatMap((r) => r.rows.map((row) => buildTextRow(row, r.file)));
     const imageRows = imageResults.flatMap((r) => r.rows.map((row) => buildImageRow(row, r.file)));
@@ -576,6 +580,8 @@ router.post("/jobs/:jobId/compare", async (req, res) => {
       imageCost,
       textCompareCost,
       totalCost: imageCost + textCompareCost,
+      imageSkipped,
+      imageSkipReason,
     });
   } catch (err) {
     req.log.error({ err, jobId }, "Comparison failed");
