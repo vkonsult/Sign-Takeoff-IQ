@@ -13,7 +13,8 @@ import JobsList from "@/pages/JobsList";
 import JobDetails from "@/pages/JobDetails";
 import Training from "@/pages/Training";
 import NotFound from "@/pages/not-found";
-import AdminPanel from "@/pages/AdminPanel";
+import AdminOrgs from "@/pages/AdminOrgs";
+import AdminUsers from "@/pages/AdminUsers";
 import OnboardingPage from "@/pages/OnboardingPage";
 import SettingsCompany from "@/pages/SettingsCompany";
 import SettingsUsers from "@/pages/SettingsUsers";
@@ -217,7 +218,10 @@ function Router() {
         {() => <AdminRoute component={SettingsUsers} />}
       </Route>
       <Route path="/admin">
-        {() => <SuperAdminRoute component={AdminPanel} />}
+        {() => <SuperAdminRoute component={AdminOrgs} />}
+      </Route>
+      <Route path="/admin/users">
+        {() => <SuperAdminRoute component={AdminUsers} />}
       </Route>
       <Route component={NotFound} />
     </Switch>

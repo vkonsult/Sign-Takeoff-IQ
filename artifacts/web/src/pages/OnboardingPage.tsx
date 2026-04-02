@@ -1,43 +1,22 @@
-import { useState } from "react";
+import { useState, useRef } from "react";
 import { useLocation } from "wouter";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { apiFetch } from "@/lib/apiClient";
-import { CheckCircle2, ChevronRight, Building2, Phone, Globe, MapPin, Mail } from "lucide-react";
+import { Upload, CheckCircle2, X, ArrowRight } from "lucide-react";
 
-type Step = "welcome" | "company" | "done";
-
-function StepIndicator({ current }: { current: Step }) {
-  const steps: Step[] = ["welcome", "company", "done"];
-  const idx = steps.indexOf(current);
-  return (
-    <div className="flex items-center gap-2 mb-8">
-      {steps.map((s, i) => (
-        <div key={s} className="flex items-center gap-2">
-          <div
-            className={`w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold transition-all ${
-              i < idx
-                ? "bg-primary text-primary-foreground"
-                : i === idx
-                  ? "bg-primary text-primary-foreground ring-2 ring-primary/30"
-                  : "bg-secondary text-muted-foreground"
-            }`}
-          >
-            {i < idx ? <CheckCircle2 className="w-4 h-4" /> : i + 1}
-          </div>
-          {i < steps.length - 1 && (
-            <div className={`h-px w-8 ${i < idx ? "bg-primary" : "bg-border"}`} />
-          )}
-        </div>
-      ))}
-    </div>
-  );
+async function uploadLogoFile(file: File): Promise<string> {
+  const formData = new FormData();
+  formData.append("logo", file);
+  const res = await apiFetch("/api/admin/logo", { method: "POST", body: formData });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error ?? "Logo upload failed");
+  return data.url as string;
 }
 
 export default function OnboardingPage() {
-  const [step, setStep] = useState<Step>("welcome");
-  const [, setLocation] = useLocation();
-  const queryClient = useQueryClient();
+  const [, navigate] = useLocation();
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
+  const [step, setStep] = useState<1 | 2>(1);
   const [form, setForm] = useState({
     name: "",
     email: "",
@@ -46,10 +25,33 @@ export default function OnboardingPage() {
     website: "",
     logoUrl: "",
   });
+  const [logoPreview, setLogoPreview] = useState<string | null>(null);
+  const [logoUploading, setLogoUploading] = useState(false);
+  const [logoError, setLogoError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const saveMutation = useMutation({
-    mutationFn: async () => {
+  const handleLogoFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setLogoError(null);
+    setLogoUploading(true);
+    try {
+      const url = await uploadLogoFile(file);
+      setForm((p) => ({ ...p, logoUrl: url }));
+      setLogoPreview(url);
+    } catch (err) {
+      setLogoError((err as Error).message);
+    } finally {
+      setLogoUploading(false);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    }
+  };
+
+  const handleSave = async () => {
+    setSaving(true);
+    setError(null);
+    try {
       const res = await apiFetch("/api/admin/org", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
@@ -64,201 +66,192 @@ export default function OnboardingPage() {
         }),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error ?? "Failed to save");
-      return data;
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["admin-org"] });
-      setStep("done");
-    },
-    onError: (e: Error) => {
-      setError(e.message);
-    },
-  });
+      if (!res.ok) {
+        setError(data.error ?? "Failed to save");
+        setSaving(false);
+        return;
+      }
+      setStep(2);
+    } catch {
+      setError("Network error");
+    } finally {
+      setSaving(false);
+    }
+  };
 
   return (
     <div className="min-h-screen bg-background flex items-center justify-center p-6">
       <div className="w-full max-w-lg">
-        {/* Logo */}
-        <div className="flex items-center gap-3 mb-10">
-          <div className="w-9 h-9 rounded-lg bg-primary flex items-center justify-center">
-            <svg viewBox="0 0 24 24" fill="none" className="w-5 h-5 text-primary-foreground stroke-current" strokeWidth="2">
-              <path d="M4 22L20 2" strokeLinecap="round" />
-              <path d="M4 12L12 4" strokeLinecap="round" />
-              <path d="M12 20L20 12" strokeLinecap="round" />
-            </svg>
-          </div>
-          <div>
-            <h1 className="font-display font-bold text-sm leading-tight text-foreground">SIGN TAKEOFF IQ</h1>
-            <p className="text-[10px] text-primary tracking-widest font-mono uppercase">Setup Wizard</p>
-          </div>
+        {/* Step indicator */}
+        <div className="flex items-center justify-center gap-3 mb-8">
+          {[1, 2].map((s) => (
+            <div key={s} className="flex items-center gap-2">
+              <div
+                className={`w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold border-2 transition-colors ${
+                  step > s
+                    ? "bg-primary border-primary text-primary-foreground"
+                    : step === s
+                      ? "border-primary text-primary bg-transparent"
+                      : "border-border text-muted-foreground"
+                }`}
+              >
+                {step > s ? <CheckCircle2 className="w-3.5 h-3.5" /> : s}
+              </div>
+              {s < 2 && <div className={`w-12 h-px ${step > s ? "bg-primary" : "bg-border"}`} />}
+            </div>
+          ))}
         </div>
 
-        <StepIndicator current={step} />
-
-        {/* Step: Welcome */}
-        {step === "welcome" && (
-          <div className="bg-card border border-border rounded-2xl p-8">
-            <div className="w-12 h-12 rounded-full bg-primary/10 flex items-center justify-center mb-5">
-              <Building2 className="w-6 h-6 text-primary" />
-            </div>
-            <h2 className="text-xl font-display font-bold text-foreground mb-3">
-              Welcome to Sign Takeoff IQ
-            </h2>
-            <p className="text-sm text-muted-foreground mb-6 leading-relaxed">
-              Let's set up your company profile. This takes about 2 minutes and helps your team
-              hit the ground running with AI-powered sign extraction.
-            </p>
-            <ul className="space-y-2 mb-8">
-              {[
-                "Company information and branding",
-                "AI-powered plan extraction ready to go",
-                "Your team can start uploading plans immediately",
-              ].map((item) => (
-                <li key={item} className="flex items-start gap-2 text-sm text-muted-foreground">
-                  <CheckCircle2 className="w-4 h-4 text-primary mt-0.5 flex-shrink-0" />
-                  {item}
-                </li>
-              ))}
-            </ul>
-            <button
-              onClick={() => setStep("company")}
-              className="w-full flex items-center justify-center gap-2 px-6 py-3 bg-primary text-primary-foreground rounded-xl font-medium hover:bg-primary/90 transition-colors"
-            >
-              Get Started
-              <ChevronRight className="w-4 h-4" />
-            </button>
-          </div>
-        )}
-
-        {/* Step: Company */}
-        {step === "company" && (
-          <div className="bg-card border border-border rounded-2xl p-8">
-            <h2 className="text-xl font-display font-bold text-foreground mb-1">Company Profile</h2>
-            <p className="text-sm text-muted-foreground mb-6">
-              Fill in your company details. All fields except name are optional.
-            </p>
-            {error && (
-              <div className="mb-4 text-sm text-destructive bg-destructive/10 border border-destructive/20 rounded-lg px-3 py-2">
-                {error}
+        {step === 1 && (
+          <div className="bg-card border border-border rounded-2xl shadow-lg overflow-hidden">
+            <div className="px-8 pt-8 pb-6 border-b border-border">
+              <div className="flex items-center gap-3 mb-1">
+                <div className="w-8 h-8 rounded bg-primary flex items-center justify-center flex-shrink-0">
+                  <svg viewBox="0 0 24 24" fill="none" className="w-4 h-4 stroke-white" strokeWidth="2">
+                    <path d="M4 22L20 2" strokeLinecap="round" />
+                    <path d="M4 12L12 4" strokeLinecap="round" />
+                    <path d="M12 20L20 12" strokeLinecap="round" />
+                  </svg>
+                </div>
+                <div>
+                  <h1 className="text-lg font-display font-bold text-foreground">Set Up Your Company</h1>
+                  <p className="text-xs text-muted-foreground">Step 1 of 2 — Company profile</p>
+                </div>
               </div>
-            )}
-            <form
-              onSubmit={(e) => {
-                e.preventDefault();
-                setError(null);
-                saveMutation.mutate();
-              }}
-              className="space-y-4"
-            >
-              <div className="space-y-1">
-                <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider flex items-center gap-1.5">
-                  <Building2 className="w-3.5 h-3.5" /> Company Name *
+            </div>
+
+            <div className="p-8 space-y-5">
+              {/* Logo */}
+              <div>
+                <label className="block text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3">
+                  Company Logo
                 </label>
-                <input
-                  required
-                  value={form.name}
+                <div className="flex items-center gap-4">
+                  <div className="w-14 h-14 rounded-xl border border-border bg-secondary flex items-center justify-center flex-shrink-0 overflow-hidden">
+                    {logoPreview ? (
+                      <img src={logoPreview} alt="Logo" className="w-full h-full object-contain p-1" />
+                    ) : (
+                      <span className="text-xl font-display font-bold text-muted-foreground">
+                        {(form.name || "?")[0]?.toUpperCase()}
+                      </span>
+                    )}
+                  </div>
+                  <div className="flex-1 space-y-2">
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => fileInputRef.current?.click()}
+                        disabled={logoUploading}
+                        className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-border text-xs font-medium text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors disabled:opacity-50"
+                      >
+                        <Upload className="w-3.5 h-3.5" />
+                        {logoUploading ? "Uploading…" : "Upload Logo"}
+                      </button>
+                      {form.logoUrl && (
+                        <button type="button"
+                          onClick={() => { setForm((p) => ({ ...p, logoUrl: "" })); setLogoPreview(null); }}
+                          className="p-1 rounded text-muted-foreground hover:text-destructive transition-colors">
+                          <X className="w-3 h-3" />
+                        </button>
+                      )}
+                    </div>
+                    <input
+                      value={form.logoUrl}
+                      onChange={(e) => { setForm((p) => ({ ...p, logoUrl: e.target.value })); setLogoPreview(e.target.value || null); }}
+                      className="w-full px-2 py-1.5 rounded-lg bg-secondary border border-border text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-primary/50"
+                      placeholder="or paste a logo URL…"
+                    />
+                    {logoError && <p className="text-xs text-destructive">{logoError}</p>}
+                    <input ref={fileInputRef} type="file" accept="image/*" onChange={handleLogoFileChange} className="hidden" />
+                  </div>
+                </div>
+              </div>
+
+              {/* Company name */}
+              <div className="space-y-1">
+                <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+                  Company Name *
+                </label>
+                <input required value={form.name}
                   onChange={(e) => setForm((p) => ({ ...p, name: e.target.value }))}
                   className="w-full px-3 py-2.5 rounded-lg bg-secondary border border-border text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary/50"
-                  placeholder="Acme Sign Co."
-                />
+                  placeholder="Acme Sign & Display" />
               </div>
+
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-1">
-                  <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider flex items-center gap-1.5">
-                    <Mail className="w-3.5 h-3.5" /> Email
-                  </label>
-                  <input
-                    type="email"
-                    value={form.email}
+                  <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Email</label>
+                  <input type="email" value={form.email}
                     onChange={(e) => setForm((p) => ({ ...p, email: e.target.value }))}
                     className="w-full px-3 py-2.5 rounded-lg bg-secondary border border-border text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary/50"
-                    placeholder="info@company.com"
-                  />
+                    placeholder="contact@co.com" />
                 </div>
                 <div className="space-y-1">
-                  <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider flex items-center gap-1.5">
-                    <Phone className="w-3.5 h-3.5" /> Phone
-                  </label>
-                  <input
-                    value={form.phone}
+                  <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Phone</label>
+                  <input value={form.phone}
                     onChange={(e) => setForm((p) => ({ ...p, phone: e.target.value }))}
                     className="w-full px-3 py-2.5 rounded-lg bg-secondary border border-border text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary/50"
-                    placeholder="+1 555 000 0000"
-                  />
+                    placeholder="+1 555-000-0000" />
                 </div>
               </div>
               <div className="space-y-1">
-                <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider flex items-center gap-1.5">
-                  <MapPin className="w-3.5 h-3.5" /> Address
-                </label>
-                <input
-                  value={form.address}
+                <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Address</label>
+                <input value={form.address}
                   onChange={(e) => setForm((p) => ({ ...p, address: e.target.value }))}
                   className="w-full px-3 py-2.5 rounded-lg bg-secondary border border-border text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary/50"
-                  placeholder="123 Main St, City, ST 00000"
-                />
+                  placeholder="123 Main St, City, ST 00000" />
               </div>
-              <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-1">
-                  <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider flex items-center gap-1.5">
-                    <Globe className="w-3.5 h-3.5" /> Website
-                  </label>
-                  <input
-                    value={form.website}
-                    onChange={(e) => setForm((p) => ({ ...p, website: e.target.value }))}
-                    className="w-full px-3 py-2.5 rounded-lg bg-secondary border border-border text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary/50"
-                    placeholder="https://company.com"
-                  />
-                </div>
-                <div className="space-y-1">
-                  <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Logo URL</label>
-                  <input
-                    value={form.logoUrl}
-                    onChange={(e) => setForm((p) => ({ ...p, logoUrl: e.target.value }))}
-                    className="w-full px-3 py-2.5 rounded-lg bg-secondary border border-border text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary/50"
-                    placeholder="https://…/logo.png"
-                  />
-                </div>
+              <div className="space-y-1">
+                <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Website</label>
+                <input value={form.website}
+                  onChange={(e) => setForm((p) => ({ ...p, website: e.target.value }))}
+                  className="w-full px-3 py-2.5 rounded-lg bg-secondary border border-border text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary/50"
+                  placeholder="https://company.com" />
               </div>
-              <div className="flex gap-3 pt-2">
-                <button
-                  type="button"
-                  onClick={() => setStep("welcome")}
-                  className="px-4 py-2.5 rounded-xl border border-border text-sm font-medium text-muted-foreground hover:bg-secondary transition-colors"
-                >
-                  Back
-                </button>
-                <button
-                  type="submit"
-                  disabled={saveMutation.isPending}
-                  className="flex-1 flex items-center justify-center gap-2 px-6 py-2.5 bg-primary text-primary-foreground rounded-xl font-medium hover:bg-primary/90 transition-colors disabled:opacity-50"
-                >
-                  {saveMutation.isPending ? "Saving…" : "Complete Setup"}
-                  <ChevronRight className="w-4 h-4" />
-                </button>
-              </div>
-            </form>
+
+              {error && (
+                <p className="text-sm text-destructive bg-destructive/10 border border-destructive/20 rounded-lg px-3 py-2">
+                  {error}
+                </p>
+              )}
+
+              <button
+                onClick={handleSave}
+                disabled={saving || !form.name.trim() || logoUploading}
+                className="w-full flex items-center justify-center gap-2 py-3 bg-primary text-primary-foreground rounded-xl text-sm font-semibold hover:bg-primary/90 transition-colors disabled:opacity-50 mt-2"
+              >
+                {saving ? "Saving…" : "Continue"}
+                {!saving && <ArrowRight className="w-4 h-4" />}
+              </button>
+            </div>
           </div>
         )}
 
-        {/* Step: Done */}
-        {step === "done" && (
-          <div className="bg-card border border-border rounded-2xl p-8 text-center">
-            <div className="w-16 h-16 rounded-full bg-primary/10 flex items-center justify-center mx-auto mb-5">
-              <CheckCircle2 className="w-8 h-8 text-primary" />
+        {step === 2 && (
+          <div className="bg-card border border-border rounded-2xl shadow-lg p-8 text-center space-y-5">
+            <div className="w-14 h-14 rounded-full bg-green-900/30 flex items-center justify-center mx-auto">
+              <CheckCircle2 className="w-7 h-7 text-green-400" />
             </div>
-            <h2 className="text-xl font-display font-bold text-foreground mb-3">You're all set!</h2>
-            <p className="text-sm text-muted-foreground mb-8 leading-relaxed">
-              Your company profile has been configured. You can now start uploading architectural
-              plans and extracting sign data with AI.
-            </p>
+            <div>
+              <h2 className="text-xl font-display font-bold text-foreground mb-1">You're all set!</h2>
+              <p className="text-sm text-muted-foreground">
+                {form.name || "Your company"} is ready to start processing sign takeoffs.
+              </p>
+            </div>
+            <div className="bg-secondary/50 rounded-xl border border-border p-4 text-left space-y-2">
+              <p className="text-sm font-medium text-foreground">What you can do now:</p>
+              <ul className="space-y-1 text-xs text-muted-foreground">
+                <li>• Upload architectural PDF plans to extract sign data</li>
+                <li>• AI scans text and visuals to find every sign</li>
+                <li>• Review results in the interactive table</li>
+                <li>• Export to Excel for your estimating workflow</li>
+              </ul>
+            </div>
             <button
-              onClick={() => setLocation("/jobs")}
-              className="w-full flex items-center justify-center gap-2 px-6 py-3 bg-primary text-primary-foreground rounded-xl font-medium hover:bg-primary/90 transition-colors"
+              onClick={() => navigate("/jobs")}
+              className="w-full py-3 bg-primary text-primary-foreground rounded-xl text-sm font-semibold hover:bg-primary/90 transition-colors"
             >
               Go to Dashboard
-              <ChevronRight className="w-4 h-4" />
             </button>
           </div>
         )}

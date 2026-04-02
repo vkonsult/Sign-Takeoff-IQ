@@ -1,9 +1,8 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { AppShell } from "@/components/layout/Shell";
+import { AdminShell } from "@/components/layout/AdminShell";
 import { apiFetch } from "@/lib/apiClient";
-import { Building2, Save, AlertCircle, CheckCircle2, Users } from "lucide-react";
-import { Link } from "wouter";
+import { Save, AlertCircle, CheckCircle2, Upload, X } from "lucide-react";
 
 type Organization = {
   id: string;
@@ -19,8 +18,18 @@ type Organization = {
   updatedAt: string;
 };
 
+async function uploadLogoFile(file: File): Promise<string> {
+  const formData = new FormData();
+  formData.append("logo", file);
+  const res = await apiFetch("/api/admin/logo", { method: "POST", body: formData });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error ?? "Logo upload failed");
+  return data.url as string;
+}
+
 export default function SettingsCompany() {
   const queryClient = useQueryClient();
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const orgQuery = useQuery({
     queryKey: ["admin-org"],
@@ -39,6 +48,9 @@ export default function SettingsCompany() {
     website: "",
     logoUrl: "",
   });
+  const [logoPreview, setLogoPreview] = useState<string | null>(null);
+  const [logoUploading, setLogoUploading] = useState(false);
+  const [logoError, setLogoError] = useState<string | null>(null);
   const [saveStatus, setSaveStatus] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const [saveError, setSaveError] = useState<string | null>(null);
 
@@ -53,6 +65,7 @@ export default function SettingsCompany() {
         website: org.website ?? "",
         logoUrl: org.logoUrl ?? "",
       });
+      setLogoPreview(org.logoUrl ?? null);
     }
   }, [orgQuery.data]);
 
@@ -86,6 +99,23 @@ export default function SettingsCompany() {
     },
   });
 
+  const handleLogoFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setLogoError(null);
+    setLogoUploading(true);
+    try {
+      const url = await uploadLogoFile(file);
+      setForm((p) => ({ ...p, logoUrl: url }));
+      setLogoPreview(url);
+    } catch (err) {
+      setLogoError((err as Error).message);
+    } finally {
+      setLogoUploading(false);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    }
+  };
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     setSaveStatus("saving");
@@ -96,38 +126,14 @@ export default function SettingsCompany() {
   const org = orgQuery.data?.organization;
 
   return (
-    <AppShell>
-      <div className="flex-1 p-8 max-w-3xl mx-auto w-full">
-        <header className="mb-8">
-          <div className="flex items-center gap-3 mb-2">
-            <div className="w-8 h-8 rounded-lg bg-secondary border border-border flex items-center justify-center">
-              <Building2 className="w-4 h-4 text-muted-foreground" />
-            </div>
-            <h1 className="text-2xl font-display font-bold text-foreground">Company Settings</h1>
-          </div>
-          <p className="text-sm text-muted-foreground ml-11">
-            Manage your organization's profile and contact information
+    <AdminShell section="tenant">
+      <div className="flex-1 p-8 max-w-2xl">
+        <header className="mb-6">
+          <h1 className="text-xl font-display font-bold text-foreground">Company Profile</h1>
+          <p className="text-sm text-muted-foreground">
+            Manage your organization's information and branding
           </p>
         </header>
-
-        {/* Settings nav */}
-        <div className="flex gap-1 mb-8 border-b border-border">
-          <Link
-            href="/settings"
-            className="px-4 py-2 text-sm font-medium border-b-2 border-primary text-foreground -mb-px"
-          >
-            Company
-          </Link>
-          <Link
-            href="/settings/users"
-            className="px-4 py-2 text-sm font-medium border-b-2 border-transparent text-muted-foreground hover:text-foreground transition-colors -mb-px"
-          >
-            <span className="flex items-center gap-1.5">
-              <Users className="w-3.5 h-3.5" />
-              Users
-            </span>
-          </Link>
-        </div>
 
         {orgQuery.isLoading ? (
           <div className="bg-card border border-border rounded-xl p-8">
@@ -143,27 +149,73 @@ export default function SettingsCompany() {
             <span className="text-sm">Failed to load organization settings</span>
           </div>
         ) : (
-          <div className="space-y-6">
-            {/* Logo preview */}
-            {org?.logoUrl && (
-              <div className="bg-card border border-border rounded-xl p-4 flex items-center gap-4">
-                <img
-                  src={org.logoUrl}
-                  alt="Company logo"
-                  className="h-12 w-auto object-contain rounded"
-                />
-                <div>
-                  <p className="text-sm font-medium text-foreground">{org.name}</p>
-                  <p className="text-xs font-mono text-muted-foreground">{org.slug}</p>
+          <div className="space-y-5">
+            {/* Logo section */}
+            <div className="bg-card border border-border rounded-xl p-5">
+              <h2 className="text-sm font-semibold text-foreground mb-4">Company Logo</h2>
+              <div className="flex items-center gap-4">
+                <div className="w-16 h-16 rounded-xl border border-border bg-secondary flex items-center justify-center flex-shrink-0 overflow-hidden">
+                  {logoPreview ? (
+                    <img src={logoPreview} alt="Logo" className="w-full h-full object-contain p-1" />
+                  ) : (
+                    <span className="text-2xl font-display font-bold text-muted-foreground">
+                      {(form.name || org?.name || "?")[0]?.toUpperCase()}
+                    </span>
+                  )}
+                </div>
+                <div className="flex-1 space-y-2">
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => fileInputRef.current?.click()}
+                      disabled={logoUploading}
+                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-border text-xs font-medium text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors disabled:opacity-50"
+                    >
+                      <Upload className="w-3.5 h-3.5" />
+                      {logoUploading ? "Uploading…" : "Upload Image"}
+                    </button>
+                    {form.logoUrl && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setForm((p) => ({ ...p, logoUrl: "" }));
+                          setLogoPreview(null);
+                        }}
+                        className="flex items-center gap-1 px-2 py-1.5 rounded-lg text-xs text-muted-foreground hover:text-destructive transition-colors"
+                      >
+                        <X className="w-3 h-3" /> Remove
+                      </button>
+                    )}
+                    <input
+                      ref={fileInputRef}
+                      type="file"
+                      accept="image/*"
+                      onChange={handleLogoFileChange}
+                      className="hidden"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <p className="text-[10px] text-muted-foreground">Or paste a URL:</p>
+                    <input
+                      value={form.logoUrl}
+                      onChange={(e) => {
+                        setForm((p) => ({ ...p, logoUrl: e.target.value }));
+                        setLogoPreview(e.target.value || null);
+                      }}
+                      className="w-full px-2 py-1.5 rounded-lg bg-secondary border border-border text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-primary/50"
+                      placeholder="https://…/logo.png"
+                    />
+                  </div>
+                  {logoError && <p className="text-xs text-destructive">{logoError}</p>}
                 </div>
               </div>
-            )}
+            </div>
 
-            <form onSubmit={handleSubmit} className="bg-card border border-border rounded-xl p-6 space-y-5">
+            {/* Main form */}
+            <form onSubmit={handleSubmit} className="bg-card border border-border rounded-xl p-5 space-y-4">
               <h2 className="text-sm font-semibold text-foreground border-b border-border pb-3">
                 Organization Information
               </h2>
-
               <div className="space-y-1">
                 <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
                   Company Name *
@@ -175,68 +227,37 @@ export default function SettingsCompany() {
                   className="w-full px-3 py-2.5 rounded-lg bg-secondary border border-border text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary/50"
                 />
               </div>
-
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-1">
                   <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
                     Contact Email
                   </label>
-                  <input
-                    type="email"
-                    value={form.email}
+                  <input type="email" value={form.email}
                     onChange={(e) => setForm((p) => ({ ...p, email: e.target.value }))}
                     className="w-full px-3 py-2.5 rounded-lg bg-secondary border border-border text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary/50"
-                    placeholder="contact@company.com"
-                  />
+                    placeholder="contact@company.com" />
                 </div>
                 <div className="space-y-1">
-                  <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
-                    Phone
-                  </label>
-                  <input
-                    value={form.phone}
+                  <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Phone</label>
+                  <input value={form.phone}
                     onChange={(e) => setForm((p) => ({ ...p, phone: e.target.value }))}
                     className="w-full px-3 py-2.5 rounded-lg bg-secondary border border-border text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary/50"
-                    placeholder="+1 555 000 0000"
-                  />
+                    placeholder="+1 555 000 0000" />
                 </div>
               </div>
-
               <div className="space-y-1">
-                <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
-                  Address
-                </label>
-                <input
-                  value={form.address}
+                <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Address</label>
+                <input value={form.address}
                   onChange={(e) => setForm((p) => ({ ...p, address: e.target.value }))}
                   className="w-full px-3 py-2.5 rounded-lg bg-secondary border border-border text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary/50"
-                  placeholder="123 Main St, City, ST 00000"
-                />
+                  placeholder="123 Main St, City, ST 00000" />
               </div>
-
-              <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-1">
-                  <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
-                    Website
-                  </label>
-                  <input
-                    value={form.website}
-                    onChange={(e) => setForm((p) => ({ ...p, website: e.target.value }))}
-                    className="w-full px-3 py-2.5 rounded-lg bg-secondary border border-border text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary/50"
-                    placeholder="https://company.com"
-                  />
-                </div>
-                <div className="space-y-1">
-                  <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
-                    Logo URL
-                  </label>
-                  <input
-                    value={form.logoUrl}
-                    onChange={(e) => setForm((p) => ({ ...p, logoUrl: e.target.value }))}
-                    className="w-full px-3 py-2.5 rounded-lg bg-secondary border border-border text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary/50"
-                    placeholder="https://…/logo.png"
-                  />
-                </div>
+              <div className="space-y-1">
+                <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Website</label>
+                <input value={form.website}
+                  onChange={(e) => setForm((p) => ({ ...p, website: e.target.value }))}
+                  className="w-full px-3 py-2.5 rounded-lg bg-secondary border border-border text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary/50"
+                  placeholder="https://company.com" />
               </div>
 
               {saveError && (
@@ -248,27 +269,21 @@ export default function SettingsCompany() {
               {saveStatus === "saved" && (
                 <div className="flex items-center gap-2 text-sm text-green-400 bg-green-900/10 border border-green-700/20 rounded-lg px-3 py-2">
                   <CheckCircle2 className="w-4 h-4 flex-shrink-0" />
-                  Changes saved successfully
+                  Changes saved
                 </div>
               )}
-
-              <div className="flex justify-end pt-2">
-                <button
-                  type="submit"
-                  disabled={saveMutation.isPending}
-                  className="flex items-center gap-2 px-5 py-2.5 bg-primary text-primary-foreground rounded-lg text-sm font-medium hover:bg-primary/90 transition-colors disabled:opacity-50"
-                >
+              <div className="flex justify-end">
+                <button type="submit" disabled={saveMutation.isPending}
+                  className="flex items-center gap-2 px-5 py-2.5 bg-primary text-primary-foreground rounded-lg text-sm font-medium hover:bg-primary/90 transition-colors disabled:opacity-50">
                   <Save className="w-3.5 h-3.5" />
                   {saveMutation.isPending ? "Saving…" : "Save Changes"}
                 </button>
               </div>
             </form>
 
-            {/* Org metadata */}
-            <div className="bg-card border border-border rounded-xl p-4 space-y-2">
-              <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
-                Organization Details
-              </h3>
+            {/* Metadata */}
+            <div className="bg-card border border-border rounded-xl p-4">
+              <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3">Organization Details</h3>
               <div className="grid grid-cols-2 gap-3 text-xs">
                 <div>
                   <p className="text-muted-foreground">Slug</p>
@@ -276,17 +291,13 @@ export default function SettingsCompany() {
                 </div>
                 <div>
                   <p className="text-muted-foreground">Created</p>
-                  <p className="text-foreground">
-                    {org?.createdAt
-                      ? new Date(org.createdAt).toLocaleDateString()
-                      : "—"}
-                  </p>
+                  <p className="text-foreground">{org?.createdAt ? new Date(org.createdAt).toLocaleDateString() : "—"}</p>
                 </div>
               </div>
             </div>
           </div>
         )}
       </div>
-    </AppShell>
+    </AdminShell>
   );
 }
