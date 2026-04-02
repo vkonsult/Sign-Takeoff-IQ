@@ -1,38 +1,41 @@
 import { useState, useEffect } from "react";
 import { apiFetch } from "@/lib/apiClient";
 
-export function usePdfBlob(url: string | null): { blobUrl: string | null; blobError: string | null } {
-  const [blobUrl, setBlobUrl] = useState<string | null>(null);
+export function usePdfBlob(url: string | null): {
+  pdfData: Uint8Array | null;
+  blobError: string | null;
+} {
+  const [pdfData, setPdfData] = useState<Uint8Array | null>(null);
   const [blobError, setBlobError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!url) {
-      setBlobUrl(null);
+      setPdfData(null);
       setBlobError(null);
       return;
     }
 
-    let objectUrl: string | null = null;
-    setBlobUrl(null);
+    let cancelled = false;
+    setPdfData(null);
     setBlobError(null);
 
     apiFetch(url)
       .then((res) => {
         if (!res.ok) throw new Error(`Server returned ${res.status}`);
-        return res.blob();
+        return res.arrayBuffer();
       })
-      .then((blob) => {
-        objectUrl = URL.createObjectURL(blob);
-        setBlobUrl(objectUrl);
+      .then((buf) => {
+        if (!cancelled) setPdfData(new Uint8Array(buf));
       })
       .catch((err: unknown) => {
-        setBlobError((err instanceof Error ? err.message : null) ?? "Failed to load PDF");
+        if (!cancelled)
+          setBlobError((err instanceof Error ? err.message : null) ?? "Failed to load PDF");
       });
 
     return () => {
-      if (objectUrl) URL.revokeObjectURL(objectUrl);
+      cancelled = true;
     };
   }, [url]);
 
-  return { blobUrl, blobError };
+  return { pdfData, blobError };
 }

@@ -30,8 +30,7 @@ export function SignSpecModal({ jobId, fileId, fileName, specPages, onClose }: S
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const { blobUrl, blobError } = usePdfBlob(`/api/jobs/${jobId}/files/${fileId}/pdf`);
-  const pdfUrl = blobUrl;
+  const { pdfData, blobError } = usePdfBlob(`/api/jobs/${jobId}/files/${fileId}/pdf`);
 
   useEffect(() => {
     if (blobError) setError(blobError);
@@ -146,13 +145,13 @@ export function SignSpecModal({ jobId, fileId, fileName, specPages, onClose }: S
 
         {/* PDF Viewer */}
         <div className="flex-1 overflow-auto flex items-start justify-center p-6 bg-zinc-900">
-          {!pdfUrl && !error && (
+          {!pdfData && !error && (
             <div className="flex flex-col items-center gap-3 text-muted-foreground pt-20">
               <Loader2 className="w-8 h-8 animate-spin" />
               <p className="text-sm">Loading sign spec...</p>
             </div>
           )}
-          {!pdfUrl && error && (
+          {!pdfData && error && (
             <div className="flex flex-col items-center gap-2 text-destructive pt-20">
               <FileText className="w-8 h-8" />
               <p className="text-sm">Failed to load PDF</p>
@@ -160,7 +159,7 @@ export function SignSpecModal({ jobId, fileId, fileName, specPages, onClose }: S
             </div>
           )}
           <Document
-            file={pdfUrl}
+            file={pdfData ? { data: pdfData } : null}
             onLoadSuccess={() => setLoading(false)}
             onLoadError={(err) => setError(err.message)}
             loading={null}

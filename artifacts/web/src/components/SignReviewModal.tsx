@@ -382,7 +382,9 @@ export function SignReviewModal({
   const allSigns = localSigns;
   const file = files.find((f) => f.id === sign.jobFileId) ?? null;
   const rawPdfApiUrl = file ? `/api/jobs/${jobId}/files/${file.id}/pdf` : null;
-  const { blobUrl: pdfUrl } = usePdfBlob(rawPdfApiUrl);
+  const { pdfData, blobError: pdfLoadError } = usePdfBlob(rawPdfApiUrl);
+  // Stable flag: true once data is ready, false while loading or if no file.
+  const pdfReady = !!pdfData;
 
   const [numPages, setNumPages] = useState<number | null>(null);
   const [pageNumber, setPageNumber] = useState(sign.pageNumber ?? 1);
@@ -439,22 +441,23 @@ export function SignReviewModal({
 
   // Load PDF document for text extraction (separate from react-pdf rendering).
   // Uses state (not a ref) so that the text-extraction effect re-runs once the
-  // async load completes.
+  // async load completes. We pass a copy of pdfData so pdfjs can transfer the
+  // underlying ArrayBuffer without affecting the copy used by react-pdf.
   useEffect(() => {
-    if (!pdfUrl) return;
+    if (!pdfData) return;
     setPdfDoc(null);
     let destroyed = false;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const task = (pdfjs as any).getDocument({ url: pdfUrl });
+    const task = (pdfjs as any).getDocument({ data: pdfData.slice(0) });
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     task.promise.then((doc: any) => {
       if (!destroyed) setPdfDoc(doc);
-    });
+    }).catch(() => { /* silently ignore extraction errors */ });
     return () => {
       destroyed = true;
       task.destroy?.();
     };
-  }, [pdfUrl]);
+  }, [pdfData]);
 
   // Extract text items for the current page and compute markers.
   // activeSign.id is in deps so re-runs when user clicks a marker, recomputing
@@ -787,7 +790,7 @@ export function SignReviewModal({
                 </button>
               )}
               {/* Draw mode toggle */}
-              {pdfUrl && (
+              {pdfReady && (
                 <button
                   onClick={() => setDrawMode((v) => !v)}
                   className="flex items-center gap-1.5 text-[10px] font-display font-semibold uppercase tracking-wide px-2 py-1 rounded transition-colors border"
@@ -839,14 +842,21 @@ export function SignReviewModal({
 
           {/* PDF canvas + overlay */}
           <div className="flex-1 overflow-auto p-4 flex justify-center items-start">
-            {rawPdfApiUrl && !pdfUrl && (
+            {rawPdfApiUrl && !pdfReady && !pdfLoadError && (
               <div className="flex items-center justify-center h-64">
                 <Loader2 className="w-8 h-8 text-primary animate-spin" />
               </div>
             )}
-            {pdfUrl ? (
+            {pdfLoadError && !pdfReady && (
+              <div className="flex flex-col items-center justify-center h-64 text-destructive gap-2">
+                <AlertTriangle className="w-8 h-8" />
+                <p className="text-sm">Failed to load PDF</p>
+                <p className="text-xs opacity-70">{pdfLoadError}</p>
+              </div>
+            )}
+            {pdfReady ? (
               <Document
-                file={pdfUrl}
+                file={pdfData ? { data: pdfData } : null}
                 onLoadSuccess={({ numPages }) => {
                   setNumPages(numPages);
                   setPdfError(null);
