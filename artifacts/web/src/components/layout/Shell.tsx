@@ -1,4 +1,4 @@
-import { ReactNode, useState, useEffect } from "react";
+import { ReactNode, useState } from "react";
 import { Sidebar } from "./Sidebar";
 
 const LS_KEY = "sidebar-collapsed";
