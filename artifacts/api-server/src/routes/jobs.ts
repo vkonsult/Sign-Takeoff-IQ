@@ -151,6 +151,13 @@ router.get("/jobs/:jobId", async (req, res) => {
     const flaggedCount = extractedSigns.filter((s) => s.reviewFlag).length;
     const highConfidenceCount = extractedSigns.filter((s) => s.confidenceScore >= 0.8).length;
 
+    // Derive comparison run costs from stored token counts (Gemini 2.5 Flash pricing)
+    const COST_INPUT = 0.15 / 1_000_000;
+    const COST_OUTPUT = 0.60 / 1_000_000;
+    const compareImageCost = job.imageInputTokens * COST_INPUT + job.imageOutputTokens * COST_OUTPUT;
+    const compareTextCost = job.compareTextInputTokens * COST_INPUT + job.compareTextOutputTokens * COST_OUTPUT;
+    const compareTotalCost = compareImageCost + compareTextCost;
+
     res.json({
       job,
       files: files.map((f) => ({
@@ -164,6 +171,15 @@ router.get("/jobs/:jobId", async (req, res) => {
       totalSigns,
       flaggedCount,
       highConfidenceCount,
+      compareMetrics: {
+        imageInputTokens: job.imageInputTokens,
+        imageOutputTokens: job.imageOutputTokens,
+        textInputTokens: job.compareTextInputTokens,
+        textOutputTokens: job.compareTextOutputTokens,
+        imageCost: compareImageCost,
+        textCost: compareTextCost,
+        totalCost: compareTotalCost,
+      },
     });
   } catch (err) {
     req.log.error({ err, jobId }, "Failed to get job");
@@ -396,8 +412,13 @@ router.post("/jobs/:jobId/compare", async (req, res) => {
       .where(eq(jobsTable.id, jobId));
 
     // ── Matching pass ─────────────────────────────────────────────────────────
-    // Match text signs against image signs. Require BOTH sign_type AND location
-    // similarity. Fall back to single-field if the other field is missing on either side.
+    // Match text signs against image signs using significant-word overlap scoring
+    // (tokens ≥4 chars). This strategy is more robust than literal substring overlap
+    // for sign data because: (a) sign types/locations often differ in minor phrasing
+    // ("ROOM ID" vs "Room Identification"), and (b) very short labels like "103" would
+    // produce empty significant-word sets and correctly fall through to positional
+    // proximity as the tiebreaker. Requires BOTH type AND location overlap to
+    // reduce false-positive matches between same-type signs at different locations.
 
     function normalize(s: string | null | undefined): string {
       return (s ?? "").toLowerCase().replace(/[^a-z0-9 ]/g, " ").replace(/\s+/g, " ").trim();
