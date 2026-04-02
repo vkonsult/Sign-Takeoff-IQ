@@ -598,12 +598,44 @@ CRITICAL RULES:
 - Return ONLY a valid JSON array. No markdown, no code blocks, no explanation.
 - If you cannot read the floor plan, return []
 
+LEGEND / SYMBOL KEY EXCLUSION (important):
+- Architectural drawings often include a bordered "Life Safety Legend", "Signage Legend", "Symbol Key", or "Drawing Legend" box that defines what each symbol means. This may appear in the corner or margin of a floor plan page.
+- IGNORE ALL CONTENT INSIDE THESE LEGEND BOXES. Do not extract sign entries for symbols that are simply being defined in a legend table. These are definitions, not real sign locations.
+- Only extract sign entries from actual room labels, space designations, and code requirements applicable to the real spaces shown in the floor plan — not from the legend.
+
 FLOOR PLAN PAGES (with page markers):
 ${scheduleCtx}${trainingCtx}${verifiedCtx}---
 `;
 }
 
 // ─── PAGE SCORING ────────────────────────────────────────────────────────────
+
+// Keywords that strongly indicate a page is a legend/symbol-key page.
+// These pages define symbols but do NOT represent actual sign locations.
+// A match overrides floor-plan classification so the page is skipped.
+const LEGEND_PAGE_KEYWORDS = [
+  "life safety legend",
+  "signage legend",
+  "symbol legend",
+  "symbol key",
+  "drawing legend",
+  "legend:",
+  "symbols and abbreviations",
+  "general notes legend",
+  "fire protection legend",
+  "door hardware legend",
+  "room finish legend",
+  "abbreviation legend",
+];
+
+function scoreForLegendPage(text: string): number {
+  const lower = text.toLowerCase();
+  return LEGEND_PAGE_KEYWORDS.reduce((score, kw) => {
+    const hits = (lower.match(new RegExp(kw.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g")) || []).length;
+    // Weight each keyword more heavily so a single match is sufficient to override
+    return score + hits * 3;
+  }, 0);
+}
 
 const FLOOR_PLAN_KEYWORDS = [
   "floor plan", "level", "plan view", "partition", "floor level",
@@ -710,6 +742,16 @@ function classifyPage(pageNum: number, text: string, filenameBoost?: { floorPlan
   const boost = filenameBoost ?? { floorPlan: 0, signSchedule: 0 };
   const floorPlanScore = textFloorPlanScore + boost.floorPlan;
   const signScheduleScore = textSignScheduleScore + boost.signSchedule;
+
+  // Legend/symbol-key pages are classified as "other" and excluded from
+  // sign extraction. A single strong legend keyword (score ≥ 3) overrides
+  // floor-plan classification unless the floor-plan text score is very high
+  // (≥ 10), which would indicate that the page contains substantial real
+  // room content alongside a small legend box.
+  const legendScore = scoreForLegendPage(text);
+  if (legendScore >= 3 && textFloorPlanScore < 10) {
+    return { pageNum, text, floorPlanScore: textFloorPlanScore, signScheduleScore: textSignScheduleScore, type: "other" };
+  }
 
   let type: PageType = "other";
 
@@ -1172,6 +1214,12 @@ IMPORTANT RULES:
 - Return ONLY a valid JSON array. No markdown, no code blocks, no explanation.
 - Each entry must include x_position and y_position as numbers between 0 and 1.
 - If no signs are visible in the document, return an empty array: []
+
+LEGEND / SYMBOL KEY EXCLUSION (critical):
+- Architectural plans often contain a "Life Safety Legend", "Signage Legend", "Symbol Key", or "Drawing Legend" box — typically a bordered table in the corner of the page that lists what each symbol means.
+- DO NOT extract any entries from these legend or symbol-key boxes. They are definitions, not actual sign locations.
+- Only extract callouts that point to a real physical location on the floor plan with a leader line or bubble label. A callout that is inside a bordered legend table is a definition — skip it.
+- If an entire page appears to be a legend or symbol-key sheet (no actual floor plan rooms visible), return an empty array for that page.
 
 IMPORTANT: Return ONLY the JSON array. No markdown fences, no explanation.`;
 
