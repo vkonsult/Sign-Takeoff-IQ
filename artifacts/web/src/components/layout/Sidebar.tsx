@@ -21,6 +21,14 @@ import { useClerk, useUser } from "@clerk/react";
 import { useUserRole } from "@/hooks/use-user-role";
 import { isGuestMode } from "@/lib/apiClient";
 
+const SIDEBAR_ACTION_LABELS: Record<string, string> = {
+  job_opened: "opened",
+  scan_run: "ran scan on",
+  sign_updated: "edited signs in",
+  xlsx_exported: "exported XLSX for",
+  pdf_exported: "exported PDF for",
+};
+
 interface SidebarProps {
   collapsed: boolean;
   onToggle: () => void;
@@ -206,7 +214,7 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
             ) : (
               data?.jobs?.slice(0, 5).map((job) => {
                 const jobAny = job as typeof job & {
-                  recentUsers?: { userName: string; userInitials: string; at: string }[];
+                  recentUsers?: { userName: string; userInitials: string; at: string; eventType?: string }[];
                 };
                 const recentUsers = jobAny.recentUsers ?? [];
                 return (
@@ -227,16 +235,20 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
                       <div className="flex items-center gap-1 flex-shrink-0">
                         {recentUsers.length > 0 && (
                           <div className="flex">
-                            {recentUsers.map((u, i) => (
-                              <span
-                                key={u.userName + i}
-                                title={`${u.userName} — ${formatDistanceToNow(new Date(u.at), { addSuffix: true })}`}
-                                className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-primary/15 text-primary text-[9px] font-bold flex-shrink-0 ring-1 ring-card"
-                                style={{ marginLeft: i > 0 ? "-5px" : undefined }}
-                              >
-                                {u.userInitials}
-                              </span>
-                            ))}
+                            {recentUsers.map((u, i) => {
+                              const action = u.eventType ? (SIDEBAR_ACTION_LABELS[u.eventType] ?? "touched") : "last active in";
+                              const relTime = formatDistanceToNow(new Date(u.at), { addSuffix: true });
+                              return (
+                                <span
+                                  key={u.userName + i}
+                                  title={`${u.userName} ${action} this plan ${relTime}`}
+                                  className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-primary/15 text-primary text-[9px] font-bold flex-shrink-0 ring-1 ring-card"
+                                  style={{ marginLeft: i > 0 ? "-5px" : undefined }}
+                                >
+                                  {u.userInitials}
+                                </span>
+                              );
+                            })}
                           </div>
                         )}
                         <StatusDot status={job.status} />

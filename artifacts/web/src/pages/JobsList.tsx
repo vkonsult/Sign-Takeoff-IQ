@@ -15,22 +15,35 @@ interface RecentUser {
   userName: string;
   userInitials: string;
   at: string;
+  eventType?: string;
 }
+
+const ACTION_LABELS: Record<string, string> = {
+  job_opened: "opened",
+  scan_run: "ran scan on",
+  sign_updated: "edited signs in",
+  xlsx_exported: "exported XLSX for",
+  pdf_exported: "exported PDF for",
+};
 
 function StackedUserBadges({ users }: { users: RecentUser[] }) {
   if (users.length === 0) return <span className="text-muted-foreground/30 text-xs">—</span>;
   return (
     <div className="flex items-center justify-center">
-      {users.map((u, i) => (
-        <span
-          key={u.userName + i}
-          title={`${u.userName} — ${formatDistanceToNow(new Date(u.at), { addSuffix: true })}`}
-          className="inline-flex items-center justify-center w-7 h-7 rounded-full bg-primary/15 text-primary text-[11px] font-bold flex-shrink-0 ring-2 ring-card cursor-default"
-          style={{ marginLeft: i > 0 ? "-8px" : undefined, zIndex: users.length - i }}
-        >
-          {u.userInitials}
-        </span>
-      ))}
+      {users.map((u, i) => {
+        const action = u.eventType ? (ACTION_LABELS[u.eventType] ?? "touched") : "last active in";
+        const relTime = formatDistanceToNow(new Date(u.at), { addSuffix: true });
+        return (
+          <span
+            key={u.userName + i}
+            title={`${u.userName} ${action} this plan ${relTime}`}
+            className="inline-flex items-center justify-center w-7 h-7 rounded-full bg-primary/15 text-primary text-[11px] font-bold flex-shrink-0 ring-2 ring-card cursor-default"
+            style={{ marginLeft: i > 0 ? "-8px" : undefined, zIndex: users.length - i }}
+          >
+            {u.userInitials}
+          </span>
+        );
+      })}
     </div>
   );
 }
