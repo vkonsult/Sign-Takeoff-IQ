@@ -1,5 +1,5 @@
 import { Router, type IRouter, type Request, type Response } from "express";
-import { eq, desc, inArray, and, or, ne, isNull, isNotNull, not, SQL, getTableColumns } from "drizzle-orm";
+import { eq, desc, inArray, and, or, ne, isNull, isNotNull, not, SQL, sql, getTableColumns } from "drizzle-orm";
 import { db } from "@workspace/db";
 import {
   jobsTable,
