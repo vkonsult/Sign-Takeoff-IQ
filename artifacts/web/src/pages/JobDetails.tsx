@@ -21,13 +21,11 @@ import {
   ChevronDown,
   Layers,
   Stamp,
-  GitCompare,
   ShieldCheck,
   Eye,
-  X,
+  RefreshCw,
 } from "lucide-react";
 import { format } from "date-fns";
-import { motion } from "framer-motion";
 import { exportMarkedupPdf } from "@/lib/exportMarkedupPdf";
 
 export default function JobDetails() {
@@ -145,34 +143,6 @@ export default function JobDetails() {
     });
   };
 
-  const [compareLoading, setCompareLoading] = useState(false);
-  const [compareResult, setCompareResult] = useState<ComparisonResult | null>(null);
-  const [compareError, setCompareError] = useState<string | null>(null);
-  const [compareTab, setCompareTab] = useState<"both" | "imageOnly">("both");
-
-  const handleRunComparison = async () => {
-    if (!jobId || compareLoading) return;
-    setCompareLoading(true);
-    setCompareError(null);
-    setCompareResult(null);
-    try {
-      const res = await fetch(`/api/jobs/${jobId}/compare`, { method: "POST" });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({})) as { error?: string };
-        throw new Error(body.error ?? `Request failed (${res.status})`);
-      }
-      const result = await res.json() as ComparisonResult;
-      setCompareResult(result);
-      setCompareTab("both");
-      // Invalidate job data to refresh confidence scores
-      queryClient.invalidateQueries({ queryKey: getGetJobQueryKey(jobId) });
-    } catch (err) {
-      setCompareError(err instanceof Error ? err.message : "Comparison failed");
-    } finally {
-      setCompareLoading(false);
-    }
-  };
-
   if (isLoading && !data) {
     return (
       <AppShell>
@@ -194,13 +164,9 @@ export default function JobDetails() {
   }
 
   const { job, files, totalSigns, flaggedCount, highConfidenceCount } = data;
-  // Exclude image-method signs from the main table; they appear only in the ComparisonPanel.
-  const extractedSigns = data.extractedSigns.filter(
-    (s: SignRow) => {
-      const method = (s as Record<string, unknown>).extractionMethod as string | null | undefined;
-      return method !== "image";
-    }
-  );
+  // Show all signs: text, manual, and image-only (visual-only finds).
+  // Paired image signs are excluded by the API (their data is in the paired text row).
+  const extractedSigns = data.extractedSigns;
   const isProcessing = job.status === "processing" || extractMutation.isPending;
   const isCompleted = job.status === "completed";
   const isPending = job.status === "pending";
@@ -284,30 +250,17 @@ export default function JobDetails() {
               {isCompleted && (
                 <>
                   <button
-                    onClick={handleRunComparison}
-                    disabled={compareLoading}
-                    title="Re-run extraction using the image pipeline and compare results side-by-side"
-                    className="flex items-center gap-2 px-4 py-2.5 bg-secondary border border-border text-muted-foreground font-display font-semibold uppercase tracking-wide text-sm rounded-lg hover:bg-primary/10 hover:text-primary hover:border-primary/40 transition-all active:scale-95 disabled:opacity-50"
-                  >
-                    {compareLoading ? (
-                      <Loader2 className="w-4 h-4 animate-spin" />
-                    ) : (
-                      <GitCompare className="w-4 h-4" />
-                    )}
-                    {compareLoading ? "Comparing…" : "Run Comparison"}
-                  </button>
-                  <button
                     onClick={handleStartExtraction}
                     disabled={extractMutation.isPending}
-                    title="Re-run extraction to get updated sign counts and Sheets Analysis"
+                    title="Re-run both text and visual scans to refresh sign data"
                     className="flex items-center gap-2 px-4 py-2.5 bg-secondary border border-border text-muted-foreground font-display font-semibold uppercase tracking-wide text-sm rounded-lg hover:bg-primary/10 hover:text-primary hover:border-primary/40 transition-all active:scale-95 disabled:opacity-50"
                   >
                     {extractMutation.isPending ? (
                       <Loader2 className="w-4 h-4 animate-spin" />
                     ) : (
-                      <Play className="w-4 h-4 fill-current" />
+                      <RefreshCw className="w-4 h-4" />
                     )}
-                    Re-extract
+                    Re-Scan
                   </button>
                   <button
                     onClick={handleExportMarkedPdf}
@@ -346,7 +299,7 @@ export default function JobDetails() {
               </div>
               <h2 className="text-xl font-display text-foreground mb-2">Analyzing Plan Documents...</h2>
               <p className="text-muted-foreground font-mono text-sm max-w-md mx-auto leading-relaxed">
-                Gemini AI is reading plan text, identifying sign schedules, and structuring the takeoff data. This may take a minute depending on document size.
+                Running text and visual scans in parallel. Gemini AI is reading plan text, identifying sign schedules, and visually scanning floor plans. Large files may take 3–6 minutes.
               </p>
               
               <div className="mt-8 w-full bg-secondary rounded-full h-1.5 overflow-hidden">
@@ -374,25 +327,13 @@ export default function JobDetails() {
                   accent="primary"
                 />
                 <CostCard 
-                  inputTokens={job.inputTokens ?? 0}
-                  outputTokens={job.outputTokens ?? 0}
+                  inputTokens={(job.inputTokens ?? 0) + ((job as Record<string, unknown>).imageInputTokens as number ?? 0)}
+                  outputTokens={(job.outputTokens ?? 0) + ((job as Record<string, unknown>).imageOutputTokens as number ?? 0)}
                 />
               </div>
               
               {/* Sheets Analysis Panel */}
               <SheetsPanel files={files} onOpenSpec={setSpecViewer} />
-
-              {/* Comparison Panel */}
-              {(compareLoading || compareResult || compareError) && (
-                <ComparisonPanel
-                  loading={compareLoading}
-                  result={compareResult}
-                  error={compareError}
-                  activeTab={compareTab}
-                  onTabChange={setCompareTab}
-                  onDismiss={() => { setCompareResult(null); setCompareError(null); }}
-                />
-              )}
 
               {/* Data Table Container */}
               <div className="flex-1 overflow-auto bg-card border-t border-border">
@@ -409,6 +350,7 @@ export default function JobDetails() {
                         <th className="data-header">Finish / Color</th>
                         <th className="data-header">Message</th>
                         <th className="data-header text-center">Confidence</th>
+                        <th className="data-header text-center">Source</th>
                         <th className="data-header text-center">Status</th>
                         <th className="data-header text-center w-20">Review</th>
                       </tr>
@@ -445,6 +387,9 @@ export default function JobDetails() {
                             <ConfidenceBadge score={sign.confidenceScore} />
                           </td>
                           <td className="data-cell text-center">
+                            <SourceBadge sign={sign as Record<string, unknown>} />
+                          </td>
+                          <td className="data-cell text-center">
                             <div className="flex flex-col gap-1 items-center">
                               {sign.userVerified && (
                                 <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider" style={{ background: "#22c55e15", color: "#22c55e", border: "1px solid #22c55e44" }}>
@@ -473,7 +418,7 @@ export default function JobDetails() {
                       ))}
                       {extractedSigns.length === 0 && (
                         <tr>
-                          <td colSpan={11} className="p-8 text-center text-muted-foreground">
+                          <td colSpan={12} className="p-8 text-center text-muted-foreground">
                             No signs were extracted from these documents.
                           </td>
                         </tr>
@@ -759,245 +704,41 @@ function SheetsPanel({
   );
 }
 
-// ─── COMPARISON PANEL ─────────────────────────────────────────────────────────
+// ─── SOURCE BADGE ─────────────────────────────────────────────────────────────
 
-type ComparisonSign = Record<string, unknown>;
-type ComparisonResult = {
-  textOnly: ComparisonSign[];
-  both: ComparisonSign[];
-  imageOnly: ComparisonSign[];
-  imageInputTokens: number;
-  imageOutputTokens: number;
-  imageCost: number;
-  textCompareInputTokens: number;
-  textCompareOutputTokens: number;
-  textCompareCost: number;
-  totalCost: number;
-  imageSkipped?: boolean;
-  imageSkipReason?: string | null;
-};
+function SourceBadge({ sign }: { sign: Record<string, unknown> }) {
+  const method = sign.extractionMethod as string | null | undefined;
+  const paired = sign.pairedSignId as string | null | undefined;
+  const manual = sign.manuallyAdded as boolean | undefined;
 
-function ComparisonPanel({
-  loading,
-  result,
-  error,
-  activeTab,
-  onTabChange,
-  onDismiss,
-}: {
-  loading: boolean;
-  result: ComparisonResult | null;
-  error: string | null;
-  activeTab: "both" | "imageOnly";
-  onTabChange: (t: "both" | "imageOnly") => void;
-  onDismiss: () => void;
-}) {
-  const fmt = (c: number) =>
-    c === 0 ? "$0.00" : c < 0.001 ? `$${c.toFixed(5)}` : c < 0.01 ? `$${c.toFixed(4)}` : `$${c.toFixed(3)}`;
+  if (manual) {
+    return (
+      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider bg-purple-500/10 text-purple-400 border border-purple-500/20 whitespace-nowrap">
+        <Pencil className="w-2.5 h-2.5" /> Manual
+      </span>
+    );
+  }
 
-  const hasImageResults = result && !result.imageSkipped && (result.imageOnly.length > 0 || result.both.length > 0);
-  const activeSignList = result
-    ? activeTab === "both" ? result.both : result.imageOnly
-    : [];
+  if (method === "text" && paired) {
+    return (
+      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider bg-accent/10 text-accent border border-accent/20 whitespace-nowrap">
+        <ShieldCheck className="w-2.5 h-2.5" /> Both
+      </span>
+    );
+  }
+
+  if (method === "image") {
+    return (
+      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider bg-orange-500/10 text-orange-400 border border-orange-500/20 whitespace-nowrap">
+        <Eye className="w-2.5 h-2.5" /> Visual
+      </span>
+    );
+  }
 
   return (
-    <div className="flex-none border-t border-border bg-card/50">
-      <div className="max-w-7xl mx-auto w-full px-4 py-3">
-        {/* Header */}
-        <div className="flex items-center justify-between mb-3">
-          <div className="flex items-center gap-2">
-            <GitCompare className="w-4 h-4 text-primary" />
-            <span className="text-sm font-display font-semibold text-foreground uppercase tracking-wider">
-              Image vs Text Comparison
-            </span>
-            {loading && <Loader2 className="w-3.5 h-3.5 animate-spin text-muted-foreground" />}
-          </div>
-          <button onClick={onDismiss} className="text-muted-foreground hover:text-foreground transition-colors">
-            <X className="w-3.5 h-3.5" />
-          </button>
-        </div>
-
-        {/* Loading state */}
-        {loading && (
-          <div className="py-4 text-sm text-muted-foreground font-mono text-center">
-            Running dual-pass extraction — text &amp; visual scan in parallel. This may take 1–3 minutes for large files…
-          </div>
-        )}
-
-        {/* Error state */}
-        {error && (
-          <div className="text-sm text-destructive bg-destructive/10 border border-destructive/20 rounded-lg px-4 py-3 font-mono">
-            {error}
-          </div>
-        )}
-
-        {/* Results */}
-        {result && (
-          <>
-            {/* Image skipped warning */}
-            {result.imageSkipped && (
-              <div className="flex items-start gap-2.5 bg-yellow-500/10 border border-yellow-500/30 rounded-lg px-3 py-2.5 mb-3">
-                <AlertTriangle className="w-4 h-4 text-yellow-500 flex-shrink-0 mt-0.5" />
-                <div>
-                  <p className="text-[12px] font-semibold text-yellow-500 mb-0.5">Visual scan unavailable</p>
-                  <p className="text-[11px] text-muted-foreground font-mono">
-                    {result.imageSkipReason
-                      ? result.imageSkipReason
-                      : "Image extraction could not run on this file."}
-                    {" "}The text extraction pass completed normally — your signs above are from the text-only pass.
-                  </p>
-                </div>
-              </div>
-            )}
-
-            {/* Text-only re-run summary (shown when image unavailable) */}
-            {result.imageSkipped && (
-              <div className="flex items-center gap-6 text-[11px] font-mono text-muted-foreground bg-secondary/40 rounded-lg px-4 py-2.5 border border-border">
-                <span>
-                  <span className="text-foreground font-semibold">{result.textOnly.length}</span> signs found by text re-scan
-                </span>
-                <span className="text-muted-foreground/50">·</span>
-                <span>
-                  Text cost: <span className="text-foreground font-semibold">{fmt(result.textCompareCost ?? 0)}</span>
-                </span>
-                <span className="text-muted-foreground/50">·</span>
-                <span className="text-muted-foreground/60">Results merged into your main sign table above</span>
-              </div>
-            )}
-
-            {/* Full comparison results (when image extraction worked) */}
-            {!result.imageSkipped && (
-              <>
-                {/* Stats summary row */}
-                <div className="flex items-center gap-4 mb-3">
-                  <div className="flex items-center gap-1.5 bg-accent/10 border border-accent/30 rounded-lg px-3 py-1.5">
-                    <ShieldCheck className="w-3.5 h-3.5 text-accent" />
-                    <span className="text-[12px] font-semibold text-accent">{result.both.length}</span>
-                    <span className="text-[10px] text-muted-foreground">validated by both</span>
-                  </div>
-                  <div className="flex items-center gap-1.5 bg-secondary border border-border rounded-lg px-3 py-1.5">
-                    <Eye className="w-3.5 h-3.5 text-muted-foreground" />
-                    <span className="text-[12px] font-semibold text-foreground">{result.imageOnly.length}</span>
-                    <span className="text-[10px] text-muted-foreground">visual-only finds</span>
-                  </div>
-                  <div className="flex items-center gap-1.5 bg-secondary border border-border rounded-lg px-3 py-1.5">
-                    <FileText className="w-3.5 h-3.5 text-muted-foreground" />
-                    <span className="text-[12px] font-semibold text-foreground">{result.textOnly.length}</span>
-                    <span className="text-[10px] text-muted-foreground">text-only (in main table)</span>
-                  </div>
-                  <span className="ml-auto text-[10px] font-mono text-muted-foreground/60">
-                    Total cost: {fmt(result.totalCost ?? result.imageCost)}
-                  </span>
-                </div>
-
-                {/* No image results at all */}
-                {!hasImageResults && (
-                  <div className="text-[11px] text-muted-foreground/60 font-mono py-2 text-center">
-                    Visual scan found no sign callouts or ADA symbols. All {result.textOnly.length} signs came from text extraction and are in your main table above.
-                  </div>
-                )}
-
-                {/* Tabs for when we have image results */}
-                {hasImageResults && (
-                  <>
-                    <div className="flex items-center gap-2 mb-2">
-                      <button
-                        onClick={() => onTabChange("both")}
-                        className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-display font-semibold uppercase tracking-wide border transition-all ${
-                          activeTab === "both"
-                            ? "text-accent border-accent/40 bg-accent/10"
-                            : "text-muted-foreground border-border bg-transparent hover:bg-secondary"
-                        }`}
-                      >
-                        <ShieldCheck className="w-3 h-3" />
-                        Validated by Both
-                        <span className="ml-1 inline-flex items-center justify-center w-4 h-4 rounded text-[9px] font-bold bg-current/20">
-                          {result.both.length}
-                        </span>
-                      </button>
-                      <button
-                        onClick={() => onTabChange("imageOnly")}
-                        className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-display font-semibold uppercase tracking-wide border transition-all ${
-                          activeTab === "imageOnly"
-                            ? "text-primary border-primary/40 bg-primary/10"
-                            : "text-muted-foreground border-border bg-transparent hover:bg-secondary"
-                        }`}
-                      >
-                        <GitCompare className="w-3 h-3" />
-                        Visual-Only Finds
-                        <span className="ml-1 inline-flex items-center justify-center w-4 h-4 rounded text-[9px] font-bold bg-current/20">
-                          {result.imageOnly.length}
-                        </span>
-                      </button>
-                    </div>
-
-                    <p className="text-[10px] font-mono text-muted-foreground mb-2">
-                      {activeTab === "both"
-                        ? "Found by both passes — confidence boosted. Signs in your main table above."
-                        : "Found visually but not in text — may be CAD callouts or ADA symbols. Review and add to table if needed."}
-                    </p>
-
-                    {activeSignList.length === 0 ? (
-                      <p className="text-[11px] text-muted-foreground/50 font-mono py-2">No signs in this bucket.</p>
-                    ) : (
-                      <div className="overflow-x-auto rounded-lg border border-border max-h-52 overflow-y-auto">
-                        <table className="w-full text-left text-[11px]">
-                          <thead>
-                            <tr className="border-b border-border bg-secondary/50 text-[10px] font-display uppercase tracking-wider text-muted-foreground">
-                              <th className="px-3 py-1.5">Sheet / ID</th>
-                              <th className="px-3 py-1.5">Sign Type</th>
-                              <th className="px-3 py-1.5">Location</th>
-                              <th className="px-3 py-1.5 text-center">Qty</th>
-                              <th className="px-3 py-1.5 text-center">Confidence</th>
-                              {activeTab === "both" && <th className="px-3 py-1.5 text-center">Validated</th>}
-                              {activeTab === "imageOnly" && <th className="px-3 py-1.5 text-center">Position</th>}
-                            </tr>
-                          </thead>
-                          <tbody className="bg-background divide-y divide-border/40">
-                            {activeSignList.map((sign, idx) => {
-                              const score = typeof sign.confidenceScore === "number" ? sign.confidenceScore : 0;
-                              const scoreColor = score >= 0.8 ? "text-accent" : score >= 0.6 ? "text-primary" : "text-destructive";
-                              return (
-                                <tr key={idx} className="hover:bg-secondary/30 transition-colors">
-                                  <td className="px-3 py-1.5">
-                                    <span className="font-mono text-muted-foreground">{String(sign.sheetNumber ?? "—") || "—"}</span>
-                                    {sign.signIdentifier != null && (
-                                      <span className="ml-2 text-foreground font-medium">{String(sign.signIdentifier)}</span>
-                                    )}
-                                  </td>
-                                  <td className="px-3 py-1.5 text-foreground">{(sign.signType as string) || "—"}</td>
-                                  <td className="px-3 py-1.5 text-muted-foreground truncate max-w-[180px]">{(sign.location as string) || "—"}</td>
-                                  <td className="px-3 py-1.5 text-center font-mono">{(sign.quantity as number) || 1}</td>
-                                  <td className={`px-3 py-1.5 text-center font-mono font-semibold ${scoreColor}`}>
-                                    {Math.round(score * 100)}%
-                                  </td>
-                                  {activeTab === "both" && (
-                                    <td className="px-3 py-1.5 text-center">
-                                      <span className="inline-flex items-center gap-1 text-[10px] font-bold text-accent">
-                                        <ShieldCheck className="w-3 h-3" /> ✓
-                                      </span>
-                                    </td>
-                                  )}
-                                  {activeTab === "imageOnly" && (
-                                    <td className="px-3 py-1.5 text-center font-mono text-muted-foreground text-[10px]">
-                                      {sign.xPos != null ? `${Math.round((sign.xPos as number) * 100)}%, ${Math.round((sign.yPos as number) * 100)}%` : "—"}
-                                    </td>
-                                  )}
-                                </tr>
-                              );
-                            })}
-                          </tbody>
-                        </table>
-                      </div>
-                    )}
-                  </>
-                )}
-              </>
-            )}
-          </>
-        )}
-      </div>
-    </div>
+    <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider bg-blue-500/10 text-blue-400 border border-blue-500/20 whitespace-nowrap">
+      <FileText className="w-2.5 h-2.5" /> Text
+    </span>
   );
 }
 
@@ -1031,7 +772,7 @@ function CostCard({ inputTokens, outputTokens }: { inputTokens: number; outputTo
               {/* Input row */}
               <div className="flex items-center justify-between gap-2">
                 <span className="text-[10px] font-mono text-muted-foreground flex items-center gap-1">
-                  <span className="text-blue-400">→</span> Input <span className="text-muted-foreground/50">(PDF text sent to AI)</span>
+                  <span className="text-blue-400">→</span> Input <span className="text-muted-foreground/50">(text + visual scans)</span>
                 </span>
                 <span className="text-[10px] font-mono text-muted-foreground whitespace-nowrap">
                   {fmtTokens(inputTokens)} tok · {fmt(inputCost)}
@@ -1040,7 +781,7 @@ function CostCard({ inputTokens, outputTokens }: { inputTokens: number; outputTo
               {/* Output row */}
               <div className="flex items-center justify-between gap-2">
                 <span className="text-[10px] font-mono text-muted-foreground flex items-center gap-1">
-                  <span className="text-accent">←</span> Output <span className="text-muted-foreground/50">(AI sign JSON)</span>
+                  <span className="text-accent">←</span> Output <span className="text-muted-foreground/50">(sign JSON)</span>
                 </span>
                 <span className="text-[10px] font-mono text-muted-foreground whitespace-nowrap">
                   {fmtTokens(outputTokens)} tok · {fmt(outputCost)}
@@ -1048,7 +789,7 @@ function CostCard({ inputTokens, outputTokens }: { inputTokens: number; outputTo
               </div>
               {/* Rate footnote */}
               <div className="pt-1.5 border-t border-border/40 text-[9px] font-mono text-muted-foreground/50 leading-relaxed">
-                Gemini 2.5 Flash · ${INPUT_RATE}/M input · ${OUTPUT_RATE}/M output
+                Gemini 2.5 Flash · text + visual · ${INPUT_RATE}/M input · ${OUTPUT_RATE}/M output
               </div>
             </div>
           ) : (

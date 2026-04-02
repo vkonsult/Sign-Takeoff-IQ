@@ -132,8 +132,9 @@ router.get("/jobs/:jobId", async (req, res) => {
       .from(jobFilesTable)
       .where(eq(jobFilesTable.jobId, jobId));
 
-    // Exclude image-method signs from the review table; they are surfaced in
-    // the comparison panel and in markerSigns (for floor-plan marker export).
+    // Show text/manual signs PLUS image-only signs (those with no pair).
+    // Exclude only paired image signs — their data is already represented by
+    // the matching text sign (shown with a "Both" source badge).
     const extractedSigns = await db
       .select()
       .from(extractedSignsTable)
@@ -142,7 +143,8 @@ router.get("/jobs/:jobId", async (req, res) => {
           eq(extractedSignsTable.jobId, jobId),
           or(
             isNull(extractedSignsTable.extractionMethod),
-            ne(extractedSignsTable.extractionMethod, "image")
+            ne(extractedSignsTable.extractionMethod, "image"),
+            isNull(extractedSignsTable.pairedSignId)
           )
         )
       );
