@@ -1,5 +1,5 @@
 import { Router, type IRouter } from "express";
-import { eq, desc, inArray, and, or, ne, isNull } from "drizzle-orm";
+import { eq, desc, inArray, and, or, ne, isNull, isNotNull } from "drizzle-orm";
 import { db } from "@workspace/db";
 import {
   jobsTable,
@@ -132,8 +132,8 @@ router.get("/jobs/:jobId", async (req, res) => {
       .from(jobFilesTable)
       .where(eq(jobFilesTable.jobId, jobId));
 
-    // Exclude image-method signs from the main job view;
-    // image signs are surfaced only via the /compare endpoint response.
+    // Exclude image-method signs from the review table; they are surfaced in
+    // the comparison panel and in markerSigns (for floor-plan marker export).
     const extractedSigns = await db
       .select()
       .from(extractedSignsTable)
@@ -144,6 +144,19 @@ router.get("/jobs/:jobId", async (req, res) => {
             isNull(extractedSignsTable.extractionMethod),
             ne(extractedSignsTable.extractionMethod, "image")
           )
+        )
+      );
+
+    // markerSigns includes image-pass signs with xPos/yPos so they are available
+    // for floor-plan marker overlays and the "Export Marked PDF" workflow.
+    const markerSigns = await db
+      .select()
+      .from(extractedSignsTable)
+      .where(
+        and(
+          eq(extractedSignsTable.jobId, jobId),
+          isNotNull(extractedSignsTable.xPos),
+          isNotNull(extractedSignsTable.yPos)
         )
       );
 
@@ -180,6 +193,9 @@ router.get("/jobs/:jobId", async (req, res) => {
         textCost: compareTextCost,
         totalCost: compareTotalCost,
       },
+      // All signs that have x/y coordinates (includes image-pass signs);
+      // used by floor-plan marker overlays and "Export Marked PDF".
+      markerSigns,
     });
   } catch (err) {
     req.log.error({ err, jobId }, "Failed to get job");

@@ -7,6 +7,7 @@ import {
   boolean,
   json,
   timestamp,
+  type AnyPgColumn,
 } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod/v4";
@@ -34,7 +35,12 @@ export const extractedSignsTable = pgTable("extracted_signs", {
   xPos: real("x_pos"),
   yPos: real("y_pos"),
   extractionMethod: text("extraction_method").default("text"),
-  pairedSignId: uuid("paired_sign_id"),
+  // Self-referential FK: both the text and image rows of a matched pair point to each other.
+  // ON DELETE SET NULL so deleting one half of a pair does not cascade-delete the other.
+  pairedSignId: uuid("paired_sign_id").references(
+    (): AnyPgColumn => extractedSignsTable.id,
+    { onDelete: "set null" }
+  ),
   manuallyAdded: boolean("manually_added").notNull().default(false),
   userVerified: boolean("user_verified").notNull().default(false),
   confidenceScore: real("confidence_score").notNull().default(0),

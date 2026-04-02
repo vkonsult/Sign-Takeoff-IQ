@@ -88,7 +88,10 @@ export default function JobDetails() {
     if (!data || exportingPdf) return;
     setExportingPdf(true);
     try {
-      const markedSigns = data.extractedSigns.filter(
+      // Use markerSigns which includes image-pass signs with xPos/yPos coordinates
+      // in addition to any text/manual signs that have position data.
+      const sourceSigns = (data as { markerSigns?: typeof data.extractedSigns }).markerSigns ?? data.extractedSigns;
+      const markedSigns = sourceSigns.filter(
         (s) => s.xPos != null && s.yPos != null && s.pageNumber != null
       );
       await exportMarkedupPdf(
