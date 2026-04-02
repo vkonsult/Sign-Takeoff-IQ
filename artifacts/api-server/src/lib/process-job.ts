@@ -1,4 +1,4 @@
-import { eq, and, ne, desc, inArray } from "drizzle-orm";
+import { eq, and, ne, desc } from "drizzle-orm";
 import { db } from "@workspace/db";
 import {
   jobsTable,
@@ -8,51 +8,10 @@ import {
 } from "@workspace/db";
 
 import { ai } from "@workspace/integrations-gemini-ai";
-import { extractSignsFromPdf, extractSignsFromPdfImageVerify, extractProjectInfo, type ProjectInfo, type VerifiedSignSummary, type TextContextSign, type VerificationItem } from "./extraction";
+import { extractSignsFromPdf, extractSignsFromPdfImageVerify, extractProjectInfo, type ProjectInfo, type VerifiedSignSummary, type TextContextSign, type VerificationItem, type ExtractedSignRow } from "./extraction";
 import { saveParsedResult } from "./storage";
 import { logger } from "./logger";
 
-// ── Sign matching helpers ─────────────────────────────────────────────────────
-// Match text signs against image signs using significant-word overlap scoring.
-// Requires BOTH type AND location overlap to reduce false-positive matches.
-
-type DbSign = typeof extractedSignsTable.$inferSelect;
-
-function normalize(s: string | null | undefined): string {
-  return (s ?? "").toLowerCase().replace(/[^a-z0-9 ]/g, " ").replace(/\s+/g, " ").trim();
-}
-
-function significantWords(s: string | null | undefined): Set<string> {
-  return new Set(normalize(s).split(" ").filter((w) => w.length >= 4));
-}
-
-function wordOverlapScore(a: string | null | undefined, b: string | null | undefined): number {
-  const wa = significantWords(a);
-  const wb = significantWords(b);
-  if (wa.size === 0 || wb.size === 0) return 0;
-  let shared = 0;
-  for (const w of wa) { if (wb.has(w)) shared++; }
-  return shared / Math.max(wa.size, wb.size);
-}
-
-function positionProximity(imgSign: DbSign, txtSign: DbSign): number {
-  if (imgSign.xPos == null || imgSign.yPos == null || txtSign.xPos == null || txtSign.yPos == null) return 0;
-  const dx = imgSign.xPos - txtSign.xPos;
-  const dy = imgSign.yPos - txtSign.yPos;
-  const dist = Math.sqrt(dx * dx + dy * dy);
-  return dist < 0.1 ? 1 : dist < 0.25 ? 0.5 : 0;
-}
-
-function isMatch(imgSign: DbSign, txtSign: DbSign): boolean {
-  const typeScore = wordOverlapScore(imgSign.signType, txtSign.signType);
-  const locScore = wordOverlapScore(imgSign.location, txtSign.location);
-  const posFactor = positionProximity(imgSign, txtSign);
-  if (typeScore >= 0.5 && locScore >= 0.5) return true;
-  if (typeScore >= 0.8 && locScore >= 0.2) return true;
-  if (locScore >= 0.8 && typeScore >= 0.2) return true;
-  if (posFactor > 0 && (typeScore >= 0.5 || locScore >= 0.5)) return true;
-  return false;
-}
 
 export async function processJob(jobId: string): Promise<void> {
   // ── Preserve verified + manually-added signs before clearing AI output ───
@@ -228,7 +187,45 @@ export async function processJob(jobId: string): Promise<void> {
         rows: textResult.rows,
       });
 
+      // ── In-memory verification application ────────────────────────────────
+      // Build a quick-lookup from (sign_identifier|location) → verification status
+      // so we can apply CONFIRMED/NOT_FOUND boosts before inserting.
+      function findVerification(row: ExtractedSignRow): VerificationItem | undefined {
+        if (!imageResult.skipped) {
+          // Pass 1: match by sign_identifier (case-insensitive)
+          if (row.sign_identifier) {
+            const m = imageResult.verifications.find(
+              (v) => v.sign_identifier?.toLowerCase() === row.sign_identifier!.toLowerCase()
+            );
+            if (m) return m;
+          }
+          // Pass 2: match by location substring
+          if (row.location) {
+            const rLoc = row.location.toLowerCase();
+            const m = imageResult.verifications.find(
+              (v) => v.location != null && (v.location.toLowerCase().includes(rLoc) || rLoc.includes(v.location.toLowerCase()))
+            );
+            if (m) return m;
+          }
+        }
+        return undefined;
+      }
+
       for (const row of textResult.rows) {
+        const verif = findVerification(row);
+        let conf = row.confidence_score;
+        let flag = row.review_flag;
+
+        if (verif) {
+          if (verif.status === "CONFIRMED") {
+            conf = Math.min(1.0, conf + 0.15);
+            flag = conf < 0.75;
+          } else if (verif.status === "NOT_FOUND") {
+            flag = true; // visual pass couldn't find it — needs human review
+          }
+          // UNCERTAIN: leave unchanged
+        }
+
         allTextRows.push({
           jobId,
           jobFileId: file.id,
@@ -246,8 +243,8 @@ export async function processJob(jobId: string): Promise<void> {
           messageContent: row.message_content,
           notes: row.notes,
           pageNumber: row.page_number,
-          confidenceScore: row.confidence_score,
-          reviewFlag: row.review_flag,
+          confidenceScore: conf,
+          reviewFlag: flag,
           extractionMethod: "text",
           rawJson: row as unknown as Record<string, unknown>,
         });
@@ -282,10 +279,10 @@ export async function processJob(jobId: string): Promise<void> {
         });
       }
 
-      // Store verifications so the matching pass can apply confidence/flag updates
-      for (const v of imageResult.verifications) {
-        allVerifications.push({ ...v, fileId: file.id });
-      }
+      // Collect verifications stats for the completion log (no longer needed for DB matching)
+      const confirmedCount = imageResult.verifications.filter(v => v.status === "CONFIRMED").length;
+      const notFoundCount = imageResult.verifications.filter(v => v.status === "NOT_FOUND").length;
+      allVerifications.push(...imageResult.verifications.map(v => ({ ...v, fileId: file.id })));
 
       if (imageResult.skipped) {
         logger.info({ jobId, file: file.originalName, reason: imageResult.skipReason }, "Visual verification skipped for file");
@@ -317,82 +314,20 @@ export async function processJob(jobId: string): Promise<void> {
     await db.insert(extractedSignsTable).values(allImageRows);
   }
 
-  // ── Verification pass: apply Gemini's confirm/not-found signals to text signs ─
-  // Unlike the old fuzzy image-vs-text matching, we now have explicit CONFIRMED /
-  // UNCERTAIN / NOT_FOUND labels for each text sign from the verification prompt.
+  // Log overall verification stats (actual boosts applied in-memory per-file above)
   if (allVerifications.length > 0) {
-    const allInserted = await db
-      .select()
-      .from(extractedSignsTable)
-      .where(eq(extractedSignsTable.jobId, jobId));
-
-    const textSigns = allInserted.filter((s) => s.extractionMethod === "text" && !s.manuallyAdded && !s.userVerified);
-    const confirmedIds = new Set<string>();
-    const notFoundIds = new Set<string>();
-
-    for (const v of allVerifications) {
-      // Find best matching text sign: prefer exact signIdentifier match on same page,
-      // fall back to location overlap.
-      let best: DbSign | null = null;
-
-      // Pass 1: exact sign_identifier + page
-      if (v.sign_identifier) {
-        best = textSigns.find(
-          (s) => s.signIdentifier?.toLowerCase() === v.sign_identifier!.toLowerCase() &&
-                 (v.page_number == null || s.pageNumber === v.page_number)
-        ) ?? null;
-      }
-
-      // Pass 2: location word overlap + page
-      if (!best && v.location) {
-        const vLoc = v.location.toLowerCase();
-        best = textSigns.find(
-          (s) => s.location?.toLowerCase().includes(vLoc) &&
-                 (v.page_number == null || s.pageNumber === v.page_number)
-        ) ?? null;
-      }
-
-      if (!best) continue; // verification item couldn't be matched to a DB sign
-
-      if (v.status === "CONFIRMED") {
-        confirmedIds.add(best.id);
-      } else if (v.status === "NOT_FOUND") {
-        notFoundIds.add(best.id);
-      }
-      // UNCERTAIN: leave sign unchanged (text pass confidence/flag already set)
-    }
-
-    // Boost confirmed text signs
-    if (confirmedIds.size > 0) {
-      for (const id of confirmedIds) {
-        const sign = textSigns.find((s) => s.id === id)!;
-        const boosted = Math.min(1.0, (sign.confidenceScore ?? 0) + 0.15);
-        await db
-          .update(extractedSignsTable)
-          .set({ confidenceScore: boosted, reviewFlag: boosted < 0.75 })
-          .where(eq(extractedSignsTable.id, id));
-      }
-    }
-
-    // Flag NOT_FOUND text signs for human review
-    const notFoundOnly = [...notFoundIds].filter((id) => !confirmedIds.has(id));
-    if (notFoundOnly.length > 0) {
-      await db
-        .update(extractedSignsTable)
-        .set({ reviewFlag: true })
-        .where(inArray(extractedSignsTable.id, notFoundOnly));
-    }
-
+    const confirmed = allVerifications.filter(v => v.status === "CONFIRMED").length;
+    const notFound = allVerifications.filter(v => v.status === "NOT_FOUND").length;
     logger.info(
       {
         jobId,
-        textSigns: textSigns.length,
-        verifications: allVerifications.length,
-        confirmed: confirmedIds.size,
-        notFound: notFoundOnly.length,
+        totalVerifications: allVerifications.length,
+        confirmed,
+        notFound,
+        uncertain: allVerifications.length - confirmed - notFound,
         discoveries: allImageRows.length,
       },
-      "Verification matching complete"
+      "Verification complete"
     );
   }
 
