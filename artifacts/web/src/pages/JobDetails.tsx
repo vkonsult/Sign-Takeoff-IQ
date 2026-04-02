@@ -190,7 +190,15 @@ export default function JobDetails() {
     );
   }
 
-  const { job, files, extractedSigns, totalSigns, flaggedCount, highConfidenceCount } = data;
+  const { job, files, totalSigns, flaggedCount, highConfidenceCount } = data;
+  // Exclude comparison-run signs (text_compare and image) from the main table;
+  // those only appear in the ComparisonPanel.
+  const extractedSigns = data.extractedSigns.filter(
+    (s: SignRow) => {
+      const method = (s as Record<string, unknown>).extractionMethod as string | null | undefined;
+      return method !== "text_compare" && method !== "image";
+    }
+  );
   const isProcessing = job.status === "processing" || extractMutation.isPending;
   const isCompleted = job.status === "completed";
   const isPending = job.status === "pending";
@@ -759,6 +767,10 @@ type ComparisonResult = {
   imageInputTokens: number;
   imageOutputTokens: number;
   imageCost: number;
+  textCompareInputTokens: number;
+  textCompareOutputTokens: number;
+  textCompareCost: number;
+  totalCost: number;
 };
 
 function ComparisonPanel({
@@ -801,7 +813,7 @@ function ComparisonPanel({
           {result && (
             <div className="flex items-center gap-3">
               <span className="text-[10px] font-mono text-muted-foreground">
-                Image pass: {fmtTokens(result.imageInputTokens)} in · {fmtTokens(result.imageOutputTokens)} out · {fmt(result.imageCost)}
+                Text: {fmtTokens((result.textCompareInputTokens ?? 0) + (result.textCompareOutputTokens ?? 0))} tok · Image: {fmtTokens(result.imageInputTokens + result.imageOutputTokens)} tok · Total: {fmt(result.totalCost ?? result.imageCost)}
               </span>
               <button onClick={onDismiss} className="text-muted-foreground hover:text-foreground transition-colors">
                 <X className="w-3.5 h-3.5" />
@@ -819,7 +831,7 @@ function ComparisonPanel({
         {loading && (
           <div className="flex items-center gap-3 py-4 text-center">
             <div className="flex-1 text-sm text-muted-foreground font-mono text-center">
-              Sending PDF to Gemini vision API — analyzing visual content for sign callouts…
+              Running dual-pass extraction (text + image) — this may take 30–60 seconds…
             </div>
           </div>
         )}
@@ -934,7 +946,7 @@ function ComparisonPanel({
                 <span className="text-muted-foreground font-semibold">{result.imageOnly.length}</span> image-only
               </span>
               <span className="ml-auto">
-                Image pass cost: {fmt(result.imageCost)} ({fmtTokens(result.imageInputTokens + result.imageOutputTokens)} tokens)
+                Text: {fmt(result.textCompareCost ?? 0)} · Image: {fmt(result.imageCost)} · Total: {fmt(result.totalCost ?? result.imageCost)}
               </span>
             </div>
           </>

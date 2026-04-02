@@ -1,5 +1,5 @@
 import { Router, type IRouter } from "express";
-import { eq, desc, inArray, and } from "drizzle-orm";
+import { eq, desc, inArray, and, or, ne, isNull } from "drizzle-orm";
 import { db } from "@workspace/db";
 import {
   jobsTable,
@@ -9,7 +9,7 @@ import {
 import { buildExcelExport } from "../lib/export";
 import { getJobExportPath } from "../lib/storage";
 import { processJob } from "../lib/process-job";
-import { extractSignsFromPdfImage } from "../lib/extraction";
+import { extractSignsFromPdfImage, extractSignsFromPdf } from "../lib/extraction";
 import { ai } from "@workspace/integrations-gemini-ai";
 import fs from "fs/promises";
 import fsSync from "fs";
@@ -132,10 +132,23 @@ router.get("/jobs/:jobId", async (req, res) => {
       .from(jobFilesTable)
       .where(eq(jobFilesTable.jobId, jobId));
 
+    // Exclude comparison-run signs (text_compare / image) from the main job view;
+    // those are surfaced only via the /compare endpoint.
     const extractedSigns = await db
       .select()
       .from(extractedSignsTable)
-      .where(eq(extractedSignsTable.jobId, jobId));
+      .where(
+        and(
+          eq(extractedSignsTable.jobId, jobId),
+          or(
+            isNull(extractedSignsTable.extractionMethod),
+            and(
+              ne(extractedSignsTable.extractionMethod, "text_compare"),
+              ne(extractedSignsTable.extractionMethod, "image")
+            )
+          )
+        )
+      );
 
     const totalSigns = extractedSigns.length;
     const flaggedCount = extractedSigns.filter((s) => s.reviewFlag).length;
@@ -266,21 +279,69 @@ router.post("/jobs/:jobId/compare", async (req, res) => {
       return;
     }
 
-    // Delete previous image-extraction results for this job (re-run semantics)
-    const { count: deletedCount } = await db
+    // Clear all previous comparison-run signs (text_compare + image), keep original text + manual/verified
+    await db
       .delete(extractedSignsTable)
       .where(
         and(
           eq(extractedSignsTable.jobId, jobId),
-          eq(extractedSignsTable.extractionMethod, "image")
+          or(
+            eq(extractedSignsTable.extractionMethod, "image"),
+            eq(extractedSignsTable.extractionMethod, "text_compare")
+          )
         )
-      )
-      .returning()
-      .then((rows) => ({ count: rows.length }));
+      );
 
-    req.log.info({ jobId, deletedCount }, "Cleared previous image-extraction results");
+    req.log.info({ jobId }, "Cleared previous comparison-run signs");
 
-    // Run image extraction for each file
+    // ── Fresh text extraction pass ────────────────────────────────────────────
+    let totalTextInputTokens = 0;
+    let totalTextOutputTokens = 0;
+    const textCompareRows: typeof extractedSignsTable.$inferInsert[] = [];
+
+    for (const file of files) {
+      try {
+        const { rows, inputTokens, outputTokens } = await extractSignsFromPdf(
+          file.storedPath,
+          ai
+        );
+        totalTextInputTokens += inputTokens;
+        totalTextOutputTokens += outputTokens;
+        for (const row of rows) {
+          textCompareRows.push({
+            jobId,
+            jobFileId: file.id,
+            sheetNumber: row.sheet_number,
+            detailReference: row.detail_reference,
+            signType: row.sign_type,
+            signIdentifier: row.sign_identifier,
+            quantity: row.quantity,
+            location: row.location,
+            dimensions: row.dimensions,
+            mountingType: row.mounting_type,
+            finishColor: row.finish_color,
+            illumination: row.illumination,
+            materials: row.materials,
+            messageContent: row.message_content,
+            notes: row.notes,
+            pageNumber: row.page_number,
+            xPos: null,
+            yPos: null,
+            confidenceScore: row.confidence_score,
+            reviewFlag: row.review_flag,
+            extractionMethod: "text_compare",
+          });
+        }
+      } catch (err) {
+        req.log.error({ err, fileId: file.id }, "Text-compare extraction failed for file");
+      }
+    }
+
+    if (textCompareRows.length > 0) {
+      await db.insert(extractedSignsTable).values(textCompareRows);
+    }
+
+    // ── Fresh image extraction pass ───────────────────────────────────────────
     let totalImageInputTokens = 0;
     let totalImageOutputTokens = 0;
     const imageRows: typeof extractedSignsTable.$inferInsert[] = [];
@@ -291,10 +352,8 @@ router.post("/jobs/:jobId/compare", async (req, res) => {
           file.storedPath,
           ai
         );
-
         totalImageInputTokens += inputTokens;
         totalImageOutputTokens += outputTokens;
-
         for (const row of rows) {
           imageRows.push({
             jobId,
@@ -336,85 +395,129 @@ router.post("/jobs/:jobId/compare", async (req, res) => {
       .where(eq(jobsTable.id, jobId));
 
     // ── Matching pass ─────────────────────────────────────────────────────────
-    // For each image sign, look for a text sign with overlapping location or sign_type.
-    // Matching criteria: case-insensitive substring overlap on (sign_type or location).
+    // Match text_compare signs against image signs. Require BOTH sign_type AND location
+    // similarity. Fall back to single-field if the other field is missing on either side.
 
-    function normalize(s: string | null): string {
-      return (s ?? "").toLowerCase().replace(/[^a-z0-9 ]/g, "").trim();
+    function normalize(s: string | null | undefined): string {
+      return (s ?? "").toLowerCase().replace(/[^a-z0-9 ]/g, " ").replace(/\s+/g, " ").trim();
     }
 
-    function hasOverlap(a: string | null, b: string | null): boolean {
-      const na = normalize(a);
-      const nb = normalize(b);
-      if (!na || !nb) return false;
-      const wordsA = na.split(/\s+/).filter((w) => w.length > 3);
-      const wordsB = new Set(nb.split(/\s+/).filter((w) => w.length > 3));
-      return wordsA.some((w) => wordsB.has(w));
+    function significantWords(s: string | null | undefined): Set<string> {
+      return new Set(normalize(s).split(" ").filter((w) => w.length >= 4));
     }
 
-    // Re-fetch after insert so we have real DB rows with IDs
+    function wordOverlapScore(a: string | null | undefined, b: string | null | undefined): number {
+      const wa = significantWords(a);
+      const wb = significantWords(b);
+      if (wa.size === 0 || wb.size === 0) return 0;
+      let shared = 0;
+      for (const w of wa) { if (wb.has(w)) shared++; }
+      return shared / Math.max(wa.size, wb.size);
+    }
+
+    function positionProximity(imgSign: typeof extractedSignsTable.$inferSelect, txtSign: typeof extractedSignsTable.$inferSelect): number {
+      if (imgSign.xPos == null || imgSign.yPos == null || txtSign.xPos == null || txtSign.yPos == null) return 0;
+      const dx = imgSign.xPos - txtSign.xPos;
+      const dy = imgSign.yPos - txtSign.yPos;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      return dist < 0.1 ? 1 : dist < 0.25 ? 0.5 : 0;
+    }
+
+    function isMatch(imgSign: typeof extractedSignsTable.$inferSelect, txtSign: typeof extractedSignsTable.$inferSelect): boolean {
+      const typeScore = wordOverlapScore(imgSign.signType, txtSign.signType);
+      const locScore = wordOverlapScore(imgSign.location, txtSign.location);
+      const posFactor = positionProximity(imgSign, txtSign);
+
+      // Primary: require meaningful overlap on both type AND location
+      if (typeScore >= 0.5 && locScore >= 0.5) return true;
+      // Secondary: very strong overlap on one field + some on the other
+      if (typeScore >= 0.8 && locScore >= 0.2) return true;
+      if (locScore >= 0.8 && typeScore >= 0.2) return true;
+      // Tertiary: position is very close + one field overlaps
+      if (posFactor > 0 && (typeScore >= 0.5 || locScore >= 0.5)) return true;
+      return false;
+    }
+
+    // Re-fetch after inserts so we have real DB IDs
     const allSignsAfter = await db
       .select()
       .from(extractedSignsTable)
       .where(eq(extractedSignsTable.jobId, jobId));
 
-    const textSignsAfter = allSignsAfter.filter(
-      (s) => !s.manuallyAdded && !s.userVerified && (s.extractionMethod === "text" || s.extractionMethod === null)
-    );
-    const imageSignsAfter = allSignsAfter.filter((s) => s.extractionMethod === "image");
+    const textCompareSigns = allSignsAfter.filter((s) => s.extractionMethod === "text_compare");
+    const imageSigns = allSignsAfter.filter((s) => s.extractionMethod === "image");
 
-    // Build match sets
+    // Greedy best-match pairing
     const matchedTextIds = new Set<string>();
     const matchedImageIds = new Set<string>();
+    const pairs: Array<{ textId: string; imageId: string }> = [];
 
-    for (const imgSign of imageSignsAfter) {
-      for (const txtSign of textSignsAfter) {
+    for (const imgSign of imageSigns) {
+      let bestTextSign: typeof imageSigns[number] | null = null;
+      let bestTypeScore = 0;
+
+      for (const txtSign of textCompareSigns) {
         if (matchedTextIds.has(txtSign.id)) continue;
-        const typeMatch = hasOverlap(imgSign.signType, txtSign.signType);
-        const locMatch = hasOverlap(imgSign.location, txtSign.location);
-        if (typeMatch || locMatch) {
-          matchedTextIds.add(txtSign.id);
-          matchedImageIds.add(imgSign.id);
-          break;
+        if (!isMatch(imgSign, txtSign)) continue;
+        const ts = wordOverlapScore(imgSign.signType, txtSign.signType);
+        if (ts > bestTypeScore) {
+          bestTypeScore = ts;
+          bestTextSign = txtSign;
         }
+      }
+
+      if (bestTextSign) {
+        matchedTextIds.add(bestTextSign.id);
+        matchedImageIds.add(imgSign.id);
+        pairs.push({ textId: bestTextSign.id, imageId: imgSign.id });
       }
     }
 
-    // Boost confidence for matched text signs
-    for (const txtSignId of matchedTextIds) {
-      const txtSign = textSignsAfter.find((s) => s.id === txtSignId)!;
-      const boostedScore = Math.min(1.0, (txtSign.confidenceScore ?? 0) + 0.15);
+    // Persist pairings and symmetrically boost confidence on both rows
+    for (const { textId, imageId } of pairs) {
+      const txtSign = textCompareSigns.find((s) => s.id === textId)!;
+      const imgSign = imageSigns.find((s) => s.id === imageId)!;
+
+      const txtBoosted = Math.min(1.0, (txtSign.confidenceScore ?? 0) + 0.15);
+      const imgBoosted = Math.min(1.0, (imgSign.confidenceScore ?? 0) + 0.15);
+
       await db
         .update(extractedSignsTable)
-        .set({ confidenceScore: boostedScore, reviewFlag: boostedScore >= 0.6 ? false : true })
-        .where(eq(extractedSignsTable.id, txtSignId));
+        .set({ pairedSignId: imageId, confidenceScore: txtBoosted, reviewFlag: txtBoosted >= 0.6 ? false : true })
+        .where(eq(extractedSignsTable.id, textId));
+
+      await db
+        .update(extractedSignsTable)
+        .set({ pairedSignId: textId, confidenceScore: imgBoosted, reviewFlag: imgBoosted >= 0.6 ? false : true })
+        .where(eq(extractedSignsTable.id, imageId));
     }
 
-    // Build response buckets
-    const textOnly = textSignsAfter
-      .filter((s) => !matchedTextIds.has(s.id))
-      .map((s) => ({ ...s }));
+    // Re-fetch final state for response buckets
+    const finalSigns = await db
+      .select()
+      .from(extractedSignsTable)
+      .where(eq(extractedSignsTable.jobId, jobId));
 
-    const both = textSignsAfter
-      .filter((s) => matchedTextIds.has(s.id))
-      .map((s) => ({ ...s, confidenceScore: Math.min(1.0, (s.confidenceScore ?? 0) + 0.15) }));
+    const finalTextCompare = finalSigns.filter((s) => s.extractionMethod === "text_compare");
+    const finalImage = finalSigns.filter((s) => s.extractionMethod === "image");
 
-    const imageOnly = imageSignsAfter
-      .filter((s) => !matchedImageIds.has(s.id))
-      .map((s) => ({ ...s }));
+    const both = finalTextCompare.filter((s) => s.pairedSignId != null);
+    const textOnly = finalTextCompare.filter((s) => s.pairedSignId == null);
+    const imageOnly = finalImage.filter((s) => s.pairedSignId == null);
 
-    // Gemini 2.5 Flash pricing
     const INPUT_RATE = 0.15;
     const OUTPUT_RATE = 0.60;
     const imageCost =
       ((totalImageInputTokens * INPUT_RATE) + (totalImageOutputTokens * OUTPUT_RATE)) / 1_000_000;
+    const textCompareCost =
+      ((totalTextInputTokens * INPUT_RATE) + (totalTextOutputTokens * OUTPUT_RATE)) / 1_000_000;
 
     req.log.info(
       {
         jobId,
-        imageSignsFound: imageRows.length,
-        textSignsTotal: textSignsAfter.length,
-        matched: matchedTextIds.size,
+        textCompareFound: textCompareRows.length,
+        imageFound: imageRows.length,
+        matched: pairs.length,
         textOnly: textOnly.length,
         imageOnly: imageOnly.length,
         totalImageInputTokens,
@@ -430,7 +533,11 @@ router.post("/jobs/:jobId/compare", async (req, res) => {
       imageOnly,
       imageInputTokens: totalImageInputTokens,
       imageOutputTokens: totalImageOutputTokens,
+      textCompareInputTokens: totalTextInputTokens,
+      textCompareOutputTokens: totalTextOutputTokens,
       imageCost,
+      textCompareCost,
+      totalCost: imageCost + textCompareCost,
     });
   } catch (err) {
     req.log.error({ err, jobId }, "Comparison failed");

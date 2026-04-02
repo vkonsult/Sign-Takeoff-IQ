@@ -34,6 +34,7 @@ export const extractedSignsTable = pgTable("extracted_signs", {
   xPos: real("x_pos"),
   yPos: real("y_pos"),
   extractionMethod: text("extraction_method").default("text"),
+  pairedSignId: uuid("paired_sign_id"),
   manuallyAdded: boolean("manually_added").notNull().default(false),
   userVerified: boolean("user_verified").notNull().default(false),
   confidenceScore: real("confidence_score").notNull().default(0),
