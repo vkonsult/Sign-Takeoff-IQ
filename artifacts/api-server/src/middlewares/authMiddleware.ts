@@ -1,7 +1,7 @@
 import { type Request, type Response, type NextFunction } from "express";
 import { getAuth } from "@clerk/express";
 import { db, organizationMembershipsTable } from "@workspace/db";
-import { eq } from "drizzle-orm";
+import { eq, and } from "drizzle-orm";
 import { logger } from "../lib/logger";
 import crypto from "crypto";
 
@@ -48,6 +48,27 @@ async function resolveMembership(
   jwtOrgId: string | null,
   jwtRole: UserRole,
 ): Promise<{ role: UserRole; organizationId: string | null }> {
+  if (jwtOrgId) {
+    const [membership] = await db
+      .select()
+      .from(organizationMembershipsTable)
+      .where(
+        and(
+          eq(organizationMembershipsTable.clerkUserId, clerkUserId),
+          eq(organizationMembershipsTable.organizationId, jwtOrgId),
+        ),
+      )
+      .limit(1);
+
+    if (membership) {
+      return {
+        role: membership.role as UserRole,
+        organizationId: membership.organizationId,
+      };
+    }
+    return { role: jwtRole, organizationId: jwtOrgId };
+  }
+
   const [membership] = await db
     .select()
     .from(organizationMembershipsTable)
@@ -61,7 +82,7 @@ async function resolveMembership(
     };
   }
 
-  return { role: jwtRole, organizationId: jwtOrgId };
+  return { role: jwtRole, organizationId: null };
 }
 
 function extractFromJwt(req: Request): { role: UserRole; orgId: string | null } {

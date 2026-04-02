@@ -1,5 +1,5 @@
 import { Router, type IRouter, type Request, type Response } from "express";
-import { eq, desc, inArray, and, or, ne, isNull, isNotNull, not } from "drizzle-orm";
+import { eq, desc, inArray, and, or, ne, isNotNull, not, SQL } from "drizzle-orm";
 import { db } from "@workspace/db";
 import {
   jobsTable,
@@ -18,20 +18,24 @@ import { requireRole } from "../middlewares/authMiddleware";
 
 const router: IRouter = Router();
 
-function orgFilter(req: Request) {
+function orgFilter(req: Request): SQL | undefined | "FORBIDDEN" {
   const user = req.authUser;
   if (!user || user.isSuperAdmin) return undefined;
   if (user.organizationId) return eq(jobsTable.organizationId, user.organizationId);
-  return isNull(jobsTable.organizationId);
+  return "FORBIDDEN";
 }
 
 async function getJobWithOrgCheck(req: Request, res: Response, jobId: string) {
+  const user = req.authUser;
+  if (user && !user.isSuperAdmin && !user.organizationId) {
+    res.status(403).json({ error: "No organization context" });
+    return null;
+  }
   const [job] = await db.select().from(jobsTable).where(eq(jobsTable.id, jobId));
   if (!job) {
     res.status(404).json({ error: "Job not found" });
     return null;
   }
-  const user = req.authUser;
   if (user && !user.isSuperAdmin) {
     if (job.organizationId !== user.organizationId) {
       res.status(403).json({ error: "Access denied" });
@@ -44,6 +48,10 @@ async function getJobWithOrgCheck(req: Request, res: Response, jobId: string) {
 router.get("/jobs", async (req, res) => {
   try {
     const filter = orgFilter(req);
+    if (filter === "FORBIDDEN") {
+      res.status(403).json({ error: "No organization context" });
+      return;
+    }
     const jobs = await db
       .select()
       .from(jobsTable)
