@@ -205,11 +205,9 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
             ) : (
               data?.jobs?.slice(0, 5).map((job) => {
                 const jobAny = job as typeof job & {
-                  lastActivityInitials?: string | null;
-                  lastActivityUser?: string | null;
-                  lastActivityAt?: string | null;
-                  lastActivityType?: string | null;
+                  recentUsers?: { userName: string; userInitials: string; at: string }[];
                 };
+                const recentUsers = jobAny.recentUsers ?? [];
                 return (
                   <Link
                     key={job.id}
@@ -226,13 +224,19 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
                         {job.name ?? job.id.split("-")[0]}
                       </span>
                       <div className="flex items-center gap-1 flex-shrink-0">
-                        {jobAny.lastActivityInitials && jobAny.lastActivityUser && jobAny.lastActivityAt && (
-                          <span
-                            title={`Last touched by ${jobAny.lastActivityUser}`}
-                            className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-primary/15 text-primary text-[9px] font-bold flex-shrink-0"
-                          >
-                            {jobAny.lastActivityInitials}
-                          </span>
+                        {recentUsers.length > 0 && (
+                          <div className="flex">
+                            {recentUsers.map((u, i) => (
+                              <span
+                                key={u.userName + i}
+                                title={`Last touched by ${u.userName}`}
+                                className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-primary/15 text-primary text-[9px] font-bold flex-shrink-0 ring-1 ring-card"
+                                style={{ marginLeft: i > 0 ? "-5px" : undefined }}
+                              >
+                                {u.userInitials}
+                              </span>
+                            ))}
+                          </div>
                         )}
                         <StatusDot status={job.status} />
                       </div>

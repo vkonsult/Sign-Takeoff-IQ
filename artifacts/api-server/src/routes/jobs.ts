@@ -66,7 +66,42 @@ router.get("/jobs", async (req, res) => {
       .where(filter)
       .orderBy(desc(jobsTable.createdAt));
 
-    res.json({ jobs });
+    const jobIds = jobs.map((j) => j.id);
+
+    // For each job, find up to 2 most recently active distinct users
+    const recentUsersByJob = new Map<string, { userId: string; userName: string; userInitials: string; at: Date }[]>();
+    if (jobIds.length > 0) {
+      const recentActivity = await db
+        .select({
+          jobId: activityLogsTable.jobId,
+          userId: activityLogsTable.userId,
+          userName: activityLogsTable.userName,
+          userInitials: activityLogsTable.userInitials,
+          at: activityLogsTable.createdAt,
+        })
+        .from(activityLogsTable)
+        .where(inArray(activityLogsTable.jobId, jobIds))
+        .orderBy(desc(activityLogsTable.createdAt));
+
+      for (const row of recentActivity) {
+        if (!row.jobId) continue;
+        const list = recentUsersByJob.get(row.jobId) ?? [];
+        if (list.length < 2 && !list.find((u) => u.userId === row.userId)) {
+          list.push({ userId: row.userId, userName: row.userName, userInitials: row.userInitials, at: row.at });
+          recentUsersByJob.set(row.jobId, list);
+        }
+      }
+    }
+
+    const enriched = jobs.map((j) => {
+      const users = recentUsersByJob.get(j.id) ?? [];
+      return {
+        ...j,
+        recentUsers: users.map((u) => ({ userName: u.userName, userInitials: u.userInitials, at: u.at })),
+      };
+    });
+
+    res.json({ jobs: enriched });
   } catch (err) {
     req.log.error({ err }, "Failed to list jobs");
     res.status(500).json({ error: "Failed to list jobs" });

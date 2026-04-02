@@ -11,35 +11,27 @@ import {
 } from "lucide-react";
 import { Link } from "wouter";
 
-function UserInitialsBadge({
-  initials,
-  userName,
-  lastActivityAt,
-  lastActivityType,
-}: {
-  initials: string;
+interface RecentUser {
   userName: string;
-  lastActivityAt: string;
-  lastActivityType: string | null;
-}) {
-  const actionLabels: Record<string, string> = {
-    job_opened: "opened",
-    scan_run: "ran scan on",
-    sign_updated: "edited sign in",
-    xlsx_exported: "exported",
-    pdf_exported: "exported",
-  };
-  const action = lastActivityType ? (actionLabels[lastActivityType] ?? "touched") : "touched";
-  const relTime = formatDistanceToNow(new Date(lastActivityAt), { addSuffix: true });
-  const tooltip = `${userName} ${action} this plan ${relTime}`;
+  userInitials: string;
+  at: string;
+}
 
+function StackedUserBadges({ users }: { users: RecentUser[] }) {
+  if (users.length === 0) return <span className="text-muted-foreground/30 text-xs">—</span>;
   return (
-    <span
-      title={tooltip}
-      className="inline-flex items-center justify-center w-7 h-7 rounded-full bg-primary/15 text-primary text-[11px] font-bold flex-shrink-0 ring-2 ring-card cursor-default"
-    >
-      {initials}
-    </span>
+    <div className="flex items-center justify-center">
+      {users.map((u, i) => (
+        <span
+          key={u.userName + i}
+          title={`${u.userName} — ${formatDistanceToNow(new Date(u.at), { addSuffix: true })}`}
+          className="inline-flex items-center justify-center w-7 h-7 rounded-full bg-primary/15 text-primary text-[11px] font-bold flex-shrink-0 ring-2 ring-card cursor-default"
+          style={{ marginLeft: i > 0 ? "-8px" : undefined, zIndex: users.length - i }}
+        >
+          {u.userInitials}
+        </span>
+      ))}
+    </div>
   );
 }
 
@@ -194,11 +186,11 @@ export default function JobsList() {
               {jobs.map((job) => {
                 const isChecked = selected.has(job.id);
                 const jobAny = job as typeof job & {
+                  recentUsers?: RecentUser[];
                   lastActivityAt?: string | null;
-                  lastActivityUser?: string | null;
-                  lastActivityInitials?: string | null;
                   lastActivityType?: string | null;
                 };
+                const recentUsers: RecentUser[] = jobAny.recentUsers ?? [];
                 return (
                   <div
                     key={job.id}
@@ -237,16 +229,7 @@ export default function JobsList() {
                       </div>
 
                       <div className="flex justify-center py-4">
-                        {jobAny.lastActivityAt && jobAny.lastActivityInitials && jobAny.lastActivityUser ? (
-                          <UserInitialsBadge
-                            initials={jobAny.lastActivityInitials}
-                            userName={jobAny.lastActivityUser}
-                            lastActivityAt={jobAny.lastActivityAt}
-                            lastActivityType={jobAny.lastActivityType ?? null}
-                          />
-                        ) : (
-                          <span className="text-muted-foreground/30 text-xs">—</span>
-                        )}
+                        <StackedUserBadges users={recentUsers} />
                       </div>
 
                       <div className="text-right text-sm text-muted-foreground py-4">
