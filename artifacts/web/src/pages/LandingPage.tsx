@@ -3,6 +3,8 @@ import { Zap, FileSearch, BarChart3, Download, Key } from "lucide-react";
 import { setGuestToken } from "@/lib/apiClient";
 import { useEffect, useState } from "react";
 
+const AUTO_GUEST_TOKEN = import.meta.env.VITE_GUEST_TOKEN as string | undefined;
+
 export default function LandingPage() {
   const [, setLocation] = useLocation();
   const [guestAvailable, setGuestAvailable] = useState(false);
@@ -16,6 +18,16 @@ export default function LandingPage() {
       .then((d: { guestAvailable?: boolean }) => setGuestAvailable(!!d.guestAvailable))
       .catch(() => {});
   }, []);
+
+  async function handleGuestClick() {
+    if (AUTO_GUEST_TOKEN) {
+      setGuestToken(AUTO_GUEST_TOKEN);
+      setLocation("/jobs");
+      return;
+    }
+    setShowTokenInput(true);
+    setTokenError("");
+  }
 
   async function handleTokenSubmit() {
     if (!tokenInput.trim()) {
@@ -54,7 +66,7 @@ export default function LandingPage() {
         <div className="flex items-center gap-3">
           {guestAvailable && (
             <button
-              onClick={() => { setShowTokenInput(true); setTokenError(""); }}
+              onClick={handleGuestClick}
               className="px-4 py-2 text-sm font-medium text-muted-foreground hover:text-foreground transition-colors"
             >
               Continue as Guest
@@ -143,7 +155,7 @@ export default function LandingPage() {
           </Link>
           {guestAvailable && (
             <button
-              onClick={() => { setShowTokenInput(true); setTokenError(""); }}
+              onClick={handleGuestClick}
               className="px-6 py-3 rounded-lg border border-border text-muted-foreground font-display font-semibold uppercase tracking-wider text-sm hover:bg-secondary/50 transition-all"
             >
               Continue as Guest
