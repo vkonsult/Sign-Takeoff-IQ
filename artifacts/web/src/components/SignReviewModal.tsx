@@ -515,8 +515,10 @@ export function SignReviewModal({
           const isCurrent = s.id === activeSign.id;
           const color = isCurrent ? "#22c55e" : (s.manuallyAdded ? "#a855f7" : "#eab308");
 
-          // Prefer stored coordinates (manually placed markers) over text search
-          if (s.xPos != null && s.yPos != null) {
+          // Only use stored coordinates for manually-placed markers.
+          // AI-extracted signs run text search (stored coords from visual extraction
+          // are unreliable Gemini guesses — text search is far more accurate).
+          if (s.manuallyAdded && s.xPos != null && s.yPos != null) {
             markers.push({
               x: s.xPos,
               y: s.yPos,

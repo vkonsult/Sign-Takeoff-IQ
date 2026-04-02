@@ -256,8 +256,10 @@ export async function processJob(jobId: string): Promise<void> {
           messageContent: row.message_content,
           notes: row.notes,
           pageNumber: row.page_number,
-          xPos: row.x_pos ?? null,
-          yPos: row.y_pos ?? null,
+          // Do NOT store visual-extraction x/y — Gemini's position guesses are
+          // unreliable. Marker positions come from the PDF text layer search instead.
+          xPos: null,
+          yPos: null,
           confidenceScore: row.confidence_score,
           reviewFlag: true,
           extractionMethod: "image",
