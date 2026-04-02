@@ -1,19 +1,31 @@
 import { Router, type IRouter } from "express";
 import { db, activityLogsTable, organizationsTable } from "@workspace/db";
-import { desc, eq, and, gte, lte, inArray } from "drizzle-orm";
+import { desc, eq, and, gte, lte, inArray, like } from "drizzle-orm";
 import { z } from "zod/v4";
 
 const router: IRouter = Router();
+
+const VALID_EVENT_TYPES = ["job_opened", "scan_run", "sign_updated", "pdf_exported", "xlsx_exported"] as const;
+type ValidEventType = typeof VALID_EVENT_TYPES[number];
+
+function parseEventTypes(raw: unknown): ValidEventType[] {
+  if (!raw) return [];
+  const arr = Array.isArray(raw) ? raw : [raw];
+  return arr.filter((v): v is ValidEventType =>
+    typeof v === "string" && (VALID_EVENT_TYPES as readonly string[]).includes(v)
+  );
+}
 
 const ActivityQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(200).default(50),
   offset: z.coerce.number().int().min(0).default(0),
   userId: z.string().optional(),
-  eventType: z.string().optional(),
   jobId: z.string().uuid().optional(),
   orgId: z.string().uuid().optional(),
   from: z.string().optional(),
   to: z.string().optional(),
+  userName: z.string().optional(),
+  jobName: z.string().optional(),
 });
 
 // GET /activity — returns activity log rows scoped to the caller's role
@@ -26,7 +38,8 @@ router.get("/activity", async (req, res) => {
     return;
   }
 
-  const { limit, offset, userId, eventType, jobId, orgId, from, to } = parsed.data;
+  const { limit, offset, userId, jobId, orgId, from, to, userName, jobName } = parsed.data;
+  const eventTypes = parseEventTypes(req.query.eventType);
 
   try {
     const conditions = [];
@@ -47,12 +60,8 @@ router.get("/activity", async (req, res) => {
     }
 
     if (jobId) conditions.push(eq(activityLogsTable.jobId, jobId));
-    if (eventType) {
-      const validTypes = ["job_opened", "scan_run", "sign_updated", "pdf_exported", "xlsx_exported"] as const;
-      type ValidType = typeof validTypes[number];
-      if ((validTypes as readonly string[]).includes(eventType)) {
-        conditions.push(eq(activityLogsTable.eventType, eventType as ValidType));
-      }
+    if (eventTypes.length > 0) {
+      conditions.push(inArray(activityLogsTable.eventType, eventTypes));
     }
     if (from) {
       const dt = new Date(from);
@@ -60,7 +69,14 @@ router.get("/activity", async (req, res) => {
     }
     if (to) {
       const dt = new Date(to);
+      dt.setDate(dt.getDate() + 1);
       if (!isNaN(dt.getTime())) conditions.push(lte(activityLogsTable.createdAt, dt));
+    }
+    if (userName) {
+      conditions.push(like(activityLogsTable.userName, `%${userName}%`));
+    }
+    if (jobName) {
+      conditions.push(like(activityLogsTable.jobName, `%${jobName}%`));
     }
 
     const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
@@ -73,7 +89,6 @@ router.get("/activity", async (req, res) => {
       .limit(limit)
       .offset(offset);
 
-    // For super admin, enrich with org name
     let orgNames: Map<string, string> = new Map();
     if (user.isSuperAdmin) {
       const orgIds = [...new Set(rows.map((r) => r.organizationId).filter(Boolean))] as string[];

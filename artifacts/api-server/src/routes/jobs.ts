@@ -5,6 +5,7 @@ import {
   jobsTable,
   jobFilesTable,
   extractedSignsTable,
+  activityLogsTable,
 } from "@workspace/db";
 import { buildExcelExport } from "../lib/export";
 import { getJobExportPath } from "../lib/storage";
@@ -239,10 +240,34 @@ router.get("/jobs/:jobId", async (req, res) => {
     const combinedOutputTokens = (job.outputTokens ?? 0) + (job.imageOutputTokens ?? 0);
     const combinedCost = combinedInputTokens * COST_INPUT + combinedOutputTokens * COST_OUTPUT;
 
+    const [lastScanRow] = await db
+      .select({
+        at: activityLogsTable.createdAt,
+        userName: activityLogsTable.userName,
+        userInitials: activityLogsTable.userInitials,
+      })
+      .from(activityLogsTable)
+      .where(and(eq(activityLogsTable.jobId, jobId), eq(activityLogsTable.eventType, "scan_run")))
+      .orderBy(desc(activityLogsTable.createdAt))
+      .limit(1);
+
+    const [lastEditRow] = await db
+      .select({
+        at: activityLogsTable.createdAt,
+        userName: activityLogsTable.userName,
+        userInitials: activityLogsTable.userInitials,
+      })
+      .from(activityLogsTable)
+      .where(and(eq(activityLogsTable.jobId, jobId), eq(activityLogsTable.eventType, "sign_updated")))
+      .orderBy(desc(activityLogsTable.createdAt))
+      .limit(1);
+
     recordActivity(req, "job_opened", jobId);
 
     res.json({
       job,
+      lastScan: lastScanRow ?? null,
+      lastEdit: lastEditRow ?? null,
       files: files.map((f) => ({
         id: f.id,
         originalName: f.originalName,
@@ -866,6 +891,23 @@ router.patch("/extracted-signs/:signId", async (req, res) => {
   } catch (err) {
     req.log.error({ err, signId }, "Failed to update sign");
     res.status(500).json({ error: "Failed to update sign" });
+  }
+});
+
+router.post("/jobs/:jobId/log-pdf-export", async (req, res) => {
+  const { jobId } = req.params;
+  if (!jobId) {
+    res.status(400).json({ error: "Job ID required" });
+    return;
+  }
+  try {
+    const job = await getJobWithOrgCheck(req, res, jobId);
+    if (!job) return;
+    recordActivity(req, "pdf_exported", jobId);
+    res.json({ ok: true });
+  } catch (err) {
+    req.log.error({ err, jobId }, "Failed to log PDF export");
+    res.status(500).json({ error: "Failed to log" });
   }
 });
 

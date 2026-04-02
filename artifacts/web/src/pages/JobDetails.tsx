@@ -17,6 +17,7 @@ import {
   Loader2,
   ListFilter,
   Pencil,
+  PenLine,
   Zap,
   MapPin,
   ChevronDown,
@@ -30,7 +31,7 @@ import {
   RefreshCw,
   BarChart2,
 } from "lucide-react";
-import { format } from "date-fns";
+import { format, formatDistanceToNow } from "date-fns";
 import { exportMarkedupPdf } from "@/lib/exportMarkedupPdf";
 
 export default function JobDetails() {
@@ -91,8 +92,6 @@ export default function JobDetails() {
     if (!data || exportingPdf) return;
     setExportingPdf(true);
     try {
-      // Use markerSigns which includes image-pass signs with xPos/yPos coordinates
-      // in addition to any text/manual signs that have position data.
       const sourceSigns = (data as { markerSigns?: typeof data.extractedSigns }).markerSigns ?? data.extractedSigns;
       const markedSigns = sourceSigns.filter(
         (s) => s.xPos != null && s.yPos != null && s.pageNumber != null
@@ -103,6 +102,7 @@ export default function JobDetails() {
         data.files,
         markedSigns
       );
+      apiFetch(`/api/jobs/${jobId}/log-pdf-export`, { method: "POST" }).catch(() => {});
     } catch (err) {
       console.error("PDF export failed:", err);
       alert("Failed to export marked-up PDF. Please try again.");
@@ -225,6 +225,13 @@ export default function JobDetails() {
   }
 
   const { job, files, totalSigns, flaggedCount, highConfidenceCount } = data;
+  const dataAny = data as typeof data & {
+    lastScan?: { at: string; userName: string; userInitials: string } | null;
+    lastEdit?: { at: string; userName: string; userInitials: string } | null;
+  };
+  const lastScan = dataAny.lastScan ?? null;
+  const lastEdit = dataAny.lastEdit ?? null;
+
   // Show all signs: text, manual, and image-only (visual-only finds).
   // Paired image signs are excluded by the API (their data is in the paired text row).
   const extractedSigns = data.extractedSigns;
@@ -319,6 +326,38 @@ export default function JobDetails() {
                   </span>
                 )}
               </div>
+              {(lastScan || lastEdit) && (
+                <div className="flex flex-wrap gap-x-4 gap-y-1 mt-1">
+                  {lastScan && (
+                    <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                      <Zap className="w-3 h-3 text-primary/70 flex-shrink-0" />
+                      Last scanned by{" "}
+                      <span
+                        className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-primary/15 text-primary text-[9px] font-bold flex-shrink-0"
+                        title={lastScan.userName}
+                      >
+                        {lastScan.userInitials}
+                      </span>
+                      <span className="font-medium text-foreground/70">{lastScan.userName}</span>
+                      {" — "}{formatDistanceToNow(new Date(lastScan.at), { addSuffix: true })}
+                    </span>
+                  )}
+                  {lastEdit && (
+                    <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                      <PenLine className="w-3 h-3 text-accent/70 flex-shrink-0" />
+                      Last edited by{" "}
+                      <span
+                        className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-accent/15 text-accent text-[9px] font-bold flex-shrink-0"
+                        title={lastEdit.userName}
+                      >
+                        {lastEdit.userInitials}
+                      </span>
+                      <span className="font-medium text-foreground/70">{lastEdit.userName}</span>
+                      {" — "}{formatDistanceToNow(new Date(lastEdit.at), { addSuffix: true })}
+                    </span>
+                  )}
+                </div>
+              )}
               
               {isFailed && job.error && (
                 <div className="mt-3 text-sm text-destructive bg-destructive/10 px-3 py-2 rounded border border-destructive/20 inline-block">

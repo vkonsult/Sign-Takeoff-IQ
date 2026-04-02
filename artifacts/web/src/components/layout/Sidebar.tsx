@@ -203,28 +203,46 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
             ) : data?.jobs?.length === 0 ? (
               <p className="text-xs text-muted-foreground px-3">No jobs found</p>
             ) : (
-              data?.jobs?.slice(0, 5).map((job) => (
-                <Link
-                  key={job.id}
-                  href={`/jobs/${job.id}`}
-                  className={cn(
-                    "flex flex-col gap-1 px-3 py-2 rounded-md border border-transparent transition-all",
-                    location === `/jobs/${job.id}`
-                      ? "bg-secondary border-border"
-                      : "hover:bg-secondary/30"
-                  )}
-                >
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="text-xs font-medium text-foreground truncate">
-                      {job.name ?? job.id.split("-")[0]}
+              data?.jobs?.slice(0, 5).map((job) => {
+                const jobAny = job as typeof job & {
+                  lastActivityInitials?: string | null;
+                  lastActivityUser?: string | null;
+                  lastActivityAt?: string | null;
+                  lastActivityType?: string | null;
+                };
+                return (
+                  <Link
+                    key={job.id}
+                    href={`/jobs/${job.id}`}
+                    className={cn(
+                      "flex flex-col gap-1 px-3 py-2 rounded-md border border-transparent transition-all",
+                      location === `/jobs/${job.id}`
+                        ? "bg-secondary border-border"
+                        : "hover:bg-secondary/30"
+                    )}
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-xs font-medium text-foreground truncate">
+                        {job.name ?? job.id.split("-")[0]}
+                      </span>
+                      <div className="flex items-center gap-1 flex-shrink-0">
+                        {jobAny.lastActivityInitials && jobAny.lastActivityUser && jobAny.lastActivityAt && (
+                          <span
+                            title={`Last touched by ${jobAny.lastActivityUser}`}
+                            className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-primary/15 text-primary text-[9px] font-bold flex-shrink-0"
+                          >
+                            {jobAny.lastActivityInitials}
+                          </span>
+                        )}
+                        <StatusDot status={job.status} />
+                      </div>
+                    </div>
+                    <span className="text-[10px] text-muted-foreground">
+                      {format(new Date(job.createdAt), "MMM d, HH:mm")}
                     </span>
-                    <StatusDot status={job.status} />
-                  </div>
-                  <span className="text-[10px] text-muted-foreground">
-                    {format(new Date(job.createdAt), "MMM d, HH:mm")}
-                  </span>
-                </Link>
-              ))
+                  </Link>
+                );
+              })
             )}
           </div>
         </div>

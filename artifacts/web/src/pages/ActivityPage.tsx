@@ -14,15 +14,20 @@ import {
   ChevronLeft,
   ChevronRight,
   Filter,
+  X,
 } from "lucide-react";
 
-const EVENT_LABELS: Record<string, { label: string; icon: React.ComponentType<{ className?: string }> }> = {
+type EventKey = "job_opened" | "scan_run" | "sign_updated" | "xlsx_exported" | "pdf_exported";
+
+const EVENT_META: Record<EventKey, { label: string; icon: React.ComponentType<{ className?: string }> }> = {
   job_opened: { label: "Opened Plan", icon: FolderOpen },
   scan_run: { label: "Ran Scan", icon: Zap },
   sign_updated: { label: "Sign Updated", icon: PenLine },
   xlsx_exported: { label: "Exported XLSX", icon: FileSpreadsheet },
   pdf_exported: { label: "Exported PDF", icon: FileSpreadsheet },
 };
+
+const ALL_EVENT_KEYS = Object.keys(EVENT_META) as EventKey[];
 
 const PAGE_SIZE = 50;
 
@@ -54,7 +59,7 @@ function UserBadge({ initials, name }: { initials: string; name: string }) {
 }
 
 function EventBadge({ eventType }: { eventType: string }) {
-  const meta = EVENT_LABELS[eventType] ?? { label: eventType, icon: Clock };
+  const meta = EVENT_META[eventType as EventKey] ?? { label: eventType, icon: Clock };
   const Icon = meta.icon;
   return (
     <div className="flex items-center gap-1.5 text-sm text-muted-foreground">
@@ -68,25 +73,36 @@ export default function ActivityPage() {
   const { isAdmin, isSuperAdmin } = useUserRole();
 
   const [offset, setOffset] = useState(0);
-  const [filterEventType, setFilterEventType] = useState<string>("");
+  const [selectedEvents, setSelectedEvents] = useState<Set<EventKey>>(new Set());
+  const [filterUser, setFilterUser] = useState<string>("");
+  const [filterPlan, setFilterPlan] = useState<string>("");
   const [filterFrom, setFilterFrom] = useState<string>("");
   const [filterTo, setFilterTo] = useState<string>("");
   const [filterOrgId, setFilterOrgId] = useState<string>("");
   const [showFilters, setShowFilters] = useState(false);
 
+  const [appliedEvents, setAppliedEvents] = useState<Set<EventKey>>(new Set());
+  const [appliedUser, setAppliedUser] = useState<string>("");
+  const [appliedPlan, setAppliedPlan] = useState<string>("");
+  const [appliedFrom, setAppliedFrom] = useState<string>("");
+  const [appliedTo, setAppliedTo] = useState<string>("");
+  const [appliedOrgId, setAppliedOrgId] = useState<string>("");
+
   const buildQueryString = useCallback(() => {
     const params = new URLSearchParams();
     params.set("limit", String(PAGE_SIZE));
     params.set("offset", String(offset));
-    if (filterEventType) params.set("eventType", filterEventType);
-    if (filterFrom) params.set("from", filterFrom);
-    if (filterTo) params.set("to", filterTo);
-    if (filterOrgId && isSuperAdmin) params.set("orgId", filterOrgId);
+    appliedEvents.forEach((e) => params.append("eventType", e));
+    if (appliedUser) params.set("userName", appliedUser);
+    if (appliedPlan) params.set("jobName", appliedPlan);
+    if (appliedFrom) params.set("from", appliedFrom);
+    if (appliedTo) params.set("to", appliedTo);
+    if (appliedOrgId && isSuperAdmin) params.set("orgId", appliedOrgId);
     return params.toString();
-  }, [offset, filterEventType, filterFrom, filterTo, filterOrgId, isSuperAdmin]);
+  }, [offset, appliedEvents, appliedUser, appliedPlan, appliedFrom, appliedTo, appliedOrgId, isSuperAdmin]);
 
   const { data, isLoading } = useQuery({
-    queryKey: ["activity", offset, filterEventType, filterFrom, filterTo, filterOrgId],
+    queryKey: ["activity", offset, [...appliedEvents].sort().join(","), appliedUser, appliedPlan, appliedFrom, appliedTo, appliedOrgId],
     queryFn: async () => {
       const res = await apiFetch(`/api/activity?${buildQueryString()}`);
       if (!res.ok) throw new Error("Failed to load activity");
@@ -100,18 +116,41 @@ export default function ActivityPage() {
   const hasPrev = offset > 0;
 
   const applyFilters = () => {
+    setAppliedEvents(new Set(selectedEvents));
+    setAppliedUser(filterUser);
+    setAppliedPlan(filterPlan);
+    setAppliedFrom(filterFrom);
+    setAppliedTo(filterTo);
+    setAppliedOrgId(filterOrgId);
     setOffset(0);
   };
 
   const clearFilters = () => {
-    setFilterEventType("");
+    setSelectedEvents(new Set());
+    setFilterUser("");
+    setFilterPlan("");
     setFilterFrom("");
     setFilterTo("");
     setFilterOrgId("");
+    setAppliedEvents(new Set());
+    setAppliedUser("");
+    setAppliedPlan("");
+    setAppliedFrom("");
+    setAppliedTo("");
+    setAppliedOrgId("");
     setOffset(0);
   };
 
-  const hasActiveFilters = filterEventType || filterFrom || filterTo || filterOrgId;
+  const toggleEvent = (key: EventKey) => {
+    setSelectedEvents((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  };
+
+  const hasActiveFilters = appliedEvents.size > 0 || appliedUser || appliedPlan || appliedFrom || appliedTo || appliedOrgId;
 
   return (
     <AppShell>
@@ -146,78 +185,149 @@ export default function ActivityPage() {
         </header>
 
         {showFilters && (
-          <div className="mb-6 p-4 bg-card border border-border rounded-xl flex flex-wrap gap-4 items-end">
-            <div className="flex flex-col gap-1 min-w-[160px]">
-              <label className="text-xs font-display font-semibold uppercase tracking-wider text-muted-foreground">
+          <div className="mb-6 p-4 bg-card border border-border rounded-xl space-y-4">
+            {/* Event type checkboxes */}
+            <div>
+              <label className="block text-xs font-display font-semibold uppercase tracking-wider text-muted-foreground mb-2">
                 Event Type
               </label>
-              <select
-                value={filterEventType}
-                onChange={(e) => setFilterEventType(e.target.value)}
-                className="h-9 rounded-md border border-border bg-background text-sm px-2 text-foreground"
-              >
-                <option value="">All events</option>
-                {Object.entries(EVENT_LABELS).map(([k, v]) => (
-                  <option key={k} value={k}>{v.label}</option>
-                ))}
-              </select>
+              <div className="flex flex-wrap gap-2">
+                {ALL_EVENT_KEYS.map((k) => {
+                  const meta = EVENT_META[k];
+                  const Icon = meta.icon;
+                  const checked = selectedEvents.has(k);
+                  return (
+                    <button
+                      key={k}
+                      type="button"
+                      onClick={() => toggleEvent(k)}
+                      className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium border transition-colors
+                        ${checked
+                          ? "bg-primary/15 border-primary/50 text-primary"
+                          : "bg-secondary border-border text-muted-foreground hover:text-foreground"}`}
+                    >
+                      <Icon className="w-3 h-3 flex-shrink-0" />
+                      {meta.label}
+                    </button>
+                  );
+                })}
+              </div>
             </div>
 
-            <div className="flex flex-col gap-1 min-w-[150px]">
-              <label className="text-xs font-display font-semibold uppercase tracking-wider text-muted-foreground">
-                From Date
-              </label>
-              <input
-                type="date"
-                value={filterFrom}
-                onChange={(e) => setFilterFrom(e.target.value)}
-                className="h-9 rounded-md border border-border bg-background text-sm px-2 text-foreground"
-              />
-            </div>
-
-            <div className="flex flex-col gap-1 min-w-[150px]">
-              <label className="text-xs font-display font-semibold uppercase tracking-wider text-muted-foreground">
-                To Date
-              </label>
-              <input
-                type="date"
-                value={filterTo}
-                onChange={(e) => setFilterTo(e.target.value)}
-                className="h-9 rounded-md border border-border bg-background text-sm px-2 text-foreground"
-              />
-            </div>
-
-            {isSuperAdmin && (
-              <div className="flex flex-col gap-1 min-w-[180px]">
+            <div className="flex flex-wrap gap-4 items-end">
+              <div className="flex flex-col gap-1 min-w-[160px]">
                 <label className="text-xs font-display font-semibold uppercase tracking-wider text-muted-foreground">
-                  Org ID (filter)
+                  User Name
                 </label>
                 <input
                   type="text"
-                  value={filterOrgId}
-                  onChange={(e) => setFilterOrgId(e.target.value)}
-                  placeholder="Paste org UUID…"
+                  value={filterUser}
+                  onChange={(e) => setFilterUser(e.target.value)}
+                  placeholder="Search by name…"
                   className="h-9 rounded-md border border-border bg-background text-sm px-2 text-foreground placeholder:text-muted-foreground"
                 />
               </div>
-            )}
 
-            <div className="flex gap-2 pb-0.5">
-              <button
-                onClick={applyFilters}
-                className="h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm font-medium"
-              >
-                Apply
-              </button>
-              {hasActiveFilters && (
-                <button
-                  onClick={clearFilters}
-                  className="h-9 px-3 rounded-md bg-secondary border border-border text-sm text-muted-foreground hover:text-foreground"
-                >
-                  Clear
-                </button>
+              <div className="flex flex-col gap-1 min-w-[160px]">
+                <label className="text-xs font-display font-semibold uppercase tracking-wider text-muted-foreground">
+                  Plan Name
+                </label>
+                <input
+                  type="text"
+                  value={filterPlan}
+                  onChange={(e) => setFilterPlan(e.target.value)}
+                  placeholder="Search plan name…"
+                  className="h-9 rounded-md border border-border bg-background text-sm px-2 text-foreground placeholder:text-muted-foreground"
+                />
+              </div>
+
+              <div className="flex flex-col gap-1 min-w-[140px]">
+                <label className="text-xs font-display font-semibold uppercase tracking-wider text-muted-foreground">
+                  From Date
+                </label>
+                <input
+                  type="date"
+                  value={filterFrom}
+                  onChange={(e) => setFilterFrom(e.target.value)}
+                  className="h-9 rounded-md border border-border bg-background text-sm px-2 text-foreground"
+                />
+              </div>
+
+              <div className="flex flex-col gap-1 min-w-[140px]">
+                <label className="text-xs font-display font-semibold uppercase tracking-wider text-muted-foreground">
+                  To Date
+                </label>
+                <input
+                  type="date"
+                  value={filterTo}
+                  onChange={(e) => setFilterTo(e.target.value)}
+                  className="h-9 rounded-md border border-border bg-background text-sm px-2 text-foreground"
+                />
+              </div>
+
+              {isSuperAdmin && (
+                <div className="flex flex-col gap-1 min-w-[180px]">
+                  <label className="text-xs font-display font-semibold uppercase tracking-wider text-muted-foreground">
+                    Org ID
+                  </label>
+                  <input
+                    type="text"
+                    value={filterOrgId}
+                    onChange={(e) => setFilterOrgId(e.target.value)}
+                    placeholder="Paste org UUID…"
+                    className="h-9 rounded-md border border-border bg-background text-sm px-2 text-foreground placeholder:text-muted-foreground"
+                  />
+                </div>
               )}
+
+              <div className="flex gap-2 pb-0.5">
+                <button
+                  onClick={applyFilters}
+                  className="h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors"
+                >
+                  Apply
+                </button>
+                {(hasActiveFilters || selectedEvents.size > 0 || filterUser || filterPlan || filterFrom || filterTo || filterOrgId) && (
+                  <button
+                    onClick={clearFilters}
+                    className="h-9 px-3 rounded-md bg-secondary border border-border text-sm text-muted-foreground hover:text-foreground flex items-center gap-1.5"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                    Clear
+                  </button>
+                )}
+              </div>
             </div>
+          </div>
+        )}
+
+        {hasActiveFilters && (
+          <div className="mb-4 flex flex-wrap gap-2">
+            {[...appliedEvents].map((e) => (
+              <span key={e} className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-primary/10 text-primary text-xs font-medium border border-primary/30">
+                {EVENT_META[e].label}
+              </span>
+            ))}
+            {appliedUser && (
+              <span className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-secondary text-foreground text-xs font-medium border border-border">
+                User: {appliedUser}
+              </span>
+            )}
+            {appliedPlan && (
+              <span className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-secondary text-foreground text-xs font-medium border border-border">
+                Plan: {appliedPlan}
+              </span>
+            )}
+            {appliedFrom && (
+              <span className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-secondary text-foreground text-xs font-medium border border-border">
+                From: {appliedFrom}
+              </span>
+            )}
+            {appliedTo && (
+              <span className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-secondary text-foreground text-xs font-medium border border-border">
+                To: {appliedTo}
+              </span>
+            )}
           </div>
         )}
 
