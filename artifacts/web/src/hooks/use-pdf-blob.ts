@@ -1,22 +1,29 @@
 import { useState, useEffect } from "react";
 import { apiFetch } from "@/lib/apiClient";
 
+/**
+ * Fetches a PDF from an authenticated API route and holds the raw bytes in
+ * memory as an ArrayBuffer.  Callers must create a FRESH copy via
+ *   new Uint8Array(pdfBuffer.slice(0))
+ * before passing the data to react-pdf or pdfjs — both transfer the underlying
+ * ArrayBuffer, which would detach it and break subsequent reads.
+ */
 export function usePdfBlob(url: string | null): {
-  pdfData: Uint8Array | null;
+  pdfBuffer: ArrayBuffer | null;
   blobError: string | null;
 } {
-  const [pdfData, setPdfData] = useState<Uint8Array | null>(null);
+  const [pdfBuffer, setPdfBuffer] = useState<ArrayBuffer | null>(null);
   const [blobError, setBlobError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!url) {
-      setPdfData(null);
+      setPdfBuffer(null);
       setBlobError(null);
       return;
     }
 
     let cancelled = false;
-    setPdfData(null);
+    setPdfBuffer(null);
     setBlobError(null);
 
     apiFetch(url)
@@ -25,7 +32,7 @@ export function usePdfBlob(url: string | null): {
         return res.arrayBuffer();
       })
       .then((buf) => {
-        if (!cancelled) setPdfData(new Uint8Array(buf));
+        if (!cancelled) setPdfBuffer(buf);
       })
       .catch((err: unknown) => {
         if (!cancelled)
@@ -37,5 +44,5 @@ export function usePdfBlob(url: string | null): {
     };
   }, [url]);
 
-  return { pdfData, blobError };
+  return { pdfBuffer, blobError };
 }

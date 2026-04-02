@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect, useMemo } from "react";
 import { Document, Page, pdfjs } from "react-pdf";
 import { apiFetch } from "@/lib/apiClient";
 import { usePdfBlob } from "@/hooks/use-pdf-blob";
@@ -382,9 +382,15 @@ export function SignReviewModal({
   const allSigns = localSigns;
   const file = files.find((f) => f.id === sign.jobFileId) ?? null;
   const rawPdfApiUrl = file ? `/api/jobs/${jobId}/files/${file.id}/pdf` : null;
-  const { pdfData, blobError: pdfLoadError } = usePdfBlob(rawPdfApiUrl);
+  const { pdfBuffer, blobError: pdfLoadError } = usePdfBlob(rawPdfApiUrl);
   // Stable flag: true once data is ready, false while loading or if no file.
-  const pdfReady = !!pdfData;
+  const pdfReady = !!pdfBuffer;
+  // Memoized react-pdf file object — creates a fresh copy from the stored ArrayBuffer
+  // so react-pdf's internal postMessage transfer never detaches our state reference.
+  const pdfFile = useMemo(
+    () => (pdfBuffer ? { data: new Uint8Array(pdfBuffer.slice(0)) } : null),
+    [pdfBuffer]
+  );
 
   const [numPages, setNumPages] = useState<number | null>(null);
   const [pageNumber, setPageNumber] = useState(sign.pageNumber ?? 1);
@@ -444,11 +450,13 @@ export function SignReviewModal({
   // async load completes. We pass a copy of pdfData so pdfjs can transfer the
   // underlying ArrayBuffer without affecting the copy used by react-pdf.
   useEffect(() => {
-    if (!pdfData) return;
+    if (!pdfBuffer) return;
     setPdfDoc(null);
     let destroyed = false;
+    // Fresh Uint8Array copy — pdfjs transfers the underlying ArrayBuffer, so we
+    // must never pass the same buffer reference that react-pdf already consumed.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const task = (pdfjs as any).getDocument({ data: pdfData.slice(0) });
+    const task = (pdfjs as any).getDocument({ data: new Uint8Array(pdfBuffer.slice(0)) });
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     task.promise.then((doc: any) => {
       if (!destroyed) setPdfDoc(doc);
@@ -457,7 +465,7 @@ export function SignReviewModal({
       destroyed = true;
       task.destroy?.();
     };
-  }, [pdfData]);
+  }, [pdfBuffer]);
 
   // Extract text items for the current page and compute markers.
   // activeSign.id is in deps so re-runs when user clicks a marker, recomputing
@@ -648,11 +656,42 @@ export function SignReviewModal({
   return (
     <div className="fixed inset-0 z-50 flex flex-col bg-background/95 backdrop-blur-sm">
       {/* Top bar */}
-      <div className="flex-none flex items-center justify-between px-6 py-3 bg-card border-b border-border shadow-lg">
-        <div className="flex items-center gap-4">
+      {(() => {
+        const allSignsSorted = allSigns;
+        const currentIdx = allSignsSorted.findIndex((s) => s.id === activeSign.id);
+        const hasPrev = currentIdx > 0;
+        const hasNext = currentIdx >= 0 && currentIdx < allSignsSorted.length - 1;
+        const goPrev = () => { if (hasPrev) setActiveSign(allSignsSorted[currentIdx - 1]); };
+        const goNext = () => { if (hasNext) setActiveSign(allSignsSorted[currentIdx + 1]); };
+        return (
+      <div className="flex-none flex items-center justify-between px-4 py-3 bg-card border-b border-border shadow-lg">
+        {/* Prev / Next sign navigation */}
+        <div className="flex items-center gap-1 flex-shrink-0">
+          <button
+            disabled={!hasPrev}
+            onClick={goPrev}
+            title="Previous sign"
+            className="p-1.5 rounded hover:bg-secondary disabled:opacity-25 transition-colors"
+          >
+            <ChevronLeft className="w-4 h-4" />
+          </button>
+          <span className="text-xs font-mono text-muted-foreground select-none min-w-[52px] text-center">
+            {currentIdx >= 0 ? `${currentIdx + 1} / ${allSignsSorted.length}` : "—"}
+          </span>
+          <button
+            disabled={!hasNext}
+            onClick={goNext}
+            title="Next sign"
+            className="p-1.5 rounded hover:bg-secondary disabled:opacity-25 transition-colors"
+          >
+            <ChevronRight className="w-4 h-4" />
+          </button>
+          <div className="w-px h-4 bg-border mx-1" />
+        </div>
+        <div className="flex items-center gap-3 min-w-0 flex-1">
           <FileText className="w-5 h-5 text-muted-foreground flex-shrink-0" />
-          <div>
-            <p className="text-sm font-display font-semibold text-foreground leading-none">
+          <div className="min-w-0">
+            <p className="text-sm font-display font-semibold text-foreground leading-none truncate">
               {file?.originalName ?? "Unknown file"}
             </p>
             {activeSign.sheetNumber && (
@@ -704,6 +743,8 @@ export function SignReviewModal({
           <X className="w-5 h-5" />
         </button>
       </div>
+        );
+      })()}
 
       {/* Two-panel body */}
       <div className="flex-1 flex overflow-hidden">
@@ -816,22 +857,24 @@ export function SignReviewModal({
               <div className="flex items-center gap-1.5 ml-2 overflow-x-auto max-w-[320px]">
                 {signsOnCurrentPage.map((s) => {
                   const isActive = s.id === activeSign.id;
-                  const color = isActive ? "#22c55e" : "#eab308";
                   return (
                     <button
                       key={s.id}
                       title={`${s.signType ?? "Sign"} — ${s.location ?? ""}\nClick to edit this sign`}
                       onClick={() => setActiveSign(s)}
-                      className="flex-shrink-0 text-[10px] font-mono px-1.5 py-0.5 rounded whitespace-nowrap transition-all"
+                      className="flex-shrink-0 flex items-center gap-1 text-[10px] font-mono px-1.5 py-0.5 rounded whitespace-nowrap transition-all"
                       style={{
-                        backgroundColor: isActive ? color : `${color}25`,
-                        color: isActive ? "#fff" : color,
-                        border: `1px solid ${color}`,
+                        backgroundColor: isActive ? "#22c55e" : "#22c55e18",
+                        color: isActive ? "#fff" : "#22c55e",
+                        border: `1px solid ${isActive ? "#22c55e" : "#22c55e55"}`,
                         fontWeight: isActive ? 700 : 500,
-                        boxShadow: isActive ? `0 0 6px ${color}66` : "none",
+                        boxShadow: isActive ? "0 0 8px #22c55e55" : "none",
                         cursor: "pointer",
                       }}
                     >
+                      {isActive && (
+                        <span className="inline-block w-1.5 h-1.5 rounded-full bg-white flex-shrink-0" />
+                      )}
                       {s.signIdentifier ?? s.signType?.slice(0, 8) ?? "SIGN"}
                     </button>
                   );
@@ -856,7 +899,7 @@ export function SignReviewModal({
             )}
             {pdfReady ? (
               <Document
-                file={pdfData ? { data: pdfData } : null}
+                file={pdfFile}
                 onLoadSuccess={({ numPages }) => {
                   setNumPages(numPages);
                   setPdfError(null);

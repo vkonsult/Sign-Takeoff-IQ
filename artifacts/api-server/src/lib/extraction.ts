@@ -1264,8 +1264,20 @@ const ImageSignRowSchema = z.object({
     .optional()
     .default(null)
     .transform((v) => (v !== null && v !== undefined && typeof v === "number" ? Math.round(v) : (v as number | null))),
-  x_position: z.number().min(0).max(1).nullable().optional().default(null),
-  y_position: z.number().min(0).max(1).nullable().optional().default(null),
+  // Accept 0-1 (normalized) OR 0-100 (percentage) — normalize either to 0-1.
+  // Clamp to [0, 1] so pixel-coord outliers don't break validation.
+  x_position: z
+    .number()
+    .nullable()
+    .optional()
+    .default(null)
+    .transform((v) => (v === null || v === undefined ? null : v > 1 && v <= 100 ? v / 100 : Math.min(1, Math.max(0, v)))),
+  y_position: z
+    .number()
+    .nullable()
+    .optional()
+    .default(null)
+    .transform((v) => (v === null || v === undefined ? null : v > 1 && v <= 100 ? v / 100 : Math.min(1, Math.max(0, v)))),
   confidence_score: z.number().min(0).max(1).optional(),
   review_flag: z.boolean().optional(),
 });
