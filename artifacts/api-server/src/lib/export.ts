@@ -115,6 +115,7 @@ export async function buildExcelExport(
     row.height = 18;
   });
 
+  // ── Summary sheet ────────────────────────────────────────────────────────
   const summarySheet = workbook.addWorksheet("Summary");
   summarySheet.columns = [
     { header: "Metric", key: "metric", width: 30 },
@@ -141,6 +142,76 @@ export async function buildExcelExport(
   ].forEach((row) => {
     summarySheet.addRow(row);
   });
+
+  // ── By Sign Type sheet ───────────────────────────────────────────────────
+  // Group signs by Sign Type + Dimensions, sum quantity, collect unique sheets/floors
+  type GroupRow = { signType: string; dimensions: string; qty: number; sheets: Set<string> };
+  const groupMap = new Map<string, GroupRow>();
+  for (const sign of signs) {
+    const st = (sign.signType ?? "Unknown").trim();
+    const dim = (sign.dimensions ?? "—").trim();
+    const key = `${st}||${dim}`;
+    const ex = groupMap.get(key);
+    const qty = sign.quantity ?? 1;
+    const sheet = sign.sheetNumber ?? null;
+    if (ex) {
+      ex.qty += qty;
+      if (sheet) ex.sheets.add(sheet);
+    } else {
+      const sheets = new Set<string>();
+      if (sheet) sheets.add(sheet);
+      groupMap.set(key, { signType: st, dimensions: dim, qty, sheets });
+    }
+  }
+  const groupRows = [...groupMap.values()].sort((a, b) =>
+    a.signType.localeCompare(b.signType) || a.dimensions.localeCompare(b.dimensions)
+  );
+
+  const byTypeSheet = workbook.addWorksheet("By Sign Type");
+  byTypeSheet.columns = [
+    { header: "Sign Type",       key: "sign_type",   width: 26 },
+    { header: "Size",            key: "dimensions",  width: 18 },
+    { header: "Total Qty",       key: "qty",         width: 12 },
+    { header: "Floors / Sheets", key: "sheets",      width: 32 },
+  ];
+
+  const byTypeHeader = byTypeSheet.getRow(1);
+  byTypeHeader.eachCell((cell) => {
+    cell.fill = HEADER_FILL;
+    cell.font = HEADER_FONT;
+    cell.alignment = { vertical: "middle", horizontal: "center", wrapText: false };
+    cell.border = { bottom: { style: "medium", color: { argb: "FF0D2137" } } };
+  });
+  byTypeHeader.height = 22;
+
+  let grandTotal = 0;
+  groupRows.forEach((r, i) => {
+    grandTotal += r.qty;
+    const row = byTypeSheet.addRow({
+      sign_type:  r.signType,
+      dimensions: r.dimensions,
+      qty:        r.qty,
+      sheets:     [...r.sheets].sort().join(", ") || "—",
+    });
+    row.eachCell({ includeEmpty: true }, (cell) => {
+      cell.alignment = { vertical: "middle", wrapText: true };
+      cell.border = { bottom: { style: "thin", color: { argb: "FFD0D0D0" } } };
+      if (i % 2 === 1) {
+        cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFF5F5F5" } };
+      }
+    });
+    row.height = 18;
+  });
+
+  // Grand total row
+  const totalRow = byTypeSheet.addRow({ sign_type: "TOTAL", dimensions: "", qty: grandTotal, sheets: "" });
+  totalRow.eachCell({ includeEmpty: true }, (cell) => {
+    cell.font = { bold: true, size: 11 };
+    cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF1E3A5F" } };
+    cell.font = { bold: true, color: { argb: "FFFFFFFF" }, size: 11 };
+    cell.alignment = { vertical: "middle", horizontal: "center" };
+  });
+  totalRow.height = 20;
 
   await workbook.xlsx.writeFile(outputPath);
 }

@@ -27,6 +27,7 @@ import {
   Eye,
   EyeOff,
   RefreshCw,
+  BarChart2,
 } from "lucide-react";
 import { format } from "date-fns";
 import { exportMarkedupPdf } from "@/lib/exportMarkedupPdf";
@@ -402,22 +403,22 @@ export default function JobDetails() {
             </div>
           ) : isCompleted ? (
             <div className="flex flex-col h-full">
-              <div className="flex-none p-4 max-w-7xl mx-auto w-full grid grid-cols-2 md:grid-cols-4 gap-4">
+              <div className="flex-none px-4 pt-3 pb-2 max-w-7xl mx-auto w-full grid grid-cols-2 md:grid-cols-4 gap-3">
                 <SummaryCard 
                   title="Total Signs Extracted" 
                   value={totalSigns} 
-                  icon={<ListFilter className="w-5 h-5 text-muted-foreground" />} 
+                  icon={<ListFilter className="w-4 h-4 text-muted-foreground" />} 
                 />
                 <SummaryCard 
                   title="High Confidence" 
                   value={highConfidenceCount} 
-                  icon={<CheckCircle2 className="w-5 h-5 text-accent" />} 
+                  icon={<CheckCircle2 className="w-4 h-4 text-accent" />} 
                   accent="accent"
                 />
                 <SummaryCard 
                   title="Needs Review" 
                   value={flaggedCount} 
-                  icon={<AlertTriangle className="w-5 h-5 text-primary" />} 
+                  icon={<AlertTriangle className="w-4 h-4 text-primary" />} 
                   accent="primary"
                 />
                 <CostCard 
@@ -428,6 +429,9 @@ export default function JobDetails() {
               
               {/* Sheets Analysis Panel */}
               <SheetsPanel files={files} onOpenSpec={setSpecViewer} />
+
+              {/* Sign Type Summary Panel */}
+              <SignSummaryPanel signs={extractedSigns} />
 
               {/* Data Table Container */}
               <div className="flex-1 overflow-auto bg-card border-t border-border">
@@ -731,20 +735,103 @@ function ConfidenceBadge({ score }: { score: number }) {
 
 function SummaryCard({ title, value, icon, accent }: { title: string, value: number, icon: React.ReactNode, accent?: 'primary' | 'accent' }) {
   return (
-    <div className="bg-card border border-border p-4 rounded-xl relative overflow-hidden group hover:border-border/80 transition-colors">
-      <div className="flex justify-between items-start relative z-10">
+    <div className="bg-card border border-border px-3 py-2 rounded-lg relative overflow-hidden group hover:border-border/80 transition-colors">
+      <div className="flex justify-between items-center relative z-10">
         <div>
-          <p className="text-xs font-display font-medium text-muted-foreground uppercase tracking-wider mb-1">{title}</p>
-          <p className={`text-2xl font-mono font-bold ${accent === 'primary' ? 'text-primary' : accent === 'accent' ? 'text-accent' : 'text-foreground'}`}>
+          <p className="text-[10px] font-display font-medium text-muted-foreground uppercase tracking-wider mb-0.5">{title}</p>
+          <p className={`text-xl font-mono font-bold ${accent === 'primary' ? 'text-primary' : accent === 'accent' ? 'text-accent' : 'text-foreground'}`}>
             {value}
           </p>
         </div>
-        <div className="p-2 bg-secondary rounded-lg">
+        <div className="p-1.5 bg-secondary rounded-md flex-shrink-0">
           {icon}
         </div>
       </div>
-      {accent === 'primary' && <div className="absolute -bottom-4 -right-4 w-24 h-24 bg-primary/5 rounded-full blur-2xl group-hover:bg-primary/10 transition-colors"></div>}
-      {accent === 'accent' && <div className="absolute -bottom-4 -right-4 w-24 h-24 bg-accent/5 rounded-full blur-2xl group-hover:bg-accent/10 transition-colors"></div>}
+      {accent === 'primary' && <div className="absolute -bottom-4 -right-4 w-16 h-16 bg-primary/5 rounded-full blur-2xl group-hover:bg-primary/10 transition-colors"></div>}
+      {accent === 'accent' && <div className="absolute -bottom-4 -right-4 w-16 h-16 bg-accent/5 rounded-full blur-2xl group-hover:bg-accent/10 transition-colors"></div>}
+    </div>
+  );
+}
+
+type SignSummaryRow = {
+  signType: string;
+  dimensions: string;
+  qty: number;
+  sheets: string[];
+};
+
+type AnySign = Record<string, unknown>;
+
+function buildSignSummary(signs: AnySign[]): SignSummaryRow[] {
+  const map = new Map<string, SignSummaryRow>();
+  for (const sign of signs) {
+    const st = ((sign.signType as string) || "Unknown").trim();
+    const dim = ((sign.dimensions as string) || "—").trim();
+    const key = `${st}||${dim}`;
+    const ex = map.get(key);
+    const qty = (sign.quantity as number) ?? 1;
+    const sheet = (sign.sheetNumber as string) || null;
+    if (ex) {
+      ex.qty += qty;
+      if (sheet && !ex.sheets.includes(sheet)) ex.sheets.push(sheet);
+    } else {
+      map.set(key, { signType: st, dimensions: dim, qty, sheets: sheet ? [sheet] : [] });
+    }
+  }
+  return [...map.values()].sort((a, b) =>
+    a.signType.localeCompare(b.signType) || a.dimensions.localeCompare(b.dimensions)
+  );
+}
+
+function SignSummaryPanel({ signs }: { signs: AnySign[] }) {
+  const [open, setOpen] = useState(false);
+  const rows = buildSignSummary(signs);
+  const totalQty = rows.reduce((s, r) => s + r.qty, 0);
+
+  return (
+    <div className="flex-none border-t border-border/60 bg-background">
+      <div className="max-w-7xl mx-auto w-full px-4">
+        <button
+          onClick={() => setOpen((v) => !v)}
+          className="flex items-center gap-3 py-2 w-full text-left group"
+        >
+          <BarChart2 className="w-3.5 h-3.5 text-muted-foreground" />
+          <span className="text-xs font-display font-semibold text-foreground uppercase tracking-wider">Sign Type Summary</span>
+          <span className="text-[10px] font-mono text-muted-foreground/50">
+            {rows.length} type{rows.length !== 1 ? "s" : ""} · {totalQty} total
+          </span>
+          <ChevronDown className={`w-3.5 h-3.5 text-muted-foreground/50 ml-auto transition-transform ${open ? "rotate-180" : ""}`} />
+        </button>
+        {open && (
+          <div className="pb-3 overflow-x-auto">
+            <table className="w-full text-left border-collapse">
+              <thead>
+                <tr className="border-y border-border/60">
+                  <th className="py-1 px-2 text-[10px] font-display font-bold uppercase tracking-wider text-muted-foreground">Sign Type</th>
+                  <th className="py-1 px-2 text-[10px] font-display font-bold uppercase tracking-wider text-muted-foreground">Size</th>
+                  <th className="py-1 px-2 text-[10px] font-display font-bold uppercase tracking-wider text-muted-foreground text-center">Qty</th>
+                  <th className="py-1 px-2 text-[10px] font-display font-bold uppercase tracking-wider text-muted-foreground">Floors / Sheets</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((r, i) => (
+                  <tr key={i} className={`border-b border-border/30 hover:bg-secondary/20 ${i % 2 === 0 ? "" : "bg-card/30"}`}>
+                    <td className="py-1 px-2 text-xs text-foreground">{r.signType}</td>
+                    <td className="py-1 px-2 text-xs font-mono text-muted-foreground">{r.dimensions}</td>
+                    <td className="py-1 px-2 text-xs font-mono font-bold text-center text-foreground">{r.qty}</td>
+                    <td className="py-1 px-2 text-[10px] font-mono text-muted-foreground/70">{r.sheets.sort().join(", ") || "—"}</td>
+                  </tr>
+                ))}
+                <tr className="border-t-2 border-border/60 bg-secondary/30">
+                  <td className="py-1 px-2 text-xs font-bold text-foreground" colSpan={2}>Total</td>
+                  <td className="py-1 px-2 text-xs font-mono font-bold text-center text-primary">{totalQty}</td>
+                  <td className="py-1 px-2"></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -975,15 +1062,15 @@ function CostCard({ inputTokens, outputTokens }: { inputTokens: number; outputTo
     c === 0 ? "$0.00" : c < 0.001 ? `$${c.toFixed(5)}` : c < 0.01 ? `$${c.toFixed(4)}` : `$${c.toFixed(3)}`;
 
   return (
-    <div className="bg-card border border-border p-4 rounded-xl relative overflow-hidden group hover:border-border/80 transition-colors">
+    <div className="bg-card border border-border px-3 py-2 rounded-lg relative overflow-hidden group hover:border-border/80 transition-colors">
       <div className="flex justify-between items-start relative z-10">
         <div className="min-w-0 flex-1">
-          <p className="text-xs font-display font-medium text-muted-foreground uppercase tracking-wider mb-1">AI Processing Cost</p>
-          <p className="text-2xl font-mono font-bold text-foreground">
+          <p className="text-[10px] font-display font-medium text-muted-foreground uppercase tracking-wider mb-0.5">AI Processing Cost</p>
+          <p className="text-xl font-mono font-bold text-foreground">
             {hasData ? fmt(totalCost) : "—"}
           </p>
           {hasData ? (
-            <div className="mt-2 space-y-1.5">
+            <div className="mt-1.5 space-y-1">
               {/* Input row */}
               <div className="flex items-center justify-between gap-2">
                 <span className="text-[10px] font-mono text-muted-foreground flex items-center gap-1">
@@ -1011,8 +1098,8 @@ function CostCard({ inputTokens, outputTokens }: { inputTokens: number; outputTo
             <p className="text-[10px] font-mono text-muted-foreground/50 mt-1">No token data for this job</p>
           )}
         </div>
-        <div className="p-2 bg-secondary rounded-lg flex-shrink-0">
-          <Zap className="w-5 h-5 text-muted-foreground" />
+        <div className="p-1.5 bg-secondary rounded-md flex-shrink-0">
+          <Zap className="w-4 h-4 text-muted-foreground" />
         </div>
       </div>
     </div>
