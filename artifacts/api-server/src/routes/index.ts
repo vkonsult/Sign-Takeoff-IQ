@@ -4,10 +4,12 @@ import uploadRouter from "./upload";
 import jobsRouter from "./jobs";
 import knowledgeRouter from "./knowledge";
 import trainingRouter from "./training";
+import { requireAuth } from "../middlewares/authMiddleware";
 
 const router: IRouter = Router();
 
 router.use(healthRouter);
+router.use(requireAuth);
 router.use(uploadRouter);
 router.use(jobsRouter);
 router.use(knowledgeRouter);

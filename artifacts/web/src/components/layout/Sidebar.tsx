@@ -1,9 +1,10 @@
 import { useState } from "react";
 import { Link, useLocation } from "wouter";
-import { FileUp, FolderOpen, Settings, AlertCircle, BookOpen, ChevronLeft, ChevronRight } from "lucide-react";
+import { FileUp, FolderOpen, AlertCircle, BookOpen, ChevronLeft, ChevronRight, LogOut, User } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useJobsList } from "@/hooks/use-takeoff";
 import { format } from "date-fns";
+import { useClerk, useUser } from "@clerk/react";
 
 interface SidebarProps {
   collapsed: boolean;
@@ -13,12 +14,23 @@ interface SidebarProps {
 export function Sidebar({ collapsed, onToggle }: SidebarProps) {
   const [location] = useLocation();
   const { data, isLoading } = useJobsList();
+  const { signOut } = useClerk();
+  const { user } = useUser();
 
   const navItems = [
-    { href: "/", label: "New Upload", icon: FileUp },
+    { href: "/new-upload", label: "New Upload", icon: FileUp },
     { href: "/jobs", label: "All Jobs", icon: FolderOpen },
     { href: "/training", label: "Training Import", icon: BookOpen },
   ];
+
+  const initials = user
+    ? (((user.firstName?.[0] ?? "") + (user.lastName?.[0] ?? "")).toUpperCase() ||
+      (user.emailAddresses?.[0]?.emailAddress?.[0]?.toUpperCase() ?? "?"))
+    : "?";
+
+  const displayName = user
+    ? user.fullName ?? user.emailAddresses?.[0]?.emailAddress ?? "User"
+    : "User";
 
   return (
     <div
@@ -138,13 +150,21 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
       {/* Spacer when collapsed so toggle stays at bottom */}
       {collapsed && <div className="flex-1" />}
 
-      {/* Footer: settings + toggle */}
+      {/* Footer: user profile + toggle */}
       <div className={cn("border-t border-border space-y-1", collapsed ? "p-1.5" : "p-4")}>
         {collapsed ? (
           <>
-            <NavTooltip label="Settings">
-              <button className="flex items-center justify-center w-9 h-9 rounded-md text-muted-foreground hover:bg-secondary/50 hover:text-foreground transition-all">
-                <Settings className="w-4 h-4 opacity-70" />
+            <NavTooltip label={displayName}>
+              <div className="flex items-center justify-center w-9 h-9 rounded-full bg-primary/20 text-primary text-xs font-bold cursor-default select-none">
+                {initials}
+              </div>
+            </NavTooltip>
+            <NavTooltip label="Sign out">
+              <button
+                onClick={() => signOut()}
+                className="flex items-center justify-center w-9 h-9 rounded-md text-muted-foreground hover:bg-destructive/10 hover:text-destructive transition-all"
+              >
+                <LogOut className="w-4 h-4 opacity-70" />
               </button>
             </NavTooltip>
             <NavTooltip label="Expand sidebar">
@@ -158,10 +178,24 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
           </>
         ) : (
           <>
-            <button className="flex items-center gap-3 px-3 py-2 w-full rounded-md text-sm font-medium text-muted-foreground hover:bg-secondary/50 hover:text-foreground transition-all">
-              <Settings className="w-4 h-4 opacity-70" />
-              Settings
-            </button>
+            <div className="flex items-center gap-3 px-3 py-2 rounded-md border border-border/50 bg-secondary/30 mb-2">
+              <div className="w-7 h-7 rounded-full bg-primary/20 text-primary text-xs font-bold flex items-center justify-center flex-shrink-0 select-none">
+                {initials}
+              </div>
+              <div className="flex-1 min-w-0">
+                <p className="text-xs font-medium text-foreground truncate">{displayName}</p>
+                <p className="text-[10px] text-muted-foreground truncate">
+                  {user?.emailAddresses?.[0]?.emailAddress ?? ""}
+                </p>
+              </div>
+              <button
+                onClick={() => signOut()}
+                title="Sign out"
+                className="p-1 rounded text-muted-foreground hover:text-destructive transition-colors"
+              >
+                <LogOut className="w-3.5 h-3.5" />
+              </button>
+            </div>
             <button
               onClick={onToggle}
               className="flex items-center gap-3 px-3 py-2 w-full rounded-md text-sm font-medium text-muted-foreground hover:bg-secondary/50 hover:text-foreground transition-all"
