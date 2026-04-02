@@ -76,7 +76,12 @@ router.post("/upload", (req, res, next) => {
 
     const [job] = await db
       .insert(jobsTable)
-      .values({ name: jobName, status: "pending", fileCount: files.length })
+      .values({
+        name: jobName,
+        status: "pending",
+        fileCount: files.length,
+        organizationId: req.authUser?.organizationId ?? null,
+      })
       .returning();
 
     const uploadDir = await ensureJobUploadDir(job.id);

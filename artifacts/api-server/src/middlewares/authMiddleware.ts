@@ -1,5 +1,7 @@
 import { type Request, type Response, type NextFunction } from "express";
 import { getAuth } from "@clerk/express";
+import { db, organizationMembershipsTable } from "@workspace/db";
+import { eq } from "drizzle-orm";
 import { logger } from "../lib/logger";
 
 export type UserRole =
@@ -14,6 +16,7 @@ export interface AuthUser {
   userId: string;
   role: UserRole;
   organizationId: string | null;
+  isSuperAdmin: boolean;
 }
 
 declare global {
@@ -27,24 +30,42 @@ declare global {
 
 const SUPER_ADMIN_GUEST_TOKEN = process.env.SUPER_ADMIN_GUEST_TOKEN;
 
-function extractRoleFromAuth(req: Request): UserRole {
-  const auth = getAuth(req);
-  const claims = auth?.sessionClaims as Record<string, unknown> | undefined;
-  if (!claims) return "SALES";
-  const meta = (claims.publicMetadata ?? claims.metadata ?? {}) as Record<string, unknown>;
-  const role = meta.role as string | undefined;
-  if (role && ["SUPER_ADMIN", "ADMIN", "SALES", "ESTIMATOR", "PROJECT_MANAGER"].includes(role)) {
-    return role as UserRole;
+async function resolveMembership(
+  clerkUserId: string,
+  jwtOrgId: string | null,
+  jwtRole: UserRole,
+): Promise<{ role: UserRole; organizationId: string | null }> {
+  const [membership] = await db
+    .select()
+    .from(organizationMembershipsTable)
+    .where(eq(organizationMembershipsTable.clerkUserId, clerkUserId))
+    .limit(1);
+
+  if (membership) {
+    return {
+      role: membership.role as UserRole,
+      organizationId: membership.organizationId,
+    };
   }
-  return "SALES";
+
+  return { role: jwtRole, organizationId: jwtOrgId };
 }
 
-function extractOrgIdFromAuth(req: Request): string | null {
+function extractFromJwt(req: Request): { role: UserRole; orgId: string | null } {
   const auth = getAuth(req);
   const claims = auth?.sessionClaims as Record<string, unknown> | undefined;
-  if (!claims) return null;
-  const meta = (claims.publicMetadata ?? claims.metadata ?? {}) as Record<string, unknown>;
-  return (meta.organizationId as string) ?? null;
+  const meta = claims
+    ? ((claims.publicMetadata ?? claims.metadata ?? {}) as Record<string, unknown>)
+    : {};
+
+  const role = meta.role as string | undefined;
+  const validRole =
+    role && ["SUPER_ADMIN", "ADMIN", "SALES", "ESTIMATOR", "PROJECT_MANAGER"].includes(role)
+      ? (role as UserRole)
+      : "SALES";
+
+  const orgId = (meta.organizationId as string) ?? null;
+  return { role: validRole, orgId };
 }
 
 export function requireAuth(req: Request, res: Response, next: NextFunction): void {
@@ -56,6 +77,7 @@ export function requireAuth(req: Request, res: Response, next: NextFunction): vo
         userId: "guest-super-admin",
         role: "SUPER_ADMIN",
         organizationId: null,
+        isSuperAdmin: true,
       };
       next();
       return;
@@ -70,13 +92,28 @@ export function requireAuth(req: Request, res: Response, next: NextFunction): vo
     return;
   }
 
-  req.authUser = {
-    userId,
-    role: extractRoleFromAuth(req),
-    organizationId: extractOrgIdFromAuth(req),
-  };
+  const { role: jwtRole, orgId: jwtOrgId } = extractFromJwt(req);
 
-  next();
+  resolveMembership(userId, jwtOrgId, jwtRole)
+    .then(({ role, organizationId }) => {
+      req.authUser = {
+        userId,
+        role,
+        organizationId,
+        isSuperAdmin: role === "SUPER_ADMIN",
+      };
+      next();
+    })
+    .catch((err) => {
+      logger.warn({ err, userId }, "Failed to resolve membership — using JWT claims only");
+      req.authUser = {
+        userId,
+        role: jwtRole,
+        organizationId: jwtOrgId,
+        isSuperAdmin: jwtRole === "SUPER_ADMIN",
+      };
+      next();
+    });
 }
 
 export function requireRole(...roles: UserRole[]) {

@@ -1,4 +1,4 @@
-import { Router, type IRouter } from "express";
+import { Router, type IRouter, type Request, type Response } from "express";
 import { eq, desc, inArray, and, or, ne, isNull, isNotNull, not } from "drizzle-orm";
 import { db } from "@workspace/db";
 import {
@@ -14,14 +14,40 @@ import { ai } from "@workspace/integrations-gemini-ai";
 import fs from "fs/promises";
 import fsSync from "fs";
 import { z } from "zod/v4";
+import { requireRole } from "../middlewares/authMiddleware";
 
 const router: IRouter = Router();
 
+function orgFilter(req: Request) {
+  const user = req.authUser;
+  if (!user || user.isSuperAdmin) return undefined;
+  if (user.organizationId) return eq(jobsTable.organizationId, user.organizationId);
+  return isNull(jobsTable.organizationId);
+}
+
+async function getJobWithOrgCheck(req: Request, res: Response, jobId: string) {
+  const [job] = await db.select().from(jobsTable).where(eq(jobsTable.id, jobId));
+  if (!job) {
+    res.status(404).json({ error: "Job not found" });
+    return null;
+  }
+  const user = req.authUser;
+  if (user && !user.isSuperAdmin) {
+    if (job.organizationId !== user.organizationId) {
+      res.status(403).json({ error: "Access denied" });
+      return null;
+    }
+  }
+  return job;
+}
+
 router.get("/jobs", async (req, res) => {
   try {
+    const filter = orgFilter(req);
     const jobs = await db
       .select()
       .from(jobsTable)
+      .where(filter)
       .orderBy(desc(jobsTable.createdAt));
 
     res.json({ jobs });
@@ -39,7 +65,9 @@ router.delete("/jobs/:jobId", async (req, res) => {
   }
 
   try {
-    // Collect stored file paths before cascade-delete removes the rows
+    const job = await getJobWithOrgCheck(req, res, jobId);
+    if (!job) return;
+
     const files = await db
       .select({ storedPath: jobFilesTable.storedPath })
       .from(jobFilesTable)
@@ -55,7 +83,6 @@ router.delete("/jobs/:jobId", async (req, res) => {
       return;
     }
 
-    // Best-effort: clean up uploaded PDF files from disk
     for (const f of files) {
       try {
         await fs.unlink(f.storedPath);
@@ -84,16 +111,21 @@ router.delete("/jobs", async (req, res) => {
   const ids = jobIds as string[];
 
   try {
-    // Collect all stored PDF paths before deletion
+    const user = req.authUser;
+    const orgCondition = user && !user.isSuperAdmin
+      ? (user.organizationId
+          ? eq(jobsTable.organizationId, user.organizationId)
+          : isNull(jobsTable.organizationId))
+      : undefined;
+
     const files = await db
       .select({ storedPath: jobFilesTable.storedPath })
       .from(jobFilesTable)
       .where(inArray(jobFilesTable.jobId, ids));
 
-    // Cascade delete handles extracted_signs and job_files rows
     const deleted = await db
       .delete(jobsTable)
-      .where(inArray(jobsTable.id, ids))
+      .where(and(inArray(jobsTable.id, ids), orgCondition))
       .returning({ id: jobsTable.id });
 
     // Best-effort: clean up PDF files from disk
@@ -121,11 +153,8 @@ router.get("/jobs/:jobId", async (req, res) => {
   }
 
   try {
-    const [job] = await db.select().from(jobsTable).where(eq(jobsTable.id, jobId));
-    if (!job) {
-      res.status(404).json({ error: "Job not found" });
-      return;
-    }
+    const job = await getJobWithOrgCheck(req, res, jobId);
+    if (!job) return;
 
     const files = await db
       .select()
@@ -233,6 +262,9 @@ router.patch("/jobs/:jobId", async (req, res) => {
   }
 
   try {
+    const job = await getJobWithOrgCheck(req, res, jobId);
+    if (!job) return;
+
     const [updated] = await db
       .update(jobsTable)
       .set({ name: parsed.data.name, updatedAt: new Date() })
@@ -260,11 +292,8 @@ router.post("/jobs/:jobId/process", async (req, res) => {
   }
 
   try {
-    const [job] = await db.select().from(jobsTable).where(eq(jobsTable.id, jobId));
-    if (!job) {
-      res.status(404).json({ error: "Job not found" });
-      return;
-    }
+    const job = await getJobWithOrgCheck(req, res, jobId);
+    if (!job) return;
 
     if (job.status === "processing") {
       res.status(409).json({ error: "Job is already processing" });
@@ -303,11 +332,8 @@ router.post("/jobs/:jobId/compare", async (req, res) => {
   }
 
   try {
-    const [job] = await db.select().from(jobsTable).where(eq(jobsTable.id, jobId));
-    if (!job) {
-      res.status(404).json({ error: "Job not found" });
-      return;
-    }
+    const job = await getJobWithOrgCheck(req, res, jobId);
+    if (!job) return;
 
     if (job.status !== "completed") {
       res.status(422).json({ error: "Job must be completed before running comparison" });
@@ -609,6 +635,9 @@ router.get("/jobs/:jobId/files/:fileId/pdf", async (req, res) => {
   }
 
   try {
+    const _job = await getJobWithOrgCheck(req, res, jobId);
+    if (!_job) return;
+
     const [file] = await db
       .select()
       .from(jobFilesTable)
@@ -678,6 +707,9 @@ router.post("/extracted-signs", async (req, res) => {
   }
 
   try {
+    const _job = await getJobWithOrgCheck(req, res, parsed.data.jobId);
+    if (!_job) return;
+
     const [sign] = await db
       .insert(extractedSignsTable)
       .values({
@@ -705,6 +737,19 @@ router.delete("/extracted-signs/:signId", async (req, res) => {
   }
 
   try {
+    const [existing] = await db
+      .select()
+      .from(extractedSignsTable)
+      .where(eq(extractedSignsTable.id, signId));
+
+    if (!existing) {
+      res.status(404).json({ error: "Sign not found" });
+      return;
+    }
+
+    const _job = await getJobWithOrgCheck(req, res, existing.jobId);
+    if (!_job) return;
+
     const [deleted] = await db
       .delete(extractedSignsTable)
       .where(eq(extractedSignsTable.id, signId))
@@ -767,6 +812,9 @@ router.patch("/extracted-signs/:signId", async (req, res) => {
       return;
     }
 
+    const _job = await getJobWithOrgCheck(req, res, existing.jobId);
+    if (!_job) return;
+
     // Only auto-verify when the user edits actual sign content fields.
     // Status-flag-only updates (hidden, reviewFlag) should not trigger verification.
     const contentFields: (keyof typeof parsed.data)[] = [
@@ -801,11 +849,8 @@ router.get("/jobs/:jobId/export", async (req, res) => {
   }
 
   try {
-    const [job] = await db.select().from(jobsTable).where(eq(jobsTable.id, jobId));
-    if (!job) {
-      res.status(404).json({ error: "Job not found" });
-      return;
-    }
+    const job = await getJobWithOrgCheck(req, res, jobId);
+    if (!job) return;
 
     if (job.status !== "completed") {
       res.status(422).json({ error: "Job must be completed before exporting" });

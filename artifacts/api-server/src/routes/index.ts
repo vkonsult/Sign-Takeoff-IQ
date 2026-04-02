@@ -4,6 +4,7 @@ import uploadRouter from "./upload";
 import jobsRouter from "./jobs";
 import knowledgeRouter from "./knowledge";
 import trainingRouter from "./training";
+import adminRouter from "./admin";
 import { requireAuth } from "../middlewares/authMiddleware";
 
 const router: IRouter = Router();
@@ -14,5 +15,6 @@ router.use(uploadRouter);
 router.use(jobsRouter);
 router.use(knowledgeRouter);
 router.use(trainingRouter);
+router.use(adminRouter);
 
 export default router;
