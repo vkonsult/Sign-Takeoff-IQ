@@ -15,6 +15,7 @@ type UserRow = {
   orgName: string | null;
   orgSlug: string | null;
   createdAt: string;
+  lastLoginAt: string | null;
 };
 
 const ROLE_COLORS: Record<string, string> = {
@@ -116,7 +117,9 @@ export default function AdminUsers() {
                           <p className="text-xs text-foreground">{u.orgName ?? "—"}</p>
                           {u.orgSlug && <p className="text-[10px] font-mono text-muted-foreground">{u.orgSlug}</p>}
                         </td>
-                        <td className="px-4 py-3 text-xs text-muted-foreground">—</td>
+                        <td className="px-4 py-3 text-xs text-muted-foreground">
+                          {u.lastLoginAt ? format(new Date(u.lastLoginAt), "MMM d, yyyy") : "—"}
+                        </td>
                         <td className="px-4 py-3 text-xs text-muted-foreground">
                           {format(new Date(u.createdAt), "MMM d, yyyy")}
                         </td>

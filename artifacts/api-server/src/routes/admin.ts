@@ -209,7 +209,7 @@ router.get("/admin/organizations/:orgId/members", requireRole("SUPER_ADMIN"), as
 // ── SUPER ADMIN: List all users across all orgs ───────────────────────────────
 router.get("/admin/users", requireRole("SUPER_ADMIN"), async (req, res) => {
   try {
-    const users = await db
+    const rows = await db
       .select({
         id: organizationMembershipsTable.id,
         clerkUserId: organizationMembershipsTable.clerkUserId,
@@ -224,6 +224,29 @@ router.get("/admin/users", requireRole("SUPER_ADMIN"), async (req, res) => {
       .from(organizationMembershipsTable)
       .leftJoin(organizationsTable, eq(organizationMembershipsTable.organizationId, organizationsTable.id))
       .orderBy(desc(organizationMembershipsTable.createdAt));
+
+    // Fetch last-login from Clerk for real users (skip pending placeholders)
+    const realUserIds = rows
+      .map((r) => r.clerkUserId)
+      .filter((id) => !id.startsWith("pending-"));
+
+    const lastLoginMap = new Map<string, string | null>();
+    if (realUserIds.length > 0) {
+      try {
+        const clerkUsers = await clerk.users.getUserList({ userId: realUserIds, limit: 500 });
+        for (const cu of clerkUsers.data) {
+          lastLoginMap.set(cu.id, cu.lastSignInAt ? new Date(cu.lastSignInAt).toISOString() : null);
+        }
+      } catch (clerkErr) {
+        req.log.warn({ clerkErr }, "Could not fetch last-login from Clerk");
+      }
+    }
+
+    const users = rows.map((r) => ({
+      ...r,
+      lastLoginAt: lastLoginMap.get(r.clerkUserId) ?? null,
+    }));
+
     res.json({ users });
   } catch (err) {
     req.log.error({ err }, "Failed to list users");
@@ -318,11 +341,34 @@ router.get("/admin/org/members", requireRole("ADMIN"), async (req, res) => {
     return;
   }
   try {
-    const members = await db
+    const rows = await db
       .select()
       .from(organizationMembershipsTable)
       .where(eq(organizationMembershipsTable.organizationId, organizationId))
       .orderBy(desc(organizationMembershipsTable.createdAt));
+
+    // Enrich with Clerk last-login for real users
+    const realUserIds = rows
+      .map((r) => r.clerkUserId)
+      .filter((id) => !id.startsWith("pending-"));
+
+    const lastLoginMap = new Map<string, string | null>();
+    if (realUserIds.length > 0) {
+      try {
+        const clerkUsers = await clerk.users.getUserList({ userId: realUserIds, limit: 500 });
+        for (const cu of clerkUsers.data) {
+          lastLoginMap.set(cu.id, cu.lastSignInAt ? new Date(cu.lastSignInAt).toISOString() : null);
+        }
+      } catch (clerkErr) {
+        req.log.warn({ clerkErr }, "Could not fetch last-login from Clerk for members");
+      }
+    }
+
+    const members = rows.map((r) => ({
+      ...r,
+      lastLoginAt: lastLoginMap.get(r.clerkUserId) ?? null,
+    }));
+
     res.json({ members });
   } catch (err) {
     req.log.error({ err, organizationId }, "Failed to list org members");

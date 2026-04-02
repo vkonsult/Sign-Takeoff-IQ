@@ -97,7 +97,8 @@ export default function OnboardingPage() {
         setError(data.error ?? "Failed to complete setup");
         return;
       }
-      setStep(3);
+      // Auto-redirect to the dashboard on completion
+      navigate("/jobs");
     } catch {
       setError("Network error");
     } finally {

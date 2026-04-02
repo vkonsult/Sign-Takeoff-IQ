@@ -279,6 +279,18 @@ function NewOrgModal({ onClose, onCreated }: { onClose: () => void; onCreated: (
                   className="w-full px-3 py-2 rounded-lg bg-secondary border border-border text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary/50"
                   placeholder="+1 555 000 0000" />
               </div>
+              <div className="col-span-2 space-y-1">
+                <label className="text-xs font-medium text-muted-foreground">Address</label>
+                <input value={form.address} onChange={(e) => setForm((p) => ({ ...p, address: e.target.value }))}
+                  className="w-full px-3 py-2 rounded-lg bg-secondary border border-border text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary/50"
+                  placeholder="123 Main St, City, ST 00000" />
+              </div>
+              <div className="col-span-2 space-y-1">
+                <label className="text-xs font-medium text-muted-foreground">Website</label>
+                <input value={form.website} onChange={(e) => setForm((p) => ({ ...p, website: e.target.value }))}
+                  className="w-full px-3 py-2 rounded-lg bg-secondary border border-border text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary/50"
+                  placeholder="https://company.com" />
+              </div>
             </div>
           </div>
 
