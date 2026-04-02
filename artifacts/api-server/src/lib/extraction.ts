@@ -1237,7 +1237,7 @@ LEGEND EXCLUSION — READ CAREFULLY:
 - Only extract callouts that are placed at a real physical location on the floor plan (attached to a room, corridor, or door via a leader line or proximity).
 - Exception: sign SCHEDULE tables (rows listing sign IDs with quantities and locations) ARE valid — extract every row.
 
-AGGRESSION RULE: If you have scanned the entire page and believe there are zero sign callouts, scan again. A floor plan with zero callouts is almost certainly an error. Report every callout you can find even at confidence_score = 0.6.
+PRECISION RULE: Quality matters far more than quantity. Only report sign callouts you can actually see and confidently identify in the image. A page with few or no actual sign callouts is perfectly valid — do not invent or infer entries. Set confidence_score ≥ 0.70 for all reported items; if you cannot reach 0.70 confidence, omit that entry entirely. Hallucinated or guessed entries cause serious harm to the workflow.
 
 Return ONLY a valid JSON array. No markdown fences, no explanation, no commentary.`;
 

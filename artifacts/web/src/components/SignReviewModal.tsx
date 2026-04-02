@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useMemo } from "react";
+import { useState, useCallback, useEffect, useMemo, useRef } from "react";
 import { Document, Page, pdfjs } from "react-pdf";
 import { apiFetch } from "@/lib/apiClient";
 import { usePdfBlob } from "@/hooks/use-pdf-blob";
@@ -396,6 +396,7 @@ export function SignReviewModal({
   const [pageNumber, setPageNumber] = useState(sign.pageNumber ?? 1);
   const [scale, setScale] = useState(1.0);
   const [pdfError, setPdfError] = useState<string | null>(null);
+  const pdfContainerRef = useRef<HTMLDivElement>(null);
 
   // activeSign tracks which sign is currently being edited — starts as the
   // prop but can change when the user clicks a marker on the PDF.
@@ -411,6 +412,18 @@ export function SignReviewModal({
   const [pdfDoc, setPdfDoc] = useState<any | null>(null);
   const [textMarkers, setTextMarkers] = useState<TextMarker[]>([]);
   const [nativeSize, setNativeSize] = useState<{ w: number; h: number } | null>(null);
+
+  // Auto-fit scale to container width when the page dimensions become known
+  useEffect(() => {
+    if (!nativeSize || !pdfContainerRef.current) return;
+    const containerW = pdfContainerRef.current.clientWidth - 32; // subtract padding
+    if (containerW > 0) {
+      const fit = containerW / nativeSize.w;
+      setScale(Math.min(1.2, Math.max(0.3, fit)));
+    }
+  // Only run when native width first becomes known or changes (new page/doc)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [nativeSize?.w]);
   const [textSearchStatus, setTextSearchStatus] = useState<"idle" | "found" | "not-found">("idle");
   const [showOverlay, setShowOverlay] = useState(true);
   const [drawMode, setDrawMode] = useState(false);
@@ -528,6 +541,19 @@ export function SignReviewModal({
             });
             if (isCurrent) currentSignFound = true;
           }
+        }
+
+        // If the active sign is on this page but we couldn't locate it, add a
+        // ghost marker at the top-center so the user still sees a green dot.
+        if (!currentSignFound && signsOnCurrentPage.some((s) => s.id === activeSign.id)) {
+          markers.push({
+            x: 0.5,
+            y: 0.08,
+            signId: activeSign.id,
+            color: "#22c55e",
+            label: "?",
+            isCurrent: true,
+          });
         }
 
         setTextMarkers(markers);
@@ -884,7 +910,7 @@ export function SignReviewModal({
           </div>
 
           {/* PDF canvas + overlay */}
-          <div className="flex-1 overflow-auto p-4 flex justify-center items-start">
+          <div ref={pdfContainerRef} className="flex-1 overflow-auto p-4 flex justify-center items-start">
             {rawPdfApiUrl && !pdfReady && !pdfLoadError && (
               <div className="flex items-center justify-center h-64">
                 <Loader2 className="w-8 h-8 text-primary animate-spin" />
