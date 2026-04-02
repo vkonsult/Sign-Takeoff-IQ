@@ -1182,58 +1182,64 @@ async function callGeminiMultimodal(
 
 // ─── IMAGE EXTRACTION PROMPT ──────────────────────────────────────────────────
 
-const IMAGE_EXTRACTION_PROMPT = `You are an expert sign contractor performing a visual sign takeoff from architectural plan documents.
+const IMAGE_EXTRACTION_PROMPT = `You are an expert sign contractor performing a VISUAL CROSS-VERIFICATION sign takeoff from architectural plan documents.
 
-You are viewing the actual PDF pages as images. Your task is to identify ALL sign-related elements visible in these documents by looking at the visual content — callout bubbles, leader lines, room tag balloons, ADA symbols, sign schedule tables, and any text labeling actual sign locations on the floor plan.
+CRITICAL MISSION: This is a second-pass visual scan whose primary purpose is to cross-verify a text-extraction pass that has already run. Your job is to visually CONFIRM signs found by the text pass AND independently find any signs the text pass may have missed. A large architectural floor plan will have dozens to hundreds of sign callouts — returning fewer than 10 results for a multi-room floor plan is almost certainly wrong. Scan aggressively.
 
-For each unique sign or sign entry you can visually identify, extract these fields. Use null if not visible:
+You are viewing the actual PDF pages as images. Scan every square inch of each page systematically. Look for:
+- Small circled or triangled numbers/letters at room entries and doorways (these are ADA/Room ID callouts)
+- Triangular "flag" symbols with a reference code pointing to a wall location
+- Diamond, hexagonal, or other shaped callout bubbles with sign type codes
+- Leader lines connecting a code to a physical location
+- Room name labels next to doors (these often indicate a Room ID sign)
+- "EXIT" text or exit sign symbols above doors or at stair entries
+- Fire extinguisher, AED, or safety sign symbols
+- Wayfinding arrows or directory indicators
+- Any alphanumeric code like "RI-101", "S-1", "A", "EX", "1A" placed near a door, room corner, or corridor
+- Sign schedule tables listing sign types, quantities, and locations
+- Keynote callouts referencing sign types in the keynote legend
 
-- sheet_number: The plan sheet number from the title block or page header (e.g. "A-101", "S-1")
-- detail_reference: Any callout number or reference bubble visible (e.g. "1", "A", "SN-01")
-- sign_type: The type of sign (e.g. "Room ID", "Exit", "ADA Restroom", "Wayfinding", "Building ID", "Fire Extinguisher")
-- sign_identifier: The sign code or label that uniquely identifies it (e.g. "S-01", "EX-1", "TYPE A")
-- quantity: Number of signs of this type visible (integer). Default to 1.
-- location: Where the sign is located — use the visible room label, space name, or positional description (e.g. "Room 101", "Main Lobby", "North Stairwell Level 2")
-- dimensions: Physical dimensions if shown in the legend or schedule (e.g. '6" x 8"', '24" x 36"')
-- mounting_type: Mounting method if visible or implied (e.g. "Wall Mounted", "Post Mounted")
-- finish_color: Finish or color if visible in the legend
+IMPORTANT — DO NOT MISS SMALL CALLOUTS:
+ADA floor plans often have very small (6–8pt font) circular or triangular callout symbols scattered throughout the floor plan. These are easy to overlook. Zoom in mentally on every doorway and room entry. Every room with a door almost certainly has a Room ID sign callout.
+
+For each sign callout you visually identify, extract these fields (use null if not visible):
+
+- sheet_number: Plan sheet number from title block (e.g. "A-101", "S-1")
+- detail_reference: The callout code visible in the bubble or triangle (e.g. "1", "A", "RI-01", "EX")
+- sign_type: Type of sign (e.g. "Room ID", "Exit", "ADA Restroom", "Wayfinding", "Fire Extinguisher", "Stairwell")
+- sign_identifier: The unique sign code if visible (e.g. "S-01", "EX-1", "TYPE A"). Use detail_reference if no separate identifier.
+- quantity: Integer count of this sign at this location. Default 1.
+- location: Room name, space name, or positional description visible near the callout (e.g. "Room 101 - Storage", "Main Lobby", "North Exit")
+- dimensions: Physical size if shown in legend or schedule (e.g. '6" x 8"')
+- mounting_type: How it is mounted if visible (e.g. "Wall Mounted", "Post Mounted", "Overhead")
+- finish_color: Finish or color if visible
 - illumination: Lighting type if specified
 - materials: Materials if specified
-- message_content: The text content of the sign if visible (e.g. "EXIT", "RESTROOMS", "ELECTRICAL ROOM")
-- notes: Any special notes visible in callouts or legends
-- page_number: The page number (1-indexed) where you see this sign. The PDF is provided in page order.
-- x_position: Normalized horizontal position (0.0 = left edge, 1.0 = right edge) of where this sign callout appears on its page. Estimate visually.
-- y_position: Normalized vertical position (0.0 = top edge, 1.0 = bottom edge) of where this sign callout appears on its page. Estimate visually.
-- confidence_score: 0.9 = clearly visible callout; 0.7 = visible but partially obscured; 0.5 = inferred from context
-- review_flag: true if confidence_score < 0.7
+- message_content: The text message of the sign if visible (e.g. "EXIT", "RESTROOMS", "STAIR A")
+- notes: Any special notes in callouts or legends
+- page_number: 1-indexed page number where you see this callout
+- x_position: Normalized horizontal position 0.0–1.0 of the callout bubble/symbol on its page
+- y_position: Normalized vertical position 0.0–1.0 of the callout bubble/symbol on its page
+- confidence_score: 0.9 = clearly visible; 0.75 = small but readable; 0.6 = partially obscured or inferred; 0.5 = best guess
+- review_flag: true if confidence_score < 0.75
 
-IMPORTANT RULES:
-- Focus on what you can SEE in the document, not what you infer from code requirements
-- Include every visible sign callout, symbol, and schedule row
-- Do NOT fabricate signs — only report what is visible
-- Return ONLY a valid JSON array. No markdown, no code blocks, no explanation.
-- Each entry must include x_position and y_position as numbers between 0 and 1.
-- If no signs are visible in the document, return an empty array: []
+READ NUMBERS WITH EXTREME CARE:
+- Room numbers and reference codes are highly precise. "SHOP 113" ≠ "SHOP 118". "RI-105" ≠ "RI-106".
+- Zoom in mentally on each digit. Visually similar: 1 vs I vs l, 3 vs 8, 0 vs 6 vs 8, 5 vs 6, 7 vs 1.
+- If you cannot confidently read a digit, set confidence_score ≤ 0.6, review_flag = true, and record what you can see.
 
-CRITICAL — READ NUMBERS WITH EXTREME CARE:
-- Room numbers, sign IDs, and reference codes are highly precise. A single wrong digit changes the meaning entirely (e.g. "SHOP 113" ≠ "SHOP 118", "RI-105" ≠ "RI-106").
-- Zoom in mentally on each number before transcribing it. Do not guess or round.
-- Visually similar digits to watch for: 1 vs I vs l, 3 vs 8, 0 vs 6 vs 8, 5 vs 6, 7 vs 1.
-- If you cannot confidently read a number or room label, set confidence_score ≤ 0.6 and review_flag = true, and report the digits you can see.
-- For x_position and y_position: place the coordinate at the sign callout bubble or leader-line endpoint — NOT at the center of the room. The callout is typically at the edge of the labeled space.
+MARKER PLACEMENT:
+- x_position / y_position must point to the callout bubble or triangle symbol, NOT the room centroid or room name.
+- For a leader-line callout, place the coordinate at the arrowhead or bubble end.
 
-MARKER ACCURACY:
-- x_position and y_position must point to the exact callout label or bubble for the sign, not to the room centroid.
-- If the sign has a visible bubble or triangle marker with a reference code, place your coordinate at that symbol.
-- Do not place the coordinate at the room name text block — use the sign callout itself.
+LEGEND EXCLUSION — READ CAREFULLY:
+- Architectural plans have a legend/symbol key box (usually in a corner) listing what each symbol means. These entries are DEFINITIONS, not actual sign locations. DO NOT extract them.
+- Only extract callouts that are placed at a real physical location on the floor plan (attached to a room, corridor, or door via a leader line or proximity).
+- Exception: sign SCHEDULE tables (rows listing sign IDs with quantities and locations) ARE valid — extract every row.
 
-LEGEND / SYMBOL KEY EXCLUSION (critical):
-- Architectural plans often contain a "Life Safety Legend", "Signage Legend", "Symbol Key", or "Drawing Legend" box — typically a bordered table in the corner of the page that lists what each symbol means.
-- DO NOT extract any entries from these legend or symbol-key boxes. They are definitions, not actual sign locations.
-- Only extract callouts that point to a real physical location on the floor plan with a leader line or bubble label. A callout that is inside a bordered legend table is a definition — skip it.
-- If an entire page appears to be a legend or symbol-key sheet (no actual floor plan rooms visible), return an empty array for that page.
+AGGRESSION RULE: If you have scanned the entire page and believe there are zero sign callouts, scan again. A floor plan with zero callouts is almost certainly an error. Report every callout you can find even at confidence_score = 0.6.
 
-IMPORTANT: Return ONLY the JSON array. No markdown fences, no explanation.`;
+Return ONLY a valid JSON array. No markdown fences, no explanation, no commentary.`;
 
 const ImageSignRowSchema = z.object({
   sheet_number: z.string().nullable().optional().default(null),

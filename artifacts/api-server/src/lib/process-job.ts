@@ -1,4 +1,4 @@
-import { eq, and, ne, desc } from "drizzle-orm";
+import { eq, and, ne, desc, inArray } from "drizzle-orm";
 import { db } from "@workspace/db";
 import {
   jobsTable,
@@ -324,27 +324,50 @@ export async function processJob(jobId: string): Promise<void> {
       }
     }
 
-    // Persist pairings and symmetrically boost confidence on both rows
+    // Persist pairings: boost confidence on confirmed pairs, flag unmatched text signs
     for (const { textId, imageId } of pairs) {
       const txtSign = textSigns.find((s) => s.id === textId)!;
       const imgSign = imageSigns.find((s) => s.id === imageId)!;
 
+      // Both passes confirmed this sign → bigger confidence boost
       const txtBoosted = Math.min(1.0, (txtSign.confidenceScore ?? 0) + 0.15);
       const imgBoosted = Math.min(1.0, (imgSign.confidenceScore ?? 0) + 0.15);
 
       await db
         .update(extractedSignsTable)
-        .set({ pairedSignId: imageId, confidenceScore: txtBoosted, reviewFlag: txtBoosted >= 0.6 ? false : true })
+        .set({ pairedSignId: imageId, confidenceScore: txtBoosted, reviewFlag: txtBoosted < 0.75 })
         .where(eq(extractedSignsTable.id, textId));
 
       await db
         .update(extractedSignsTable)
-        .set({ pairedSignId: textId, confidenceScore: imgBoosted, reviewFlag: imgBoosted >= 0.6 ? false : true })
+        .set({ pairedSignId: textId, confidenceScore: imgBoosted, reviewFlag: imgBoosted < 0.75 })
         .where(eq(extractedSignsTable.id, imageId));
     }
 
+    // Flag unmatched text signs: visual pass did not confirm them → set review_flag
+    const unmatchedTextIds = textSigns
+      .filter((s) => !matchedTextIds.has(s.id))
+      .map((s) => s.id);
+
+    if (unmatchedTextIds.length > 0) {
+      await db
+        .update(extractedSignsTable)
+        .set({ reviewFlag: true })
+        .where(inArray(extractedSignsTable.id, unmatchedTextIds));
+    }
+
+    // Flag unmatched image signs: text pass did not confirm them → keep review_flag=true (already set)
+    const unmatchedImageCount = imageSigns.filter((s) => !matchedImageIds.has(s.id)).length;
+
     logger.info(
-      { jobId, textSigns: textSigns.length, imageSigns: imageSigns.length, pairs: pairs.length },
+      {
+        jobId,
+        textSigns: textSigns.length,
+        imageSigns: imageSigns.length,
+        pairs: pairs.length,
+        unmatchedText: unmatchedTextIds.length,
+        unmatchedImage: unmatchedImageCount,
+      },
       "Sign matching complete"
     );
   }
