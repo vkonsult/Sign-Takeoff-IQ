@@ -9,8 +9,8 @@ export interface PdfPhrase {
 }
 
 export interface PageWords {
-  pageWidth: number;  // native PDF width  (pts at scale 1.0)
-  pageHeight: number; // native PDF height (pts at scale 1.0)
+  pageWidth: number;  // visual page width  in viewport pts (rotation-adjusted)
+  pageHeight: number; // visual page height in viewport pts (rotation-adjusted)
   phrases: PdfPhrase[];
 }
 
@@ -32,6 +32,13 @@ interface PdfjsTextContent {
 interface PdfjsViewport {
   width: number;
   height: number;
+  /**
+   * Converts a point from PDF user space to viewport (screen) space.
+   * Handles page rotation so the returned [vx, vy] is always in the
+   * visually-correct coordinate system: vx increases rightward,
+   * vy increases downward from the top-left of the rendered page.
+   */
+  convertToViewportPoint(x: number, y: number): [number, number];
 }
 
 interface PdfjsPage {
@@ -118,6 +125,10 @@ function isTextItem(item: PdfjsTextItem | Record<string, unknown>): item is Pdfj
  * All coordinates are normalised to [0, 1] with origin at the TOP-LEFT of
  * the page (y increases downward), matching the SVG coordinate system used
  * by the marker overlay in the front-end.
+ *
+ * Rotation-aware: each text item's PDF user-space coordinates are converted
+ * to viewport space via `viewport.convertToViewportPoint` before normalising,
+ * so pages with /Rotate = 0, 90, 180, or 270 all produce correct results.
  */
 export async function extractPagePhrases(
   pdfPath: string,
@@ -136,6 +147,9 @@ export async function extractPagePhrases(
   const doc = await lib.getDocument({ data, disableAutoFetch: true, disableStream: true }).promise;
 
   const page = await doc.getPage(pageNum);
+  // getViewport({ scale: 1.0 }) without an explicit rotation argument uses the
+  // page's own /Rotate attribute, so viewport.width/height are the visual
+  // (rotation-adjusted) dimensions.
   const viewport = page.getViewport({ scale: 1.0 });
   const pageW = viewport.width;
   const pageH = viewport.height;
@@ -143,21 +157,63 @@ export async function extractPagePhrases(
   const content = await page.getTextContent();
 
   // Filter to real text items (TextItem, not TextMarkedContent) with visible text
-  const items = content.items
+  const rawItems = content.items
     .filter(isTextItem)
     .filter((it) => it.str.trim().length > 0);
 
-  // Sort top-to-bottom (high Y first in PDF space), left-to-right on same line
-  const sorted = [...items].sort((a, b) => {
-    const ay = a.transform[5];
-    const by_ = b.transform[5];
-    if (Math.abs(ay - by_) > 3) return by_ - ay; // different lines
-    return a.transform[4] - b.transform[4];       // same line → left to right
+  // ── Convert every item's bounding box to viewport (screen) space ────────
+  // PDF text item origin (transform[4], transform[5]) is in PDF user space
+  // (origin bottom-left, y increases upward).  `convertToViewportPoint` maps
+  // this to viewport space (origin top-left, y increases downward) and also
+  // applies the page rotation matrix, so the result is always visually correct
+  // regardless of /Rotate.
+  //
+  // We convert all four corners of the glyph's bounding box and take min/max,
+  // which handles 90° / 270° pages where the x and y axes are swapped.
+  type VpItem = {
+    item: PdfjsTextItem;
+    vx0: number; // left edge in viewport space
+    vx1: number; // right edge in viewport space
+    vy0: number; // top edge in viewport space (y-down)
+    vy1: number; // bottom edge in viewport space (y-down)
+    vyC: number; // vertical centre (for same-line detection)
+  };
+
+  function toViewportItem(item: PdfjsTextItem): VpItem {
+    const tx = item.transform[4];
+    const ty = item.transform[5];
+    const w = item.width || 8;
+    const h = Math.abs(item.height) || 8;
+    // Four corners of the glyph box in PDF user space:
+    //   bottom-left  (tx,   ty  )  ←  baseline origin
+    //   bottom-right (tx+w, ty  )
+    //   top-left     (tx,   ty+h)  ← "top" in PDF's y-up space
+    //   top-right    (tx+w, ty+h)
+    const corners: [number, number][] = [
+      viewport.convertToViewportPoint(tx,     ty    ),
+      viewport.convertToViewportPoint(tx + w, ty    ),
+      viewport.convertToViewportPoint(tx,     ty + h),
+      viewport.convertToViewportPoint(tx + w, ty + h),
+    ];
+    const vx0 = Math.min(...corners.map((c) => c[0]));
+    const vx1 = Math.max(...corners.map((c) => c[0]));
+    const vy0 = Math.min(...corners.map((c) => c[1]));
+    const vy1 = Math.max(...corners.map((c) => c[1]));
+    return { item, vx0, vx1, vy0, vy1, vyC: (vy0 + vy1) / 2 };
+  }
+
+  const vpItems: VpItem[] = rawItems.map(toViewportItem);
+
+  // Sort top-to-bottom, left-to-right in viewport space.
+  // Using viewport-space coordinates ensures correct ordering for all rotation values.
+  const sorted = [...vpItems].sort((a, b) => {
+    if (Math.abs(a.vyC - b.vyC) > 3) return a.vyC - b.vyC; // different lines (top-down)
+    return a.vx0 - b.vx0;                                   // same line → left to right
   });
 
-  // Each group entry stores the text item plus the horizontal gap (pts) before it.
-  // We use the gap to decide whether to insert a word-boundary space on flush.
-  type GroupEntry = { item: PdfjsTextItem; gapPts: number };
+  // Each group entry stores the viewport-space item plus the visual gap (viewport pts)
+  // before it.  We use the gap to decide whether to insert a word-boundary space.
+  type GroupEntry = { vp: VpItem; gapPts: number };
 
   const phrases: PdfPhrase[] = [];
   let group: GroupEntry[] | null = null;
@@ -165,63 +221,58 @@ export async function extractPagePhrases(
   function flushGroup(): void {
     if (!group || group.length === 0) return;
 
-    const items = group.map((e) => e.item);
-    const minX = Math.min(...items.map((i) => i.transform[4]));
-    const maxX = Math.max(...items.map((i) => i.transform[4] + i.width));
-    // In PDF space y increases upward; transform[5] = baseline (bottom of glyph)
-    // Top of glyph = baseline + height
-    const minBaseline = Math.min(...items.map((i) => i.transform[5]));
-    const maxBaseline = Math.max(...items.map((i) => i.transform[5]));
-    const maxH = Math.max(...items.map((i) => Math.abs(i.height)));
+    // Union of all items' viewport bounding boxes
+    const vxMin = Math.min(...group.map((e) => e.vp.vx0));
+    const vxMax = Math.max(...group.map((e) => e.vp.vx1));
+    const vyMin = Math.min(...group.map((e) => e.vp.vy0));
+    const vyMax = Math.max(...group.map((e) => e.vp.vy1));
 
-    const topPdf = maxBaseline + (maxH || 8); // top edge (PDF space, y-up)
-    const botPdf = minBaseline;               // bottom edge
-
-    // Reconstruct text: insert a space whenever the horizontal gap before an item
-    // exceeds 30 % of the previous character's width — this preserves word
-    // boundaries that were lost because pdfjs discards whitespace-only items.
-    let text = group[0]!.item.str;
+    // Reconstruct text: insert a space whenever the visual gap before an item
+    // exceeds 30 % of the previous item's visual width — this preserves word
+    // boundaries lost because pdfjs discards whitespace-only items.
+    let text = group[0]!.vp.item.str;
     for (let gi = 1; gi < group.length; gi++) {
       const entry = group[gi]!;
-      const prevItemW = group[gi - 1]!.item.width || 8;
-      if (entry.gapPts > prevItemW * 0.3) text += " ";
-      text += entry.item.str;
+      const prevVpW = group[gi - 1]!.vp.vx1 - group[gi - 1]!.vp.vx0 || 8;
+      if (entry.gapPts > prevVpW * 0.3) text += " ";
+      text += entry.vp.item.str;
     }
     text = text.trim().replace(/  +/g, " ");
 
-    // Convert to normalised top-down coordinates
+    // Normalise to [0, 1] — viewport space is already top-down so no y-flip needed
     phrases.push({
       text,
-      x0: Math.min(1, Math.max(0, minX / pageW)),
-      x1: Math.min(1, Math.max(0, maxX / pageW)),
-      y0: Math.min(1, Math.max(0, 1 - topPdf / pageH)), // top in top-down
-      y1: Math.min(1, Math.max(0, 1 - botPdf / pageH)), // bottom in top-down
+      x0: Math.min(1, Math.max(0, vxMin / pageW)),
+      x1: Math.min(1, Math.max(0, vxMax / pageW)),
+      y0: Math.min(1, Math.max(0, vyMin / pageH)),
+      y1: Math.min(1, Math.max(0, vyMax / pageH)),
     });
     group = null;
   }
 
-  for (const item of sorted) {
+  for (const vp of sorted) {
     if (!group) {
-      group = [{ item, gapPts: 0 }];
+      group = [{ vp, gapPts: 0 }];
       continue;
     }
 
-    const prev = group[group.length - 1]!.item;
-    const prevY = prev.transform[5];
-    const prevX = prev.transform[4];
-    const prevW = prev.width || 8;
-    const currY = item.transform[5];
-    const currX = item.transform[4];
-
-    const gap = currX - (prevX + prevW);
-    const sameLine = Math.abs(currY - prevY) <= 3;
-    const adjacent = gap < prevW * 1.2;
+    const prev = group[group.length - 1]!.vp;
+    // Gap in viewport-x between right edge of previous item and left edge of this one
+    const gap = vp.vx0 - prev.vx1;
+    // Items are on the same visual line when their centres differ by ≤ 3 viewport pts.
+    // The threshold matches the original 3 pt PDF-space threshold; scale 1.0 means
+    // viewport pts == PDF pts for 0°/180° pages and the rotation swap is handled by
+    // the coordinate conversion for 90°/270°.
+    const sameLine = Math.abs(vp.vyC - prev.vyC) <= 3;
+    // Adjacent: gap less than 120 % of the previous item's visual width
+    const prevVpW = prev.vx1 - prev.vx0 || 8;
+    const adjacent = gap < prevVpW * 1.2;
 
     if (sameLine && adjacent) {
-      group.push({ item, gapPts: Math.max(0, gap) });
+      group.push({ vp, gapPts: Math.max(0, gap) });
     } else {
       flushGroup();
-      group = [{ item, gapPts: 0 }];
+      group = [{ vp, gapPts: 0 }];
     }
   }
   flushGroup();
