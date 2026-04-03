@@ -207,6 +207,89 @@ function exactBoundaryMatch(haystack: string, needle: string): boolean {
   return false;
 }
 
+/**
+ * Canonical synonym table mapping common architectural/sign abbreviations to their
+ * full forms. Both the short form and the full form resolve to the same canonical
+ * string so that canonToken(a) === canonToken(b) when they are synonyms.
+ */
+const SIGN_ABBREV_CANON: Record<string, string> = {
+  // Elevators / stairs
+  ELEV: "ELEVATOR",
+  ELEVATOR: "ELEVATOR",
+  STAIR: "STAIRWELL",
+  STAIRWELL: "STAIRWELL",
+  STR: "STAIRWELL",
+  // Mechanical / equipment
+  MECH: "MECHANICAL",
+  MECHANICAL: "MECHANICAL",
+  EQUIP: "EQUIPMENT",
+  EQUIPMENT: "EQUIPMENT",
+  // Storage / utilities
+  STOR: "STORAGE",
+  STORAGE: "STORAGE",
+  UTIL: "UTILITY",
+  UTILITY: "UTILITY",
+  MAINT: "MAINTENANCE",
+  MAINTENANCE: "MAINTENANCE",
+  // Electrical / telecom / communications
+  ELEC: "ELECTRICAL",
+  ELECTRICAL: "ELECTRICAL",
+  TELECOM: "TELECOMMUNICATIONS",
+  TELECOMMUNICATIONS: "TELECOMMUNICATIONS",
+  COMM: "COMMUNICATIONS",
+  COMMUNICATIONS: "COMMUNICATIONS",
+  // Corridors / rooms
+  CORR: "CORRIDOR",
+  CORRIDOR: "CORRIDOR",
+  JAN: "JANITOR",
+  JANITOR: "JANITOR",
+  VEST: "VESTIBULE",
+  VESTIBULE: "VESTIBULE",
+  CONF: "CONFERENCE",
+  CONFERENCE: "CONFERENCE",
+  RECEPT: "RECEPTION",
+  RECEPTION: "RECEPTION",
+  // Laundry / parking
+  LAUND: "LAUNDRY",
+  LAUNDRY: "LAUNDRY",
+  PKG: "PARKING",
+  PARKING: "PARKING",
+  // Gymnasium / management
+  GYM: "GYMNASIUM",
+  GYMNASIUM: "GYMNASIUM",
+  MGMT: "MANAGEMENT",
+  MANAGEMENT: "MANAGEMENT",
+  // Additional common pairs
+  LOBBY: "LOBBY",
+  LOUNGE: "LOUNGE",
+  OFFICE: "OFFICE",
+  OFC: "OFFICE",
+  RESTROOM: "RESTROOM",
+  RR: "RESTROOM",
+  TOILET: "RESTROOM",
+  BATH: "BATHROOM",
+  BATHROOM: "BATHROOM",
+  BREAK: "BREAKROOM",
+  BREAKROOM: "BREAKROOM",
+  COPY: "COPYROOM",
+  COPYROOM: "COPYROOM",
+  SERVER: "SERVERROOM",
+  SERVERROOM: "SERVERROOM",
+};
+
+/**
+ * Normalises a token through the abbreviation canon table.
+ * Accepts tokens in any case (internally uppercases for lookup).
+ * Returns the lowercased canonical full form when the token is a known
+ * abbreviation; returns the original token unchanged (lowercased) otherwise.
+ * This makes it safe to call with tokens from tokenize() (which lowercases).
+ */
+function canonToken(tok: string): string {
+  const upper = tok.toUpperCase();
+  const canon = SIGN_ABBREV_CANON[upper];
+  return canon ? canon.toLowerCase() : tok.toLowerCase();
+}
+
 /** Levenshtein edit distance between two strings. */
 function levenshtein(s: string, t: string): number {
   const m = s.length, n = t.length;
@@ -241,12 +324,19 @@ function levenshteinSim(a: string, b: string): number {
  */
 function bestTokenMatch(qtok: string, phraseTokens: string[]): number {
   let best = 0;
+  const qcanon = canonToken(qtok);
   for (const ptok of phraseTokens) {
     if (qtok === ptok) return 1;
     // Prefix/suffix containment: "STOR" → "STORAGE" or "STORAGE" → "STOR"
     const [shorter, longer] = qtok.length <= ptok.length ? [qtok, ptok] : [ptok, qtok];
     if (longer.startsWith(shorter)) {
       best = Math.max(best, shorter.length / longer.length);
+    }
+    // Canonical-equivalence check: MECH === MECHANICAL, ELEV === ELEVATOR, etc.
+    // Slots after prefix but before Levenshtein; score 0.95 reflects near-certain match.
+    if (qcanon === canonToken(ptok)) {
+      best = Math.max(best, 0.95);
+      continue;
     }
     // Levenshtein similarity for close edits
     best = Math.max(best, levenshteinSim(qtok, ptok));
@@ -704,16 +794,20 @@ function findSignLocationFromPhrases(
   // Split both the location string and each phrase into uppercase tokens,
   // score = |intersection| / |union|.  Accept anything ≥ 0.4.
   // Only runs when sign.location is non-empty.
+  // Tokens are expanded through canonToken so that MECH and MECHANICAL are
+  // treated as the same token when computing Jaccard overlap.
   if (sign.location && sign.location.trim().length >= 2) {
     const locTokensRaw = sign.location.trim().toUpperCase().split(/\s+/).filter((t) => t.length >= 2);
     if (locTokensRaw.length > 0) {
+      const locTokensCanon = locTokensRaw.map(canonToken);
       let bestOverlapScore = 0;
       let bestOverlapPhrase: PdfPhrase | null = null;
       for (const p of sdp) {
         const phraseTokens = p.text.trim().toUpperCase().split(/\s+/).filter((t) => t.length >= 2);
         if (phraseTokens.length === 0) continue;
-        const union = new Set([...locTokensRaw, ...phraseTokens]);
-        const intersection = locTokensRaw.filter((t) => phraseTokens.includes(t));
+        const phraseTokensCanon = phraseTokens.map(canonToken);
+        const union = new Set([...locTokensCanon, ...phraseTokensCanon]);
+        const intersection = locTokensCanon.filter((t) => phraseTokensCanon.includes(t));
         const score = intersection.length / union.size;
         if (score > bestOverlapScore) {
           bestOverlapScore = score;
