@@ -661,12 +661,33 @@ function findSignLocationFromPhrases(
     return cy >= 0.04 && cy <= 0.96 && p.text.trim().length >= 2;
   });
 
+  // ── Spatial bias for multi-column PDFs ─────────────────────────────────────
+  // When the sign is in Building B (e.g. "B405") restrict phrase candidates to
+  // the right half of the page (x > 0.45).  Building A ("A405") → left half
+  // (x < 0.55).  This prevents cross-building phrase contamination when two
+  // floor plans are placed side-by-side on one sheet.
+  let spatialXMin = 0;
+  let spatialXMax = 1;
+  if (sign.location) {
+    const locUp = sign.location.toUpperCase();
+    if (/\bB\d{3}[A-Z]?\b/.test(locUp)) spatialXMin = 0.45;
+    else if (/\bA\d{3}[A-Z]?\b/.test(locUp)) spatialXMax = 0.55;
+  }
+  const hasSpatialBias = spatialXMin > 0 || spatialXMax < 1;
+  const phraseInRange = (p: PdfPhrase) => {
+    const px = (p.x0 + p.x1) / 2;
+    return px >= spatialXMin && px <= spatialXMax;
+  };
+  // sdp = spatially-filtered drawing phrases; sap = spatially-filtered all phrases
+  const sdp = hasSpatialBias ? drawingPhrases.filter(phraseInRange) : drawingPhrases;
+  const sap = hasSpatialBias ? phrases.filter(phraseInRange) : phrases;
+
   // ── Pre-Pass A: verbatim signIdentifier in any phrase ─────────────────────
   // If the sign's identifier appears literally (case-insensitive, trimmed)
   // inside any phrase on the page, use that phrase immediately.
   if (sign.signIdentifier && sign.signIdentifier.trim().length >= 2) {
     const idVerbatim = sign.signIdentifier.trim().toUpperCase();
-    for (const p of phrases) {
+    for (const p of sap) {
       if (p.text.trim().toUpperCase().includes(idVerbatim)) {
         return {
           x: (p.x0 + p.x1) / 2,
@@ -688,7 +709,7 @@ function findSignLocationFromPhrases(
     if (locTokensRaw.length > 0) {
       let bestOverlapScore = 0;
       let bestOverlapPhrase: PdfPhrase | null = null;
-      for (const p of drawingPhrases) {
+      for (const p of sdp) {
         const phraseTokens = p.text.trim().toUpperCase().split(/\s+/).filter((t) => t.length >= 2);
         if (phraseTokens.length === 0) continue;
         const union = new Set([...locTokensRaw, ...phraseTokens]);
@@ -721,7 +742,7 @@ function findSignLocationFromPhrases(
     const roomNumRegex = /\b[A-Z]?\d{3}[A-Z]?\b/g;
     const roomNums = (sign.location.trim().toUpperCase().match(roomNumRegex) ?? []);
     for (const roomNum of roomNums) {
-      for (const p of drawingPhrases) {
+      for (const p of sdp) {
         const phraseUp = p.text.trim().toUpperCase();
         const phraseRooms = phraseUp.match(roomNumRegex) ?? [];
         if (phraseRooms.includes(roomNum)) {
@@ -751,7 +772,7 @@ function findSignLocationFromPhrases(
     const idNorm = normId(sign.signIdentifier);
     if (idNorm.length >= 3) {
       const idHits: { x: number; y: number; phrase: PdfPhrase }[] = [];
-      for (const p of phrases) {
+      for (const p of sap) {
         if (exactBoundaryMatch(normId(p.text), idNorm)) {
           idHits.push({ x: (p.x0 + p.x1) / 2, y: (p.y0 + p.y1) / 2, phrase: p });
         }
@@ -763,7 +784,7 @@ function findSignLocationFromPhrases(
         // For each candidate, score nearby phrases (within 0.12 radius) against the location string
         const NEIGHBOR_RADIUS = 0.12;
         const scored = idHits.map((hit) => {
-          const neighbors = phrases.filter((p) => {
+          const neighbors = sap.filter((p) => {
             const px = (p.x0 + p.x1) / 2;
             const py = (p.y0 + p.y1) / 2;
             return Math.hypot(px - hit.x, py - hit.y) <= NEIGHBOR_RADIUS;
@@ -796,7 +817,7 @@ function findSignLocationFromPhrases(
     const { typeToken, numberToken } = parseLocationParts(sign.location);
     if (typeToken && numberToken) {
       const clusterResult = findPairedClusterMatch(
-        drawingPhrases,
+        sdp,
         typeToken,
         numberToken,
         sign.signIdentifier ?? undefined,
@@ -817,7 +838,7 @@ function findSignLocationFromPhrases(
     let bestScore = 0;
     const candidates: { score: number; phrase: PdfPhrase; x: number; y: number }[] = [];
 
-    for (const p of drawingPhrases) {
+    for (const p of sdp) {
       const score = phraseMatchScore(p.text, sign.location);
       if (score >= PASS1_THRESHOLD) {
         candidates.push({ score, phrase: p, x: (p.x0 + p.x1) / 2, y: (p.y0 + p.y1) / 2 });
@@ -827,7 +848,7 @@ function findSignLocationFromPhrases(
 
     if (candidates.length > 0) {
       // Rank all pass-1 candidates by room-number exact-match bonus + cluster score.
-      const ranked1 = rankCandidates(candidates, drawingPhrases, sign.location ?? locationSource, "");
+      const ranked1 = rankCandidates(candidates, sdp, sign.location ?? locationSource, "");
       const top1 = ranked1[0]!;
       const second1 = ranked1[1];
 
@@ -882,7 +903,7 @@ function findSignLocationFromPhrases(
       const tokenNorm = normId(token);
       const hits: { x: number; y: number; phrase: PdfPhrase }[] = [];
 
-      for (const p of drawingPhrases) {
+      for (const p of sdp) {
         if (roomMatch(normId(p.text), tokenNorm)) {
           hits.push({ x: (p.x0 + p.x1) / 2, y: (p.y0 + p.y1) / 2, phrase: p });
         }
@@ -891,13 +912,13 @@ function findSignLocationFromPhrases(
       if (hits.length === 0) continue;
 
       const floorPlanHits = hits.filter((h) =>
-        hasContextNearHitInPhrases(drawingPhrases, locationSource, tokenNorm, h.x, h.y),
+        hasContextNearHitInPhrases(sdp, locationSource, tokenNorm, h.x, h.y),
       );
       if (floorPlanHits.length === 0) continue;
 
       // Rank floor-plan hits using room-number bonus + context cluster score.
       const pass2Cands = floorPlanHits.map((h) => ({ score: 0.75, phrase: h.phrase, x: h.x, y: h.y }));
-      const ranked2 = rankCandidates(pass2Cands, drawingPhrases, locationSource, tokenNorm);
+      const ranked2 = rankCandidates(pass2Cands, sdp, locationSource, tokenNorm);
       const top2 = ranked2[0]!;
       const second2 = ranked2[1];
 
@@ -943,7 +964,7 @@ function findSignLocationFromPhrases(
   if (locationSource) {
     let bestScore = 0;
     let bestPhrase: PdfPhrase | null = null;
-    for (const p of drawingPhrases) {
+    for (const p of sdp) {
       const score = phraseMatchScore(p.text, locationSource);
       if (score > bestScore) { bestScore = score; bestPhrase = p; }
     }
@@ -1277,8 +1298,11 @@ export function SignReviewModal({
     }
 
     // Minimal collision nudge: if two auto-matched markers would fully overlap,
-    // nudge the later one slightly. At most one nudge per marker, no cascading.
-    // Ghost markers (isGhost) are skipped — they all share the same fallback position.
+    // nudge the later one slightly away from the earlier one.
+    // - Direction: vector from mj → mi (away from the collision partner)
+    // - Cap: max 0.012 normalized units — if still overlapping, leave them stacked
+    // - At most one nudge per marker, no cascading
+    // - Ghost markers are skipped entirely
     const COLLISION_THRESHOLD = 0.012;
     for (let i = 0; i < markers.length; i++) {
       const mi = markers[i]!;
@@ -1287,15 +1311,17 @@ export function SignReviewModal({
       for (let j = 0; j < i; j++) {
         const mj = markers[j]!;
         if (mj.isGhost) continue; // don't collide-nudge against ghosts
-        if (Math.hypot(mi.x - mj.x, mi.y - mj.y) < COLLISION_THRESHOLD) {
-          // Nudge in whichever axis has more room to the boundary
-          const roomRight = 1 - mi.x;
-          const roomDown  = 1 - mi.y;
-          if (roomRight >= roomDown) {
-            mi.x = Math.min(1, mi.x + COLLISION_THRESHOLD);
-          } else {
-            mi.y = Math.min(1, mi.y + COLLISION_THRESHOLD);
+        const dist = Math.hypot(mi.x - mj.x, mi.y - mj.y);
+        if (dist < COLLISION_THRESHOLD) {
+          if (dist > 0.001) {
+            // Nudge mi along the separation vector (mj → mi), capped at 0.012
+            const nx = (mi.x - mj.x) / dist;
+            const ny = (mi.y - mj.y) / dist;
+            const nudge = Math.min(COLLISION_THRESHOLD, COLLISION_THRESHOLD - dist);
+            mi.x = Math.min(0.98, Math.max(0.02, mi.x + nx * nudge));
+            mi.y = Math.min(0.98, Math.max(0.02, mi.y + ny * nudge));
           }
+          // else: identical positions — leave stacked (no reliable direction vector)
           break;
         }
       }
