@@ -1248,6 +1248,65 @@ PRECISION RULE: Quality matters far more than quantity. Only report sign callout
 
 Return ONLY a valid JSON array. No markdown fences, no explanation, no commentary.`;
 
+const VISUAL_FALLBACK_EXTRACTION_PROMPT = `You are an expert sign contractor performing a FIRST-PASS visual sign takeoff from an architectural PDF document that contains little or no machine-readable text (it is likely a scanned or image-based file).
+
+CRITICAL MISSION: This is the PRIMARY and ONLY extraction pass for this document. No text extraction has run. Your job is to scan every page of this PDF visually and find ALL sign callouts, sign schedules, and code-required signage indicators. A large architectural floor plan will have dozens to hundreds of sign callouts — returning fewer than 10 results for a multi-room floor plan is almost certainly wrong. Scan aggressively.
+
+You are viewing the actual PDF pages as images. Scan every square inch of each page systematically. Look for:
+- Small circled or triangled numbers/letters at room entries and doorways (these are ADA/Room ID callouts)
+- Triangular "flag" symbols with a reference code pointing to a wall location
+- Diamond, hexagonal, or other shaped callout bubbles with sign type codes
+- Leader lines connecting a code to a physical location
+- Room name labels next to doors (these often indicate a Room ID sign)
+- "EXIT" text or exit sign symbols above doors or at stair entries
+- Fire extinguisher, AED, or safety sign symbols
+- Wayfinding arrows or directory indicators
+- Any alphanumeric code like "RI-101", "S-1", "A", "EX", "1A" placed near a door, room corner, or corridor
+- Sign schedule tables listing sign types, quantities, and locations
+- Keynote callouts referencing sign types in the keynote legend
+
+IMPORTANT — DO NOT MISS SMALL CALLOUTS:
+ADA floor plans often have very small (6–8pt font) circular or triangular callout symbols scattered throughout the floor plan. These are easy to overlook. Zoom in mentally on every doorway and room entry. Every room with a door almost certainly has a Room ID sign callout.
+
+For each sign callout you visually identify, extract these fields (use null if not visible):
+
+- sheet_number: Plan sheet number from title block (e.g. "A-101", "S-1")
+- detail_reference: The callout code visible in the bubble or triangle (e.g. "1", "A", "RI-01", "EX")
+- sign_type: Type of sign (e.g. "Room ID", "Exit", "ADA Restroom", "Wayfinding", "Fire Extinguisher", "Stairwell")
+- sign_identifier: The unique sign code if visible (e.g. "S-01", "EX-1", "TYPE A"). Use detail_reference if no separate identifier.
+- quantity: Integer count of this sign at this location. Default 1.
+- location: Room name, space name, or positional description visible near the callout (e.g. "Room 101 - Storage", "Main Lobby", "North Exit")
+- dimensions: Physical size if shown in legend or schedule (e.g. '6" x 8"')
+- mounting_type: How it is mounted if visible (e.g. "Wall Mounted", "Post Mounted", "Overhead")
+- finish_color: Finish or color if visible
+- illumination: Lighting type if specified
+- materials: Materials if specified
+- message_content: The text message of the sign if visible (e.g. "EXIT", "RESTROOMS", "STAIR A")
+- notes: Any special notes in callouts or legends
+- page_number: 1-indexed page number where you see this callout
+- x_position: Normalized horizontal position 0.0–1.0 of the callout bubble/symbol on its page
+- y_position: Normalized vertical position 0.0–1.0 of the callout bubble/symbol on its page
+- confidence_score: 0.9 = clearly visible; 0.75 = small but readable; 0.6 = partially obscured or inferred; 0.5 = best guess
+- review_flag: true if confidence_score < 0.75
+
+READ NUMBERS WITH EXTREME CARE:
+- Room numbers and reference codes are highly precise. "SHOP 113" ≠ "SHOP 118". "RI-105" ≠ "RI-106".
+- Zoom in mentally on each digit. Visually similar: 1 vs I vs l, 3 vs 8, 0 vs 6 vs 8, 5 vs 6, 7 vs 1.
+- If you cannot confidently read a digit, set confidence_score ≤ 0.6, review_flag = true, and record what you can see.
+
+MARKER PLACEMENT:
+- x_position / y_position must point to the callout bubble or triangle symbol, NOT the room centroid or room name.
+- For a leader-line callout, place the coordinate at the arrowhead or bubble end.
+
+LEGEND EXCLUSION — READ CAREFULLY:
+- Architectural plans have a legend/symbol key box (usually in a corner) listing what each symbol means. These entries are DEFINITIONS, not actual sign locations. DO NOT extract them.
+- Only extract callouts that are placed at a real physical location on the floor plan (attached to a room, corridor, or door via a leader line or proximity).
+- Exception: sign SCHEDULE tables (rows listing sign IDs with quantities and locations) ARE valid — extract every row.
+
+PRECISION RULE: Quality matters far more than quantity. Only report sign callouts you can actually see and confidently identify in the image. A page with few or no actual sign callouts is perfectly valid — do not invent or infer entries. Set confidence_score ≥ 0.70 for all reported items; if you cannot reach 0.70 confidence, omit that entry entirely. Hallucinated or guessed entries cause serious harm to the workflow.
+
+Return ONLY a valid JSON array. No markdown fences, no explanation, no commentary.`;
+
 const ImageSignRowSchema = z.object({
   sheet_number: z.string().nullable().optional().default(null),
   detail_reference: z.string().nullable().optional().default(null),
@@ -1917,6 +1976,98 @@ export async function extractSignsFromPdf(
       totalOutputTokens += go;
       const fallbackRows = parseGeminiResponse(fallbackText, "general-fallback");
       allRows.push(...fallbackRows);
+    }
+  }
+
+  // ── PASS 4: Visual extraction fallback — for image-based / scanned PDFs ─────
+  // If all prior passes found nothing AND the total extracted text is too sparse
+  // to be useful (< 50 usable characters), the PDF is likely scanned/image-based.
+  // Send the PDF directly to the multimodal AI for visual sign extraction.
+  if (allRows.length === 0) {
+    const totalTextLength = pages.reduce((sum, p) => sum + p.text.trim().length, 0);
+    if (totalTextLength < 50 && numPages > 0) {
+      logger.info(
+        { filePath: filePath.split("/").pop(), totalTextLength, numPages },
+        "Sparse text detected — running visual extraction fallback (Pass 4)"
+      );
+
+      let fileBuffer: Buffer | null = null;
+      try {
+        fileBuffer = await fs.readFile(filePath);
+      } catch (err) {
+        logger.error({ err, filePath }, "Pass 4: could not read PDF file — skipping visual fallback");
+      }
+
+      if (fileBuffer) {
+        const fileName = filePath.split("/").pop() ?? "file.pdf";
+
+        if (fileBuffer.length <= MAX_INLINE_PDF_BYTES) {
+          const pdfBase64 = fileBuffer.toString("base64");
+          const label = `visual-fallback-${fileName}`;
+          try {
+            const { text: vfText, inputTokens: vi, outputTokens: vo } = await callGeminiMultimodal(VISUAL_FALLBACK_EXTRACTION_PROMPT, pdfBase64, ai, label);
+            totalInputTokens += vi;
+            totalOutputTokens += vo;
+            const vfRows = parseImageExtractionResponse(vfText, label);
+            logger.info({ rows: vfRows.length, inputTokens: vi, outputTokens: vo }, "Pass 4 visual fallback complete (single-pass)");
+            allRows.push(...vfRows);
+          } catch (err) {
+            logger.error({ err, fileName }, "Pass 4 visual fallback call failed — no results");
+          }
+        } else {
+          // Large PDF: split into page batches
+          logger.info({ fileName, sizeBytes: fileBuffer.length }, "Pass 4 visual fallback: PDF too large — splitting into page batches");
+          let { PDFDocument } = await import("pdf-lib");
+          let srcDoc: import("pdf-lib").PDFDocument;
+          try {
+            srcDoc = await PDFDocument.load(fileBuffer, { ignoreEncryption: true });
+            const totalPages = srcDoc.getPageCount();
+            let batchCount = 0;
+
+            for (let startPage = 0; startPage < totalPages; startPage += IMAGE_BATCH_PAGES) {
+              const endPage = Math.min(startPage + IMAGE_BATCH_PAGES, totalPages);
+              const pageIndices = Array.from({ length: endPage - startPage }, (_, i) => startPage + i);
+
+              let batchPdfBytes: Uint8Array;
+              try {
+                const batchDoc = await PDFDocument.create();
+                const copiedPages = await batchDoc.copyPages(srcDoc, pageIndices);
+                for (const page of copiedPages) batchDoc.addPage(page);
+                batchPdfBytes = await batchDoc.save();
+              } catch (err) {
+                logger.warn({ err, startPage, endPage }, "Pass 4: failed to create batch PDF — skipping batch");
+                continue;
+              }
+
+              if (batchPdfBytes.length > MAX_INLINE_PDF_BYTES) {
+                logger.warn({ startPage, endPage }, "Pass 4: batch too large — skipping");
+                continue;
+              }
+
+              const pdfBase64 = Buffer.from(batchPdfBytes).toString("base64");
+              const label = `visual-fallback-${fileName}-p${startPage + 1}-${endPage}`;
+              batchCount++;
+
+              try {
+                const { text: vfText, inputTokens: vi, outputTokens: vo } = await callGeminiMultimodal(VISUAL_FALLBACK_EXTRACTION_PROMPT, pdfBase64, ai, label);
+                totalInputTokens += vi;
+                totalOutputTokens += vo;
+                const batchRows = parseImageExtractionResponse(vfText, label);
+                for (const r of batchRows) {
+                  if (r.page_number != null) r.page_number = r.page_number + startPage;
+                }
+                allRows.push(...batchRows);
+              } catch (err) {
+                logger.warn({ err, label }, "Pass 4 visual fallback batch call failed — skipping batch");
+              }
+            }
+
+            logger.info({ batches: batchCount, totalRows: allRows.length }, "Pass 4 visual fallback complete (batched)");
+          } catch (err) {
+            logger.error({ err, fileName }, "Pass 4: pdf-lib failed to load PDF for batching — skipping visual fallback");
+          }
+        }
+      }
     }
   }
 
