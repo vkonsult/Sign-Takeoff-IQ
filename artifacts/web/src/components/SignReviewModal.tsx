@@ -996,7 +996,11 @@ export function SignReviewModal({
   // visualLocateFailed: signs for which Gemini returned no candidates → suppress marker
   const [visualLocateFailed, setVisualLocateFailed] = useState<Set<string>>(new Set());
   const [visualLocating, setVisualLocating] = useState(false);
+  // Page-level dedup ref: prevents re-firing the Gemini request for the same page
   const visualLocateQueriedRef = useRef<Set<string>>(new Set());
+  // Per-sign ref: tracks exactly which sign IDs were submitted in the last request batch.
+  // Used for per-sign marker suppression — only suppress signs actually sent to Gemini.
+  const visualLocateSubmittedRef = useRef<Set<string>>(new Set());
 
   // Measure actual rendered page size by observing the Page element's DOM dimensions.
   // This is more reliable than computing nativeSize.w * scale because react-pdf may
@@ -1130,14 +1134,10 @@ export function SignReviewModal({
         continue;
       }
 
-      // Suppress annotation-band text markers for residential-unit signs that were submitted
-      // to visual-locate (in-flight or completed). Non-residential signs are unaffected.
-      const hasBeenSubmittedForVisualLocate = (() => {
-        if (!s.location || !isResidentialUnitLocation(s.location)) return false;
-        const pageKey = `${file?.id}:${pageNumber}`;
-        return visualLocateQueriedRef.current.has(pageKey);
-      })();
-      if (hasBeenSubmittedForVisualLocate) continue;
+      // Suppress annotation-band text marker for THIS sign if it was actually submitted to
+      // visual-locate (per-sign suppression — not page-level). Signs not included in the
+      // batch (failed cluster check, excluded by cap, non-residential) are NOT suppressed.
+      if (visualLocateSubmittedRef.current.has(s.id)) continue;
 
       const loc = findSignLocationFromPhrases(phrases, s);
       if (loc) {
@@ -1201,10 +1201,11 @@ export function SignReviewModal({
     }
   }, [serverPhrases, phrasesFetchFailed, pageNumber, sign.id, signPlacementKey, activeSign.id, visualLocateFailed, visualCandidates]);
 
-  // Clear visual candidates and failed set when the page or file changes
+  // Clear visual candidates, failed set, and per-sign submitted set when the page or file changes
   useEffect(() => {
     setVisualCandidates(new Map());
     setVisualLocateFailed(new Set());
+    visualLocateSubmittedRef.current = new Set();
   }, [file?.id, pageNumber]);
 
   // Auto-fire Gemini visual-locate for residential-unit paired-cluster signs ONLY — i.e.
@@ -1245,6 +1246,8 @@ export function SignReviewModal({
     if (targetSigns.length === 0) return;
 
     visualLocateQueriedRef.current.add(pageKey);
+    // Track exactly which sign IDs are being submitted so we can suppress only those markers
+    targetSigns.forEach((s) => visualLocateSubmittedRef.current.add(s.id));
     setVisualLocating(true);
 
     apiFetch(`/api/jobs/${jobId}/visual-locate`, {
@@ -1322,8 +1325,10 @@ export function SignReviewModal({
       })
       .catch((err) => {
         console.error("[visual-locate] request failed:", err);
-        // Failure-safe: clear the page key so annotation-band markers fall back normally
+        // Failure-safe: clear the page key AND per-sign submitted IDs so annotation-band
+        // markers fall back to normal text matching without permanent suppression.
         visualLocateQueriedRef.current.delete(pageKey);
+        targetSigns.forEach((s) => visualLocateSubmittedRef.current.delete(s.id));
       })
       .finally(() => setVisualLocating(false));
   // eslint-disable-next-line react-hooks/exhaustive-deps
