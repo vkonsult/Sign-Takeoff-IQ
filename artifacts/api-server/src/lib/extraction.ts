@@ -1931,8 +1931,9 @@ export async function extractSignsFromPdf(
   // ── Source-level dedup ────────────────────────────────────────────────────
   // Group by composite key location.toUpperCase() + "||" + signType.toUpperCase().
   // Rows where either field is null get a unique fallback key and are never merged.
-  // Within each group, keep the highest confidence_score entry; on a tie prefer
-  // the entry where detail_reference is non-null.
+  // Winner rule (same as deduplicateSignRows in process-job.ts):
+  //   1. Prefer the entry that has a non-null detail_reference.
+  //   2. If both or neither have one, prefer the higher confidence_score.
   const rowsBeforeDedup = allRows.length;
   const groupMap = new Map<string, ExtractedSignRow>();
   let uniqueKeyCounter = 0;
@@ -1949,10 +1950,10 @@ export async function extractSignsFromPdf(
     } else {
       const existingScore = existing.confidence_score ?? 0;
       const newScore = row.confidence_score ?? 0;
-      if (
-        newScore > existingScore ||
-        (newScore === existingScore && row.detail_reference != null && existing.detail_reference == null)
-      ) {
+      const preferNew =
+        (row.detail_reference != null && existing.detail_reference == null) ||
+        (!!row.detail_reference === !!existing.detail_reference && newScore > existingScore);
+      if (preferNew) {
         groupMap.set(key, row);
       }
     }
