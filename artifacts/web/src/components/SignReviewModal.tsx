@@ -373,6 +373,10 @@ function findSignLocationFromPhrases(
   }
 
   // ── Pass 2: fuzzy phrase match ─────────────────────────────────────────────
+  // Token-level best-match Levenshtein scoring — see phraseMatchScore() above.
+  // Threshold is calibrated for that scorer (prefix matches like "STOR" vs
+  // "STORAGE" yield ~0.57; raising the bar above 0.45 would discard them).
+  const FUZZY_MATCH_THRESHOLD = 0.45;
   if (locationSource) {
     let bestScore = 0;
     let bestPhrase: PdfPhrase | null = null;
@@ -380,7 +384,7 @@ function findSignLocationFromPhrases(
       const score = phraseMatchScore(p.text, locationSource);
       if (score > bestScore) { bestScore = score; bestPhrase = p; }
     }
-    if (bestScore >= 0.45 && bestPhrase) {
+    if (bestScore >= FUZZY_MATCH_THRESHOLD && bestPhrase) {
       return {
         x: (bestPhrase.x0 + bestPhrase.x1) / 2,
         y: (bestPhrase.y0 + bestPhrase.y1) / 2,

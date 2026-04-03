@@ -60,6 +60,9 @@ interface PdfjsLib {
 }
 
 // ── In-memory phrase cache keyed by `fileId:pageNum` ─────────────────────
+// This is a process-level (module-singleton) cache, not a per-request cache.
+// Phrases are stable for a given PDF page, so caching across requests is safe
+// and avoids re-parsing on every navigation page-turn in the UI.
 const phraseCache = new Map<string, PageWords>();
 
 // ── pdfjs-dist lazy loader ────────────────────────────────────────────────
