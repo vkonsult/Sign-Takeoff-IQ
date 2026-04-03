@@ -474,13 +474,153 @@ function tightBboxForTokens(
 }
 
 /**
+ * Split a location string into a { typeToken, numberToken } pair.
+ *
+ * Room-number tokens (e.g. "325A", "B405") are extracted using the same regex
+ * used by Pass 2.  The remaining text (after removal) becomes the type token.
+ *
+ * Examples:
+ *   "UNIT 1A 325A" → { typeToken: "UNIT 1A", numberToken: "325A" }
+ *   "MECH B405"    → { typeToken: "MECH",    numberToken: "B405" }
+ *   "UNIT 1A"      → { typeToken: "UNIT 1A", numberToken: null }
+ *   "325A"         → { typeToken: null,       numberToken: "325A" }
+ */
+function parseLocationParts(
+  location: string,
+): { typeToken: string | null; numberToken: string | null } {
+  const ROOM_NUM_RE = /\b(?:[A-Za-z]{1,2}\d{2,4}[A-Za-z]?|\d{2,4}[A-Za-z]{1,2})\b/g;
+  const numberMatches = location.match(ROOM_NUM_RE) ?? [];
+  // Use the first (and usually only) room-number token
+  const numberToken = numberMatches.length > 0 ? numberMatches[0]! : null;
+  // Strip all room-number tokens to get the type residual
+  const typeRaw = location.replace(ROOM_NUM_RE, " ").replace(/\s+/g, " ").trim();
+  const typeToken = typeRaw.length >= 2 ? typeRaw : null;
+  return { typeToken, numberToken };
+}
+
+/**
+ * Paired-cluster matching: requires both a unit-type phrase and a room-number
+ * phrase to co-occur within CLUSTER_RADIUS on the page.
+ *
+ * Returns:
+ *   - a match object anchored to the room-number phrase bbox (most specific anchor)
+ *   - null       if no valid cluster found (number not on page near any type)
+ *   - "ambiguous" if 2+ equally-close clusters exist
+ */
+function findPairedClusterMatch(
+  drawingPhrases: PdfPhrase[],
+  typeToken: string,
+  numberToken: string,
+  signId: string | undefined,
+): { x: number; y: number; matched: string; score: number; phrase: PdfPhrase; rejectedCandidates: PdfPhrase[] } | null | "ambiguous" {
+  const CLUSTER_RADIUS = 0.05;
+  const TYPE_MATCH_THRESHOLD = 0.70;
+
+  // All phrase candidates matching the unit-type token (e.g. "UNIT 1A", "MECH")
+  const typeCands = drawingPhrases.filter(
+    (p) => phraseMatchScore(p.text, typeToken) >= TYPE_MATCH_THRESHOLD,
+  );
+
+  // Room-number candidates: exact boundary match only — no fuzzy
+  const numNorm = normId(numberToken);
+  const numCands = drawingPhrases.filter(
+    (p) => exactBoundaryMatch(normId(p.text), numNorm),
+  );
+
+  console.log(
+    `[CLUSTER] ${signId ?? "?"} type="${typeToken}" number="${numberToken}"`,
+  );
+  console.log(
+    `  typeCands(${typeCands.length}): [${typeCands.slice(0, 4).map((p) => `"${p.text}"@(${((p.x0 + p.x1) / 2).toFixed(2)},${((p.y0 + p.y1) / 2).toFixed(2)})`).join(", ")}]`,
+  );
+  console.log(
+    `  numCands(${numCands.length}): [${numCands.slice(0, 4).map((p) => `"${p.text}"@(${((p.x0 + p.x1) / 2).toFixed(2)},${((p.y0 + p.y1) / 2).toFixed(2)})`).join(", ")}]`,
+  );
+
+  if (typeCands.length === 0 || numCands.length === 0) {
+    console.log(`  → no candidates — null`);
+    return null;
+  }
+
+  // Build all (typePhrase, numPhrase) pairs within CLUSTER_RADIUS
+  const pairs: Array<{
+    typePhrase: PdfPhrase;
+    numPhrase: PdfPhrase;
+    dist: number;
+  }> = [];
+
+  for (const tc of typeCands) {
+    const tcx = (tc.x0 + tc.x1) / 2;
+    const tcy = (tc.y0 + tc.y1) / 2;
+    for (const nc of numCands) {
+      const ncx = (nc.x0 + nc.x1) / 2;
+      const ncy = (nc.y0 + nc.y1) / 2;
+      const dist = Math.hypot(ncx - tcx, ncy - tcy);
+      if (dist <= CLUSTER_RADIUS) {
+        pairs.push({ typePhrase: tc, numPhrase: nc, dist });
+        console.log(
+          `  pair: "${tc.text}"+(${tcx.toFixed(2)},${tcy.toFixed(2)}) + ` +
+          `"${nc.text}"+(${ncx.toFixed(2)},${ncy.toFixed(2)}) dist=${dist.toFixed(3)}`,
+        );
+      }
+    }
+  }
+
+  if (pairs.length === 0) {
+    console.log(`  → 0 pairs — null`);
+    return null;
+  }
+
+  // Sort by distance ascending (closest pair = most co-located)
+  pairs.sort((a, b) => a.dist - b.dist);
+  const winner = pairs[0]!;
+  const second = pairs[1];
+
+  // Ambiguous: 2+ pairs and they are almost equally close
+  if (second !== undefined && second.dist - winner.dist < 0.02) {
+    console.log(
+      `  → AMBIGUOUS: winner dist=${winner.dist.toFixed(3)} vs second dist=${second.dist.toFixed(3)}`,
+    );
+    return "ambiguous";
+  }
+
+  // Anchor to the room-number phrase bbox (most specific / unique)
+  const anchor = {
+    x: (winner.numPhrase.x0 + winner.numPhrase.x1) / 2,
+    y: (winner.numPhrase.y0 + winner.numPhrase.y1) / 2,
+  };
+  console.log(
+    `  → WINNER: "${winner.typePhrase.text}" + "${winner.numPhrase.text}" ` +
+    `anchor=(${anchor.x.toFixed(3)},${anchor.y.toFixed(3)}) score=0.95`,
+  );
+
+  // Rejected = type candidates that did NOT pair with the winning number phrase
+  const winningTypePhrase = winner.typePhrase;
+  const rejectedCandidates = typeCands
+    .filter((tc) => tc !== winningTypePhrase)
+    .slice(0, 2);
+
+  return {
+    x: anchor.x,
+    y: anchor.y,
+    matched: `${typeToken} ${numberToken}`,
+    score: 0.95,
+    phrase: winner.numPhrase,
+    rejectedCandidates,
+  };
+}
+
+/**
  * Given server-extracted phrases for one PDF page and a sign, find the best
  * matching position using bbox centres.
  *
- * Pass 0 — exact identifier match (single occurrence = callout bubble) → score 1.0
- * Pass 1 — full-phrase location string match via phraseMatchScore (≥ 0.65)  → score ≥ 0.8
- * Pass 2 — room-number token matching with context co-location check         → score 0.75
- * Pass 3 — fuzzy phrase scoring fallback (threshold raised to 0.6)           → proportional score
+ * Pass 0   — exact identifier match (single occurrence = callout bubble) → score 1.0
+ * Pass 0.5 — paired-cluster match: requires type token + number token to
+ *             co-occur within CLUSTER_RADIUS=0.05. Owns all locations that
+ *             contain a room-number component; does not fall through to P1–3.
+ * Pass 1   — full-phrase location string match via phraseMatchScore (≥ 0.65)  → score ≥ 0.8
+ * Pass 2   — room-number token matching with context co-location check         → score 0.75
+ * Pass 3   — fuzzy phrase scoring fallback (threshold raised to 0.6)           → proportional score
  *
  * Margin filtering: phrases with y < 0.04 or y > 0.96 (title blocks / borders)
  * or fewer than 2 characters are excluded from Passes 1–3.
@@ -516,6 +656,27 @@ function findSignLocationFromPhrases(
 
   const locationSource = [sign.location, sign.messageContent].filter(Boolean).join(" ");
   const pageCy = 0.5; // page centroid y used for tie-breaking
+
+  // ── Pass 0.5: paired-cluster match ────────────────────────────────────────
+  // When the location string contains BOTH a unit-type part ("UNIT 1A", "MECH")
+  // AND a room-number part ("325A", "B405"), require them to co-occur within
+  // CLUSTER_RADIUS=0.05 on the page.  This pass owns all locations with a
+  // room-number component — Pass 1/2/3 are skipped for those locations because
+  // a wrong marker (spread across repeated unit labels) is worse than no marker.
+  if (sign.location) {
+    const { typeToken, numberToken } = parseLocationParts(sign.location);
+    if (typeToken && numberToken) {
+      const clusterResult = findPairedClusterMatch(
+        drawingPhrases,
+        typeToken,
+        numberToken,
+        sign.signIdentifier ?? undefined,
+      );
+      if (clusterResult === "ambiguous") return null;  // ambiguous — suppress
+      if (clusterResult !== null) return clusterResult; // clean winner
+      return null; // number not found near any type — suppress (no fallback to P1)
+    }
+  }
 
   // ── Pass 1: full-phrase location string match ──────────────────────────────
   // Score the entire sign.location string against every drawing-area phrase
