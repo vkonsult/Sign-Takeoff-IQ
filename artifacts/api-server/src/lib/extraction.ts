@@ -3,6 +3,21 @@ import pdfParse from "pdf-parse/lib/pdf-parse.js";
 import { z } from "zod";
 import { logger } from "./logger";
 
+// ── Module-level cache for PDF text extraction ────────────────────────────────
+// PDF files are immutable once uploaded, so caching by path is safe.
+// Caps at 30 entries; oldest entry is evicted when full.
+const PDF_TEXT_CACHE_MAX = 30;
+const pdfTextCache = new Map<string, { pages: ScoredPage[]; numPages: number }>();
+
+function pdfTextCacheSet(key: string, value: { pages: ScoredPage[]; numPages: number }): void {
+  if (pdfTextCache.size >= PDF_TEXT_CACHE_MAX) {
+    // Evict the oldest (first-inserted) entry
+    const oldestKey = pdfTextCache.keys().next().value;
+    if (oldestKey !== undefined) pdfTextCache.delete(oldestKey);
+  }
+  pdfTextCache.set(key, value);
+}
+
 export interface ExtractedSignRow {
   sheet_number: string | null;
   detail_reference: string | null;
@@ -604,6 +619,7 @@ CRITICAL RULES:
 - If a floor plan shows 12 offices, output 12 separate Room ID sign entries (one per room)
 - Return ONLY a valid JSON array. No markdown, no code blocks, no explanation.
 - If you cannot read the floor plan, return []
+- COMPACT JSON: Omit any field whose value is null or empty — do NOT include it in the object. Only include fields that have actual values. Every object must include at minimum: sign_type, location, page_number, confidence_score, review_flag.
 
 LEGEND / SYMBOL KEY EXCLUSION (important):
 - Architectural drawings often include a bordered "Life Safety Legend", "Signage Legend", "Symbol Key", or "Drawing Legend" box that defines what each symbol means. This may appear in the corner or margin of a floor plan page.
@@ -806,6 +822,13 @@ async function extractTextFromPdf(filePath: string): Promise<{
   pages: ScoredPage[];
   numPages: number;
 }> {
+  // Return cached result if available (files are immutable once uploaded)
+  const cached = pdfTextCache.get(filePath);
+  if (cached) {
+    logger.debug({ filePath: filePath.split("/").pop() }, "PDF text cache hit");
+    return cached;
+  }
+
   try {
     const dataBuffer = await fs.readFile(filePath);
     const pageTexts: string[] = [];
@@ -844,7 +867,9 @@ async function extractTextFromPdf(filePath: string): Promise<{
       "PDF pages classified"
     );
 
-    return { pages, numPages: result.numpages };
+    const value = { pages, numPages: result.numpages };
+    pdfTextCacheSet(filePath, value);
+    return value;
   } catch (err) {
     logger.error({ err, filePath }, "Error extracting text from PDF");
     return { pages: [], numPages: 0 };
@@ -1937,21 +1962,33 @@ export async function extractSignsFromPdf(
       "Starting ADA floor plan extraction passes"
     );
 
-    for (let batchIdx = 0; batchIdx < batches.length; batchIdx++) {
-      const batch = batches[batchIdx]!;
-      // Sort back to page order for coherent reading
-      batch.sort((a, b) => a.pageNum - b.pageNum);
-      const block = batch.map((p) => `--- PAGE ${p.pageNum} ---\n${p.text}`).join("\n\n");
+    // Pre-build the prompt once (it's the same for all batches) then fire all
+    // batches concurrently.  For a 5-page PDF with 5 batches this cuts latency
+    // from 5 × T to T (limited by the slowest batch, not the sum).
+    const floorPlanPromptPrefix = buildFloorPlanADAPrompt(projectContext, signScheduleContext, verifiedSigns, trainingContext);
 
-      const label = `floor-plan-batch-${batchIdx + 1}-of-${batches.length}`;
-      logger.info({ batchPages: batch.length, label }, "Running ADA floor plan pass");
+    const batchResults = await Promise.all(
+      batches.map(async (batch, batchIdx) => {
+        const sorted = [...batch].sort((a, b) => a.pageNum - b.pageNum);
+        const block = sorted.map((p) => `--- PAGE ${p.pageNum} ---\n${p.text}`).join("\n\n");
+        const label = `floor-plan-batch-${batchIdx + 1}-of-${batches.length}`;
+        logger.info({ batchPages: batch.length, label }, "Running ADA floor plan pass");
 
-      const { text: fpText, inputTokens: fi, outputTokens: fo } = await callGemini(buildFloorPlanADAPrompt(projectContext, signScheduleContext, verifiedSigns, trainingContext) + block, ai, label);
+        const { text: fpText, inputTokens: fi, outputTokens: fo } = await callGemini(
+          floorPlanPromptPrefix + block,
+          ai,
+          label
+        );
+        const fpRows = parseGeminiResponse(fpText, label);
+        logger.info({ count: fpRows.length, label }, "ADA floor plan pass complete");
+        return { rows: fpRows, inputTokens: fi, outputTokens: fo };
+      })
+    );
+
+    for (const { rows, inputTokens: fi, outputTokens: fo } of batchResults) {
+      allRows.push(...rows);
       totalInputTokens += fi;
       totalOutputTokens += fo;
-      const fpRows = parseGeminiResponse(fpText, label);
-      logger.info({ count: fpRows.length, label }, "ADA floor plan pass complete");
-      allRows.push(...fpRows);
     }
   }
 

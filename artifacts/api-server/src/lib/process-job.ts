@@ -166,179 +166,189 @@ export async function processJob(jobId: string): Promise<void> {
     logger.warn({ err, jobId }, "Project info extraction failed — continuing without location context");
   }
 
-  // ── PASSES 1–3: Text + visual extraction for each file (parallel per file) ──
-  for (const file of files) {
-    try {
-      logger.info({ jobId, file: file.originalName }, "Extracting signs from file (text + visual in parallel)");
-      const fileVerified = verifiedByFile[file.id] ?? [];
-      const otherVerified = verifiedGlobal.filter((v) => !fileVerified.includes(v));
-      const allVerifiedForFile = [...fileVerified, ...otherVerified];
-
-      // Run text extraction FIRST, then use those results to drive the
-      // visual verification pass (text signs → context → verify/discover).
-      const textResult = await extractSignsFromPdf(
-        file.storedPath,
-        ai,
-        projectContext,
-        allVerifiedForFile.length > 0 ? allVerifiedForFile : undefined,
-        crossJobVerified.length > 0 ? crossJobVerified : undefined
-      );
-
-      // Build page → text-sign context map for the verification prompt
-      const textSignsByPage = new Map<number, TextContextSign[]>();
-      for (const row of textResult.rows) {
-        const pg = row.page_number ?? 1;
-        if (!textSignsByPage.has(pg)) textSignsByPage.set(pg, []);
-        textSignsByPage.get(pg)!.push({
-          sign_identifier: row.sign_identifier,
-          location: row.location,
-          sign_type: row.sign_type,
-          sheet_number: row.sheet_number,
-          page_number: row.page_number,
-        });
+  // ── PASSES 1–3: Text + visual extraction — all files in parallel ─────────────
+  // Within each file: text extraction runs first, then visual verification uses
+  // its results.  Across files: all pipelines run concurrently so a 4-file job
+  // takes no longer than a 1-file job.
+  type FileResult =
+    | {
+        ok: true;
+        file: typeof files[number];
+        textResult: Awaited<ReturnType<typeof extractSignsFromPdf>>;
+        imageResult: Awaited<ReturnType<typeof extractSignsFromPdfImageVerify>>;
       }
+    | { ok: false; file: typeof files[number]; error: string };
 
-      const imageResult = await extractSignsFromPdfImageVerify(file.storedPath, ai, textSignsByPage).catch((err) => {
-        logger.warn({ err, fileId: file.id }, "Visual verification threw unexpectedly — skipping");
-        return { verifications: [] as VerificationItem[], discoveries: [], inputTokens: 0, outputTokens: 0, skipped: true as const, skipReason: "Internal error" };
-      });
+  const fileResults: FileResult[] = await Promise.all(
+    files.map(async (file): Promise<FileResult> => {
+      try {
+        logger.info({ jobId, file: file.originalName }, "Extracting signs from file");
+        const fileVerified = verifiedByFile[file.id] ?? [];
+        const otherVerified = verifiedGlobal.filter((v) => !fileVerified.includes(v));
+        const allVerifiedForFile = [...fileVerified, ...otherVerified];
 
-      totalInputTokens += textResult.inputTokens;
-      totalOutputTokens += textResult.outputTokens;
-      totalImageInputTokens += imageResult.inputTokens;
-      totalImageOutputTokens += imageResult.outputTokens;
+        const textResult = await extractSignsFromPdf(
+          file.storedPath,
+          ai,
+          projectContext,
+          allVerifiedForFile.length > 0 ? allVerifiedForFile : undefined,
+          crossJobVerified.length > 0 ? crossJobVerified : undefined
+        );
 
-      await db
-        .update(jobFilesTable)
-        .set({ pageCount: textResult.pageCount, extractedText: textResult.rawText.slice(0, 10000), pageStats: textResult.pageStats })
-        .where(eq(jobFilesTable.id, file.id));
-
-      parsedResults.push({
-        fileId: file.id,
-        fileName: file.originalName,
-        pageCount: textResult.pageCount,
-        rowCount: textResult.rows.length,
-        imageRowCount: imageResult.discoveries.length,
-        imageSkipped: imageResult.skipped ?? false,
-        rows: textResult.rows,
-      });
-
-      // ── In-memory verification application ────────────────────────────────
-      // Build a quick-lookup from (sign_identifier|location) → verification status
-      // so we can apply CONFIRMED/NOT_FOUND boosts before inserting.
-      function findVerification(row: ExtractedSignRow): VerificationItem | undefined {
-        if (!imageResult.skipped) {
-          // Pass 1: match by sign_identifier (case-insensitive)
-          if (row.sign_identifier) {
-            const m = imageResult.verifications.find(
-              (v) => v.sign_identifier?.toLowerCase() === row.sign_identifier!.toLowerCase()
-            );
-            if (m) return m;
-          }
-          // Pass 2: match by location substring
-          if (row.location) {
-            const rLoc = row.location.toLowerCase();
-            const m = imageResult.verifications.find(
-              (v) => v.location != null && (v.location.toLowerCase().includes(rLoc) || rLoc.includes(v.location.toLowerCase()))
-            );
-            if (m) return m;
-          }
-        }
-        return undefined;
-      }
-
-      for (const row of textResult.rows) {
-        const verif = findVerification(row);
-        let conf = row.confidence_score;
-        let flag = row.review_flag;
-
-        if (verif) {
-          if (verif.status === "CONFIRMED") {
-            conf = Math.min(1.0, conf + 0.15);
-            flag = conf < 0.75;
-          } else if (verif.status === "NOT_FOUND") {
-            flag = true; // visual pass couldn't find it — needs human review
-          }
-          // UNCERTAIN: leave unchanged
+        // Build page → text-sign context map for the visual verification prompt
+        const textSignsByPage = new Map<number, TextContextSign[]>();
+        for (const row of textResult.rows) {
+          const pg = row.page_number ?? 1;
+          if (!textSignsByPage.has(pg)) textSignsByPage.set(pg, []);
+          textSignsByPage.get(pg)!.push({
+            sign_identifier: row.sign_identifier,
+            location: row.location,
+            sign_type: row.sign_type,
+            sheet_number: row.sheet_number,
+            page_number: row.page_number,
+          });
         }
 
-        allTextRows.push({
-          jobId,
-          jobFileId: file.id,
-          sheetNumber: row.sheet_number,
-          detailReference: row.detail_reference,
-          signType: row.sign_type,
-          signIdentifier: row.sign_identifier,
-          quantity: row.quantity,
-          location: row.location,
-          dimensions: row.dimensions,
-          mountingType: row.mounting_type,
-          finishColor: row.finish_color,
-          illumination: row.illumination,
-          materials: row.materials,
-          messageContent: row.message_content,
-          notes: row.notes,
-          pageNumber: row.page_number,
-          confidenceScore: conf,
-          reviewFlag: flag,
-          extractionMethod: "text",
-          rawJson: row as unknown as Record<string, unknown>,
+        const imageResult = await extractSignsFromPdfImageVerify(file.storedPath, ai, textSignsByPage).catch((err) => {
+          logger.warn({ err, fileId: file.id }, "Visual verification threw unexpectedly — skipping");
+          return { verifications: [] as VerificationItem[], discoveries: [], inputTokens: 0, outputTokens: 0, skipped: true as const, skipReason: "Internal error" };
         });
+
+        // Per-file DB update is safe to do inside the parallel map
+        await db
+          .update(jobFilesTable)
+          .set({ pageCount: textResult.pageCount, extractedText: textResult.rawText.slice(0, 10000), pageStats: textResult.pageStats })
+          .where(eq(jobFilesTable.id, file.id));
+
+        return { ok: true, file, textResult, imageResult };
+      } catch (err) {
+        logger.error({ err, fileId: file.id, fileName: file.originalName }, "File extraction failed");
+        return { ok: false, file, error: String(err) };
+      }
+    })
+  );
+
+  // ── Merge parallel results into accumulator arrays ────────────────────────
+  for (const result of fileResults) {
+    if (!result.ok) {
+      parsedResults.push({ fileId: result.file.id, fileName: result.file.originalName, error: result.error });
+      continue;
+    }
+
+    const { file, textResult, imageResult } = result;
+
+    totalInputTokens += textResult.inputTokens;
+    totalOutputTokens += textResult.outputTokens;
+    totalImageInputTokens += imageResult.inputTokens;
+    totalImageOutputTokens += imageResult.outputTokens;
+
+    parsedResults.push({
+      fileId: file.id,
+      fileName: file.originalName,
+      pageCount: textResult.pageCount,
+      rowCount: textResult.rows.length,
+      imageRowCount: imageResult.discoveries.length,
+      imageSkipped: imageResult.skipped ?? false,
+      rows: textResult.rows,
+    });
+
+    // Apply visual-verification boosts / flags to text rows in-memory
+    const findVerification = (row: ExtractedSignRow): VerificationItem | undefined => {
+      if (imageResult.skipped) return undefined;
+      if (row.sign_identifier) {
+        const m = imageResult.verifications.find(
+          (v) => v.sign_identifier?.toLowerCase() === row.sign_identifier!.toLowerCase()
+        );
+        if (m) return m;
+      }
+      if (row.location) {
+        const rLoc = row.location.toLowerCase();
+        const m = imageResult.verifications.find(
+          (v) => v.location != null && (v.location.toLowerCase().includes(rLoc) || rLoc.includes(v.location.toLowerCase()))
+        );
+        if (m) return m;
+      }
+      return undefined;
+    };
+
+    for (const row of textResult.rows) {
+      const verif = findVerification(row);
+      let conf = row.confidence_score;
+      let flag = row.review_flag;
+
+      if (verif) {
+        if (verif.status === "CONFIRMED") {
+          conf = Math.min(1.0, conf + 0.15);
+          flag = conf < 0.75;
+        } else if (verif.status === "NOT_FOUND") {
+          flag = true;
+        }
       }
 
-      // Visual-verification discoveries: signs the visual pass found that the
-      // text pass missed. Store as supplementary with reviewFlag=true.
-      for (const row of imageResult.discoveries) {
-        allImageRows.push({
-          jobId,
-          jobFileId: file.id,
-          sheetNumber: row.sheet_number,
-          detailReference: row.detail_reference,
-          signType: row.sign_type,
-          signIdentifier: row.sign_identifier,
-          quantity: row.quantity,
-          location: row.location,
-          dimensions: row.dimensions,
-          mountingType: row.mounting_type,
-          finishColor: row.finish_color,
-          illumination: row.illumination,
-          materials: row.materials,
-          messageContent: row.message_content,
-          notes: row.notes,
-          pageNumber: row.page_number,
-          xPos: null,
-          yPos: null,
-          confidenceScore: row.confidence_score,
-          reviewFlag: true,
-          extractionMethod: "image",
-          rawJson: row as unknown as Record<string, unknown>,
-        });
-      }
-
-      // Collect verifications stats for the completion log (no longer needed for DB matching)
-      const confirmedCount = imageResult.verifications.filter(v => v.status === "CONFIRMED").length;
-      const notFoundCount = imageResult.verifications.filter(v => v.status === "NOT_FOUND").length;
-      allVerifications.push(...imageResult.verifications.map(v => ({ ...v, fileId: file.id })));
-
-      if (imageResult.skipped) {
-        logger.info({ jobId, file: file.originalName, reason: imageResult.skipReason }, "Visual verification skipped for file");
-      } else {
-        logger.info({
-          jobId,
-          file: file.originalName,
-          verifications: imageResult.verifications.length,
-          confirmed: imageResult.verifications.filter(v => v.status === "CONFIRMED").length,
-          notFound: imageResult.verifications.filter(v => v.status === "NOT_FOUND").length,
-          discoveries: imageResult.discoveries.length,
-        }, "Visual verification complete for file");
-      }
-    } catch (err) {
-      logger.error({ err, fileId: file.id, fileName: file.originalName }, "File extraction failed");
-      parsedResults.push({
-        fileId: file.id,
-        fileName: file.originalName,
-        error: String(err),
+      allTextRows.push({
+        jobId,
+        jobFileId: file.id,
+        sheetNumber: row.sheet_number,
+        detailReference: row.detail_reference,
+        signType: row.sign_type,
+        signIdentifier: row.sign_identifier,
+        quantity: row.quantity,
+        location: row.location,
+        dimensions: row.dimensions,
+        mountingType: row.mounting_type,
+        finishColor: row.finish_color,
+        illumination: row.illumination,
+        materials: row.materials,
+        messageContent: row.message_content,
+        notes: row.notes,
+        pageNumber: row.page_number,
+        confidenceScore: conf,
+        reviewFlag: flag,
+        extractionMethod: "text",
+        rawJson: row as unknown as Record<string, unknown>,
       });
+    }
+
+    for (const row of imageResult.discoveries) {
+      allImageRows.push({
+        jobId,
+        jobFileId: file.id,
+        sheetNumber: row.sheet_number,
+        detailReference: row.detail_reference,
+        signType: row.sign_type,
+        signIdentifier: row.sign_identifier,
+        quantity: row.quantity,
+        location: row.location,
+        dimensions: row.dimensions,
+        mountingType: row.mounting_type,
+        finishColor: row.finish_color,
+        illumination: row.illumination,
+        materials: row.materials,
+        messageContent: row.message_content,
+        notes: row.notes,
+        pageNumber: row.page_number,
+        xPos: null,
+        yPos: null,
+        confidenceScore: row.confidence_score,
+        reviewFlag: true,
+        extractionMethod: "image",
+        rawJson: row as unknown as Record<string, unknown>,
+      });
+    }
+
+    allVerifications.push(...imageResult.verifications.map(v => ({ ...v, fileId: file.id })));
+
+    if (imageResult.skipped) {
+      logger.info({ jobId, file: file.originalName, reason: imageResult.skipReason }, "Visual verification skipped for file");
+    } else {
+      logger.info({
+        jobId,
+        file: file.originalName,
+        verifications: imageResult.verifications.length,
+        confirmed: imageResult.verifications.filter(v => v.status === "CONFIRMED").length,
+        notFound: imageResult.verifications.filter(v => v.status === "NOT_FOUND").length,
+        discoveries: imageResult.discoveries.length,
+      }, "Visual verification complete for file");
     }
   }
 
