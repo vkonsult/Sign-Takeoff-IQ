@@ -9,6 +9,7 @@ import {
 } from "@workspace/db";
 import { buildExcelExport } from "../lib/export";
 import { getJobExportPath } from "../lib/storage";
+import { extractPagePhrases } from "../lib/pdf-words";
 import { processJob } from "../lib/process-job";
 import { extractSignsFromPdfImage, extractSignsFromPdf } from "../lib/extraction";
 import { ai } from "@workspace/integrations-gemini-ai";
@@ -774,6 +775,49 @@ router.get("/jobs/:jobId/files/:fileId/pdf", async (req, res) => {
   } catch (err) {
     req.log.error({ err, fileId }, "Failed to serve PDF");
     res.status(500).json({ error: "Failed to serve PDF" });
+  }
+});
+
+// ── Word / phrase extraction for marker placement ──────────────────────────
+// Returns text phrases with full bounding boxes (normalised 0–1) for a single
+// page of the uploaded PDF.  Results are cached in memory per (fileId, pageNum).
+router.get("/jobs/:jobId/files/:fileId/pages/:pageNum/words", async (req, res) => {
+  const { jobId, fileId, pageNum } = req.params;
+  const pageNumInt = parseInt(pageNum ?? "", 10);
+
+  if (!jobId || !fileId || isNaN(pageNumInt) || pageNumInt < 1) {
+    res.status(400).json({ error: "Invalid parameters" });
+    return;
+  }
+
+  try {
+    const _job = await getJobWithOrgCheck(req, res, jobId);
+    if (!_job) return;
+
+    const [file] = await db
+      .select()
+      .from(jobFilesTable)
+      .where(eq(jobFilesTable.id, fileId));
+
+    if (!file || file.jobId !== jobId) {
+      res.status(404).json({ error: "File not found" });
+      return;
+    }
+
+    try {
+      await fs.access(file.storedPath);
+    } catch {
+      res.status(404).json({ error: "PDF file not found on disk" });
+      return;
+    }
+
+    const result = await extractPagePhrases(file.storedPath, fileId, pageNumInt);
+
+    res.setHeader("Cache-Control", "private, max-age=300");
+    res.json(result);
+  } catch (err) {
+    req.log.error({ err, fileId, pageNum }, "Failed to extract page words");
+    res.status(500).json({ error: "Failed to extract page words" });
   }
 });
 

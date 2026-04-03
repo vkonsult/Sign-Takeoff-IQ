@@ -142,22 +142,25 @@ function signToForm(sign: ExtractedSign): FormState {
   };
 }
 
-// ─── Text-item type from pdfjs ─────────────────────────────────────────────
+// ─── Types ─────────────────────────────────────────────────────────────────
 
-interface PdfTextItem {
-  str: string;
-  transform: [number, number, number, number, number, number];
-  width: number;
-  height: number;
+/** Phrase extracted server-side from the PDF text layer (normalised bbox). */
+interface PdfPhrase {
+  text: string;
+  x0: number; // 0–1 normalised left edge
+  y0: number; // 0–1 normalised top edge   (top-down: 0 = top of page)
+  x1: number; // 0–1 normalised right edge
+  y1: number; // 0–1 normalised bottom edge
 }
 
 interface TextMarker {
-  x: number; // 0–1 fraction of page width
-  y: number; // 0–1 fraction of page height (top-down)
+  x: number;               // 0–1 bbox centre (page width)
+  y: number;               // 0–1 bbox centre (page height, top-down)
   signId: string;
   color: string;
   label: string;
   isCurrent: boolean;
+  placementScore: number;  // 0–1 match confidence; 1.0 = exact ID or manual
 }
 
 /** Tokenize a string into searchable words (len ≥ 2, deduplicated) */
@@ -172,91 +175,6 @@ function tokenize(text: string | null | undefined): string[] {
   )];
 }
 
-/**
- * Build a spatial text index from PDF text items.
- * CAD PDFs (Revit/AutoCAD) often fragment words into individual characters.
- * This groups items into "runs" on the same baseline, concatenates them,
- * and returns a searchable structure with a representative item for position.
- */
-interface TextRun {
-  text: string;         // concatenated text of the run
-  item: PdfTextItem;    // first item in run (for coordinates)
-  midX: number;         // average X of all items in run
-  midY: number;         // average Y of all items in run
-}
-
-function buildTextRuns(items: PdfTextItem[]): TextRun[] {
-  if (items.length === 0) return [];
-
-  // Sort by Y descending (top of page first), then X ascending
-  const sorted = [...items]
-    .filter((it) => it.str.trim())
-    .sort((a, b) => {
-      const ay = a.transform[5]!;
-      const by_ = b.transform[5]!;
-      if (Math.abs(ay - by_) > 4) return by_ - ay;       // different lines
-      return a.transform[4]! - b.transform[4]!;           // same line → left to right
-    });
-
-  const runs: TextRun[] = [];
-  let current: { text: string; items: PdfTextItem[] } | null = null;
-
-  for (const item of sorted) {
-    if (!current) {
-      current = { text: item.str, items: [item] };
-      continue;
-    }
-
-    const prevY = current.items[current.items.length - 1]!.transform[5]!;
-    const prevX = current.items[current.items.length - 1]!.transform[4]!;
-    const prevW = current.items[current.items.length - 1]!.width ?? 8;
-    const currY = item.transform[5]!;
-    const currX = item.transform[4]!;
-
-    // Same baseline (within 3 pts) and horizontally adjacent (gap < 3× prev char width)
-    const sameLine = Math.abs(currY - prevY) <= 3;
-    const adjacent = currX - (prevX + prevW) < prevW * 3;
-
-    if (sameLine && adjacent) {
-      current.text += item.str;
-      current.items.push(item);
-    } else {
-      // Flush current run
-      const xs = current.items.map((i) => i.transform[4]!);
-      const ys = current.items.map((i) => i.transform[5]!);
-      runs.push({
-        text: current.text,
-        item: current.items[0]!,
-        midX: xs.reduce((a, b) => a + b, 0) / xs.length,
-        midY: ys.reduce((a, b) => a + b, 0) / ys.length,
-      });
-      current = { text: item.str, items: [item] };
-    }
-  }
-
-  if (current) {
-    const xs = current.items.map((i) => i.transform[4]!);
-    const ys = current.items.map((i) => i.transform[5]!);
-    runs.push({
-      text: current.text,
-      item: current.items[0]!,
-      midX: xs.reduce((a, b) => a + b, 0) / xs.length,
-      midY: ys.reduce((a, b) => a + b, 0) / ys.length,
-    });
-  }
-
-  return runs;
-}
-
-/**
- * Given the text items from a PDF page and a sign, find the best matching
- * location on the page. Returns normalized (0–1) coordinates or null.
- *
- * Handles two common CAD PDF formats:
- *  1. Word-per-item  — standard PDF text; matched via token search on each item
- *  2. Char-per-item  — Revit/AutoCAD fragmentation; matched by first grouping
- *                      adjacent glyphs into runs, then searching within runs
- */
 function normId(s: string): string {
   return s.toLowerCase().replace(/[\s\-_]/g, "");
 }
@@ -275,202 +193,178 @@ function exactBoundaryMatch(haystack: string, needle: string): boolean {
   return false;
 }
 
-function findSignLocation(
-  items: PdfTextItem[],
-  pageW: number,
-  pageH: number,
-  sign: ExtractedSign
-): { x: number; y: number; matched: string } | null {
+/** Jaro string similarity in [0, 1]. */
+function jaro(s: string, t: string): number {
+  if (s === t) return 1;
+  if (!s.length || !t.length) return 0;
+  const matchDist = Math.max(Math.floor(Math.max(s.length, t.length) / 2) - 1, 0);
+  const sMatch = new Array(s.length).fill(false);
+  const tMatch = new Array(t.length).fill(false);
+  let matches = 0;
+  for (let i = 0; i < s.length; i++) {
+    const lo = Math.max(0, i - matchDist);
+    const hi = Math.min(i + matchDist + 1, t.length);
+    for (let j = lo; j < hi; j++) {
+      if (tMatch[j] || s[i] !== t[j]) continue;
+      sMatch[i] = true; tMatch[j] = true; matches++; break;
+    }
+  }
+  if (!matches) return 0;
+  let trans = 0;
+  let k = 0;
+  for (let i = 0; i < s.length; i++) {
+    if (!sMatch[i]) continue;
+    while (!tMatch[k]) k++;
+    if (s[i] !== t[k]) trans++;
+    k++;
+  }
+  return (matches / s.length + matches / t.length + (matches - trans / 2) / matches) / 3;
+}
 
-  // ── Pass 0: exact normalized identifier match ─────────────────────────────
-  // Sign identifiers like "RI-56" or "EL-04" appear in TWO places on a plan:
-  //   1. The callout bubble at the unit door (the CORRECT position)
-  //   2. A sign schedule table listing all signs on the sheet (WRONG position)
-  // We collect ALL occurrences first. If exactly ONE is found, it's the callout
-  // → use it. If multiple are found, we can't reliably tell callout from schedule
-  // → fall through to room-number matching instead.
+/**
+ * Combined phrase-match score: 70% token overlap + 30% Jaro similarity.
+ * Operates on normalised (lower-case, punctuation stripped) forms.
+ */
+function phraseMatchScore(phraseText: string, query: string): number {
+  const pn = phraseText.toLowerCase().replace(/[^a-z0-9]/g, " ").replace(/\s+/g, " ").trim();
+  const qn = query.toLowerCase().replace(/[^a-z0-9]/g, " ").replace(/\s+/g, " ").trim();
+  if (!pn || !qn) return 0;
+  const pt = tokenize(pn);
+  const qt = tokenize(qn);
+  const shared = pt.filter((tok) => qt.includes(tok)).length;
+  const tokenScore = shared / Math.max(pt.length, qt.length, 1);
+  const jaroScore = jaro(pn, qn);
+  return tokenScore * 0.7 + jaroScore * 0.3;
+}
+
+/**
+ * True if the identifier token appears in any hit within `CONTEXT_RADIUS` of
+ * the floor-plan hit — distinguishing room-label occurrences from schedule-table
+ * occurrences.  Uses phrase bbox centres for the spatial check.
+ */
+function hasContextNearHitInPhrases(
+  phrases: PdfPhrase[],
+  locationSrc: string,
+  tokenNorm: string,
+  hx: number,
+  hy: number,
+): boolean {
+  const CONTEXT_RADIUS = 0.05;
+  const words = (locationSrc.match(/\S+/g) ?? [])
+    .map((w) => normId(w))
+    .filter((w) => w.length >= 2 && w !== tokenNorm);
+  if (words.length === 0) return true; // no context → accept
+
+  for (const p of phrases) {
+    const pn = normId(p.text);
+    const matched = words.some(
+      (w) =>
+        pn === w ||
+        (w.length >= 3 && pn.includes(w)) ||
+        (pn.length >= 3 && w.includes(pn)),
+    );
+    if (!matched) continue;
+    const px = (p.x0 + p.x1) / 2;
+    const py = (p.y0 + p.y1) / 2;
+    if (Math.hypot(px - hx, py - hy) <= CONTEXT_RADIUS) return true;
+  }
+  return false;
+}
+
+/** Exact or building-prefix match ("b101b" satisfies token "101b"). */
+function roomMatch(phraseNorm: string, tokenNorm: string): boolean {
+  if (exactBoundaryMatch(phraseNorm, tokenNorm)) return true;
+  if (
+    phraseNorm.length === tokenNorm.length + 1 &&
+    /^[a-z]/.test(phraseNorm) &&
+    phraseNorm.slice(1) === tokenNorm
+  )
+    return true;
+  return false;
+}
+
+/**
+ * Given server-extracted phrases for one PDF page and a sign, find the best
+ * matching position using bbox centres.
+ *
+ * Pass 0 — exact identifier match (single occurrence = callout bubble)
+ * Pass 1 — room-number token matching with context co-location check
+ * Pass 2 — fuzzy phrase scoring (fallback; score ≥ 0.55 required)
+ */
+function findSignLocationFromPhrases(
+  phrases: PdfPhrase[],
+  sign: ExtractedSign,
+): { x: number; y: number; matched: string; score: number } | null {
+
+  // ── Pass 0: exact identifier ───────────────────────────────────────────────
   if (sign.signIdentifier && sign.signIdentifier.length >= 3) {
     const idNorm = normId(sign.signIdentifier);
     if (idNorm.length >= 3) {
-      type IdHit = { x: number; y: number };
-      const idHits: IdHit[] = [];
-
-      // 0a: search individual items
-      for (const item of items) {
-        if (!item.str.trim()) continue;
-        if (exactBoundaryMatch(normId(item.str), idNorm)) {
-          const [, , , , tx, ty] = item.transform;
-          idHits.push({
-            x: Math.min(1, Math.max(0, tx / pageW)),
-            y: Math.min(1, Math.max(0, 1 - ty / pageH)),
-          });
+      const idHits: { x: number; y: number }[] = [];
+      for (const p of phrases) {
+        if (exactBoundaryMatch(normId(p.text), idNorm)) {
+          idHits.push({ x: (p.x0 + p.x1) / 2, y: (p.y0 + p.y1) / 2 });
         }
       }
-
-      // 0b: search text runs if nothing found via items
-      if (idHits.length === 0) {
-        const runsEarly = buildTextRuns(items);
-        for (const run of runsEarly) {
-          if (exactBoundaryMatch(normId(run.text), idNorm)) {
-            idHits.push({
-              x: Math.min(1, Math.max(0, run.midX / pageW)),
-              y: Math.min(1, Math.max(0, 1 - run.midY / pageH)),
-            });
-          }
-        }
-      }
-
-      // Only trust the identifier if it appears exactly once — that's the callout.
-      // Multiple occurrences mean schedule + callout; we can't tell them apart.
       if (idHits.length === 1) {
-        return { x: idHits[0]!.x, y: idHits[0]!.y, matched: sign.signIdentifier };
+        return { x: idHits[0]!.x, y: idHits[0]!.y, matched: sign.signIdentifier, score: 1.0 };
       }
     }
   }
 
-  // ── Pass 1: room/unit number search from location field ──────────────────
-  // Room numbers like "A101", "B203", "101B" are specific labels visible on
-  // each unit door on the floor plan. We extract these tokens from the location
-  // field and search the text layer.
-  //
-  // Key subtleties handled here:
-  //   - CAD PDFs often label units as "B101B" (building prefix + room) while
-  //     Gemini extracts just "101B". We allow a SINGLE letter building prefix
-  //     so "b101b" matches token "101b".
-  //   - Dimension annotations like "134'-4"" give pure-numeric token "134".
-  //     We REQUIRE at least one letter in the token to skip these.
-  //   - Tokens appearing > 2 times are non-unique (e.g., a corridor type code
-  //     that repeats), so we skip them → no marker rather than a wrong one.
-  //   - When 2 hits exist (schedule + floor plan), we prefer the hit that is
-  //     NOT in the top 15% of the page (title block / schedule area).
-
-  // Returns true if itemNorm is an exact match or differs from tokenNorm by
-  // exactly one leading letter (handles building-prefix labels like "b101b").
-  function roomMatch(itemNorm: string, tokenNorm: string): boolean {
-    if (exactBoundaryMatch(itemNorm, tokenNorm)) return true;
-    // Allow one leading letter prefix (e.g. "b101b" matching "101b")
-    if (
-      itemNorm.length === tokenNorm.length + 1 &&
-      /^[a-z]/.test(itemNorm) &&
-      itemNorm.slice(1) === tokenNorm
-    )
-      return true;
-    return false;
-  }
-
-  // Verify that a room-number hit is at a FLOOR-PLAN position (inside a room)
-  // rather than a SCHEDULE TABLE position.
-  //
-  // Strategy: "context co-location." In the floor plan, the room number and its
-  // context words (unit type, room name, building prefix) are printed TOGETHER
-  // inside the same small room box — within 3.5% of page space. In a schedule
-  // table the same words are in separate columns, typically 5–15% apart in x.
-  //
-  // We extract context words from the full location string, excluding the room
-  // number token we already matched, and check whether ANY of those context
-  // words appears within CONTEXT_RADIUS of the hit.
-  //
-  // Examples:
-  //   "UNIT 1A 125A" token="125A" → look for "UNIT","1A" near hit
-  //   "CORR A118"    token="A118" → look for "CORR" near hit
-  //   "FITNESS A123" token="A123" → look for "FITNESS" near hit
-  const CONTEXT_RADIUS = 0.05; // 5% of page — snug enough to exclude table columns
-  function hasContextNearHit(locationSrc: string, tokenNorm: string, hx: number, hy: number): boolean {
-    // Collect all words/codes from the location string, excluding the matched token.
-    const words = (locationSrc.match(/\S+/g) ?? [])
-      .map((w) => normId(w))
-      .filter((w) => w.length >= 2 && w !== tokenNorm);
-    if (words.length === 0) return true; // no context to check → accept
-
-    for (const item of items) {
-      if (!item.str.trim()) continue;
-      const iNorm = normId(item.str);
-      // Accept if ANY context word is a substring match with this item
-      const matches = words.some(
-        (w) =>
-          iNorm === w ||
-          (w.length >= 3 && iNorm.includes(w)) ||
-          (iNorm.length >= 3 && w.includes(iNorm)),
-      );
-      if (!matches) continue;
-      const [, , , , tx, ty] = item.transform;
-      const ix = tx / pageW;
-      const iy = 1 - ty / pageH;
-      const dx = ix - hx;
-      const dy = iy - hy;
-      if (Math.sqrt(dx * dx + dy * dy) <= CONTEXT_RADIUS) return true;
-    }
-    return false; // no context word found near the hit → likely a schedule entry
-  }
-
+  // ── Pass 1: room-number token matching ────────────────────────────────────
   const locationSource = [sign.location, sign.messageContent].filter(Boolean).join(" ");
   if (locationSource) {
-    // Extract tokens that contain BOTH letters and digits — this filters out
-    // pure-numeric dimension values (e.g. "134") while keeping "101B", "A105".
-    const roomTokens = (
+    const roomTokens: string[] = (
       locationSource.match(/\b(?:[A-Za-z]{1,2}\d{2,4}[A-Za-z]?|\d{2,4}[A-Za-z]{1,2})\b/g) ?? []
     )
-      .filter((t) => t.length >= 3)
-      .sort((a, b) => b.length - a.length); // longest (most specific) first
-
-    const runsForRoom = buildTextRuns(items);
+      .filter((t: string) => t.length >= 3)
+      .sort((a: string, b: string) => b.length - a.length);
 
     for (const token of roomTokens) {
       const tokenNorm = normId(token);
-      type RoomHit = { x: number; y: number; raw: string };
-      const hits: RoomHit[] = [];
+      const hits: { x: number; y: number }[] = [];
 
-      // Search individual items
-      for (const item of items) {
-        if (!item.str.trim()) continue;
-        const iNorm = normId(item.str);
-        if (roomMatch(iNorm, tokenNorm)) {
-          const [, , , , tx, ty] = item.transform;
-          hits.push({
-            x: Math.min(1, Math.max(0, tx / pageW)),
-            y: Math.min(1, Math.max(0, 1 - ty / pageH)),
-            raw: item.str,
-          });
+      for (const p of phrases) {
+        if (roomMatch(normId(p.text), tokenNorm)) {
+          hits.push({ x: (p.x0 + p.x1) / 2, y: (p.y0 + p.y1) / 2 });
         }
       }
 
-      // Search text runs (per-character CAD fragmentation)
-      if (hits.length === 0) {
-        for (const run of runsForRoom) {
-          const rNorm = normId(run.text);
-          if (roomMatch(rNorm, tokenNorm)) {
-            hits.push({
-              x: Math.min(1, Math.max(0, run.midX / pageW)),
-              y: Math.min(1, Math.max(0, 1 - run.midY / pageH)),
-              raw: run.text,
-            });
-          }
-        }
-      }
+      if (hits.length === 0 || hits.length > 2) continue;
 
-      if (hits.length === 0 || hits.length > 2) continue; // not found or too ambiguous
+      const floorPlanHits = hits.filter((h) =>
+        hasContextNearHitInPhrases(phrases, locationSource, tokenNorm, h.x, h.y),
+      );
+      if (floorPlanHits.length === 0) continue;
 
-      // ── Floor-plan verification ────────────────────────────────────────────
-      // Keep only hits where the location's context words appear within
-      // CONTEXT_RADIUS of the hit — confirming it's a floor-plan room label,
-      // not a schedule-table entry (where the same text is in distant columns).
-      const floorPlanHits = hits.filter((h) => hasContextNearHit(locationSource, tokenNorm, h.x, h.y));
-
-      if (floorPlanHits.length === 0) continue; // all hits are in schedule rows → skip
-
-      // Among floor-plan hits, if 2 exist prefer non-top-15%
       const preferred =
         floorPlanHits.length === 2
           ? (floorPlanHits.find((h) => h.y > 0.15) ?? floorPlanHits[0]!)
           : floorPlanHits[0]!;
 
-      return { x: preferred.x, y: preferred.y, matched: token };
+      return { x: preferred.x, y: preferred.y, matched: token, score: 0.85 };
     }
   }
 
-  // ── No reliable position found — return null (no marker) ─────────────────
-  // Better to show no dot than a wrong one. The sign row will still appear
-  // in the review table; the user can manually click to place it.
+  // ── Pass 2: fuzzy phrase match ─────────────────────────────────────────────
+  if (locationSource) {
+    let bestScore = 0;
+    let bestPhrase: PdfPhrase | null = null;
+    for (const p of phrases) {
+      const score = phraseMatchScore(p.text, locationSource);
+      if (score > bestScore) { bestScore = score; bestPhrase = p; }
+    }
+    if (bestScore >= 0.55 && bestPhrase) {
+      return {
+        x: (bestPhrase.x0 + bestPhrase.x1) / 2,
+        y: (bestPhrase.y0 + bestPhrase.y1) / 2,
+        matched: bestPhrase.text,
+        score: bestScore,
+      };
+    }
+  }
+
   return null;
 }
 
@@ -515,8 +409,8 @@ export function SignReviewModal({
   const [dirty, setDirty] = useState(false);
 
   // ── Highlight / marker state ────────────────────────────────────────────
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const [pdfDoc, setPdfDoc] = useState<any | null>(null);
+  type ServerPhraseData = { pageWidth: number; pageHeight: number; phrases: PdfPhrase[] };
+  const [serverPhrases, setServerPhrases] = useState<ServerPhraseData | null>(null);
   const [textMarkers, setTextMarkers] = useState<TextMarker[]>([]);
   const [nativeSize, setNativeSize] = useState<{ w: number; h: number } | null>(null);
 
@@ -565,142 +459,124 @@ export function SignReviewModal({
     (s) => s.jobFileId === sign.jobFileId && (s.pageNumber ?? 1) === pageNumber
   );
 
-  // Load PDF document for text extraction (separate from react-pdf rendering).
-  // Uses state (not a ref) so that the text-extraction effect re-runs once the
-  // async load completes. We pass a copy of pdfData so pdfjs can transfer the
-  // underlying ArrayBuffer without affecting the copy used by react-pdf.
+  // Fetch server-extracted phrase list whenever the file or page changes.
+  // The server groups adjacent pdfjs items into phrases and returns full bboxes
+  // so the client can use bbox centres for marker placement.
   useEffect(() => {
-    if (!pdfBuffer) return;
-    setPdfDoc(null);
-    let destroyed = false;
-    // Fresh Uint8Array copy — pdfjs transfers the underlying ArrayBuffer, so we
-    // must never pass the same buffer reference that react-pdf already consumed.
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const task = (pdfjs as any).getDocument({ data: new Uint8Array(pdfBuffer.slice(0)) });
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    task.promise.then((doc: any) => {
-      if (!destroyed) setPdfDoc(doc);
-    }).catch(() => { /* silently ignore extraction errors */ });
-    return () => {
-      destroyed = true;
-      task.destroy?.();
-    };
-  }, [pdfBuffer]);
+    if (!file) {
+      setServerPhrases(null);
+      return;
+    }
+    setServerPhrases(null);
+    let cancelled = false;
+    apiFetch(`/api/jobs/${jobId}/files/${file.id}/pages/${pageNumber}/words`)
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data: { pageWidth: number; pageHeight: number; phrases: PdfPhrase[] } | null) => {
+        if (!cancelled && data) setServerPhrases(data);
+      })
+      .catch(() => { /* silently fail — ghost marker will appear for active sign */ });
+    return () => { cancelled = true; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [file?.id, pageNumber, jobId]);
 
-  // Extract text items for the current page and compute markers.
-  // activeSign.id is in deps so re-runs when user clicks a marker, recomputing
-  // colors (green for active, yellow for others) without ever clearing them first.
+  // Compute text markers from server phrases.
+  // activeSign.id is a dep so colors re-compute when user clicks a marker.
   useEffect(() => {
-    if (!pdfDoc) {
+    if (!serverPhrases) {
       setTextMarkers([]);
       setTextSearchStatus("idle");
       return;
     }
+
+    // Set native page size from server data so the SVG overlay scales correctly.
+    setNativeSize({ w: serverPhrases.pageWidth, h: serverPhrases.pageHeight });
+
     if (signsOnCurrentPage.length === 0) {
       setTextMarkers([]);
       setTextSearchStatus("idle");
       return;
     }
 
-    let cancelled = false;
+    const markers: TextMarker[] = [];
+    let currentSignFound = false;
+    const { phrases } = serverPhrases;
 
-    pdfDoc.getPage(pageNumber).then((page: { getViewport: (o: { scale: number }) => { width: number; height: number }; getTextContent: () => Promise<{ items: PdfTextItem[] }> }) => {
-      if (cancelled) return;
-      const viewport = page.getViewport({ scale: 1.0 });
-      const pageW = viewport.width;
-      const pageH = viewport.height;
+    for (const s of signsOnCurrentPage) {
+      const isCurrent = s.id === activeSign.id;
+      const color = isCurrent ? "#22c55e" : (s.manuallyAdded ? "#a855f7" : "#eab308");
 
-      setNativeSize({ w: pageW, h: pageH });
-
-      page.getTextContent().then((content) => {
-        if (cancelled) return;
-
-        const markers: TextMarker[] = [];
-        let currentSignFound = false;
-
-        for (const s of signsOnCurrentPage) {
-          const isCurrent = s.id === activeSign.id;
-          const color = isCurrent ? "#22c55e" : (s.manuallyAdded ? "#a855f7" : "#eab308");
-
-          // Only use stored coordinates for manually-placed markers.
-          // AI-extracted signs run text search (stored coords from visual extraction
-          // are unreliable Gemini guesses — text search is far more accurate).
-          if (s.manuallyAdded && s.xPos != null && s.yPos != null) {
-            markers.push({
-              x: s.xPos,
-              y: s.yPos,
-              signId: s.id,
-              color,
-              label: s.signIdentifier ?? s.signType?.slice(0, 6) ?? "NEW",
-              isCurrent,
-            });
-            if (isCurrent) currentSignFound = true;
-            continue;
-          }
-
-          const loc = findSignLocation(content.items, pageW, pageH, s);
-          if (loc) {
-            markers.push({
-              x: loc.x,
-              y: loc.y,
-              signId: s.id,
-              color,
-              label: s.signIdentifier ?? s.signType?.slice(0, 6) ?? "SIGN",
-              isCurrent,
-            });
-            if (isCurrent) currentSignFound = true;
-          }
-        }
-
-        // If the active sign is on this page but we couldn't locate it, add a
-        // ghost marker at the top-center so the user still sees a green dot.
-        if (!currentSignFound && signsOnCurrentPage.some((s) => s.id === activeSign.id)) {
-          markers.push({
-            x: 0.5,
-            y: 0.08,
-            signId: activeSign.id,
-            color: "#22c55e",
-            label: "?",
-            isCurrent: true,
-          });
-        }
-
-        // ── Cluster deduplication: spread markers that landed at the same
-        // position into a small circle so they remain individually clickable.
-        // This handles residual cases where text-search still finds the same
-        // PDF text item for multiple signs (e.g., a legend row that appears
-        // multiple times in the text layer at exactly the same coordinate).
-        const CLUSTER_EPS = 0.015; // ~1.5% of page width/height
-        const posGroups = new Map<string, number[]>();
-        markers.forEach((m, i) => {
-          const key = `${Math.round(m.x / CLUSTER_EPS)},${Math.round(m.y / CLUSTER_EPS)}`;
-          if (!posGroups.has(key)) posGroups.set(key, []);
-          posGroups.get(key)!.push(i);
+      // Manually-placed markers: use stored coordinates directly.
+      if (s.manuallyAdded && s.xPos != null && s.yPos != null) {
+        markers.push({
+          x: s.xPos,
+          y: s.yPos,
+          signId: s.id,
+          color,
+          label: s.signIdentifier ?? s.signType?.slice(0, 6) ?? "NEW",
+          isCurrent,
+          placementScore: 1.0,
         });
-        for (const indices of posGroups.values()) {
-          if (indices.length <= 1) continue;
-          const cx = markers[indices[0]!]!.x;
-          const cy = markers[indices[0]!]!.y;
-          const radius = Math.min(0.04, 0.015 + 0.003 * (indices.length - 2)); // capped at 4% of page
-          indices.forEach((idx, k) => {
-            const angle = (2 * Math.PI * k) / indices.length - Math.PI / 2;
-            markers[idx]!.x = Math.min(1, Math.max(0, cx + radius * Math.cos(angle)));
-            markers[idx]!.y = Math.min(1, Math.max(0, cy + radius * Math.sin(angle)));
-          });
-        }
+        if (isCurrent) currentSignFound = true;
+        continue;
+      }
 
-        setTextMarkers(markers);
-        if (signsOnCurrentPage.some((s) => s.id === activeSign.id)) {
-          setTextSearchStatus(currentSignFound ? "found" : "not-found");
-        } else {
-          setTextSearchStatus("idle");
-        }
+      const loc = findSignLocationFromPhrases(phrases, s);
+      if (loc) {
+        markers.push({
+          x: loc.x,
+          y: loc.y,
+          signId: s.id,
+          color,
+          label: s.signIdentifier ?? s.signType?.slice(0, 6) ?? "SIGN",
+          isCurrent,
+          placementScore: loc.score,
+        });
+        if (isCurrent) currentSignFound = true;
+      }
+    }
+
+    // Ghost marker for active sign when text search fails — user can still see
+    // the green dot and drag it to the correct position.
+    if (!currentSignFound && signsOnCurrentPage.some((s) => s.id === activeSign.id)) {
+      markers.push({
+        x: 0.5,
+        y: 0.08,
+        signId: activeSign.id,
+        color: "#22c55e",
+        label: "?",
+        isCurrent: true,
+        placementScore: 0,
       });
-    });
+    }
 
-    return () => { cancelled = true; };
+    // ── Cluster deduplication ────────────────────────────────────────────────
+    const CLUSTER_EPS = 0.015;
+    const posGroups = new Map<string, number[]>();
+    markers.forEach((m, i) => {
+      const key = `${Math.round(m.x / CLUSTER_EPS)},${Math.round(m.y / CLUSTER_EPS)}`;
+      if (!posGroups.has(key)) posGroups.set(key, []);
+      posGroups.get(key)!.push(i);
+    });
+    for (const indices of posGroups.values()) {
+      if (indices.length <= 1) continue;
+      const cx = markers[indices[0]!]!.x;
+      const cy = markers[indices[0]!]!.y;
+      const radius = Math.min(0.04, 0.015 + 0.003 * (indices.length - 2));
+      indices.forEach((idx, k) => {
+        const angle = (2 * Math.PI * k) / indices.length - Math.PI / 2;
+        markers[idx]!.x = Math.min(1, Math.max(0, cx + radius * Math.cos(angle)));
+        markers[idx]!.y = Math.min(1, Math.max(0, cy + radius * Math.sin(angle)));
+      });
+    }
+
+    setTextMarkers(markers);
+    if (signsOnCurrentPage.some((s) => s.id === activeSign.id)) {
+      setTextSearchStatus(currentSignFound ? "found" : "not-found");
+    } else {
+      setTextSearchStatus("idle");
+    }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pdfDoc, pageNumber, sign.id, signsOnCurrentPage.length, activeSign.id]);
+  }, [serverPhrases, pageNumber, sign.id, signsOnCurrentPage.length, activeSign.id]);
 
   const handleField = useCallback(
     (field: keyof FormState, value: string | boolean) => {
@@ -1123,6 +999,7 @@ export function SignReviewModal({
                         const cy = m.y * renderedH;
                         const r = m.isCurrent ? 18 : 12;
                         const isHovered = m.signId === hoveredMarkerId;
+                        const lowConfidence = m.placementScore < 0.7 && !m.isCurrent;
                         return (
                           <g key={m.signId}>
                             {/* Outer glow ring for active sign */}
@@ -1134,6 +1011,15 @@ export function SignReviewModal({
                                 opacity={0.7}
                               />
                             )}
+                            {/* Dashed ring for low-confidence placement */}
+                            {lowConfidence && (
+                              <circle
+                                cx={cx} cy={cy} r={r + 5}
+                                fill="none" stroke={m.color}
+                                strokeWidth={1} strokeDasharray="3 3"
+                                opacity={0.45}
+                              />
+                            )}
                             {/* Hover ring */}
                             {isHovered && !m.isCurrent && (
                               <circle
@@ -1142,14 +1028,17 @@ export function SignReviewModal({
                                 strokeWidth={1} opacity={0.5}
                               />
                             )}
-                            {/* Filled circle */}
+                            {/* Filled circle — semi-transparent for low-confidence */}
                             <circle
                               cx={cx} cy={cy} r={r}
-                              fill={`${m.color}33`} stroke={m.color}
+                              fill={`${m.color}${lowConfidence ? "22" : "33"}`}
+                              stroke={m.color}
                               strokeWidth={m.isCurrent ? 2.5 : 1.5}
+                              strokeDasharray={lowConfidence ? "4 2" : undefined}
+                              opacity={lowConfidence ? 0.7 : 1}
                             />
                             {/* Pin dot */}
-                            <circle cx={cx} cy={cy} r={3} fill={m.color} />
+                            <circle cx={cx} cy={cy} r={3} fill={m.color} opacity={lowConfidence ? 0.6 : 1} />
                             {/* Label */}
                             <text
                               x={cx} y={cy - r - 5}
@@ -1157,6 +1046,7 @@ export function SignReviewModal({
                               fontSize={m.isCurrent ? 10 : 8}
                               fontWeight="bold" fontFamily="monospace"
                               style={{ userSelect: "none" }}
+                              opacity={lowConfidence ? 0.7 : 1}
                             >
                               {m.label}
                             </text>
