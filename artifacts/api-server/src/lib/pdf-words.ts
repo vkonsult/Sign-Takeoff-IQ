@@ -180,25 +180,40 @@ export async function extractPagePhrases(
   };
 
   function toViewportItem(item: PdfjsTextItem): VpItem {
-    const tx = item.transform[4];
-    const ty = item.transform[5];
+    const [a, b, c, d, tx, ty] = item.transform;
     const w = item.width || 8;
     const h = Math.abs(item.height) || 8;
-    // Four corners of the glyph box in PDF user space:
-    //   bottom-left  (tx,   ty  )  ←  baseline origin
-    //   bottom-right (tx+w, ty  )
-    //   top-left     (tx,   ty+h)  ← "top" in PDF's y-up space
-    //   top-right    (tx+w, ty+h)
+    // Use the text transform matrix to find the correct advance and height
+    // directions in PDF user space.  Naively adding ±w to tx and ±h to ty
+    // only works for axis-aligned text (transform is a scale matrix).  For
+    // rotated pages (e.g. /Rotate = 90) the text is stored with a matching
+    // rotation in the CTM, so its advance direction is (a,b) in user space,
+    // NOT the +x axis.
+    //
+    //   advance unit vector : (ux, uy) = (a, b) / |(a, b)|
+    //   height  unit vector : (vx, vy) = (c, d) / |(c, d)|
+    //
+    // The four corners of the glyph's bounding parallelogram in user space:
+    //   baseline start  : (tx,        ty       )
+    //   baseline end    : (tx+ux*w,   ty+uy*w  )
+    //   ascender start  : (tx+vx*h,   ty+vy*h  )
+    //   ascender end    : (tx+ux*w+vx*h, ty+uy*w+vy*h)
+    const scaleX = Math.sqrt(a * a + b * b) || 1;
+    const scaleY = Math.sqrt(c * c + d * d) || 1;
+    const ux = a / scaleX;  // advance direction x
+    const uy = b / scaleX;  // advance direction y
+    const vx = c / scaleY;  // height  direction x
+    const vy = d / scaleY;  // height  direction y
     const corners: [number, number][] = [
-      viewport.convertToViewportPoint(tx,     ty    ),
-      viewport.convertToViewportPoint(tx + w, ty    ),
-      viewport.convertToViewportPoint(tx,     ty + h),
-      viewport.convertToViewportPoint(tx + w, ty + h),
+      viewport.convertToViewportPoint(tx,                   ty                  ),
+      viewport.convertToViewportPoint(tx + ux * w,          ty + uy * w         ),
+      viewport.convertToViewportPoint(tx + vx * h,          ty + vy * h         ),
+      viewport.convertToViewportPoint(tx + ux * w + vx * h, ty + uy * w + vy * h),
     ];
-    const vx0 = Math.min(...corners.map((c) => c[0]));
-    const vx1 = Math.max(...corners.map((c) => c[0]));
-    const vy0 = Math.min(...corners.map((c) => c[1]));
-    const vy1 = Math.max(...corners.map((c) => c[1]));
+    const vx0 = Math.min(...corners.map((pt) => pt[0]));
+    const vx1 = Math.max(...corners.map((pt) => pt[0]));
+    const vy0 = Math.min(...corners.map((pt) => pt[1]));
+    const vy1 = Math.max(...corners.map((pt) => pt[1]));
     return { item, vx0, vx1, vy0, vy1, vyC: (vy0 + vy1) / 2 };
   }
 
