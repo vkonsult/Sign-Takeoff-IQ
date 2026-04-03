@@ -262,10 +262,13 @@ async function _extractDoorMap(pdfPath: string, pageNum: number, pageWords: Page
         // 1. Bounding box aspect ratio 0.6–1.8 (quarter-circle is ~1.0 square)
         // 2. Bounding box normalised size 0.01–0.12 (per task spec)
         // 3. Minimum 6 pts to exclude tiny text-outline curves
-        // 4. Adjacent straight-segment (radius arm) with length ≈ arc radius (±40%)
-        //    A door swing always has at least one line segment from the pivot
-        //    to the arc start, approximately equal in length to the door radius.
-        // 5. Simple path: 1–8 segments (door swings are not complex shapes)
+        // 4. Simple path: 1–8 segments (door swings are not complex shapes)
+        //    NOTE: segCount starts at 0 for moveTo; lineTo/curveTo/closePath each add 1.
+        //    A bare quarter-circle arc M+C has segCount=1 — that IS a valid door arc shape.
+        // 5. Adjacent straight-segment (radius arm) check — ONLY for segCount>=2 paths:
+        //    Multi-segment paths must have a line segment ≈ arc radius to confirm door swing.
+        //    Single-curve paths (M+C, segCount=1) skip this: their radius arm is typically
+        //    in an adjacent constructPath operator (separate lineTo sub-path at same location).
         // 6. Pivot must be within page bounds (reject off-page title-block stamps)
         const minPts = 6;
         const maxPts = 200;
@@ -279,14 +282,17 @@ async function _extractDoorMap(pdfPath: string, pageNum: number, pageWords: Page
         const aspectRatio = normW / normH;
         if (aspectRatio < 0.6 || aspectRatio > 1.8) continue;
 
-        // Segment count: simple door swings have 2–8 segments
-        if (sp.segCount < 2 || sp.segCount > 8) continue;
+        // Segment count: door arcs have 1–8 segments
+        // (1 = bare M+C quarter-circle; 2+ = arc with radius arm(s) in same sub-path)
+        if (sp.segCount < 1 || sp.segCount > 8) continue;
 
-        // Adjacent line check: the sub-path must contain a straight segment whose
-        // length is within 40% of the arc radius (half the larger bbox dimension).
-        const arcRadiusPts = Math.max(w, h) / 2;
-        const lineOk = sp.maxLinePts >= arcRadiusPts * 0.6 && sp.maxLinePts <= arcRadiusPts * 1.4;
-        if (!lineOk) continue;
+        // Adjacent line check: only for paths with ≥2 segments (combined arc+arm).
+        // Bare M+C paths (segCount=1) skip this — their radius arm is a separate sub-path.
+        if (sp.segCount >= 2) {
+          const arcRadiusPts = Math.max(w, h) / 2;
+          const lineOk = sp.maxLinePts >= arcRadiusPts * 0.6 && sp.maxLinePts <= arcRadiusPts * 1.4;
+          if (!lineOk) continue;
+        }
 
         // Pivot within page bounds — reject off-page elements (title-block stamps)
         const rawPivotNx = sp.start.x / pageW;
