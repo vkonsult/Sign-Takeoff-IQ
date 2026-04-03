@@ -152,26 +152,43 @@ export async function extractPagePhrases(
     return a.transform[4] - b.transform[4];       // same line → left to right
   });
 
+  // Each group entry stores the text item plus the horizontal gap (pts) before it.
+  // We use the gap to decide whether to insert a word-boundary space on flush.
+  type GroupEntry = { item: PdfjsTextItem; gapPts: number };
+
   const phrases: PdfPhrase[] = [];
-  let group: PdfjsTextItem[] | null = null;
+  let group: GroupEntry[] | null = null;
 
   function flushGroup(): void {
     if (!group || group.length === 0) return;
 
-    const minX = Math.min(...group.map((i) => i.transform[4]));
-    const maxX = Math.max(...group.map((i) => i.transform[4] + i.width));
+    const items = group.map((e) => e.item);
+    const minX = Math.min(...items.map((i) => i.transform[4]));
+    const maxX = Math.max(...items.map((i) => i.transform[4] + i.width));
     // In PDF space y increases upward; transform[5] = baseline (bottom of glyph)
     // Top of glyph = baseline + height
-    const minBaseline = Math.min(...group.map((i) => i.transform[5]));
-    const maxBaseline = Math.max(...group.map((i) => i.transform[5]));
-    const maxH = Math.max(...group.map((i) => Math.abs(i.height)));
+    const minBaseline = Math.min(...items.map((i) => i.transform[5]));
+    const maxBaseline = Math.max(...items.map((i) => i.transform[5]));
+    const maxH = Math.max(...items.map((i) => Math.abs(i.height)));
 
     const topPdf = maxBaseline + (maxH || 8); // top edge (PDF space, y-up)
     const botPdf = minBaseline;               // bottom edge
 
+    // Reconstruct text: insert a space whenever the horizontal gap before an item
+    // exceeds 30 % of the previous character's width — this preserves word
+    // boundaries that were lost because pdfjs discards whitespace-only items.
+    let text = group[0]!.item.str;
+    for (let gi = 1; gi < group.length; gi++) {
+      const entry = group[gi]!;
+      const prevItemW = group[gi - 1]!.item.width || 8;
+      if (entry.gapPts > prevItemW * 0.3) text += " ";
+      text += entry.item.str;
+    }
+    text = text.trim().replace(/  +/g, " ");
+
     // Convert to normalised top-down coordinates
     phrases.push({
-      text: group.map((i) => i.str).join(""),
+      text,
       x0: Math.min(1, Math.max(0, minX / pageW)),
       x1: Math.min(1, Math.max(0, maxX / pageW)),
       y0: Math.min(1, Math.max(0, 1 - topPdf / pageH)), // top in top-down
@@ -182,25 +199,26 @@ export async function extractPagePhrases(
 
   for (const item of sorted) {
     if (!group) {
-      group = [item];
+      group = [{ item, gapPts: 0 }];
       continue;
     }
 
-    const prev = group[group.length - 1]!;
+    const prev = group[group.length - 1]!.item;
     const prevY = prev.transform[5];
     const prevX = prev.transform[4];
     const prevW = prev.width || 8;
     const currY = item.transform[5];
     const currX = item.transform[4];
 
+    const gap = currX - (prevX + prevW);
     const sameLine = Math.abs(currY - prevY) <= 3;
-    const adjacent = currX - (prevX + prevW) < prevW * 3;
+    const adjacent = gap < prevW * 3;
 
     if (sameLine && adjacent) {
-      group.push(item);
+      group.push({ item, gapPts: Math.max(0, gap) });
     } else {
       flushGroup();
-      group = [item];
+      group = [{ item, gapPts: 0 }];
     }
   }
   flushGroup();

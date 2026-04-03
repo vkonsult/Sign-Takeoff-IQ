@@ -219,8 +219,34 @@ function levenshteinSim(a: string, b: string): number {
 }
 
 /**
- * Combined phrase-match score: 70% token overlap + 30% Levenshtein similarity.
- * Operates on normalised (lower-case, punctuation stripped) forms.
+ * Token-level best-match score between a query token and a set of phrase tokens.
+ * Returns a value in [0, 1] reflecting the best possible match:
+ *   • Exact match → 1.0
+ *   • Prefix containment (one is a prefix of the other) → len_shorter / len_longer
+ *   • Levenshtein similarity for near-misses
+ */
+function bestTokenMatch(qtok: string, phraseTokens: string[]): number {
+  let best = 0;
+  for (const ptok of phraseTokens) {
+    if (qtok === ptok) return 1;
+    // Prefix/suffix containment: "STOR" → "STORAGE" or "STORAGE" → "STOR"
+    const [shorter, longer] = qtok.length <= ptok.length ? [qtok, ptok] : [ptok, qtok];
+    if (longer.startsWith(shorter)) {
+      best = Math.max(best, shorter.length / longer.length);
+    }
+    // Levenshtein similarity for close edits
+    best = Math.max(best, levenshteinSim(qtok, ptok));
+  }
+  return best;
+}
+
+/**
+ * Combined phrase-match score using token-level best-match Levenshtein.
+ * For each query token, finds the best matching phrase token (via exact match,
+ * prefix containment, or Levenshtein), then averages across all query tokens.
+ * This handles space-normalisation differences ("UNIT1A" ↔ "UNIT 1A") and
+ * partial word matches ("STOR" ↔ "STORAGE") that a whole-string edit distance
+ * would incorrectly penalise.
  */
 function phraseMatchScore(phraseText: string, query: string): number {
   const pn = phraseText.toLowerCase().replace(/[^a-z0-9]/g, " ").replace(/\s+/g, " ").trim();
@@ -228,10 +254,12 @@ function phraseMatchScore(phraseText: string, query: string): number {
   if (!pn || !qn) return 0;
   const pt = tokenize(pn);
   const qt = tokenize(qn);
-  const shared = pt.filter((tok) => qt.includes(tok)).length;
-  const tokenScore = shared / Math.max(pt.length, qt.length, 1);
-  const levScore = levenshteinSim(pn, qn);
-  return tokenScore * 0.7 + levScore * 0.3;
+  if (!pt.length || !qt.length) return 0;
+  let total = 0;
+  for (const qtok of qt) {
+    total += bestTokenMatch(qtok, pt);
+  }
+  return total / qt.length;
 }
 
 /**
@@ -315,7 +343,7 @@ function findSignLocationFromPhrases(
     const roomTokens: string[] = (
       locationSource.match(/\b(?:[A-Za-z]{1,2}\d{2,4}[A-Za-z]?|\d{2,4}[A-Za-z]{1,2})\b/g) ?? []
     )
-      .filter((t: string) => t.length >= 3)
+      .filter((t: string) => t.length >= 2)
       .sort((a: string, b: string) => b.length - a.length);
 
     for (const token of roomTokens) {
@@ -352,7 +380,7 @@ function findSignLocationFromPhrases(
       const score = phraseMatchScore(p.text, locationSource);
       if (score > bestScore) { bestScore = score; bestPhrase = p; }
     }
-    if (bestScore >= 0.55 && bestPhrase) {
+    if (bestScore >= 0.45 && bestPhrase) {
       return {
         x: (bestPhrase.x0 + bestPhrase.x1) / 2,
         y: (bestPhrase.y0 + bestPhrase.y1) / 2,
