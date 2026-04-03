@@ -509,6 +509,20 @@ function parseLocationParts(
 }
 
 /**
+ * Returns true if the typeToken looks like a residential unit type prefix.
+ * Used to restrict Gemini visual-locate to residential units only, preventing
+ * non-residential Pass 0.5 signs (e.g. mechanical rooms, stairs) from being
+ * unnecessarily sent to the vision endpoint.
+ */
+const RESIDENTIAL_UNIT_TYPE_RE = /^\s*(?:UNIT|SUITE|APT|APARTMENT|FLAT|CONDO|STUDIO|TOWNHOUSE|TH|PH|PENTHOUSE)\b/i;
+
+function isResidentialUnitLocation(location: string): boolean {
+  const { typeToken, numberToken } = parseLocationParts(location);
+  if (!typeToken || !numberToken) return false;
+  return RESIDENTIAL_UNIT_TYPE_RE.test(typeToken);
+}
+
+/**
  * Paired-cluster matching: requires both a unit-type phrase and a room-number
  * phrase to co-occur within CLUSTER_RADIUS on the page.
  *
@@ -1116,13 +1130,10 @@ export function SignReviewModal({
         continue;
       }
 
-      // Check if this sign is a paired-cluster sign that was already submitted to visual-locate
-      // (in-flight or completed). If so, suppress the annotation-band marker to avoid showing
-      // the wrong y≈0.247 position while Gemini locates the actual door.
+      // Suppress annotation-band text markers for residential-unit signs that were submitted
+      // to visual-locate (in-flight or completed). Non-residential signs are unaffected.
       const hasBeenSubmittedForVisualLocate = (() => {
-        if (!s.location) return false;
-        const { typeToken, numberToken } = parseLocationParts(s.location);
-        if (!typeToken || !numberToken) return false;
+        if (!s.location || !isResidentialUnitLocation(s.location)) return false;
         const pageKey = `${file?.id}:${pageNumber}`;
         return visualLocateQueriedRef.current.has(pageKey);
       })();
@@ -1212,12 +1223,13 @@ export function SignReviewModal({
     // Build marker map for anchor hints (annotation-band text-matched positions)
     const markerMap = new Map(textMarkers.map((m) => [m.signId, m]));
 
-    // Select paired-cluster signs that don't have a stored AI placement yet
+    // Select RESIDENTIAL-UNIT paired-cluster signs that don't have a stored AI placement yet.
+    // Restricting to residential-unit types (UNIT, SUITE, APT, etc.) ensures non-residential
+    // paired-cluster signs (MECH, STAIR, etc.) are unaffected by the visual-locate pass.
     const targetSigns = signsOnCurrentPage.filter((s) => {
       if (s.placementSource != null) return false; // already has stored AI/user placement
       if (!s.location) return false;
-      const { typeToken, numberToken } = parseLocationParts(s.location);
-      return typeToken != null && numberToken != null;
+      return isResidentialUnitLocation(s.location);
     });
 
     if (targetSigns.length === 0) return;
@@ -1256,11 +1268,12 @@ export function SignReviewModal({
         for (const r of data.results) {
           if (r.candidates.length === 0) {
             newFailed.add(r.signId);
-          } else {
-            // Auto-apply top candidate as gemini_vision (persists to DB immediately)
+          } else if (r.candidates.length === 1) {
+            // Single unambiguous candidate: auto-apply immediately as gemini_vision
             toAutoApply.push({ signId: r.signId, candidate: r.candidates[0]! });
-            // Store ALL candidates (including top) as numbered dots so user can see what was
-            // auto-chosen and click to override with any of them (numbered 1, 2, 3)
+          } else {
+            // Multiple plausible doors: require explicit user selection.
+            // Store all candidates as numbered dots (1, 2, 3) — user click persists.
             newCandidates.set(r.signId, r.candidates.slice(0, 3));
           }
         }
@@ -1995,16 +2008,81 @@ export function SignReviewModal({
                     );
                   })}
 
-                  {/* Visual candidate dots — numbered teal buttons showing all AI-suggested positions.
-                      Candidate #1 (index 0) is the auto-applied top pick; #2 and #3 are alternatives.
-                      All are shown as numbered dots; clicking any persists it as "user_confirmed". */}
+                  {/* AI-placed badge ON the marker — shown for the active sign with AI placement.
+                      Positioned below the marker dot; clicking it clears placement and re-runs visual-locate. */}
+                  {showOverlay && !drawMode && renderedW && renderedH && (() => {
+                    const currentMarker = textMarkers.find(
+                      (m) => m.signId === activeSign.id && m.isCurrent,
+                    );
+                    if (!currentMarker) return null;
+                    if (!activeSign.placementSource) return null;
+                    const cx = currentMarker.x * renderedW;
+                    const cy = currentMarker.y * renderedH;
+                    const r = 18; // active marker radius
+                    return (
+                      <button
+                        key={`ai-badge-${activeSign.id}`}
+                        title={`AI placed (${activeSign.placementSource === "gemini_vision" ? "auto" : "user confirmed"}) — click to reset and re-run`}
+                        onClick={async (e) => {
+                          e.stopPropagation();
+                          try {
+                            const resp = await apiFetch(`/api/extracted-signs/${activeSign.id}`, {
+                              method: "PATCH",
+                              headers: { "Content-Type": "application/json" },
+                              body: JSON.stringify({ xPos: null, yPos: null, placementSource: null }),
+                            });
+                            if (!resp.ok) return;
+                            const d = await resp.json() as { sign: ExtractedSign };
+                            setLocalSigns((prev) => prev.map((s) => s.id === activeSign.id ? d.sign : s));
+                            setActiveSign(d.sign);
+                            if (file) {
+                              visualLocateQueriedRef.current.delete(`${file.id}:${pageNumber}`);
+                            }
+                            setVisualLocateFailed((prev) => { const n = new Set(prev); n.delete(activeSign.id); return n; });
+                            setVisualCandidates((prev) => { const n = new Map(prev); n.delete(activeSign.id); return n; });
+                          } catch (err) {
+                            console.error("[visual-locate] marker badge reset failed:", err);
+                          }
+                        }}
+                        style={{
+                          position: "absolute",
+                          left: cx - 28,
+                          top: cy + r + 4,
+                          zIndex: 20,
+                          height: 18,
+                          paddingInline: 6,
+                          borderRadius: 4,
+                          background: "#06b6d4",
+                          color: "#fff",
+                          border: "none",
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          gap: 3,
+                          cursor: "pointer",
+                          fontSize: 9,
+                          fontWeight: "bold",
+                          fontFamily: "monospace",
+                          letterSpacing: "0.05em",
+                          pointerEvents: "all",
+                          whiteSpace: "nowrap",
+                        }}
+                      >
+                        ✦ AI · Reset
+                      </button>
+                    );
+                  })()}
+
+                  {/* Visual candidate dots — numbered teal buttons shown when Gemini returns 2+ candidates.
+                      (Single-candidate results are auto-applied immediately as gemini_vision.)
+                      Clicking any dot persists it as "user_confirmed" and clears the candidate list. */}
                   {showOverlay && !drawMode && renderedW && renderedH && (
                     Array.from(visualCandidates.entries()).flatMap(([signId, candidates]) =>
                       candidates.map((c, idx) => {
                         const cx = c.x * renderedW;
                         const cy = c.y * renderedH;
                         const dotNumber = idx + 1;
-                        const isTopPick = idx === 0;
+                        const isTopPick = idx === 0; // Highest-confidence candidate styled distinctly
                         return (
                           <button
                             key={`vc-${signId}-${idx}`}
