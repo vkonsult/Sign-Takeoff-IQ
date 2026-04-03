@@ -982,10 +982,14 @@ const VisualLocateSchema = z.object({
   fileId: z.string().uuid(),
   pageNumber: z.number().int().positive(),
   signs: z.array(z.object({
-    id: z.string().uuid(),
+    signId: z.string().uuid(),
     signType: z.string().nullable().optional(),
     location: z.string().nullable().optional(),
     signIdentifier: z.string().nullable().optional(),
+    roomNumber: z.string().nullable().optional(),
+    typeToken: z.string().nullable().optional(),
+    anchorX: z.number().min(0).max(1).nullable().optional(),
+    anchorY: z.number().min(0).max(1).nullable().optional(),
   })).min(1).max(20),
 });
 

@@ -977,7 +977,10 @@ export function SignReviewModal({
   const [addingSign, setAddingSign] = useState(false);
 
   // ── Visual-locate (Gemini door placement) ───────────────────────────────
+  // visualCandidates: signId → alternative candidates (index 1+) to show as numbered dots
   const [visualCandidates, setVisualCandidates] = useState<Map<string, VisualCandidate[]>>(new Map());
+  // visualLocateFailed: signs for which Gemini returned no candidates → suppress marker
+  const [visualLocateFailed, setVisualLocateFailed] = useState<Set<string>>(new Set());
   const [visualLocating, setVisualLocating] = useState(false);
   const visualLocateQueriedRef = useRef<Set<string>>(new Set());
 
@@ -1094,6 +1097,30 @@ export function SignReviewModal({
         continue;
       }
 
+      // Suppress annotation-band text markers for signs awaiting or having failed visual-locate.
+      // Visual candidates (numbered dots) or AI-placed markers will appear instead.
+      if (visualLocateFailed.has(s.id)) {
+        // No marker at all — Gemini confirmed it couldn't find the door
+        if (isCurrent) currentSignFound = false; // will get ghost marker below
+        continue;
+      }
+      if (visualCandidates.has(s.id)) {
+        // Alternatives exist for this sign (top candidate already auto-applied above)
+        continue;
+      }
+
+      // Check if this sign is a paired-cluster sign that was already submitted to visual-locate
+      // (in-flight or completed). If so, suppress the annotation-band marker to avoid showing
+      // the wrong y≈0.247 position while Gemini locates the actual door.
+      const hasBeenSubmittedForVisualLocate = (() => {
+        if (!s.location) return false;
+        const { typeToken, numberToken } = parseLocationParts(s.location);
+        if (!typeToken || !numberToken) return false;
+        const pageKey = `${file?.id}:${pageNumber}`;
+        return visualLocateQueriedRef.current.has(pageKey);
+      })();
+      if (hasBeenSubmittedForVisualLocate) continue;
+
       const loc = findSignLocationFromPhrases(phrases, s);
       if (loc) {
         markers.push({
@@ -1157,30 +1184,38 @@ export function SignReviewModal({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [serverPhrases, phrasesFetchFailed, pageNumber, sign.id, signsOnCurrentPage.length, activeSign.id]);
 
-  // Clear visual candidates when the page or file changes
+  // Clear visual candidates and failed set when the page or file changes
   useEffect(() => {
     setVisualCandidates(new Map());
+    setVisualLocateFailed(new Set());
   }, [file?.id, pageNumber]);
 
-  // Auto-fire Gemini visual-locate for unplaced paired-cluster signs after phrases load.
-  // A "paired-cluster" sign has BOTH a unit-type token ("UNIT 1A") AND a room-number
-  // token ("417B") in its location but was not placed by the text-matching passes.
+  // Auto-fire Gemini visual-locate for paired-cluster signs after phrases+markers are computed.
+  // Fires for ALL paired-cluster signs (typeToken + numberToken) that have not been confirmed
+  // yet. Excludes signs with stored placementSource (already confirmed in a prior session).
+  // After response:
+  //   - Top candidate (index 0) → auto-PATCH as "gemini_vision" (AI-placed)
+  //   - Alternatives (indices 1+) → stored in visualCandidates for user to optionally click
+  //   - No candidates → sign added to visualLocateFailed (marker suppressed)
   useEffect(() => {
     if (!file || !serverPhrases) return;
 
     const pageKey = `${file.id}:${pageNumber}`;
     if (visualLocateQueriedRef.current.has(pageKey)) return;
 
-    const needsVisualLocate = signsOnCurrentPage.filter((s) => {
-      if (s.xPos != null && s.yPos != null) return false;
+    // Build marker map for anchor hints (annotation-band text-matched positions)
+    const markerMap = new Map(textMarkers.map((m) => [m.signId, m]));
+
+    // Select paired-cluster signs that don't have a stored AI placement yet
+    const targetSigns = signsOnCurrentPage.filter((s) => {
+      if (s.placementSource != null) return false; // already has stored AI/user placement
       if (!s.location) return false;
       const { typeToken, numberToken } = parseLocationParts(s.location);
       return typeToken != null && numberToken != null;
     });
 
-    if (needsVisualLocate.length === 0) return;
+    if (targetSigns.length === 0) return;
 
-    // Mark as queried so we don't re-fire on re-renders
     visualLocateQueriedRef.current.add(pageKey);
     setVisualLocating(true);
 
@@ -1190,30 +1225,75 @@ export function SignReviewModal({
       body: JSON.stringify({
         fileId: file.id,
         pageNumber,
-        signs: needsVisualLocate.map((s) => ({
-          id: s.id,
-          signType: s.signType,
-          location: s.location,
-          signIdentifier: s.signIdentifier,
-        })),
+        signs: targetSigns.map((s) => {
+          const { typeToken, numberToken } = parseLocationParts(s.location!);
+          const marker = markerMap.get(s.id);
+          return {
+            signId: s.id,
+            signType: s.signType,
+            location: s.location,
+            signIdentifier: s.signIdentifier,
+            roomNumber: numberToken,
+            typeToken: typeToken,
+            anchorX: marker?.x ?? null,
+            anchorY: marker?.y ?? null,
+          };
+        }),
       }),
     })
       .then((r) => r.ok ? r.json() : Promise.reject(new Error("non-ok")))
       .then((data: { results: { signId: string; candidates: VisualCandidate[] }[] }) => {
-        setVisualCandidates((prev) => {
-          const next = new Map(prev);
-          for (const r of data.results) {
-            if (r.candidates.length > 0) {
-              next.set(r.signId, r.candidates.slice(0, 3));
+        const toAutoApply: Array<{ signId: string; candidate: VisualCandidate }> = [];
+        const newCandidates = new Map<string, VisualCandidate[]>();
+        const newFailed = new Set<string>();
+
+        for (const r of data.results) {
+          if (r.candidates.length === 0) {
+            newFailed.add(r.signId);
+          } else {
+            // Auto-apply top candidate as gemini_vision
+            toAutoApply.push({ signId: r.signId, candidate: r.candidates[0]! });
+            // Store alternatives for the user to optionally override
+            if (r.candidates.length > 1) {
+              newCandidates.set(r.signId, r.candidates.slice(1, 3));
             }
           }
+        }
+
+        setVisualLocateFailed((prev) => {
+          const next = new Set(prev);
+          newFailed.forEach((id) => next.add(id));
           return next;
         });
+        setVisualCandidates((prev) => {
+          const next = new Map(prev);
+          newCandidates.forEach((v, k) => next.set(k, v));
+          return next;
+        });
+
+        // Auto-PATCH top candidates as gemini_vision (fire-and-forget — UI updates via setLocalSigns)
+        for (const { signId, candidate } of toAutoApply) {
+          apiFetch(`/api/extracted-signs/${signId}`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              xPos: candidate.x,
+              yPos: candidate.y,
+              placementSource: "gemini_vision",
+            }),
+          })
+            .then((r) => r.ok ? r.json() : Promise.reject(new Error("non-ok")))
+            .then((d: { sign: ExtractedSign }) => {
+              setLocalSigns((prev) => prev.map((s) => s.id === signId ? d.sign : s));
+              if (signId === activeSign.id) setActiveSign(d.sign);
+            })
+            .catch((err) => console.error(`[visual-locate] auto-apply failed for ${signId}:`, err));
+        }
       })
-      .catch((err) => console.error("[visual-locate] failed:", err))
+      .catch((err) => console.error("[visual-locate] request failed:", err))
       .finally(() => setVisualLocating(false));
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [serverPhrases, file?.id, pageNumber]);
+  }, [serverPhrases, textMarkers, file?.id, pageNumber]);
 
   const handleField = useCallback(
     (field: keyof FormState, value: string | boolean) => {
@@ -1418,10 +1498,35 @@ export function SignReviewModal({
             </span>
           )}
           {(activeSign.placementSource === "user_confirmed" || activeSign.placementSource === "gemini_vision") && (
-            <span className="flex items-center gap-1 text-[10px] font-display font-bold uppercase tracking-wider border px-2 py-0.5 rounded" style={{ color: "#06b6d4", borderColor: "#06b6d455", background: "#06b6d410" }}>
+            <button
+              title="Click to clear AI placement and re-run visual locate"
+              onClick={async () => {
+                try {
+                  const r = await apiFetch(`/api/extracted-signs/${activeSign.id}`, {
+                    method: "PATCH",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ xPos: null, yPos: null, placementSource: null }),
+                  });
+                  if (!r.ok) return;
+                  const d = await r.json() as { sign: ExtractedSign };
+                  setLocalSigns((prev) => prev.map((s) => s.id === activeSign.id ? d.sign : s));
+                  setActiveSign(d.sign);
+                  // Allow visual-locate to re-run for this page
+                  if (file) {
+                    visualLocateQueriedRef.current.delete(`${file.id}:${pageNumber}`);
+                  }
+                  setVisualLocateFailed((prev) => { const n = new Set(prev); n.delete(activeSign.id); return n; });
+                  setVisualCandidates((prev) => { const n = new Map(prev); n.delete(activeSign.id); return n; });
+                } catch (err) {
+                  console.error("[visual-locate] reset failed:", err);
+                }
+              }}
+              className="flex items-center gap-1 text-[10px] font-display font-bold uppercase tracking-wider border px-2 py-0.5 rounded transition-opacity hover:opacity-70"
+              style={{ color: "#06b6d4", borderColor: "#06b6d455", background: "#06b6d410" }}
+            >
               <Sparkles className="w-3 h-3" />
-              AI Placed
-            </span>
+              AI Placed · Reset
+            </button>
           )}
           {activeSign.reviewFlag && (
             <span className="flex items-center gap-1 text-[10px] font-display font-bold uppercase tracking-wider text-primary border border-primary/30 bg-primary/10 px-2 py-0.5 rounded">
@@ -1526,7 +1631,7 @@ export function SignReviewModal({
             {!visualLocating && visualCandidates.size > 0 && (
               <span className="flex items-center gap-1 text-[10px] font-display font-semibold uppercase tracking-wide px-2 py-1 rounded" style={{ color: "#06b6d4", background: "#06b6d410", border: "1px solid #06b6d455" }}>
                 <Sparkles className="w-3 h-3" />
-                {Array.from(visualCandidates.values()).reduce((n, c) => n + c.length, 0)} candidate{Array.from(visualCandidates.values()).reduce((n, c) => n + c.length, 0) !== 1 ? "s" : ""} — click to confirm
+                {Array.from(visualCandidates.values()).reduce((n, c) => n + c.length, 0)} alt. position{Array.from(visualCandidates.values()).reduce((n, c) => n + c.length, 0) !== 1 ? "s" : ""} available
               </span>
             )}
 
@@ -1885,40 +1990,42 @@ export function SignReviewModal({
                     );
                   })}
 
-                  {/* Visual candidate dots — numbered teal buttons for AI door suggestions */}
+                  {/* Visual candidate dots — numbered teal buttons for AI alternative suggestions.
+                      Candidate index 0 was auto-applied; these are alternatives (index 1+) shown as
+                      "Alt 2" / "Alt 3" buttons the user can click to override the auto-placed position. */}
                   {showOverlay && !drawMode && renderedW && renderedH && (
-                    Array.from(visualCandidates.entries()).flatMap(([signId, candidates]) =>
-                      candidates.map((c, i) => {
+                    Array.from(visualCandidates.entries()).flatMap(([signId, altCandidates]) =>
+                      altCandidates.map((c, altIdx) => {
                         const cx = c.x * renderedW;
                         const cy = c.y * renderedH;
+                        const altNumber = altIdx + 2; // starts at 2 (1 was auto-applied)
                         return (
                           <button
-                            key={`vc-${signId}-${i}`}
-                            title={`AI candidate ${i + 1}: ${c.description}\nConfidence: ${Math.round(c.confidence * 100)}%\nClick to confirm placement`}
+                            key={`vc-${signId}-${altIdx}`}
+                            title={`AI alternative ${altNumber}: ${c.description}\nConfidence: ${Math.round(c.confidence * 100)}%\nClick to use this position instead`}
                             onClick={() => confirmVisualPlacement(signId, c)}
                             style={{
                               position: "absolute",
-                              left: cx - 14,
-                              top: cy - 14,
-                              width: 28,
-                              height: 28,
+                              left: cx - 16,
+                              top: cy - 16,
+                              width: 32,
+                              height: 32,
                               zIndex: 15,
                               cursor: "pointer",
                               borderRadius: "50%",
-                              border: `2px solid #06b6d4`,
-                              background: i === 0 ? "#06b6d455" : "#06b6d422",
+                              border: "2px solid #06b6d4",
+                              background: "#06b6d422",
                               color: "#06b6d4",
                               fontFamily: "monospace",
                               fontWeight: "bold",
-                              fontSize: 12,
+                              fontSize: 11,
                               display: "flex",
                               alignItems: "center",
                               justifyContent: "center",
                               pointerEvents: "all",
-                              boxShadow: i === 0 ? "0 0 8px #06b6d477" : "none",
                             }}
                           >
-                            {i + 1}
+                            {altNumber}
                           </button>
                         );
                       })

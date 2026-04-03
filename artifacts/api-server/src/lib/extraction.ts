@@ -1953,37 +1953,55 @@ export interface VisualLocateResult {
   candidates: VisualLocateCandidate[];
 }
 
-const VISUAL_LOCATE_PROMPT = `You are looking at a single floor plan page. Your task is to find the exact entrance or door location for each residential unit sign listed below.
+const VISUAL_LOCATE_PROMPT = `You are looking at a single architectural floor plan page. Your task is to find the exact entrance or door opening location for each residential unit sign listed below.
 
-The coordinates you return must be normalized values relative to the page:
+The coordinates you return must be normalized values relative to the PAGE (not the paper):
   x = 0.0 means the left edge,  x = 1.0 means the right edge
   y = 0.0 means the top edge,   y = 1.0 means the bottom edge
 
-For each sign, scan the floor plan and return the (x, y) position of its entrance/door opening — the threshold point a visitor would stand at when entering the room.
+Each sign entry includes:
+- signId: unique identifier you MUST copy exactly into your response
+- location: the full sign location string (e.g. "UNIT 1A 417B")
+- typeToken: the unit type part (e.g. "UNIT 1A")
+- roomNumber: the specific room/unit number (e.g. "417B")
+- anchorHint: approximate (x,y) of the annotation-band label for that room — the ACTUAL door is physically nearby but at a different y-position; use this as a search anchor
 
-Signs to locate (JSON input):
+Signs to locate:
 SIGNS_PLACEHOLDER
 
 Return a JSON array with exactly one object per sign:
 [
   {
-    "signId": "<exact id from input>",
+    "signId": "<exact signId from input — do not modify>",
     "candidates": [
-      {"x": 0.45, "y": 0.32, "description": "Door gap at unit label in east corridor", "confidence": 0.85}
+      {"x": 0.45, "y": 0.32, "description": "Door gap at unit 417B in east corridor", "confidence": 0.85}
     ]
   }
 ]
 
 Rules:
+- Return exactly one object per signId, even if you return empty candidates.
 - Provide up to 3 candidates per sign ordered by confidence (highest first).
 - x and y MUST be normalized floats in [0.0, 1.0].
-- If no entrance is visible for a sign, return an empty candidates array for it.
+- Focus on the door threshold/opening, not the label position.
+- If no door is visible for a sign, return an empty candidates array.
 - Return ONLY valid JSON. No markdown, no code blocks, no explanation.`;
+
+export interface VisualLocateSign {
+  signId: string;
+  signType?: string | null;
+  location?: string | null;
+  signIdentifier?: string | null;
+  roomNumber?: string | null;
+  typeToken?: string | null;
+  anchorX?: number | null;
+  anchorY?: number | null;
+}
 
 export async function visualLocateDoors(
   filePath: string,
   pageNum: number,
-  signs: Array<{ id: string; signType: string | null; location: string | null; signIdentifier: string | null }>,
+  signs: VisualLocateSign[],
   ai: GeminiAI,
 ): Promise<VisualLocateResult[]> {
   if (signs.length === 0) return [];
@@ -1995,13 +2013,13 @@ export async function visualLocateDoors(
     srcDoc = await PDFDocument.load(fileBuffer, { ignoreEncryption: true });
   } catch (err) {
     logger.error({ err, filePath }, "visualLocateDoors: pdf-lib failed to load");
-    return signs.map((s) => ({ signId: s.id, candidates: [] }));
+    return signs.map((s) => ({ signId: s.signId, candidates: [] }));
   }
 
   const pageIdx = pageNum - 1;
   if (pageIdx < 0 || pageIdx >= srcDoc.getPageCount()) {
     logger.warn({ pageNum, total: srcDoc.getPageCount() }, "visualLocateDoors: page out of range");
-    return signs.map((s) => ({ signId: s.id, candidates: [] }));
+    return signs.map((s) => ({ signId: s.signId, candidates: [] }));
   }
 
   const pageDoc = await PDFDocument.create();
@@ -2011,10 +2029,13 @@ export async function visualLocateDoors(
   const pdfBase64 = Buffer.from(pageBytes).toString("base64");
 
   const signsJson = JSON.stringify(signs.map((s) => ({
-    id: s.id,
+    signId: s.signId,
     location: s.location ?? "",
-    signType: s.signType ?? "",
-    signIdentifier: s.signIdentifier ?? "",
+    typeToken: s.typeToken ?? "",
+    roomNumber: s.roomNumber ?? "",
+    anchorHint: s.anchorX != null && s.anchorY != null
+      ? `annotation label near (${s.anchorX.toFixed(3)}, ${s.anchorY.toFixed(3)})`
+      : "not available",
   })));
   const prompt = VISUAL_LOCATE_PROMPT.replace("SIGNS_PLACEHOLDER", signsJson);
 
@@ -2024,7 +2045,7 @@ export async function visualLocateDoors(
     raw = text;
   } catch (err) {
     logger.error({ err }, "visualLocateDoors: Gemini call failed");
-    return signs.map((s) => ({ signId: s.id, candidates: [] }));
+    return signs.map((s) => ({ signId: s.signId, candidates: [] }));
   }
 
   try {
@@ -2033,15 +2054,15 @@ export async function visualLocateDoors(
     if (!Array.isArray(parsed)) throw new Error("Response is not an array");
     const resultMap = new Map(parsed.map((r) => [r.signId, r]));
     return signs.map((s) => {
-      const entry = resultMap.get(s.id);
-      if (!entry) return { signId: s.id, candidates: [] };
+      const entry = resultMap.get(s.signId);
+      if (!entry) return { signId: s.signId, candidates: [] };
       const validCandidates = (entry.candidates ?? []).filter(
         (c) => typeof c.x === "number" && typeof c.y === "number" && c.x >= 0 && c.x <= 1 && c.y >= 0 && c.y <= 1
       ).slice(0, 3);
-      return { signId: s.id, candidates: validCandidates };
+      return { signId: s.signId, candidates: validCandidates };
     });
   } catch (err) {
     logger.error({ err, raw: raw.slice(0, 300) }, "visualLocateDoors: JSON parse failed");
-    return signs.map((s) => ({ signId: s.id, candidates: [] }));
+    return signs.map((s) => ({ signId: s.signId, candidates: [] }));
   }
 }
