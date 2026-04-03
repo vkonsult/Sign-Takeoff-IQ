@@ -2029,42 +2029,69 @@ export function SignReviewModal({
                     );
                   })}
 
-                  {/* AI-placed badge ON the marker — shown for the active sign with AI placement.
-                      Positioned below the marker dot; clicking it clears placement and re-runs visual-locate. */}
-                  {showOverlay && !drawMode && renderedW && renderedH && (() => {
-                    const currentMarker = textMarkers.find(
-                      (m) => m.signId === activeSign.id && m.isCurrent,
-                    );
-                    if (!currentMarker) return null;
-                    if (!activeSign.placementSource) return null;
-                    const cx = currentMarker.x * renderedW;
-                    const cy = currentMarker.y * renderedH;
-                    const r = 18; // active marker radius
+                  {/* Per-marker spinner — shown for signs currently in-flight with visual-locate */}
+                  {showOverlay && visualLocating && renderedW && renderedH && textMarkers.map((m) => {
+                    if (!visualLocateSubmittedRef.current.has(m.signId)) return null;
+                    const cx = m.x * renderedW!;
+                    const cy = m.y * renderedH!;
+                    const r = m.isCurrent ? 18 : 12;
                     return (
-                      <button
-                        key={`ai-badge-${activeSign.id}`}
-                        title={`AI placed (${activeSign.placementSource === "gemini_vision" ? "auto" : "user confirmed"}) — click to reset and re-run`}
-                        onClick={async (e) => {
-                          e.stopPropagation();
-                          try {
-                            const resp = await apiFetch(`/api/extracted-signs/${activeSign.id}`, {
-                              method: "PATCH",
-                              headers: { "Content-Type": "application/json" },
-                              body: JSON.stringify({ xPos: null, yPos: null, placementSource: null }),
-                            });
-                            if (!resp.ok) return;
-                            const d = await resp.json() as { sign: ExtractedSign };
-                            setLocalSigns((prev) => prev.map((s) => s.id === activeSign.id ? d.sign : s));
-                            setActiveSign(d.sign);
-                            if (file) {
-                              visualLocateQueriedRef.current.delete(`${file.id}:${pageNumber}`);
-                            }
-                            setVisualLocateFailed((prev) => { const n = new Set(prev); n.delete(activeSign.id); return n; });
-                            setVisualCandidates((prev) => { const n = new Map(prev); n.delete(activeSign.id); return n; });
-                          } catch (err) {
-                            console.error("[visual-locate] marker badge reset failed:", err);
-                          }
+                      <span
+                        key={`vl-spin-${m.signId}`}
+                        style={{
+                          position: "absolute",
+                          left: cx - 8,
+                          top: cy + r + 2,
+                          zIndex: 20,
+                          width: 16,
+                          height: 16,
+                          pointerEvents: "none",
+                          color: "#06b6d4",
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center",
                         }}
+                      >
+                        <Loader2 style={{ width: 12, height: 12, animation: "spin 1s linear infinite" }} />
+                      </span>
+                    );
+                  })}
+
+                  {/* AI-placed badge ON each AI-placed marker — shown for all signs with a placementSource.
+                      The active sign shows a full "✦ AI · Reset" clickable label; inactive signs show a
+                      smaller "✦" dot. Clicking any badge clears placement and re-queues the page. */}
+                  {showOverlay && !drawMode && renderedW && renderedH && textMarkers.map((m) => {
+                    const markerSign = signsOnCurrentPage.find((s) => s.id === m.signId);
+                    if (!markerSign?.placementSource) return null;
+                    const cx = m.x * renderedW!;
+                    const cy = m.y * renderedH!;
+                    const r = m.isCurrent ? 18 : 12;
+                    const isCurrent = m.isCurrent;
+                    const handleReset = async (e: React.MouseEvent) => {
+                      e.stopPropagation();
+                      try {
+                        const resp = await apiFetch(`/api/extracted-signs/${markerSign.id}`, {
+                          method: "PATCH",
+                          headers: { "Content-Type": "application/json" },
+                          body: JSON.stringify({ xPos: null, yPos: null, placementSource: null }),
+                        });
+                        if (!resp.ok) return;
+                        const d = await resp.json() as { sign: ExtractedSign };
+                        setLocalSigns((prev) => prev.map((s) => s.id === markerSign.id ? d.sign : s));
+                        if (markerSign.id === activeSign.id) setActiveSign(d.sign);
+                        if (file) visualLocateQueriedRef.current.delete(`${file.id}:${pageNumber}`);
+                        visualLocateSubmittedRef.current.delete(markerSign.id);
+                        setVisualLocateFailed((prev) => { const n = new Set(prev); n.delete(markerSign.id); return n; });
+                        setVisualCandidates((prev) => { const n = new Map(prev); n.delete(markerSign.id); return n; });
+                      } catch (err) {
+                        console.error("[visual-locate] marker badge reset failed:", err);
+                      }
+                    };
+                    return isCurrent ? (
+                      <button
+                        key={`ai-badge-${m.signId}`}
+                        title={`AI placed (${markerSign.placementSource === "gemini_vision" ? "auto" : "user confirmed"}) — click to reset and re-run`}
+                        onClick={handleReset}
                         style={{
                           position: "absolute",
                           left: cx - 28,
@@ -2091,8 +2118,36 @@ export function SignReviewModal({
                       >
                         ✦ AI · Reset
                       </button>
+                    ) : (
+                      <button
+                        key={`ai-badge-${m.signId}`}
+                        title={`AI placed (${markerSign.placementSource === "gemini_vision" ? "auto" : "user confirmed"}) — click to reset`}
+                        onClick={handleReset}
+                        style={{
+                          position: "absolute",
+                          left: cx + r - 2,
+                          top: cy - r - 2,
+                          zIndex: 20,
+                          width: 14,
+                          height: 14,
+                          borderRadius: "50%",
+                          background: "#06b6d4",
+                          color: "#fff",
+                          border: "none",
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          cursor: "pointer",
+                          padding: 0,
+                          fontSize: 8,
+                          fontWeight: "bold",
+                          pointerEvents: "all",
+                        }}
+                      >
+                        ✦
+                      </button>
                     );
-                  })()}
+                  })}
 
                   {/* Visual candidate dots — alternative positions shown when Gemini returns 2-3 candidates.
                       Top candidate (#1) is always auto-applied; these dots are alternatives (#2, #3).
