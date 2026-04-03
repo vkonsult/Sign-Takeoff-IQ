@@ -321,123 +321,65 @@ function findSignLocation(
     }
   }
 
-  // ── Fallback targets: location then message content ───────────────────────
-  // Identifier wasn't found — try less-specific fields. We use interior
-  // preference here because generic text (e.g. "Unit 1A") can appear in
-  // both the floor-plan legend (edge) and the actual rooms (interior).
-  const fallbackTargets = [
-    ...(sign.location ? [sign.location] : []),
-    ...(sign.messageContent ? [sign.messageContent] : []),
-  ].filter(Boolean) as string[];
+  // ── Pass 1: room/unit number search from location field ──────────────────
+  // Room numbers like "A101", "B203", "101" are highly specific labels that
+  // appear ONCE on a floor plan at the actual unit door. We extract these
+  // tokens from the location field and look for an EXACT boundary match on
+  // the page. We only accept the match if the token appears ≤ 2 times
+  // (unique enough to be reliable). Longer tokens are tried first.
+  //
+  // If no confident unique match is found we return null — NO marker is
+  // better than a wrong one. The user can manually place flagged signs.
+  const locationSource = [sign.location, sign.messageContent].filter(Boolean).join(" ");
+  if (locationSource) {
+    // Extract room-number-like tokens: optional letter prefix + 2–4 digits +
+    // optional letter suffix. Min total length of 3 to skip single-char codes.
+    const roomTokens = (locationSource.match(/\b[A-Za-z]{0,2}\d{2,4}[A-Za-z]?\b/g) ?? [])
+      .filter((t) => t.length >= 3)
+      .sort((a, b) => b.length - a.length); // longest (most specific) first
 
-  if (fallbackTargets.length === 0) return null;
+    // Also try the full text runs for character-fragmented PDFs
+    const runsForRoom = buildTextRuns(items);
 
-  // ── Pass 1: search individual items (fast path for well-formed PDFs) ──────
-  type Scored = { score: number; x: number; y: number; matched: string };
-  const candidates: Scored[] = [];
+    for (const token of roomTokens) {
+      const tokenNorm = normId(token);
+      type RoomHit = { x: number; y: number };
+      const hits: RoomHit[] = [];
 
-  for (const target of fallbackTargets) {
-    const targetTokens = tokenize(target);
-    if (targetTokens.length === 0) continue;
-
-    for (const item of items) {
-      if (!item.str.trim()) continue;
-      const itemText = item.str.toLowerCase();
-      let matches = 0;
-      for (const tok of targetTokens) {
-        if (itemText.includes(tok)) matches++;
-      }
-      if (matches > 0) {
-        const [, , , , tx, ty] = item.transform;
-        candidates.push({
-          score: matches / targetTokens.length,
-          x: Math.min(1, Math.max(0, tx / pageW)),
-          y: Math.min(1, Math.max(0, 1 - ty / pageH)),
-          matched: target,
-        });
-      }
-    }
-  }
-
-  // For location/content fallback: apply interior preference to avoid legend matches.
-  function interiorScore(c: Scored): number {
-    const dx = c.x - 0.5;
-    const dy = c.y - 0.5;
-    return Math.sqrt(dx * dx + dy * dy);
-  }
-
-  if (candidates.length > 0) {
-    const maxScore = candidates.reduce((m, c) => Math.max(m, c.score), 0);
-    const topCandidates = candidates.filter((c) => c.score === maxScore);
-    topCandidates.sort((a, b) => interiorScore(a) - interiorScore(b));
-    const best = topCandidates[0]!;
-    if (best.score >= 0.6) return { x: best.x, y: best.y, matched: best.matched };
-  }
-
-  // ── Pass 2: reconstruct text runs (handles per-character fragmentation) ───
-  const runs = buildTextRuns(items);
-
-  // Collect all run matches across all targets, then pick interior-most
-  type RunMatch = { x: number; y: number; matched: string };
-  const runMatches: RunMatch[] = [];
-
-  for (const target of fallbackTargets) {
-    const needle = target.toLowerCase().replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim();
-    if (!needle) continue;
-
-    // Search within individual runs
-    for (const run of runs) {
-      const haystack = run.text.toLowerCase().replace(/[^a-z0-9\s]/g, " ");
-      if (haystack.includes(needle) || needle.split(" ").some((word) => word.length >= 3 && haystack.includes(word))) {
-        runMatches.push({
-          x: Math.min(1, Math.max(0, run.midX / pageW)),
-          y: Math.min(1, Math.max(0, 1 - run.midY / pageH)),
-          matched: target,
-        });
-      }
-    }
-
-    // Sliding window over adjacent runs on the same line
-    for (let i = 0; i < runs.length; i++) {
-      let combined = "";
-      const windowRuns: TextRun[] = [];
-
-      for (let j = i; j < Math.min(i + 6, runs.length); j++) {
-        const r = runs[j]!;
-        // Only extend window if same baseline
-        if (windowRuns.length > 0) {
-          const lastY = windowRuns[windowRuns.length - 1]!.midY;
-          if (Math.abs(r.midY - lastY) > 6) break;
-        }
-        combined += r.text;
-        windowRuns.push(r);
-
-        const haystack = combined.toLowerCase().replace(/[^a-z0-9\s]/g, " ");
-        if (haystack.includes(needle)) {
-          const allX = windowRuns.map((r2) => r2.midX);
-          const allY = windowRuns.map((r2) => r2.midY);
-          const avgX = allX.reduce((a, b) => a + b, 0) / allX.length;
-          const avgY = allY.reduce((a, b) => a + b, 0) / allY.length;
-          runMatches.push({
-            x: Math.min(1, Math.max(0, avgX / pageW)),
-            y: Math.min(1, Math.max(0, 1 - avgY / pageH)),
-            matched: target,
+      // Search individual items
+      for (const item of items) {
+        if (!item.str.trim()) continue;
+        if (exactBoundaryMatch(normId(item.str), tokenNorm)) {
+          const [, , , , tx, ty] = item.transform;
+          hits.push({
+            x: Math.min(1, Math.max(0, tx / pageW)),
+            y: Math.min(1, Math.max(0, 1 - ty / pageH)),
           });
         }
       }
+
+      // Search text runs (fragmented CAD PDFs)
+      if (hits.length === 0) {
+        for (const run of runsForRoom) {
+          if (exactBoundaryMatch(normId(run.text), tokenNorm)) {
+            hits.push({
+              x: Math.min(1, Math.max(0, run.midX / pageW)),
+              y: Math.min(1, Math.max(0, 1 - run.midY / pageH)),
+            });
+          }
+        }
+      }
+
+      // Accept only if the token is unique on this page (≤ 2 occurrences)
+      if (hits.length >= 1 && hits.length <= 2) {
+        return { x: hits[0]!.x, y: hits[0]!.y, matched: token };
+      }
     }
   }
 
-  // Pick the interior-most run match (same heuristic as Pass 1)
-  if (runMatches.length > 0) {
-    runMatches.sort((a, b) => {
-      const da = Math.sqrt((a.x - 0.5) ** 2 + (a.y - 0.5) ** 2);
-      const db = Math.sqrt((b.x - 0.5) ** 2 + (b.y - 0.5) ** 2);
-      return da - db;
-    });
-    return runMatches[0]!;
-  }
-
+  // ── No reliable position found — return null (no marker) ─────────────────
+  // Better to show no dot than a wrong one. The sign row will still appear
+  // in the review table; the user can manually click to place it.
   return null;
 }
 
