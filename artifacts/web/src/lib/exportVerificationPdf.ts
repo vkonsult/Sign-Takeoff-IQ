@@ -1,6 +1,37 @@
 import { PDFDocument, rgb, StandardFonts } from "pdf-lib";
 import { apiFetch } from "./apiClient";
 
+/**
+ * Convert normalised marker coordinates (nx ∈ [0,1] left→right,
+ * ny ∈ [0,1] top→bottom in viewport / screen space) to pdf-lib drawing
+ * coordinates (x, y in MediaBox space: origin bottom-left, y upward).
+ *
+ * pdf-lib's page.getSize() returns the raw MediaBox dimensions WITHOUT
+ * accounting for the page's /Rotate attribute.  Drawing commands operate in
+ * that same unrotated space, so we must un-apply the rotation ourselves.
+ *
+ * Derivation (for a MediaBox [0,0,W,H]):
+ *   /Rotate 0:   x = nx*W,       y = (1−ny)*H
+ *   /Rotate 90:  x = (1−ny)*W,   y = (1−nx)*H   (landscape: display w=H,h=W)
+ *   /Rotate 180: x = (1−nx)*W,   y = ny*H
+ *   /Rotate 270: x = ny*W,       y = nx*H        (landscape: display w=H,h=W)
+ */
+function normalizedToMediaBox(
+  nx: number,
+  ny: number,
+  W: number,
+  H: number,
+  rotationDeg: number,
+): { x: number; y: number } {
+  const r = ((rotationDeg % 360) + 360) % 360;
+  switch (r) {
+    case 90:  return { x: (1 - ny) * W, y: (1 - nx) * H };
+    case 180: return { x: (1 - nx) * W, y: ny * H };
+    case 270: return { x: ny * W,       y: nx * H };
+    default:  return { x: nx * W,       y: (1 - ny) * H };
+  }
+}
+
 export interface VerificationMarker {
   pageNumber: number;
   xPos: number;
@@ -42,10 +73,10 @@ export async function exportVerificationPdf(
 
     const page = doc.getPage(pageIdx);
     const { width, height } = page.getSize();
+    const rotationDeg = page.getRotation().angle;
 
     for (const m of pageMarkers) {
-      const x = m.xPos * width;
-      const y = (1 - m.yPos) * height;
+      const { x, y } = normalizedToMediaBox(m.xPos, m.yPos, width, height, rotationDeg);
 
       const isMatched = m.status === "matched";
       const markerColor = isMatched
