@@ -30,6 +30,7 @@ import {
   EyeOff,
   RefreshCw,
   BarChart2,
+  RotateCcw,
 } from "lucide-react";
 import { format, formatDistanceToNow } from "date-fns";
 import { exportMarkedupPdf } from "@/lib/exportMarkedupPdf";
@@ -114,6 +115,15 @@ export default function JobDetails() {
   const [showHidden, setShowHidden] = useState(false);
   const [sortField, setSortField] = useState<string | null>(null);
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
+
+  const PROCESSING_TIMEOUT_SECONDS = 5 * 60;
+  const [processingSeconds, setProcessingSeconds] = useState(0);
+  const isProcessingNow = (data?.job?.status === "processing") || extractMutation.isPending;
+  useEffect(() => {
+    if (!isProcessingNow) { setProcessingSeconds(0); return; }
+    const id = setInterval(() => setProcessingSeconds((s) => s + 1), 1000);
+    return () => clearInterval(id);
+  }, [isProcessingNow]);
 
   const handleSort = (field: string) => {
     if (sortField === field) {
@@ -436,10 +446,30 @@ export default function JobDetails() {
               <p className="text-muted-foreground font-mono text-sm max-w-md mx-auto leading-relaxed">
                 Running text and visual scans in parallel. Gemini AI is reading plan text, identifying sign schedules, and visually scanning floor plans. Large files may take 3–6 minutes.
               </p>
+
+              <div className="mt-2 text-xs text-muted-foreground/60 font-mono tabular-nums">
+                {Math.floor(processingSeconds / 60)}:{String(processingSeconds % 60).padStart(2, "0")} elapsed
+              </div>
               
-              <div className="mt-8 w-full bg-secondary rounded-full h-1.5 overflow-hidden">
+              <div className="mt-4 w-full bg-secondary rounded-full h-1.5 overflow-hidden">
                 <div className="h-full bg-primary w-1/2 animate-[progress_2s_ease-in-out_infinite_alternate]" style={{ transformOrigin: 'left' }}></div>
               </div>
+
+              {processingSeconds >= PROCESSING_TIMEOUT_SECONDS && (
+                <div className="mt-8 flex flex-col items-center gap-3">
+                  <p className="text-sm text-muted-foreground">
+                    This is taking longer than expected. You can try restarting the extraction.
+                  </p>
+                  <button
+                    onClick={handleStartExtraction}
+                    disabled={extractMutation.isPending}
+                    className="flex items-center gap-2 px-4 py-2 rounded-md bg-primary/10 border border-primary/30 text-primary text-sm font-medium hover:bg-primary/20 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    <RotateCcw className="w-4 h-4" />
+                    Retry Extraction
+                  </button>
+                </div>
+              )}
             </div>
           ) : isCompleted ? (
             <div className="flex flex-col h-full">
