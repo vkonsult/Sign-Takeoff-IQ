@@ -37,7 +37,7 @@ For each unique sign or sign entry identified, extract the following fields. Use
 - sign_type: The type or category of sign (e.g. "Building ID", "Wayfinding", "Regulatory", "Exit", "Room ID", "Parking", "Monument", "Pylon", "Cabinet", "Channel Letter", "Dimensional Letter", "ADA", "Informational", "Directional")
 - sign_identifier: The sign code, number, or label that uniquely identifies it in the schedule (e.g. "S-01", "EX-1", "P1", "Sign Type A")
 - quantity: Number of signs of this type (integer). Default to 1 if a specific sign is referenced but no quantity given.
-- location: Where the sign is placed (e.g. "Main Entrance", "North Facade", "Lobby", "Suite 100 Door", "Parking Level 1")
+- location: For the location field, use only the room identifier exactly as it appears printed on the plan — for example UNIT 2A 406B or ELEC A404. Do not add descriptive phrases, door positions, or narrative text. The location value must match the printed label verbatim so it can be found in the plan's text layer.
 - dimensions: Physical size of the sign (e.g. '24" x 36"', "4'0\" x 8'0\"", "18 x 24 inches")
 - mounting_type: How the sign is attached (e.g. "Wall Mounted", "Post Mounted", "Suspended", "Floor Standing", "Flush Mount", "Projecting", "Cabinet Mount", "Direct Applied")
 - finish_color: Surface finish, paint color, or material finish (e.g. "Brushed Aluminum", "Matte Black", "PMS 485 Red", "White with Blue Copy", "Clear Anodized")
@@ -584,7 +584,7 @@ For every identifiable space or required sign location, output one JSON object p
 - sign_type: the required sign type per the rules above
 - sign_identifier: generate a short code (e.g. "RI-01" room ID, "EX-01" exit, "RS-01" restroom, "ST-01" stair, "FE-01" fire extinguisher, "FA-01" fire alarm, "FD-01" fire door, "EV-01" evacuation, "NS-01" no smoking, "EL-01" electrical, "HM-01" hazmat)
 - quantity: 1 per location unless otherwise noted
-- location: specific room name or space (e.g. "Room 101 - Office", "Stair 1 — Level 2", "Women's Restroom — North Wing", "Mechanical Room B — Level 1")
+- location: use only the room identifier exactly as it appears printed on the plan — for example UNIT 2A 406B or ELEC A404. Do not add descriptive phrases, door positions, or narrative text. The location value must match the printed label verbatim so it can be found in the plan's text layer.
 - dimensions: standard dimensions per the code rules above
 - mounting_type: as specified above for each sign type
 - finish_color: null (to be specified by contractor)
@@ -1928,10 +1928,44 @@ export async function extractSignsFromPdf(
     otherPages:        pages.filter((p) => p.type === "other").map((p) => p.pageNum).sort((a, b) => a - b),
   };
 
+  // ── Source-level dedup ────────────────────────────────────────────────────
+  // Group by composite key location.toUpperCase() + "||" + signType.toUpperCase().
+  // Rows where either field is null get a unique fallback key and are never merged.
+  // Within each group, keep the highest confidence_score entry; on a tie prefer
+  // the entry where detail_reference is non-null.
+  const rowsBeforeDedup = allRows.length;
+  const groupMap = new Map<string, ExtractedSignRow>();
+  let uniqueKeyCounter = 0;
+  for (const row of allRows) {
+    let key: string;
+    if (row.location == null || row.sign_type == null) {
+      key = `__unique_${uniqueKeyCounter++}`;
+    } else {
+      key = `${row.location.trim().toUpperCase()}||${row.sign_type.trim().toUpperCase()}`;
+    }
+    const existing = groupMap.get(key);
+    if (!existing) {
+      groupMap.set(key, row);
+    } else {
+      const existingScore = existing.confidence_score ?? 0;
+      const newScore = row.confidence_score ?? 0;
+      if (
+        newScore > existingScore ||
+        (newScore === existingScore && row.detail_reference != null && existing.detail_reference == null)
+      ) {
+        groupMap.set(key, row);
+      }
+    }
+  }
+  const dedupedRows = Array.from(groupMap.values());
+  const rowsAfterDedup = dedupedRows.length;
+
   logger.info(
     {
       filePath: filePath.split("/").pop(),
-      totalSigns: allRows.length,
+      totalSigns: rowsAfterDedup,
+      rowsBeforeDedup,
+      rowsRemovedByDedup: rowsBeforeDedup - rowsAfterDedup,
       totalInputTokens,
       totalOutputTokens,
       pageStats: {
@@ -1943,7 +1977,7 @@ export async function extractSignsFromPdf(
     "Extraction complete"
   );
 
-  return { rows: allRows, pageCount: numPages, rawText, inputTokens: totalInputTokens, outputTokens: totalOutputTokens, pageStats };
+  return { rows: dedupedRows, pageCount: numPages, rawText, inputTokens: totalInputTokens, outputTokens: totalOutputTokens, pageStats };
 }
 
 // ─── VISUAL LOCATE ──────────────────────────────────────────────────────────

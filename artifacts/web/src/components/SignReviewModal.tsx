@@ -171,7 +171,8 @@ interface TextMarker {
   color: string;
   label: string;
   isCurrent: boolean;
-  placementScore: number;  // 0–1 match confidence; 1.0 = exact ID or manual
+  placementScore: number;  // 0–1 match confidence; 1.0 = exact ID or manual; 0 = ghost
+  isGhost?: boolean;       // true when all matching failed — rendered at low opacity
   matchedPhrase?: PdfPhrase; // the phrase whose centre was used (for debug overlay)
   rejectedCandidates?: PdfPhrase[]; // runner-up candidate phrases (for debug overlay)
 }
@@ -659,6 +660,85 @@ function findSignLocationFromPhrases(
     const cy = (p.y0 + p.y1) / 2;
     return cy >= 0.04 && cy <= 0.96 && p.text.trim().length >= 2;
   });
+
+  // ── Pre-Pass A: verbatim signIdentifier in any phrase ─────────────────────
+  // If the sign's identifier appears literally (case-insensitive, trimmed)
+  // inside any phrase on the page, use that phrase immediately.
+  if (sign.signIdentifier && sign.signIdentifier.trim().length >= 2) {
+    const idVerbatim = sign.signIdentifier.trim().toUpperCase();
+    for (const p of phrases) {
+      if (p.text.trim().toUpperCase().includes(idVerbatim)) {
+        return {
+          x: (p.x0 + p.x1) / 2,
+          y: (p.y0 + p.y1) / 2,
+          matched: p.text,
+          score: 1.0,
+          phrase: p,
+        };
+      }
+    }
+  }
+
+  // ── Pre-Pass B: token-overlap scorer ─────────────────────────────────────
+  // Split both the location string and each phrase into uppercase tokens,
+  // score = |intersection| / |union|.  Accept anything ≥ 0.4.
+  // Only runs when sign.location is non-empty.
+  if (sign.location && sign.location.trim().length >= 2) {
+    const locTokensRaw = sign.location.trim().toUpperCase().split(/\s+/).filter((t) => t.length >= 2);
+    if (locTokensRaw.length > 0) {
+      let bestOverlapScore = 0;
+      let bestOverlapPhrase: PdfPhrase | null = null;
+      for (const p of drawingPhrases) {
+        const phraseTokens = p.text.trim().toUpperCase().split(/\s+/).filter((t) => t.length >= 2);
+        if (phraseTokens.length === 0) continue;
+        const union = new Set([...locTokensRaw, ...phraseTokens]);
+        const intersection = locTokensRaw.filter((t) => phraseTokens.includes(t));
+        const score = intersection.length / union.size;
+        if (score > bestOverlapScore) {
+          bestOverlapScore = score;
+          bestOverlapPhrase = p;
+        }
+      }
+      if (bestOverlapScore >= 0.4 && bestOverlapPhrase) {
+        console.log(
+          `[MATCH] ${sign.signIdentifier ?? "?"} Pre-B token-overlap→"${bestOverlapPhrase.text}" score=${bestOverlapScore.toFixed(2)}`,
+        );
+        return {
+          x: (bestOverlapPhrase.x0 + bestOverlapPhrase.x1) / 2,
+          y: (bestOverlapPhrase.y0 + bestOverlapPhrase.y1) / 2,
+          matched: bestOverlapPhrase.text,
+          score: bestOverlapScore,
+          phrase: bestOverlapPhrase,
+        };
+      }
+    }
+  }
+
+  // ── Pre-Pass C: room-number regex extractor ───────────────────────────────
+  // Extract room-number tokens from sign.location using /\b[A-Z]?\d{3}[A-Z]?\b/g.
+  // An exact match of that token inside any phrase is treated as a confirmed hit.
+  if (sign.location && sign.location.trim().length >= 2) {
+    const roomNumRegex = /\b[A-Z]?\d{3}[A-Z]?\b/g;
+    const roomNums = (sign.location.trim().toUpperCase().match(roomNumRegex) ?? []);
+    for (const roomNum of roomNums) {
+      for (const p of drawingPhrases) {
+        const phraseUp = p.text.trim().toUpperCase();
+        const phraseRooms = phraseUp.match(roomNumRegex) ?? [];
+        if (phraseRooms.includes(roomNum)) {
+          console.log(
+            `[MATCH] ${sign.signIdentifier ?? "?"} Pre-C room-num→"${p.text}" room=${roomNum}`,
+          );
+          return {
+            x: (p.x0 + p.x1) / 2,
+            y: (p.y0 + p.y1) / 2,
+            matched: p.text,
+            score: 0.85,
+            phrase: p,
+          };
+        }
+      }
+    }
+  }
 
   // ── Pass 0: exact identifier ───────────────────────────────────────────────
   // Uses ALL phrases (not margin-filtered) so that callout bubbles near edges
@@ -1179,17 +1259,34 @@ export function SignReviewModal({
           rejectedCandidates: loc.rejectedCandidates,
         });
         if (isCurrent) currentSignFound = true;
+      } else {
+        // Ghost marker — all matching passes failed.
+        // Placed at page center (0.5, 0.5) as a visual placeholder.
+        markers.push({
+          x: 0.5,
+          y: 0.5,
+          signId: s.id,
+          color,
+          label: s.signIdentifier ?? s.signType?.slice(0, 6) ?? "SIGN",
+          isCurrent,
+          placementScore: 0,
+          isGhost: true,
+        });
+        if (isCurrent) currentSignFound = true;
       }
     }
 
     // Minimal collision nudge: if two auto-matched markers would fully overlap,
     // nudge the later one slightly. At most one nudge per marker, no cascading.
+    // Ghost markers (isGhost) are skipped — they all share the same fallback position.
     const COLLISION_THRESHOLD = 0.012;
     for (let i = 0; i < markers.length; i++) {
       const mi = markers[i]!;
       if (mi.placementScore === 1.0) continue; // skip manually-placed
+      if (mi.isGhost) continue; // skip ghost markers
       for (let j = 0; j < i; j++) {
         const mj = markers[j]!;
+        if (mj.isGhost) continue; // don't collide-nudge against ghosts
         if (Math.hypot(mi.x - mj.x, mi.y - mj.y) < COLLISION_THRESHOLD) {
           // Nudge in whichever axis has more room to the boundary
           const roomRight = 1 - mi.x;
@@ -1204,10 +1301,7 @@ export function SignReviewModal({
       }
     }
 
-    // When the active sign has no text match, we intentionally do NOT place a
-    // fallback/ghost marker at an arbitrary position.  The "Not found on this page"
-    // pill in the header already signals this clearly.  A dot at a wrong position
-    // is more confusing than no dot at all.
+    // Ghost markers serve as visual placeholders for unmatched signs.
 
     setTextMarkers(markers);
     if (signsOnCurrentPage.some((s) => s.id === activeSign.id)) {
@@ -1719,25 +1813,44 @@ export function SignReviewModal({
                   ⬡ debug
                 </button>
               )}
-              {textMarkers.length > 0 && (
-                <button
-                  onClick={() => setShowOverlay((v) => !v)}
-                  className="flex items-center gap-1.5 text-[10px] font-display font-semibold uppercase tracking-wide px-2 py-1 rounded transition-colors border"
-                  style={showOverlay ? {
-                    background: "#22c55e20",
-                    color: "#22c55e",
-                    borderColor: "#22c55e55",
-                  } : {
-                    background: "transparent",
-                    color: "var(--muted-foreground)",
-                    borderColor: "var(--border)",
-                  }}
-                  title={showOverlay ? "Hide markers" : "Show markers"}
-                >
-                  {showOverlay ? <Eye className="w-3 h-3" /> : <EyeOff className="w-3 h-3" />}
-                  {textMarkers.length} marker{textMarkers.length !== 1 ? "s" : ""}
-                </button>
-              )}
+              {textMarkers.length > 0 && (() => {
+                const realMarkers = textMarkers.filter((m) => !m.isGhost);
+                const ghostCount = textMarkers.filter((m) => m.isGhost).length;
+                return (
+                  <>
+                    <button
+                      onClick={() => setShowOverlay((v) => !v)}
+                      className="flex items-center gap-1.5 text-[10px] font-display font-semibold uppercase tracking-wide px-2 py-1 rounded transition-colors border"
+                      style={showOverlay ? {
+                        background: "#22c55e20",
+                        color: "#22c55e",
+                        borderColor: "#22c55e55",
+                      } : {
+                        background: "transparent",
+                        color: "var(--muted-foreground)",
+                        borderColor: "var(--border)",
+                      }}
+                      title={showOverlay ? "Hide markers" : "Show markers"}
+                    >
+                      {showOverlay ? <Eye className="w-3 h-3" /> : <EyeOff className="w-3 h-3" />}
+                      {realMarkers.length} marker{realMarkers.length !== 1 ? "s" : ""}
+                    </button>
+                    {ghostCount > 0 && (
+                      <span
+                        className="flex items-center gap-1 text-[10px] font-display font-semibold uppercase tracking-wide px-2 py-1 rounded border"
+                        style={{
+                          background: "#ef444415",
+                          color: "#ef4444",
+                          borderColor: "#ef444440",
+                        }}
+                        title="Signs that could not be matched to a location on this page"
+                      >
+                        Unlocated: {ghostCount}
+                      </span>
+                    )}
+                  </>
+                );
+              })()}
               {/* Draw mode toggle */}
               {pdfReady && (
                 <button
@@ -1853,8 +1966,8 @@ export function SignReviewModal({
                     renderAnnotationLayer={true}
                   />
 
-                  {/* Sign schedule page notice — only show when no markers found AND page is classified as schedule */}
-                  {isSignSchedulePage && textMarkers.length === 0 && (
+                  {/* Sign schedule page notice — only show when no real (non-ghost) markers found AND page is classified as schedule */}
+                  {isSignSchedulePage && textMarkers.filter((m) => !m.isGhost).length === 0 && (
                     <div
                       style={{
                         position: "absolute",
@@ -1976,11 +2089,14 @@ export function SignReviewModal({
                         const cy = m.y * renderedH;
                         const r = m.isCurrent ? 18 : 12;
                         const isHovered = m.signId === hoveredMarkerId;
-                        const lowConfidence = m.placementScore < 0.7 && !m.isCurrent;
+                        const isGhost = m.isGhost === true;
+                        const lowConfidence = m.placementScore < 0.7 && !m.isCurrent && !isGhost;
+                        // Ghost markers render at 0.15 opacity as placeholders
+                        const markerOpacity = isGhost ? 0.15 : (lowConfidence ? 0.7 : 1);
                         return (
-                          <g key={m.signId}>
-                            {/* Outer glow ring for active sign */}
-                            {m.isCurrent && (
+                          <g key={m.signId} opacity={markerOpacity}>
+                            {/* Outer glow ring for active sign (only non-ghost) */}
+                            {m.isCurrent && !isGhost && (
                               <circle
                                 cx={cx} cy={cy} r={r + 6}
                                 fill="none" stroke={m.color}
@@ -1998,24 +2114,23 @@ export function SignReviewModal({
                               />
                             )}
                             {/* Hover ring */}
-                            {isHovered && !m.isCurrent && (
+                            {isHovered && !m.isCurrent && !isGhost && (
                               <circle
                                 cx={cx} cy={cy} r={r + 5}
                                 fill="none" stroke={m.color}
                                 strokeWidth={1} opacity={0.5}
                               />
                             )}
-                            {/* Filled circle — semi-transparent for low-confidence */}
+                            {/* Filled circle */}
                             <circle
                               cx={cx} cy={cy} r={r}
-                              fill={`${m.color}${lowConfidence ? "22" : "33"}`}
+                              fill={`${m.color}${lowConfidence || isGhost ? "22" : "33"}`}
                               stroke={m.color}
                               strokeWidth={m.isCurrent ? 2.5 : 1.5}
-                              strokeDasharray={lowConfidence ? "4 2" : undefined}
-                              opacity={lowConfidence ? 0.7 : 1}
+                              strokeDasharray={lowConfidence || isGhost ? "4 2" : undefined}
                             />
                             {/* Pin dot */}
-                            <circle cx={cx} cy={cy} r={3} fill={m.color} opacity={lowConfidence ? 0.6 : 1} />
+                            <circle cx={cx} cy={cy} r={3} fill={m.color} />
                             {/* Label */}
                             <text
                               x={cx} y={cy - r - 5}
