@@ -31,5 +31,5 @@ channel = "stable-25_05"
 [userenv]
 
 [userenv.shared]
-SUPER_ADMIN_GUEST_TOKEN = "6c57d02a6ea6c7a36a24dc0c3ab1a26f"
-VITE_GUEST_TOKEN = "6c57d02a6ea6c7a36a24dc0c3ab1a26f"
+SUPER_ADMIN_GUEST_TOKEN = "stiq-guest-2026"
+VITE_GUEST_TOKEN = "stiq-guest-2026"
