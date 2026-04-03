@@ -297,6 +297,49 @@ function hasContextNearHitInPhrases(
   return false;
 }
 
+/**
+ * Quantitative cluster-context score: counts how many unique words from
+ * `locationSrc` (excluding `excludeToken`) appear within `CONTEXT_RADIUS` of
+ * point (hx, hy) in the surrounding phrase cluster.  Returns a value in
+ * [0, 1] — the fraction of location words found nearby.  A score of 0 means
+ * no contextual evidence; higher values indicate a better spatial match.
+ * Used to disambiguate repeated room labels across a plan.
+ */
+function contextClusterScore(
+  phrases: PdfPhrase[],
+  locationSrc: string,
+  excludeToken: string,
+  hx: number,
+  hy: number,
+): number {
+  const CONTEXT_RADIUS = 0.08;
+  const words = [...new Set(
+    (locationSrc.match(/\S+/g) ?? [])
+      .map((w) => normId(w))
+      .filter((w) => w.length >= 2 && w !== excludeToken),
+  )];
+  if (words.length === 0) return 1; // no context words → neutral
+
+  let matched = 0;
+  for (const word of words) {
+    for (const p of phrases) {
+      const pn = normId(p.text);
+      const wordFound =
+        pn === word ||
+        (word.length >= 3 && pn.includes(word)) ||
+        (pn.length >= 3 && word.includes(pn));
+      if (!wordFound) continue;
+      const px = (p.x0 + p.x1) / 2;
+      const py = (p.y0 + p.y1) / 2;
+      if (Math.hypot(px - hx, py - hy) <= CONTEXT_RADIUS) {
+        matched++;
+        break; // count each word at most once
+      }
+    }
+  }
+  return matched / words.length;
+}
+
 /** Exact or building-prefix match ("b101b" satisfies token "101b"). */
 function roomMatch(phraseNorm: string, tokenNorm: string): boolean {
   if (exactBoundaryMatch(phraseNorm, tokenNorm)) return true;
@@ -313,16 +356,28 @@ function roomMatch(phraseNorm: string, tokenNorm: string): boolean {
  * Given server-extracted phrases for one PDF page and a sign, find the best
  * matching position using bbox centres.
  *
- * Pass 0 — exact identifier match (single occurrence = callout bubble)
- * Pass 1 — room-number token matching with context co-location check
- * Pass 2 — fuzzy phrase scoring (fallback; score ≥ 0.55 required)
+ * Pass 0 — exact identifier match (single occurrence = callout bubble) → score 1.0
+ * Pass 1 — full-phrase location string match via phraseMatchScore (≥ 0.65)  → score ≥ 0.8
+ * Pass 2 — room-number token matching with context co-location check         → score 0.75
+ * Pass 3 — fuzzy phrase scoring fallback (threshold raised to 0.6)           → proportional score
+ *
+ * Margin filtering: phrases with y < 0.04 or y > 0.96 (title blocks / borders)
+ * or fewer than 2 characters are excluded from Passes 1–3.
  */
 function findSignLocationFromPhrases(
   phrases: PdfPhrase[],
   sign: ExtractedSign,
 ): { x: number; y: number; matched: string; score: number; phrase: PdfPhrase } | null {
 
+  // ── Margin filtering — exclude border/title-block phrases from Passes 1–3 ──
+  const drawingPhrases = phrases.filter((p) => {
+    const cy = (p.y0 + p.y1) / 2;
+    return cy >= 0.04 && cy <= 0.96 && p.text.trim().length >= 2;
+  });
+
   // ── Pass 0: exact identifier ───────────────────────────────────────────────
+  // Uses ALL phrases (not margin-filtered) so that callout bubbles near edges
+  // are still found. Requires the ID to appear exactly once on the page.
   if (sign.signIdentifier && sign.signIdentifier.length >= 3) {
     const idNorm = normId(sign.signIdentifier);
     if (idNorm.length >= 3) {
@@ -338,8 +393,61 @@ function findSignLocationFromPhrases(
     }
   }
 
-  // ── Pass 1: room-number token matching ────────────────────────────────────
   const locationSource = [sign.location, sign.messageContent].filter(Boolean).join(" ");
+  const pageCy = 0.5; // page centroid y used for tie-breaking
+
+  // ── Pass 1: full-phrase location string match ──────────────────────────────
+  // Score the entire sign.location string against every drawing-area phrase
+  // using phraseMatchScore. Accept anything ≥ 0.65. When multiple phrases tie,
+  // pick the one whose surroundings best match the broader location string,
+  // then prefer the hit closest to the page centroid y.
+  const PASS1_THRESHOLD = 0.65;
+  if (sign.location) {
+    let bestScore = 0;
+    const candidates: { score: number; phrase: PdfPhrase; x: number; y: number }[] = [];
+
+    for (const p of drawingPhrases) {
+      const score = phraseMatchScore(p.text, sign.location);
+      if (score >= PASS1_THRESHOLD) {
+        candidates.push({ score, phrase: p, x: (p.x0 + p.x1) / 2, y: (p.y0 + p.y1) / 2 });
+        if (score > bestScore) bestScore = score;
+      }
+    }
+
+    if (candidates.length > 0) {
+      // Keep only those within 0.02 of the best score
+      const topTier = candidates.filter((c) => c.score >= bestScore - 0.02);
+
+      let chosen: (typeof topTier)[0];
+      if (topTier.length === 1) {
+        chosen = topTier[0]!;
+      } else {
+        // Disambiguate: rank by quantitative surrounding-cluster score first,
+        // then by closest y-deviation from page centroid as tiebreaker.
+        const withContext = topTier.map((c) => ({
+          ...c,
+          clusterScore: contextClusterScore(drawingPhrases, locationSource, "", c.x, c.y),
+          yCentroidDev: Math.abs(c.y - pageCy),
+        }));
+        withContext.sort((a, b) =>
+          b.clusterScore - a.clusterScore || a.yCentroidDev - b.yCentroidDev,
+        );
+        chosen = withContext[0]!;
+      }
+
+      // Map pass-1 raw score to a confidence ≥ 0.8
+      const confidence = 0.8 + (chosen.score - PASS1_THRESHOLD) / (1 - PASS1_THRESHOLD) * 0.2;
+      return {
+        x: chosen.x,
+        y: chosen.y,
+        matched: chosen.phrase.text,
+        score: Math.min(1.0, confidence),
+        phrase: chosen.phrase,
+      };
+    }
+  }
+
+  // ── Pass 2: room-number token matching ────────────────────────────────────
   if (locationSource) {
     const roomTokens: string[] = (
       locationSource.match(/\b(?:[A-Za-z]{1,2}\d{2,4}[A-Za-z]?|\d{2,4}[A-Za-z]{1,2})\b/g) ?? []
@@ -351,37 +459,47 @@ function findSignLocationFromPhrases(
       const tokenNorm = normId(token);
       const hits: { x: number; y: number; phrase: PdfPhrase }[] = [];
 
-      for (const p of phrases) {
+      for (const p of drawingPhrases) {
         if (roomMatch(normId(p.text), tokenNorm)) {
           hits.push({ x: (p.x0 + p.x1) / 2, y: (p.y0 + p.y1) / 2, phrase: p });
         }
       }
 
-      if (hits.length === 0 || hits.length > 2) continue;
+      if (hits.length === 0) continue;
 
       const floorPlanHits = hits.filter((h) =>
-        hasContextNearHitInPhrases(phrases, locationSource, tokenNorm, h.x, h.y),
+        hasContextNearHitInPhrases(drawingPhrases, locationSource, tokenNorm, h.x, h.y),
       );
       if (floorPlanHits.length === 0) continue;
 
-      const preferred =
-        floorPlanHits.length === 2
-          ? (floorPlanHits.find((h) => h.y > 0.15) ?? floorPlanHits[0]!)
-          : floorPlanHits[0]!;
+      // Disambiguate repeated room labels: rank by quantitative surrounding-
+      // cluster score first (fraction of other location words found nearby),
+      // then by closest y-deviation from page centroid as tiebreaker.
+      let preferred: { x: number; y: number; phrase: PdfPhrase };
+      if (floorPlanHits.length === 1) {
+        preferred = floorPlanHits[0]!;
+      } else {
+        const ranked = floorPlanHits.map((h) => ({
+          ...h,
+          clusterScore: contextClusterScore(drawingPhrases, locationSource, tokenNorm, h.x, h.y),
+          yCentroidDev: Math.abs(h.y - pageCy),
+        }));
+        ranked.sort((a, b) =>
+          b.clusterScore - a.clusterScore || a.yCentroidDev - b.yCentroidDev,
+        );
+        preferred = ranked[0]!;
+      }
 
-      return { x: preferred.x, y: preferred.y, matched: token, score: 0.85, phrase: preferred.phrase };
+      return { x: preferred.x, y: preferred.y, matched: token, score: 0.75, phrase: preferred.phrase };
     }
   }
 
-  // ── Pass 2: fuzzy phrase match ─────────────────────────────────────────────
-  // Token-level best-match Levenshtein scoring — see phraseMatchScore() above.
-  // Threshold is calibrated for that scorer (prefix matches like "STOR" vs
-  // "STORAGE" yield ~0.57; raising the bar above 0.45 would discard them).
-  const FUZZY_MATCH_THRESHOLD = 0.45;
+  // ── Pass 3: fuzzy phrase match (raised threshold to 0.6) ──────────────────
+  const FUZZY_MATCH_THRESHOLD = 0.6;
   if (locationSource) {
     let bestScore = 0;
     let bestPhrase: PdfPhrase | null = null;
-    for (const p of phrases) {
+    for (const p of drawingPhrases) {
       const score = phraseMatchScore(p.text, locationSource);
       if (score > bestScore) { bestScore = score; bestPhrase = p; }
     }
