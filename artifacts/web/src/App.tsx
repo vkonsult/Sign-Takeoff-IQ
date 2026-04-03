@@ -1,10 +1,10 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Switch, Route, Redirect, useLocation, Router as WouterRouter } from "wouter";
 import { QueryClient, QueryClientProvider, useQueryClient, useQuery } from "@tanstack/react-query";
 import { ClerkProvider, SignIn, SignUp, Show, useClerk, useUser } from "@clerk/react";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import { isGuestMode, apiFetch } from "@/lib/apiClient";
+import { isGuestMode, apiFetch, setGuestToken } from "@/lib/apiClient";
 import { useUserRole } from "@/hooks/use-user-role";
 
 import Home from "@/pages/Home";
@@ -24,6 +24,7 @@ import ActivityPage from "@/pages/ActivityPage";
 const clerkPubKey = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY as string;
 const clerkProxyUrl = import.meta.env.VITE_CLERK_PROXY_URL as string | undefined;
 const basePath = import.meta.env.BASE_URL.replace(/\/$/, "");
+const AUTO_GUEST_TOKEN = import.meta.env.VITE_GUEST_TOKEN as string | undefined;
 
 if (!clerkPubKey) {
   throw new Error("Missing VITE_CLERK_PUBLISHABLE_KEY environment variable");
@@ -66,14 +67,39 @@ function ClerkQueryClientCacheInvalidator() {
 }
 
 function SignInPage() {
+  const [, setLocation] = useLocation();
+  const [guestAvailable, setGuestAvailable] = useState(!!AUTO_GUEST_TOKEN);
+
+  useEffect(() => {
+    fetch(`${basePath}/api/healthz`)
+      .then((r) => r.json())
+      .then((d: { guestAvailable?: boolean }) => setGuestAvailable(!!d.guestAvailable))
+      .catch(() => {});
+  }, []);
+
+  function handleGuest() {
+    if (AUTO_GUEST_TOKEN) {
+      setGuestToken(AUTO_GUEST_TOKEN);
+      setLocation("/jobs");
+    }
+  }
+
   return (
-    <div className="min-h-screen flex items-center justify-center bg-background">
+    <div className="min-h-screen flex flex-col items-center justify-center gap-4 bg-background">
       <SignIn
         routing="path"
         path={`${basePath}/sign-in`}
         signUpUrl={`${basePath}/sign-up`}
         fallbackRedirectUrl={`${basePath}/jobs`}
       />
+      {guestAvailable && (
+        <button
+          onClick={handleGuest}
+          className="text-sm text-muted-foreground hover:text-foreground underline underline-offset-4 transition-colors"
+        >
+          Continue as Guest →
+        </button>
+      )}
     </div>
   );
 }
