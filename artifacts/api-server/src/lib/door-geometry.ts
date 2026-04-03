@@ -18,25 +18,23 @@ import fs from "fs/promises";
 import { logger } from "./logger";
 import type { PageWords } from "./pdf-words";
 
-// ── pdfjs PDF operator codes (verified from pdfjs-dist OPS enum at runtime) ──
-// Modern pdfjs bundles path ops into constructPath (91). Individual ops also
-// appear for compatibility. These values match pdfjs-dist v4.x OPS object.
-const OPS_MOVE_TO    = 13;  // m  — moveto
-const OPS_LINE_TO    = 14;  // l  — lineto
-const OPS_CURVE_TO   = 15;  // c  — curveto (cubic bezier: x1 y1 x2 y2 x y)
-const OPS_CURVE_TO2  = 16;  // v  — curveto variant (x2 y2 x y)
-const OPS_CURVE_TO3  = 17;  // y  — curveto variant (x1 y1 x y)
-const OPS_CLOSE_PATH = 18;  // h  — closepath
-const OPS_STROKE           = 20;  // S  — stroke current path
-const OPS_CLOSE_STROKE     = 21;  // s  — close and stroke
-const OPS_FILL             = 22;  // f  — fill
-const OPS_EOF_FILL         = 23;  // f* — even-odd fill
-const OPS_FILL_STROKE      = 25;  // B  — fill+stroke
-const OPS_EOF_FILL_STROKE  = 26;  // B* — eo fill+stroke
-const OPS_CLOSE_FILL_STROKE      = 27;
-const OPS_CLOSE_EOF_FILL_STROKE  = 24;
-const OPS_END_PATH         = 28;  // n  — end path without painting
-const OPS_CONSTRUCT_PATH   = 91;  // constructPath — bundles path ops in modern pdfjs
+// pdfjs-dist OPS values (verified against pdfjs-dist@5.4.296 OPS enum)
+const OPS_MOVE_TO               = 13;
+const OPS_LINE_TO               = 14;
+const OPS_CURVE_TO              = 15;  // cubic bezier: x1 y1 x2 y2 x y
+const OPS_CURVE_TO2             = 16;  // curveTo variant v: x2 y2 x y
+const OPS_CURVE_TO3             = 17;  // curveTo variant y: x1 y1 x y
+const OPS_CLOSE_PATH            = 18;
+const OPS_STROKE                = 20;
+const OPS_CLOSE_STROKE          = 21;
+const OPS_FILL                  = 22;
+const OPS_EOF_FILL              = 23;
+const OPS_FILL_STROKE           = 24;
+const OPS_EOF_FILL_STROKE       = 25;
+const OPS_CLOSE_FILL_STROKE     = 26;
+const OPS_CLOSE_EOF_FILL_STROKE = 27;
+const OPS_END_PATH              = 28;
+const OPS_CONSTRUCT_PATH        = 91;
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -258,22 +256,13 @@ async function _extractDoorMap(pdfPath: string, pageNum: number, pageWords: Page
         const normW = nx1 - nx0;
         const normH = ny1 - ny0;
 
-        // ── Door arc heuristics (task spec: §Architecture notes) ─────────────
-        // 1. Bounding box aspect ratio 0.6–1.8 (quarter-circle is ~1.0 square)
-        // 2. Bounding box normalised size 0.01–0.12 (per task spec)
-        // 3. Minimum 6 pts to exclude tiny text-outline curves
-        // 4. Simple path: 1–8 segments (door swings are not complex shapes)
-        //    NOTE: segCount starts at 0 for moveTo; lineTo/curveTo/closePath each add 1.
-        //    A bare quarter-circle arc M+C has segCount=1 — that IS a valid door arc shape.
-        // 5. Adjacent straight-segment (radius arm) check — ONLY for segCount>=2 paths:
-        //    Multi-segment paths must have a line segment ≈ arc radius to confirm door swing.
-        //    Single-curve paths (M+C, segCount=1) skip this: their radius arm is typically
-        //    in an adjacent constructPath operator (separate lineTo sub-path at same location).
-        // 6. Pivot must be within page bounds (reject off-page title-block stamps)
+        // Door arc heuristics: aspect ratio ~1:1 (quarter-circle), normalised size 1-12%,
+        // min 6 pts, 1-8 segments. Adjacent line check (radius arm ≈ arc radius) only for
+        // paths with ≥2 segments — bare M+C arcs (segCount=1) have their arm in a separate sub-path.
         const minPts = 6;
         const maxPts = 200;
-        const minNorm = 0.01;  // tighter lower bound per task spec
-        const maxNorm = 0.12;  // tighter upper bound per task spec
+        const minNorm = 0.01;
+        const maxNorm = 0.12;
 
         if (w < minPts || h < minPts || w > maxPts || h > maxPts) continue;
         if (normW < minNorm || normH < minNorm || normW > maxNorm || normH > maxNorm) continue;
@@ -440,29 +429,18 @@ async function _extractDoorMap(pdfPath: string, pageNum: number, pageWords: Page
       const args = argsArray[i] ?? [];
 
       if (op === OPS_CONSTRUCT_PATH) {
-        // constructPath bundles multiple path sub-ops in a single operator.
-        //
-        // Empirically verified pdfjs-dist v4.x structure (confirmed via getOperatorList
-        // diagnostic on real floor-plan PDFs, pathOpCount=331619 validates parsing):
-        //
-        //   args[0]    — paint op code (integer: fill/stroke/endPath OPS value)
-        //   args[1]    — Array whose element [0] is an ArrayLike<number> of interleaved
-        //                internal path ops:  0=moveTo(x,y), 1=lineTo(x,y),
-        //                                    2=curveTo(x1,y1,x2,y2,x,y), 3=closePath
-        //   args[2]    — page bounding box (ignored; we compute our own)
-        //
-        // We fire the outer paint op (args[0]) AFTER decoding all inner ops.
-
-        // Defensive extraction with null-checks at every step
+        // constructPath (OPS=91) layout in pdfjs-dist@5.x:
+        //   args[0]  — paint op (number: fill/stroke/endPath)
+        //   args[1]  — Array[1]; args[1][0] is ArrayLike with interleaved internal ops:
+        //              0=moveTo(x,y)  1=lineTo(x,y)  2=curveTo(x1,y1,x2,y2,x,y)  3=closePath
+        //   args[2]  — bounding box (ignored; we track bbox ourselves)
         const rawArgs = args as unknown[];
         const paintOp = typeof rawArgs[0] === "number" ? rawArgs[0] : null;
         if (paintOp === null) continue;
 
-        // args[1] is an Array; its first element is the actual ArrayLike path data
         const innerWrapper = rawArgs[1];
         const innerRaw: unknown = Array.isArray(innerWrapper) ? innerWrapper[0] : innerWrapper;
         if (!innerRaw || typeof innerRaw !== "object") {
-          // No inner path data — fire paint op to flush any accumulated sub-paths
           processOp(paintOp, []);
           continue;
         }
@@ -475,14 +453,8 @@ async function _extractDoorMap(pdfPath: string, pageNum: number, pageWords: Page
 
         {
           let idx = 0;
-
           while (idx < flat.length) {
             const internalOp = flat[idx++] as number;
-            // Internal constructPath op encoding (NOT pdfjs OPS!):
-            // 0 = moveTo (2 args)
-            // 1 = lineTo (2 args)
-            // 2 = curveTo — cubic bezier (6 args: x1 y1 x2 y2 x y)
-            // 3 = closePath (0 args)
             switch (internalOp) {
               case 0: { // moveTo
                 const mx = flat[idx++] ?? 0;
