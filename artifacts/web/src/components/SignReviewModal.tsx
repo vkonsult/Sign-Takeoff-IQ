@@ -161,6 +161,7 @@ interface TextMarker {
   label: string;
   isCurrent: boolean;
   placementScore: number;  // 0–1 match confidence; 1.0 = exact ID or manual
+  matchedPhrase?: PdfPhrase; // the phrase whose centre was used (for debug overlay)
 }
 
 /** Tokenize a string into searchable words (len ≥ 2, deduplicated) */
@@ -319,20 +320,20 @@ function roomMatch(phraseNorm: string, tokenNorm: string): boolean {
 function findSignLocationFromPhrases(
   phrases: PdfPhrase[],
   sign: ExtractedSign,
-): { x: number; y: number; matched: string; score: number } | null {
+): { x: number; y: number; matched: string; score: number; phrase: PdfPhrase } | null {
 
   // ── Pass 0: exact identifier ───────────────────────────────────────────────
   if (sign.signIdentifier && sign.signIdentifier.length >= 3) {
     const idNorm = normId(sign.signIdentifier);
     if (idNorm.length >= 3) {
-      const idHits: { x: number; y: number }[] = [];
+      const idHits: { x: number; y: number; phrase: PdfPhrase }[] = [];
       for (const p of phrases) {
         if (exactBoundaryMatch(normId(p.text), idNorm)) {
-          idHits.push({ x: (p.x0 + p.x1) / 2, y: (p.y0 + p.y1) / 2 });
+          idHits.push({ x: (p.x0 + p.x1) / 2, y: (p.y0 + p.y1) / 2, phrase: p });
         }
       }
       if (idHits.length === 1) {
-        return { x: idHits[0]!.x, y: idHits[0]!.y, matched: sign.signIdentifier, score: 1.0 };
+        return { x: idHits[0]!.x, y: idHits[0]!.y, matched: sign.signIdentifier, score: 1.0, phrase: idHits[0]!.phrase };
       }
     }
   }
@@ -348,11 +349,11 @@ function findSignLocationFromPhrases(
 
     for (const token of roomTokens) {
       const tokenNorm = normId(token);
-      const hits: { x: number; y: number }[] = [];
+      const hits: { x: number; y: number; phrase: PdfPhrase }[] = [];
 
       for (const p of phrases) {
         if (roomMatch(normId(p.text), tokenNorm)) {
-          hits.push({ x: (p.x0 + p.x1) / 2, y: (p.y0 + p.y1) / 2 });
+          hits.push({ x: (p.x0 + p.x1) / 2, y: (p.y0 + p.y1) / 2, phrase: p });
         }
       }
 
@@ -368,7 +369,7 @@ function findSignLocationFromPhrases(
           ? (floorPlanHits.find((h) => h.y > 0.15) ?? floorPlanHits[0]!)
           : floorPlanHits[0]!;
 
-      return { x: preferred.x, y: preferred.y, matched: token, score: 0.85 };
+      return { x: preferred.x, y: preferred.y, matched: token, score: 0.85, phrase: preferred.phrase };
     }
   }
 
@@ -390,6 +391,7 @@ function findSignLocationFromPhrases(
         y: (bestPhrase.y0 + bestPhrase.y1) / 2,
         matched: bestPhrase.text,
         score: bestScore,
+        phrase: bestPhrase,
       };
     }
   }
@@ -459,9 +461,28 @@ export function SignReviewModal({
   }, [nativeSize?.w]);
   const [textSearchStatus, setTextSearchStatus] = useState<"idle" | "found" | "not-found">("idle");
   const [showOverlay, setShowOverlay] = useState(true);
+  const [debugMode, setDebugMode] = useState(false);
   const [drawMode, setDrawMode] = useState(false);
   const [hoveredMarkerId, setHoveredMarkerId] = useState<string | null>(null);
   const [addingSign, setAddingSign] = useState(false);
+
+  // Measure actual rendered page size by observing the Page element's DOM dimensions.
+  // This is more reliable than computing nativeSize.w * scale because react-pdf may
+  // apply rounding or additional transforms internally.
+  const pageWrapRef = useRef<HTMLDivElement>(null);
+  const [measuredPageSize, setMeasuredPageSize] = useState<{ w: number; h: number } | null>(null);
+  useEffect(() => {
+    const el = pageWrapRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver(() => {
+      const canvas = el.querySelector("canvas");
+      if (canvas) {
+        setMeasuredPageSize({ w: canvas.offsetWidth, h: canvas.offsetHeight });
+      }
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
 
   // Suppress marker dots when viewing a sign schedule / spec page — those pages
   // are tabular data, not spatial floor plans, so dots on them are meaningless.
@@ -568,6 +589,7 @@ export function SignReviewModal({
           label: s.signIdentifier ?? s.signType?.slice(0, 6) ?? "SIGN",
           isCurrent,
           placementScore: loc.score,
+          matchedPhrase: loc.phrase,
         });
         if (isCurrent) currentSignFound = true;
       }
@@ -722,9 +744,11 @@ export function SignReviewModal({
       ? "text-primary"
       : "text-destructive";
 
-  // Rendered page size = native size × scale
-  const renderedW = nativeSize ? nativeSize.w * scale : null;
-  const renderedH = nativeSize ? nativeSize.h * scale : null;
+  // Prefer the ResizeObserver-measured canvas size — it reads actual CSS pixels
+  // from the DOM and is immune to any react-pdf internal rounding or scaling.
+  // Fall back to the computed value when the canvas hasn't painted yet.
+  const renderedW = measuredPageSize?.w ?? (nativeSize ? nativeSize.w * scale : null);
+  const renderedH = measuredPageSize?.h ?? (nativeSize ? nativeSize.h * scale : null);
 
   return (
     <div className="fixed inset-0 z-50 flex flex-col bg-background/95 backdrop-blur-sm">
@@ -884,6 +908,25 @@ export function SignReviewModal({
 
             {/* Overlay toggle + draw mode — pushed to right */}
             <div className="ml-auto flex items-center gap-2">
+              {/* Debug overlay: shows all extracted phrase bboxes */}
+              {serverPhrases && (
+                <button
+                  onClick={() => setDebugMode((v) => !v)}
+                  className="flex items-center gap-1 text-[10px] font-display font-semibold uppercase tracking-wide px-2 py-1 rounded transition-colors border"
+                  style={debugMode ? {
+                    background: "#f59e0b20",
+                    color: "#f59e0b",
+                    borderColor: "#f59e0b55",
+                  } : {
+                    background: "transparent",
+                    color: "var(--muted-foreground)",
+                    borderColor: "var(--border)",
+                  }}
+                  title="Toggle debug overlay — shows all extracted text bounding boxes"
+                >
+                  ⬡ debug
+                </button>
+              )}
               {textMarkers.length > 0 && (
                 <button
                   onClick={() => setShowOverlay((v) => !v)}
@@ -992,7 +1035,7 @@ export function SignReviewModal({
                 }
               >
                 {/* Wrap page + overlay in a relative container */}
-                <div className="relative shadow-2xl inline-block">
+                <div ref={pageWrapRef} className="relative shadow-2xl inline-block">
                   <Page
                     pageNumber={pageNumber}
                     scale={scale}
@@ -1018,7 +1061,7 @@ export function SignReviewModal({
                   )}
 
                   {/* SVG marker overlay — visual only, above react-pdf text layer */}
-                  {showOverlay && textMarkers.length > 0 && renderedW && renderedH && (
+                  {showOverlay && renderedW && renderedH && (textMarkers.length > 0 || (debugMode && serverPhrases)) && (
                     <svg
                       style={{
                         position: "absolute",
@@ -1032,6 +1075,40 @@ export function SignReviewModal({
                       }}
                       viewBox={`0 0 ${renderedW} ${renderedH}`}
                     >
+                      {/* Debug: draw all extracted phrase bounding boxes */}
+                      {debugMode && serverPhrases && serverPhrases.phrases.map((p, i) => {
+                        const px0 = p.x0 * renderedW;
+                        const py0 = p.y0 * renderedH;
+                        const pw  = (p.x1 - p.x0) * renderedW;
+                        const ph  = (p.y1 - p.y0) * renderedH;
+                        const cx  = (p.x0 + p.x1) / 2 * renderedW;
+                        const cy  = (p.y0 + p.y1) / 2 * renderedH;
+                        const isMatched = textMarkers.some((m) => m.matchedPhrase === p);
+                        return (
+                          <g key={`dbg-${i}`}>
+                            <rect
+                              x={px0} y={py0} width={pw} height={Math.max(ph, 2)}
+                              fill={isMatched ? "#22c55e22" : "#3b82f611"}
+                              stroke={isMatched ? "#22c55e" : "#3b82f6"}
+                              strokeWidth={isMatched ? 1.5 : 0.5}
+                              opacity={0.7}
+                            />
+                            <circle cx={cx} cy={cy} r={2}
+                              fill={isMatched ? "#22c55e" : "#3b82f6"}
+                              opacity={0.8}
+                            />
+                            {isMatched && (
+                              <text x={cx} y={py0 - 2}
+                                textAnchor="middle" fill="#22c55e"
+                                fontSize={7} fontFamily="monospace"
+                                style={{ userSelect: "none" }}
+                              >
+                                {p.text.slice(0, 20)}
+                              </text>
+                            )}
+                          </g>
+                        );
+                      })}
                       {textMarkers.map((m) => {
                         const cx = m.x * renderedW;
                         const cy = m.y * renderedH;
