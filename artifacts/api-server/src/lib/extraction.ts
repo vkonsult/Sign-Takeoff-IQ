@@ -2155,10 +2155,9 @@ export async function visualLocateDoors(
     return { ...base, source: "gemini" as const };
   });
 
-  const geminiResolved = geminiResults.filter((r) => r.candidates.length > 0).length;
-  const method = vectorResolved.size > 0 && geminiResolved > 0 ? "hybrid"
-    : vectorResolved.size > 0 ? "vector"
-    : "gemini";
+  // Method reflects actual execution path regardless of whether Gemini produced results.
+  // Gemini was invoked (step 2) so the path is either "hybrid" (vector also helped) or "gemini".
+  const method = vectorResolved.size > 0 ? "hybrid" : "gemini";
 
   return { results: finalResults, method };
 }

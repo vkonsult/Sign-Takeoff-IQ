@@ -41,10 +41,22 @@ const OPS_CONSTRUCT_PATH   = 91;  // constructPath — bundles path ops in moder
 // ── Types ────────────────────────────────────────────────────────────────────
 
 export interface DoorGeometry {
-  /** Center x of the door arc bounding box (normalised 0-1, left = 0) */
-  x: number;
-  /** Center y of the door arc bounding box (normalised 0-1, top = 0) */
-  y: number;
+  /**
+   * Pivot (hinge) point in normalised coords [0-1, top-down].
+   * This is the moveTo start-point of the arc path — the hinge corner.
+   */
+  pivot: { x: number; y: number };
+  /**
+   * Threshold midpoint — the approximate centre of the door opening.
+   * Computed as the centre of the arc bounding box.
+   */
+  threshold: { x: number; y: number };
+  /**
+   * Unit vector pointing from the pivot into the room space
+   * (the direction the door opens toward).
+   * Derived as normalize(threshold − pivot).
+   */
+  openingDir: { x: number; y: number };
   /** Approximate door width (normalised, diameter of the arc) */
   size: number;
   /** Bounding box of the arc (for debug / candidate scoring) */
@@ -171,6 +183,7 @@ async function _extractDoorMap(pdfPath: string, pageNum: number): Promise<PageDo
 
     type Point = { x: number; y: number };
     interface SubPath {
+      /** Start point in PDF coords (the moveTo — i.e. hinge/pivot) */
       start: Point;
       minX: number; maxX: number; minY: number; maxY: number;
       hasCurve: boolean;
@@ -245,11 +258,35 @@ async function _extractDoorMap(pdfPath: string, pageNum: number): Promise<PageDo
         // Segment count check: door swings are simple (1-8 segments); reject complex shapes
         if (sp.segCount > 10) continue;
 
-        const cx = (nx0 + nx1) / 2;
-        const cy = (ny0 + ny1) / 2;
+        // Must also be within the page bounds (skip off-page elements such as
+        // title-block stamps whose coordinates fall outside [0,1] before clamping)
+        const rawPivotNx = sp.start.x / pageW;
+        const rawPivotNy = 1 - sp.start.y / pageH;
+        if (rawPivotNx < 0 || rawPivotNx > 1 || rawPivotNy < 0 || rawPivotNy > 1) continue;
+
+        const thresholdX = (nx0 + nx1) / 2;
+        const thresholdY = (ny0 + ny1) / 2;
         const size = Math.max(normW, normH);
 
-        doors.push({ x: cx, y: cy, size, bbox: { x0: nx0, y0: ny0, x1: nx1, y1: ny1 } });
+        // Pivot: normalised coords of the moveTo start point (hinge corner)
+        const pivotX = Math.max(0, Math.min(1, rawPivotNx));
+        const pivotY = Math.max(0, Math.min(1, rawPivotNy));
+
+        // Opening direction: unit vector from pivot toward the arc centre (into the room)
+        const odx = thresholdX - pivotX;
+        const ody = thresholdY - pivotY;
+        const odLen = Math.sqrt(odx * odx + ody * ody);
+        const openingDir = odLen > 1e-6
+          ? { x: odx / odLen, y: ody / odLen }
+          : { x: 0, y: 1 }; // fallback: downward
+
+        doors.push({
+          pivot: { x: pivotX, y: pivotY },
+          threshold: { x: thresholdX, y: thresholdY },
+          openingDir,
+          size,
+          bbox: { x0: nx0, y0: ny0, x1: nx1, y1: ny1 },
+        });
       }
       subPaths.length = 0;
     };
@@ -461,17 +498,37 @@ async function _extractDoorMap(pdfPath: string, pageNum: number): Promise<PageDo
 
 // ── Room label → door matching ───────────────────────────────────────────────
 
+// ── Confidence thresholds ────────────────────────────────────────────────────
+/** Distance ≤ this fraction of searchRadius → confident auto-place (score ≥ AUTO_CONFIDENCE_FLOOR) */
+const AUTO_CONFIDENCE_FLOOR = 0.75;
+/** Score below this → don't include in candidates at all */
+const MIN_CANDIDATE_SCORE = 0.35;
+/** Orientation weight in the combined score (0 = ignore orientation, 1 = pure orientation) */
+const ORIENTATION_WEIGHT = 0.25;
+
 /**
  * For each sign, find its room-number label in the drawing phrases, then
  * locate the nearest door arc within the search radius.
  *
- * Matching is keyed on the exact room number (e.g. "417B"), not on fuzzy
- * unit-type matching.
+ * **Room-number matching** is exact-token keyed — the room number must appear as
+ * a standalone whitespace-delimited token in a phrase (e.g., "417B" matches phrase
+ * "UNIT 417B" but not "417BC"). `startsWith`/`endsWith` substring patterns are
+ * intentionally not used.
+ *
+ * **Scoring** combines distance and orientation plausibility:
+ *   score = (1 − distFraction) * (1 − ORIENTATION_WEIGHT)
+ *         + dotProduct(openingDir, labelDir) * ORIENTATION_WEIGHT
+ * where `labelDir` is the unit vector from door pivot toward the label anchor.
+ *
+ * **Confidence bands**:
+ * - score ≥ AUTO_CONFIDENCE_FLOOR → single confident match → return only that one (auto-place)
+ * - MIN_CANDIDATE_SCORE ≤ score < AUTO_CONFIDENCE_FLOOR → plausible candidate
+ * - score < MIN_CANDIDATE_SCORE → excluded
  *
  * @param pageWords   Already-extracted text phrases for this page (from pdf-words.ts)
  * @param doorMap     Door map for this page (from buildPageDoorMap)
  * @param signs       The residential signs to place
- * @param searchRadius How far (normalised) to look for a door arc from the label. Default 0.08.
+ * @param searchRadius How far (normalised) to search for a door arc. Default 0.08.
  */
 export function matchSignsToDoors(
   pageWords: PageWords,
@@ -480,11 +537,11 @@ export function matchSignsToDoors(
   searchRadius = 0.08,
 ): DoorMatchResult[] {
   if (!doorMap.isVector || doorMap.doors.length === 0) {
-    // Not a vector page or no doors found — return empty (will fall back to Gemini)
     return signs.map((s) => ({ signId: s.signId, candidates: [], method: "vector" as const }));
   }
 
   const results: DoorMatchResult[] = [];
+  const expandedRadius = searchRadius * 2.5; // fallback search radius for candidates
 
   for (const sign of signs) {
     const roomNum = (sign.roomNumber ?? "").trim().toUpperCase();
@@ -493,20 +550,20 @@ export function matchSignsToDoors(
       continue;
     }
 
-    // Find phrase(s) in the drawing that exactly match the room number.
-    // Exact boundary match: the phrase must equal the room number (ignoring case
-    // and leading/trailing whitespace). We don't do fuzzy matching here.
+    // ── Exact-token room-number matching ─────────────────────────────────────
+    // The room number must appear as a whole whitespace-delimited token in the
+    // phrase text. This avoids the ambiguity of startsWith/endsWith substring
+    // matches (e.g., "417B" should NOT match phrase "417BC" or "1417B").
     const labelPhrases = pageWords.phrases.filter((p) => {
-      const t = p.text.trim().toUpperCase();
-      return t === roomNum || t.endsWith(` ${roomNum}`) || t.startsWith(`${roomNum} `);
+      const tokens = p.text.trim().toUpperCase().split(/\s+/);
+      return tokens.includes(roomNum);
     });
 
-    // If no phrase matches, fall back to anchor hint (annotation-band position)
+    // Determine the anchor position for distance scoring
     let anchorX: number;
     let anchorY: number;
 
     if (labelPhrases.length > 0) {
-      // Use the centroid of the first (most confident) matching phrase
       const ph = labelPhrases[0]!;
       anchorX = (ph.x0 + ph.x1) / 2;
       anchorY = (ph.y0 + ph.y1) / 2;
@@ -514,53 +571,65 @@ export function matchSignsToDoors(
       anchorX = sign.anchorX;
       anchorY = sign.anchorY;
     } else {
-      // No anchor at all — can't match
       results.push({ signId: sign.signId, candidates: [], method: "vector" });
       continue;
     }
 
-    // Find all doors within the search radius of the anchor, scored by distance
-    const nearby: Array<{ door: DoorGeometry; dist: number }> = [];
+    // ── Score all doors within the expanded search radius ─────────────────────
+    const scored: Array<{ door: DoorGeometry; dist: number; score: number }> = [];
+
     for (const door of doorMap.doors) {
-      const dx = door.x - anchorX;
-      const dy = door.y - anchorY;
+      const dx = door.threshold.x - anchorX;
+      const dy = door.threshold.y - anchorY;
       const dist = Math.sqrt(dx * dx + dy * dy);
-      if (dist <= searchRadius) {
-        nearby.push({ door, dist });
+      if (dist > expandedRadius) continue;
+
+      // Distance component: 1.0 at dist=0, 0.0 at expandedRadius
+      const distFraction = Math.min(1, dist / expandedRadius);
+      const distScore = 1 - distFraction;
+
+      // Orientation plausibility: dot product of door's openingDir with the unit
+      // vector pointing from the door pivot TOWARD the room label anchor.
+      // A positive dot product means the door opens toward the room — good.
+      const ldx = anchorX - door.pivot.x;
+      const ldy = anchorY - door.pivot.y;
+      const ldLen = Math.sqrt(ldx * ldx + ldy * ldy);
+      const orientScore = ldLen > 1e-6
+        ? Math.max(0, (door.openingDir.x * ldx + door.openingDir.y * ldy) / ldLen)
+        : 0;
+
+      const score = distScore * (1 - ORIENTATION_WEIGHT) + orientScore * ORIENTATION_WEIGHT;
+      if (score >= MIN_CANDIDATE_SCORE) {
+        scored.push({ door, dist, score });
       }
     }
 
-    if (nearby.length === 0) {
-      // No door found in primary radius; try double radius for candidate suggestions
-      for (const door of doorMap.doors) {
-        const dx = door.x - anchorX;
-        const dy = door.y - anchorY;
-        const dist = Math.sqrt(dx * dx + dy * dy);
-        if (dist <= searchRadius * 2.5) {
-          nearby.push({ door, dist });
-        }
-      }
-    }
-
-    if (nearby.length === 0) {
+    if (scored.length === 0) {
       results.push({ signId: sign.signId, candidates: [], method: "vector" });
       continue;
     }
 
-    // Sort by distance ascending
-    nearby.sort((a, b) => a.dist - b.dist);
+    // Sort by score descending
+    scored.sort((a, b) => b.score - a.score);
 
-    // Build candidates (up to 3)
-    const candidates: DoorMatchCandidate[] = nearby.slice(0, 3).map(({ door, dist }) => {
-      // Confidence: 1.0 at dist=0, decays to 0.5 at searchRadius, 0.2 at 2.5*searchRadius
-      const confidence = Math.max(0.1, 1.0 - (dist / (searchRadius * 2.5)) * 0.8);
-      return {
-        x: door.x,
-        y: door.y,
-        confidence: parseFloat(confidence.toFixed(2)),
-        description: `Vector: door arc at (${door.x.toFixed(3)}, ${door.y.toFixed(3)}) for room ${roomNum}`,
-      };
-    });
+    const best = scored[0]!;
+
+    // ── Confidence-band gating ────────────────────────────────────────────────
+    let candidateSlice: typeof scored;
+    if (best.score >= AUTO_CONFIDENCE_FLOOR) {
+      // One confident match → auto-place, return only the best
+      candidateSlice = [best];
+    } else {
+      // Plausible matches → return up to 3 for user selection
+      candidateSlice = scored.slice(0, 3);
+    }
+
+    const candidates: DoorMatchCandidate[] = candidateSlice.map(({ door, score }) => ({
+      x: door.threshold.x,
+      y: door.threshold.y,
+      confidence: parseFloat(score.toFixed(2)),
+      description: `Vector: door at (${door.threshold.x.toFixed(3)}, ${door.threshold.y.toFixed(3)}) for room ${roomNum}`,
+    }));
 
     results.push({ signId: sign.signId, candidates, method: "vector" });
   }
