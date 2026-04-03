@@ -747,6 +747,9 @@ export function SignReviewModal({
     // Track placed positions for anti-stacking in computeMarkerOffset
     const placedPositions: Array<{ x: number; y: number }> = [];
 
+    console.log('[PLACEMENT-TEST] ACTIVE');
+    let matchedCount = 0;
+
     for (const s of signsOnCurrentPage) {
       const isCurrent = s.id === activeSign.id;
       const color = isCurrent ? "#22c55e" : (s.manuallyAdded ? "#a855f7" : "#eab308");
@@ -770,13 +773,31 @@ export function SignReviewModal({
 
       const loc = findSignLocationFromPhrases(phrases, s);
       if (loc) {
-        // Phrase centre is the raw match position; offset the marker away from
-        // the text toward the nearest open (low-density) space.
-        const offset = computeMarkerOffset(loc.phrase, phrases, placedPositions);
-        placedPositions.push(offset);
+        if (!s.manuallyAdded) matchedCount++;
+        let finalX: number;
+        let finalY: number;
+
+        if (!s.manuallyAdded && matchedCount <= 5) {
+          finalX = loc.x;
+          finalY = loc.y;
+          console.log('[PLACEMENT-TEST]', {
+            signId: s.id,
+            phrase: loc.phrase.text,
+            bbox: loc.phrase.bbox,
+            center: { x: loc.x, y: loc.y },
+            finalX,
+            finalY,
+          });
+        } else {
+          const offset = computeMarkerOffset(loc.phrase, phrases, placedPositions);
+          finalX = offset.x;
+          finalY = offset.y;
+        }
+
+        placedPositions.push({ x: finalX, y: finalY });
         markers.push({
-          x: offset.x,
-          y: offset.y,
+          x: finalX,
+          y: finalY,
           phraseCenter: { x: loc.x, y: loc.y },
           signId: s.id,
           color,
@@ -800,26 +821,6 @@ export function SignReviewModal({
         label: "?",
         isCurrent: true,
         placementScore: 0,
-      });
-    }
-
-    // ── Cluster deduplication ────────────────────────────────────────────────
-    const CLUSTER_EPS = 0.015;
-    const posGroups = new Map<string, number[]>();
-    markers.forEach((m, i) => {
-      const key = `${Math.round(m.x / CLUSTER_EPS)},${Math.round(m.y / CLUSTER_EPS)}`;
-      if (!posGroups.has(key)) posGroups.set(key, []);
-      posGroups.get(key)!.push(i);
-    });
-    for (const indices of posGroups.values()) {
-      if (indices.length <= 1) continue;
-      const cx = markers[indices[0]!]!.x;
-      const cy = markers[indices[0]!]!.y;
-      const radius = Math.min(0.04, 0.015 + 0.003 * (indices.length - 2));
-      indices.forEach((idx, k) => {
-        const angle = (2 * Math.PI * k) / indices.length - Math.PI / 2;
-        markers[idx]!.x = Math.min(1, Math.max(0, cx + radius * Math.cos(angle)));
-        markers[idx]!.y = Math.min(1, Math.max(0, cy + radius * Math.sin(angle)));
       });
     }
 
