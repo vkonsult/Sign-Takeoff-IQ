@@ -1938,3 +1938,110 @@ export async function extractSignsFromPdf(
 
   return { rows: allRows, pageCount: numPages, rawText, inputTokens: totalInputTokens, outputTokens: totalOutputTokens, pageStats };
 }
+
+// ─── VISUAL LOCATE ──────────────────────────────────────────────────────────
+
+export interface VisualLocateCandidate {
+  x: number;
+  y: number;
+  description: string;
+  confidence: number;
+}
+
+export interface VisualLocateResult {
+  signId: string;
+  candidates: VisualLocateCandidate[];
+}
+
+const VISUAL_LOCATE_PROMPT = `You are looking at a single floor plan page. Your task is to find the exact entrance or door location for each residential unit sign listed below.
+
+The coordinates you return must be normalized values relative to the page:
+  x = 0.0 means the left edge,  x = 1.0 means the right edge
+  y = 0.0 means the top edge,   y = 1.0 means the bottom edge
+
+For each sign, scan the floor plan and return the (x, y) position of its entrance/door opening — the threshold point a visitor would stand at when entering the room.
+
+Signs to locate (JSON input):
+SIGNS_PLACEHOLDER
+
+Return a JSON array with exactly one object per sign:
+[
+  {
+    "signId": "<exact id from input>",
+    "candidates": [
+      {"x": 0.45, "y": 0.32, "description": "Door gap at unit label in east corridor", "confidence": 0.85}
+    ]
+  }
+]
+
+Rules:
+- Provide up to 3 candidates per sign ordered by confidence (highest first).
+- x and y MUST be normalized floats in [0.0, 1.0].
+- If no entrance is visible for a sign, return an empty candidates array for it.
+- Return ONLY valid JSON. No markdown, no code blocks, no explanation.`;
+
+export async function visualLocateDoors(
+  filePath: string,
+  pageNum: number,
+  signs: Array<{ id: string; signType: string | null; location: string | null; signIdentifier: string | null }>,
+  ai: GeminiAI,
+): Promise<VisualLocateResult[]> {
+  if (signs.length === 0) return [];
+
+  const fileBuffer = await fs.readFile(filePath);
+  const { PDFDocument } = await import("pdf-lib");
+  let srcDoc: import("pdf-lib").PDFDocument;
+  try {
+    srcDoc = await PDFDocument.load(fileBuffer, { ignoreEncryption: true });
+  } catch (err) {
+    logger.error({ err, filePath }, "visualLocateDoors: pdf-lib failed to load");
+    return signs.map((s) => ({ signId: s.id, candidates: [] }));
+  }
+
+  const pageIdx = pageNum - 1;
+  if (pageIdx < 0 || pageIdx >= srcDoc.getPageCount()) {
+    logger.warn({ pageNum, total: srcDoc.getPageCount() }, "visualLocateDoors: page out of range");
+    return signs.map((s) => ({ signId: s.id, candidates: [] }));
+  }
+
+  const pageDoc = await PDFDocument.create();
+  const [copiedPage] = await pageDoc.copyPages(srcDoc, [pageIdx]);
+  pageDoc.addPage(copiedPage);
+  const pageBytes = await pageDoc.save();
+  const pdfBase64 = Buffer.from(pageBytes).toString("base64");
+
+  const signsJson = JSON.stringify(signs.map((s) => ({
+    id: s.id,
+    location: s.location ?? "",
+    signType: s.signType ?? "",
+    signIdentifier: s.signIdentifier ?? "",
+  })));
+  const prompt = VISUAL_LOCATE_PROMPT.replace("SIGNS_PLACEHOLDER", signsJson);
+
+  let raw = "";
+  try {
+    const { text } = await callGeminiMultimodal(prompt, pdfBase64, ai, `visual-locate-p${pageNum}`);
+    raw = text;
+  } catch (err) {
+    logger.error({ err }, "visualLocateDoors: Gemini call failed");
+    return signs.map((s) => ({ signId: s.id, candidates: [] }));
+  }
+
+  try {
+    const cleaned = raw.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
+    const parsed = JSON.parse(cleaned) as VisualLocateResult[];
+    if (!Array.isArray(parsed)) throw new Error("Response is not an array");
+    const resultMap = new Map(parsed.map((r) => [r.signId, r]));
+    return signs.map((s) => {
+      const entry = resultMap.get(s.id);
+      if (!entry) return { signId: s.id, candidates: [] };
+      const validCandidates = (entry.candidates ?? []).filter(
+        (c) => typeof c.x === "number" && typeof c.y === "number" && c.x >= 0 && c.x <= 1 && c.y >= 0 && c.y <= 1
+      ).slice(0, 3);
+      return { signId: s.id, candidates: validCandidates };
+    });
+  } catch (err) {
+    logger.error({ err, raw: raw.slice(0, 300) }, "visualLocateDoors: JSON parse failed");
+    return signs.map((s) => ({ signId: s.id, candidates: [] }));
+  }
+}

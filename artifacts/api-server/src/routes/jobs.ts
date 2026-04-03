@@ -11,7 +11,7 @@ import { buildExcelExport } from "../lib/export";
 import { getJobExportPath } from "../lib/storage";
 import { extractPagePhrases } from "../lib/pdf-words";
 import { processJob } from "../lib/process-job";
-import { extractSignsFromPdfImage, extractSignsFromPdf } from "../lib/extraction";
+import { extractSignsFromPdfImage, extractSignsFromPdf, visualLocateDoors } from "../lib/extraction";
 import { ai } from "@workspace/integrations-gemini-ai";
 import fs from "fs/promises";
 import fsSync from "fs";
@@ -920,6 +920,7 @@ const UpdateSignSchema = z.object({
   hidden: z.boolean().optional(),
   xPos: z.number().min(0).max(1).nullable().optional(),
   yPos: z.number().min(0).max(1).nullable().optional(),
+  placementSource: z.string().nullable().optional(),
 });
 
 router.patch("/extracted-signs/:signId", async (req, res) => {
@@ -974,6 +975,66 @@ router.patch("/extracted-signs/:signId", async (req, res) => {
   } catch (err) {
     req.log.error({ err, signId }, "Failed to update sign");
     res.status(500).json({ error: "Failed to update sign" });
+  }
+});
+
+const VisualLocateSchema = z.object({
+  fileId: z.string().uuid(),
+  pageNumber: z.number().int().positive(),
+  signs: z.array(z.object({
+    id: z.string().uuid(),
+    signType: z.string().nullable().optional(),
+    location: z.string().nullable().optional(),
+    signIdentifier: z.string().nullable().optional(),
+  })).min(1).max(20),
+});
+
+router.post("/jobs/:jobId/visual-locate", async (req, res) => {
+  const { jobId } = req.params;
+  if (!jobId) {
+    res.status(400).json({ error: "Job ID required" });
+    return;
+  }
+
+  const parsed = VisualLocateSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: "Invalid request body", details: parsed.error.issues });
+    return;
+  }
+
+  try {
+    const job = await getJobWithOrgCheck(req, res, jobId);
+    if (!job) return;
+
+    const [file] = await db
+      .select()
+      .from(jobFilesTable)
+      .where(eq(jobFilesTable.id, parsed.data.fileId));
+
+    if (!file || file.jobId !== jobId) {
+      res.status(404).json({ error: "File not found" });
+      return;
+    }
+
+    try {
+      await fs.access(file.storedPath);
+    } catch {
+      res.status(404).json({ error: "PDF file not found on disk" });
+      return;
+    }
+
+    const results = await visualLocateDoors(
+      file.storedPath,
+      parsed.data.pageNumber,
+      parsed.data.signs,
+      ai,
+    );
+
+    req.log.info({ jobId, pageNumber: parsed.data.pageNumber, signCount: parsed.data.signs.length }, "visual-locate complete");
+    res.json({ results });
+  } catch (err) {
+    req.log.error({ err, jobId }, "visual-locate failed");
+    res.status(500).json({ error: "visual-locate failed", details: String(err) });
   }
 });
 

@@ -22,6 +22,7 @@ import {
   Trash2,
   Plus,
   CheckCircle,
+  Sparkles,
 } from "lucide-react";
 
 pdfjs.GlobalWorkerOptions.workerSrc = `${import.meta.env.BASE_URL}pdf.worker.min.mjs`;
@@ -46,6 +47,7 @@ interface ExtractedSign {
   pageNumber?: number | null;
   xPos?: number | null;
   yPos?: number | null;
+  placementSource?: string | null;
   manuallyAdded?: boolean;
   userVerified?: boolean;
   confidenceScore: number;
@@ -151,6 +153,14 @@ interface PdfPhrase {
   y0: number; // 0–1 normalised top edge   (top-down: 0 = top of page)
   x1: number; // 0–1 normalised right edge
   y1: number; // 0–1 normalised bottom edge
+}
+
+/** A candidate door/entrance position returned by the Gemini visual-locate pass. */
+interface VisualCandidate {
+  x: number;
+  y: number;
+  description: string;
+  confidence: number;
 }
 
 interface TextMarker {
@@ -966,6 +976,11 @@ export function SignReviewModal({
   const [hoveredMarkerId, setHoveredMarkerId] = useState<string | null>(null);
   const [addingSign, setAddingSign] = useState(false);
 
+  // ── Visual-locate (Gemini door placement) ───────────────────────────────
+  const [visualCandidates, setVisualCandidates] = useState<Map<string, VisualCandidate[]>>(new Map());
+  const [visualLocating, setVisualLocating] = useState(false);
+  const visualLocateQueriedRef = useRef<Set<string>>(new Set());
+
   // Measure actual rendered page size by observing the Page element's DOM dimensions.
   // This is more reliable than computing nativeSize.w * scale because react-pdf may
   // apply rounding or additional transforms internally.
@@ -1064,14 +1079,14 @@ export function SignReviewModal({
       const isCurrent = s.id === activeSign.id;
       const color = isCurrent ? "#22c55e" : (s.manuallyAdded ? "#a855f7" : "#eab308");
 
-      // Manually-placed markers: use stored coordinates directly (no offset).
-      if (s.manuallyAdded && s.xPos != null && s.yPos != null) {
+      // Manually-placed or AI-confirmed markers: use stored coordinates directly.
+      if (s.xPos != null && s.yPos != null && (s.manuallyAdded || s.placementSource != null)) {
         markers.push({
           x: s.xPos,
           y: s.yPos,
           signId: s.id,
           color,
-          label: s.signIdentifier ?? s.signType?.slice(0, 6) ?? "NEW",
+          label: s.signIdentifier ?? s.signType?.slice(0, 6) ?? "SIGN",
           isCurrent,
           placementScore: 1.0,
         });
@@ -1141,6 +1156,64 @@ export function SignReviewModal({
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [serverPhrases, phrasesFetchFailed, pageNumber, sign.id, signsOnCurrentPage.length, activeSign.id]);
+
+  // Clear visual candidates when the page or file changes
+  useEffect(() => {
+    setVisualCandidates(new Map());
+  }, [file?.id, pageNumber]);
+
+  // Auto-fire Gemini visual-locate for unplaced paired-cluster signs after phrases load.
+  // A "paired-cluster" sign has BOTH a unit-type token ("UNIT 1A") AND a room-number
+  // token ("417B") in its location but was not placed by the text-matching passes.
+  useEffect(() => {
+    if (!file || !serverPhrases) return;
+
+    const pageKey = `${file.id}:${pageNumber}`;
+    if (visualLocateQueriedRef.current.has(pageKey)) return;
+
+    const needsVisualLocate = signsOnCurrentPage.filter((s) => {
+      if (s.xPos != null && s.yPos != null) return false;
+      if (!s.location) return false;
+      const { typeToken, numberToken } = parseLocationParts(s.location);
+      return typeToken != null && numberToken != null;
+    });
+
+    if (needsVisualLocate.length === 0) return;
+
+    // Mark as queried so we don't re-fire on re-renders
+    visualLocateQueriedRef.current.add(pageKey);
+    setVisualLocating(true);
+
+    apiFetch(`/api/jobs/${jobId}/visual-locate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        fileId: file.id,
+        pageNumber,
+        signs: needsVisualLocate.map((s) => ({
+          id: s.id,
+          signType: s.signType,
+          location: s.location,
+          signIdentifier: s.signIdentifier,
+        })),
+      }),
+    })
+      .then((r) => r.ok ? r.json() : Promise.reject(new Error("non-ok")))
+      .then((data: { results: { signId: string; candidates: VisualCandidate[] }[] }) => {
+        setVisualCandidates((prev) => {
+          const next = new Map(prev);
+          for (const r of data.results) {
+            if (r.candidates.length > 0) {
+              next.set(r.signId, r.candidates.slice(0, 3));
+            }
+          }
+          return next;
+        });
+      })
+      .catch((err) => console.error("[visual-locate] failed:", err))
+      .finally(() => setVisualLocating(false));
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [serverPhrases, file?.id, pageNumber]);
 
   const handleField = useCallback(
     (field: keyof FormState, value: string | boolean) => {
@@ -1240,6 +1313,33 @@ export function SignReviewModal({
     }
   };
 
+  const confirmVisualPlacement = async (signId: string, candidate: VisualCandidate) => {
+    try {
+      const res = await apiFetch(`/api/extracted-signs/${signId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          xPos: candidate.x,
+          yPos: candidate.y,
+          placementSource: "user_confirmed",
+        }),
+      });
+      if (!res.ok) throw new Error("Failed to confirm placement");
+      const data = await res.json() as { sign: ExtractedSign };
+      setLocalSigns((prev) => prev.map((s) => s.id === signId ? data.sign : s));
+      setVisualCandidates((prev) => {
+        const next = new Map(prev);
+        next.delete(signId);
+        return next;
+      });
+      if (signId === activeSign.id) {
+        setActiveSign(data.sign);
+      }
+    } catch (err) {
+      console.error("[visual-locate] confirm placement failed:", err);
+    }
+  };
+
   const confidence = Math.round(activeSign.confidenceScore * 100);
   const confColor =
     confidence >= 80
@@ -1315,6 +1415,12 @@ export function SignReviewModal({
             <span className="flex items-center gap-1 text-[10px] font-display font-bold uppercase tracking-wider border px-2 py-0.5 rounded" style={{ color: "#22c55e", borderColor: "#22c55e55", background: "#22c55e10" }}>
               <CheckCircle className="w-3 h-3" />
               Verified
+            </span>
+          )}
+          {(activeSign.placementSource === "user_confirmed" || activeSign.placementSource === "gemini_vision") && (
+            <span className="flex items-center gap-1 text-[10px] font-display font-bold uppercase tracking-wider border px-2 py-0.5 rounded" style={{ color: "#06b6d4", borderColor: "#06b6d455", background: "#06b6d410" }}>
+              <Sparkles className="w-3 h-3" />
+              AI Placed
             </span>
           )}
           {activeSign.reviewFlag && (
@@ -1409,6 +1515,20 @@ export function SignReviewModal({
                 Sheet <span className="font-mono text-foreground">{activeSign.sheetNumber}</span>
               </span>
             ) : null}
+
+            {/* Visual-locate loading indicator */}
+            {visualLocating && (
+              <span className="flex items-center gap-1 text-[10px] font-display font-semibold uppercase tracking-wide px-2 py-1 rounded" style={{ color: "#06b6d4", background: "#06b6d410", border: "1px solid #06b6d455" }}>
+                <Loader2 className="w-3 h-3 animate-spin" />
+                AI locating...
+              </span>
+            )}
+            {!visualLocating && visualCandidates.size > 0 && (
+              <span className="flex items-center gap-1 text-[10px] font-display font-semibold uppercase tracking-wide px-2 py-1 rounded" style={{ color: "#06b6d4", background: "#06b6d410", border: "1px solid #06b6d455" }}>
+                <Sparkles className="w-3 h-3" />
+                {Array.from(visualCandidates.values()).reduce((n, c) => n + c.length, 0)} candidate{Array.from(visualCandidates.values()).reduce((n, c) => n + c.length, 0) !== 1 ? "s" : ""} — click to confirm
+              </span>
+            )}
 
             {/* Overlay toggle + draw mode — pushed to right */}
             <div className="ml-auto flex items-center gap-2">
@@ -1764,6 +1884,46 @@ export function SignReviewModal({
                       </button>
                     );
                   })}
+
+                  {/* Visual candidate dots — numbered teal buttons for AI door suggestions */}
+                  {showOverlay && !drawMode && renderedW && renderedH && (
+                    Array.from(visualCandidates.entries()).flatMap(([signId, candidates]) =>
+                      candidates.map((c, i) => {
+                        const cx = c.x * renderedW;
+                        const cy = c.y * renderedH;
+                        return (
+                          <button
+                            key={`vc-${signId}-${i}`}
+                            title={`AI candidate ${i + 1}: ${c.description}\nConfidence: ${Math.round(c.confidence * 100)}%\nClick to confirm placement`}
+                            onClick={() => confirmVisualPlacement(signId, c)}
+                            style={{
+                              position: "absolute",
+                              left: cx - 14,
+                              top: cy - 14,
+                              width: 28,
+                              height: 28,
+                              zIndex: 15,
+                              cursor: "pointer",
+                              borderRadius: "50%",
+                              border: `2px solid #06b6d4`,
+                              background: i === 0 ? "#06b6d455" : "#06b6d422",
+                              color: "#06b6d4",
+                              fontFamily: "monospace",
+                              fontWeight: "bold",
+                              fontSize: 12,
+                              display: "flex",
+                              alignItems: "center",
+                              justifyContent: "center",
+                              pointerEvents: "all",
+                              boxShadow: i === 0 ? "0 0 8px #06b6d477" : "none",
+                            }}
+                          >
+                            {i + 1}
+                          </button>
+                        );
+                      })
+                    )
+                  )}
 
                   {/* Draw mode hint when hovering empty space */}
                   {drawMode && !hoveredMarkerId && renderedW && renderedH && (
