@@ -163,6 +163,7 @@ interface TextMarker {
   isCurrent: boolean;
   placementScore: number;  // 0–1 match confidence; 1.0 = exact ID or manual
   matchedPhrase?: PdfPhrase; // the phrase whose centre was used (for debug overlay)
+  rejectedCandidates?: PdfPhrase[]; // runner-up candidate phrases (for debug overlay)
 }
 
 /** Tokenize a string into searchable words (len ≥ 2, deduplicated) */
@@ -341,6 +342,67 @@ function contextClusterScore(
   return matched / words.length;
 }
 
+interface ScoredCandidate {
+  phrase: PdfPhrase;
+  x: number;
+  y: number;
+  phraseScore: number;
+  roomBonus: number;   // 1.0 if a room-number token from locationSrc is found exactly nearby
+  clusterScore: number;
+  totalScore: number;
+}
+
+/**
+ * Re-rank phrase candidates using a room-number exact-match bonus and context
+ * cluster score.  Room-number tokens (e.g. "B405", "307B") strongly dominate
+ * when present in locationSrc.  When no room numbers exist, context cluster
+ * becomes the primary differentiator.
+ *
+ * ROOM_RADIUS is kept tight (0.06) so that "B405" only matches if the token
+ * actually appears very close to the candidate anchor.
+ */
+function rankCandidates(
+  candidates: Array<{ score: number; phrase: PdfPhrase; x: number; y: number }>,
+  allPhrases: PdfPhrase[],
+  locationSrc: string,
+  excludeToken: string,
+): ScoredCandidate[] {
+  const ROOM_RADIUS = 0.06;
+  const roomTokens = (
+    locationSrc.match(/\b(?:[A-Za-z]{1,2}\d{2,4}[A-Za-z]?|\d{2,4}[A-Za-z]{1,2})\b/g) ?? []
+  )
+    .map((t) => normId(t))
+    .filter((t) => t.length >= 2);
+
+  return candidates
+    .map((c): ScoredCandidate => {
+      let roomBonus = 0;
+      if (roomTokens.length > 0) {
+        outer: for (const rt of roomTokens) {
+          for (const p of allPhrases) {
+            if (exactBoundaryMatch(normId(p.text), rt)) {
+              const px = (p.x0 + p.x1) / 2;
+              const py = (p.y0 + p.y1) / 2;
+              if (Math.hypot(px - c.x, py - c.y) <= ROOM_RADIUS) {
+                roomBonus = 1.0;
+                break outer;
+              }
+            }
+          }
+        }
+      }
+      const clusterScore = contextClusterScore(allPhrases, locationSrc, excludeToken, c.x, c.y);
+      // When location has room-number tokens they strongly differentiate candidates.
+      // When no room-number tokens exist, cluster context is the primary signal.
+      const totalScore =
+        roomTokens.length > 0
+          ? roomBonus * 0.60 + clusterScore * 0.30 + c.score * 0.10
+          : clusterScore * 0.65 + c.score * 0.35;
+      return { phrase: c.phrase, x: c.x, y: c.y, phraseScore: c.score, roomBonus, clusterScore, totalScore };
+    })
+    .sort((a, b) => b.totalScore - a.totalScore);
+}
+
 /** Exact or building-prefix match ("b101b" satisfies token "101b"). */
 function roomMatch(phraseNorm: string, tokenNorm: string): boolean {
   if (exactBoundaryMatch(phraseNorm, tokenNorm)) return true;
@@ -426,7 +488,7 @@ function tightBboxForTokens(
 function findSignLocationFromPhrases(
   phrases: PdfPhrase[],
   sign: ExtractedSign,
-): { x: number; y: number; matched: string; score: number; phrase: PdfPhrase } | null {
+): { x: number; y: number; matched: string; score: number; phrase: PdfPhrase; rejectedCandidates?: PdfPhrase[] } | null {
 
   // ── Margin filtering — exclude border/title-block phrases from Passes 1–3 ──
   const drawingPhrases = phrases.filter((p) => {
@@ -474,36 +536,47 @@ function findSignLocationFromPhrases(
     }
 
     if (candidates.length > 0) {
-      // Keep only those within 0.02 of the best score
-      const topTier = candidates.filter((c) => c.score >= bestScore - 0.02);
+      // Rank all pass-1 candidates by room-number exact-match bonus + cluster score.
+      const ranked1 = rankCandidates(candidates, drawingPhrases, sign.location ?? locationSource, "");
+      const top1 = ranked1[0]!;
+      const second1 = ranked1[1];
 
-      let chosen: (typeof topTier)[0];
-      if (topTier.length === 1) {
-        chosen = topTier[0]!;
-      } else {
-        // Disambiguate: rank by quantitative surrounding-cluster score first,
-        // then by closest y-deviation from page centroid as tiebreaker.
-        const withContext = topTier.map((c) => ({
-          ...c,
-          clusterScore: contextClusterScore(drawingPhrases, locationSource, "", c.x, c.y),
-          yCentroidDev: Math.abs(c.y - pageCy),
-        }));
-        withContext.sort((a, b) =>
-          b.clusterScore - a.clusterScore || a.yCentroidDev - b.yCentroidDev,
+      // Suppress if ambiguous: 2+ candidates and no clear winner.
+      // "Clear winner" = gap ≥ 0.12 OR top totalScore ≥ 0.75.
+      const ambiguous1 = second1 !== undefined
+        && (top1.totalScore - second1.totalScore) < 0.12
+        && top1.totalScore < 0.75;
+
+      if (ambiguous1) {
+        // Fall through to Pass 2 for room-number matching which may disambiguate.
+        console.log(
+          `[MATCH] ${sign.signIdentifier ?? "?"} P1-AMBIGUOUS: ` +
+          `top="${top1.phrase.text}" ${top1.totalScore.toFixed(2)} vs ` +
+          `"${second1.phrase.text}" ${second1.totalScore.toFixed(2)}`,
         );
-        chosen = withContext[0]!;
+      } else {
+        const rejected1 = ranked1.slice(1, 3).map((r) => r.phrase);
+        console.log(
+          `[MATCH] ${sign.signIdentifier ?? "?"} P1→"${top1.phrase.text}" ` +
+          `total=${top1.totalScore.toFixed(2)} room=${top1.roomBonus.toFixed(2)} cluster=${top1.clusterScore.toFixed(2)}`,
+        );
+        ranked1.slice(1, 3).forEach((r, i) =>
+          console.log(
+            `  [MATCH] cand${i + 2}: "${r.phrase.text}" ` +
+            `total=${r.totalScore.toFixed(2)} room=${r.roomBonus.toFixed(2)} cluster=${r.clusterScore.toFixed(2)}`,
+          ),
+        );
+        const confidence = 0.8 + (top1.phraseScore - PASS1_THRESHOLD) / (1 - PASS1_THRESHOLD) * 0.2;
+        const tight1 = tightBboxForTokens(top1.phrase, sign.location ?? top1.phrase.text);
+        return {
+          x: (tight1.x0 + tight1.x1) / 2,
+          y: (tight1.y0 + tight1.y1) / 2,
+          matched: top1.phrase.text,
+          score: Math.min(1.0, confidence),
+          phrase: top1.phrase,
+          rejectedCandidates: rejected1,
+        };
       }
-
-      // Map pass-1 raw score to a confidence ≥ 0.8
-      const confidence = 0.8 + (chosen.score - PASS1_THRESHOLD) / (1 - PASS1_THRESHOLD) * 0.2;
-      const tight1 = tightBboxForTokens(chosen.phrase, sign.location ?? chosen.phrase.text);
-      return {
-        x: (tight1.x0 + tight1.x1) / 2,
-        y: (tight1.y0 + tight1.y1) / 2,
-        matched: chosen.phrase.text,
-        score: Math.min(1.0, confidence),
-        phrase: chosen.phrase,
-      };
     }
   }
 
@@ -532,26 +605,46 @@ function findSignLocationFromPhrases(
       );
       if (floorPlanHits.length === 0) continue;
 
-      // Disambiguate repeated room labels: rank by quantitative surrounding-
-      // cluster score first (fraction of other location words found nearby),
-      // then by closest y-deviation from page centroid as tiebreaker.
-      let preferred: { x: number; y: number; phrase: PdfPhrase };
-      if (floorPlanHits.length === 1) {
-        preferred = floorPlanHits[0]!;
-      } else {
-        const ranked = floorPlanHits.map((h) => ({
-          ...h,
-          clusterScore: contextClusterScore(drawingPhrases, locationSource, tokenNorm, h.x, h.y),
-          yCentroidDev: Math.abs(h.y - pageCy),
-        }));
-        ranked.sort((a, b) =>
-          b.clusterScore - a.clusterScore || a.yCentroidDev - b.yCentroidDev,
+      // Rank floor-plan hits using room-number bonus + context cluster score.
+      const pass2Cands = floorPlanHits.map((h) => ({ score: 0.75, phrase: h.phrase, x: h.x, y: h.y }));
+      const ranked2 = rankCandidates(pass2Cands, drawingPhrases, locationSource, tokenNorm);
+      const top2 = ranked2[0]!;
+      const second2 = ranked2[1];
+
+      // Suppress if ambiguous.
+      const ambiguous2 = second2 !== undefined
+        && (top2.totalScore - second2.totalScore) < 0.12
+        && top2.totalScore < 0.75;
+
+      if (ambiguous2) {
+        console.log(
+          `[MATCH] ${sign.signIdentifier ?? "?"} P2-AMBIGUOUS on "${token}": ` +
+          `top="${top2.phrase.text}" ${top2.totalScore.toFixed(2)} vs ` +
+          `"${second2.phrase.text}" ${second2.totalScore.toFixed(2)}`,
         );
-        preferred = ranked[0]!;
+        continue; // try next room-number token
       }
 
-      const tight2 = tightBboxForTokens(preferred.phrase, token);
-      return { x: (tight2.x0 + tight2.x1) / 2, y: (tight2.y0 + tight2.y1) / 2, matched: token, score: 0.75, phrase: preferred.phrase };
+      const rejected2 = ranked2.slice(1, 3).map((r) => r.phrase);
+      console.log(
+        `[MATCH] ${sign.signIdentifier ?? "?"} P2→"${top2.phrase.text}" ` +
+        `total=${top2.totalScore.toFixed(2)} room=${top2.roomBonus.toFixed(2)} cluster=${top2.clusterScore.toFixed(2)}`,
+      );
+      ranked2.slice(1, 3).forEach((r, i) =>
+        console.log(
+          `  [MATCH] cand${i + 2}: "${r.phrase.text}" ` +
+          `total=${r.totalScore.toFixed(2)} room=${r.roomBonus.toFixed(2)} cluster=${r.clusterScore.toFixed(2)}`,
+        ),
+      );
+      const tight2 = tightBboxForTokens(top2.phrase, token);
+      return {
+        x: (tight2.x0 + tight2.x1) / 2,
+        y: (tight2.y0 + tight2.y1) / 2,
+        matched: token,
+        score: 0.75,
+        phrase: top2.phrase,
+        rejectedCandidates: rejected2,
+      };
     }
   }
 
@@ -837,6 +930,7 @@ export function SignReviewModal({
           isCurrent,
           placementScore: loc.score,
           matchedPhrase: loc.phrase,
+          rejectedCandidates: loc.rejectedCandidates,
         });
         if (isCurrent) currentSignFound = true;
       }
@@ -1381,6 +1475,35 @@ export function SignReviewModal({
                           </g>
                         );
                       })}
+                      {/* Debug: rejected candidate phrases drawn as yellow boxes so you can
+                            compare them against the chosen green box for each marker */}
+                      {debugMode && textMarkers.flatMap((m) =>
+                        (m.rejectedCandidates ?? []).map((p, ri) => {
+                          const px0 = p.x0 * renderedW;
+                          const py0 = p.y0 * renderedH;
+                          const pw  = (p.x1 - p.x0) * renderedW;
+                          const ph  = (p.y1 - p.y0) * renderedH;
+                          const pcx = (p.x0 + p.x1) / 2 * renderedW;
+                          return (
+                            <g key={`rej-${m.signId}-${ri}`}>
+                              <rect
+                                x={px0} y={py0} width={pw} height={Math.max(ph, 2)}
+                                fill="#eab30812" stroke="#eab308" strokeWidth={1}
+                                strokeDasharray="3 2" opacity={0.9}
+                              />
+                              <text
+                                x={pcx} y={py0 - 2}
+                                textAnchor="middle" fill="#eab308"
+                                fontSize={6} fontFamily="monospace"
+                                style={{ userSelect: "none" }}
+                              >
+                                {p.text.slice(0, 14)}-REJ
+                              </text>
+                            </g>
+                          );
+                        })
+                      )}
+
                       {textMarkers.map((m) => {
                         const cx = m.x * renderedW;
                         const cy = m.y * renderedH;
