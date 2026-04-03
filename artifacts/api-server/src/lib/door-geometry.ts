@@ -588,7 +588,6 @@ export function matchSignsToDoors(
   }
 
   const results: DoorMatchResult[] = [];
-  const expandedRadius = searchRadius * 2.5; // fallback search radius for candidates
 
   for (const sign of signs) {
     const roomNum = (sign.roomNumber ?? "").trim().toUpperCase();
@@ -597,38 +596,28 @@ export function matchSignsToDoors(
       continue;
     }
 
-    // ── Exact-token room-number lookup via pre-built labels index ─────────────
-    // doorMap.labels is keyed by exact uppercase whitespace-delimited tokens,
-    // built once during buildPageDoorMap. This avoids per-sign phrase scanning
-    // and prevents substring ambiguity (e.g., "417B" won't match "417BC").
+    // Exact-token room-number lookup — must be present in doorMap.labels for a vector match.
+    // Labels are keyed by uppercase whitespace-delimited tokens (e.g., "417B" ≠ "417BC").
     const labelPos = doorMap.labels.get(roomNum);
-
-    // Determine the anchor position for distance scoring
-    let anchorX: number;
-    let anchorY: number;
-
-    if (labelPos) {
-      anchorX = labelPos.x;
-      anchorY = labelPos.y;
-    } else if (sign.anchorX != null && sign.anchorY != null) {
-      anchorX = sign.anchorX;
-      anchorY = sign.anchorY;
-    } else {
+    if (!labelPos) {
       results.push({ signId: sign.signId, candidates: [], method: "vector" });
       continue;
     }
 
-    // ── Score all doors within the expanded search radius ─────────────────────
+    const anchorX = labelPos.x;
+    const anchorY = labelPos.y;
+
+    // Score all doors within searchRadius
     const scored: Array<{ door: DoorGeometry; dist: number; score: number }> = [];
 
     for (const door of doorMap.doors) {
       const dx = door.threshold.x - anchorX;
       const dy = door.threshold.y - anchorY;
       const dist = Math.sqrt(dx * dx + dy * dy);
-      if (dist > expandedRadius) continue;
+      if (dist > searchRadius) continue;
 
-      // Distance component: 1.0 at dist=0, 0.0 at expandedRadius
-      const distFraction = Math.min(1, dist / expandedRadius);
+      // Distance component: 1.0 at dist=0, 0.0 at searchRadius
+      const distFraction = Math.min(1, dist / searchRadius);
       const distScore = 1 - distFraction;
 
       // Orientation plausibility: dot product of door's openingDir with the unit
@@ -657,24 +646,16 @@ export function matchSignsToDoors(
 
     const best = scored[0]!;
 
-    // ── Confidence-band gating ────────────────────────────────────────────────
-    // Task spec intent:
-    //   - score ≥ AUTO_CONFIDENCE_FLOOR → single confident match → auto-place (1 result)
-    //   - MIN_CANDIDATE_SCORE ≤ score < AUTO_CONFIDENCE_FLOOR AND ≥2 candidates → show 2-3 for user selection
-    //   - Only 1 low-confidence candidate → return empty (not enough to auto-place or choose from)
-    //
-    // The single-weak-match case MUST return empty to prevent a solo low-confidence
-    // result from being auto-applied by the frontend's single-candidate shortcut.
+    // Confidence-band gating:
+    //   ≥ AUTO_CONFIDENCE_FLOOR → single confident match (auto-place)
+    //   < AUTO_CONFIDENCE_FLOOR, ≥2 candidates → present up to 3 for user selection
+    //   < AUTO_CONFIDENCE_FLOOR, only 1 candidate → suppress; let Gemini handle
     let candidateSlice: typeof scored;
     if (best.score >= AUTO_CONFIDENCE_FLOOR) {
-      // One confident match → auto-place
       candidateSlice = [best];
     } else if (scored.length >= 2) {
-      // Multiple plausible matches → present 2–3 for user selection
       candidateSlice = scored.slice(0, 3);
     } else {
-      // Only one weak match (< AUTO_CONFIDENCE_FLOOR) → not enough confidence and
-      // no alternatives to present. Return empty so Gemini handles this sign.
       results.push({ signId: sign.signId, candidates: [], method: "vector" });
       continue;
     }
