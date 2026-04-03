@@ -282,6 +282,8 @@ function findSignLocation(
   sign: ExtractedSign
 ): { x: number; y: number; matched: string } | null {
 
+  const _debugSign = ["RI-56", "RI-57", "RI-01", "RI-07", "EL-01"].includes(sign.signIdentifier ?? "");
+
   // ── Pass 0: exact normalized identifier match ─────────────────────────────
   // Sign identifiers like "RI-56" or "EL-04" appear in TWO places on a plan:
   //   1. The callout bubble at the unit door (the CORRECT position)
@@ -319,6 +321,8 @@ function findSignLocation(
           }
         }
       }
+
+      if (_debugSign) console.log(`[DBG] P0 ${sign.signIdentifier} idHits=${idHits.length}`, idHits.map(h => `(${h.x.toFixed(3)},${h.y.toFixed(3)})`));
 
       // Only trust the identifier if it appears exactly once — that's the callout.
       // Multiple occurrences mean schedule + callout; we can't tell them apart.
@@ -358,6 +362,42 @@ function findSignLocation(
     return false;
   }
 
+  // Detect if a hit is inside a sign-schedule TABLE COLUMN rather than an
+  // isolated floor-plan unit label.
+  //
+  // Key observation: schedule table rows are packed tight (~0.5–1.5% y-apart).
+  // Floor-plan unit labels are spread out (each unit takes 3–7% of page height).
+  //
+  // Strategy: for the hit position (hx, hy), count how many OTHER room-number-
+  // pattern text items are in the same NARROW x-band (±2%) AND within a CLOSE
+  // y-range (0.5%–2%) — indicating adjacent schedule rows. If 2 or more such
+  // tightly-packed neighbours exist → the hit is in a schedule column → skip.
+  //
+  // This is immune to stairwell labels (AS2-1, BS2-1) and other false triggers
+  // because those labels don't cluster into tight columns of room numbers.
+  const ROOM_NUM_RE = /^(?:[a-z]{1,2}\d{2,4}[a-z]?|\d{2,4}[a-z]{1,2})$/;
+  function isInScheduleColumn(hx: number, hy: number, debug = false): boolean {
+    const X_TOL = 0.025; // ±2.5% x = same column
+    const Y_MIN = 0.004; // skip items at essentially the same y (same item)
+    const Y_CLOSE = 0.025; // within 2.5% y = tightly-packed schedule row
+    let closeCount = 0;
+    for (const item of items) {
+      if (!item.str.trim()) continue;
+      const iNorm = normId(item.str);
+      if (!ROOM_NUM_RE.test(iNorm)) continue;
+      const [, , , , tx, ty] = item.transform;
+      const ix = tx / pageW;
+      const iy = 1 - ty / pageH;
+      const dx = Math.abs(ix - hx);
+      const dy = Math.abs(iy - hy);
+      if (dx <= X_TOL && dy > Y_MIN && dy <= Y_CLOSE) {
+        closeCount++;
+        if (debug) console.log(`[DBG]   → close column neighbour: "${item.str}" norm="${iNorm}" @(${ix.toFixed(3)},${iy.toFixed(3)}) dy=${dy.toFixed(3)}`);
+      }
+    }
+    return closeCount >= 2; // 2+ tightly-spaced room numbers → schedule table
+  }
+
   const locationSource = [sign.location, sign.messageContent].filter(Boolean).join(" ");
   if (locationSource) {
     // Extract tokens that contain BOTH letters and digits — this filters out
@@ -370,19 +410,23 @@ function findSignLocation(
 
     const runsForRoom = buildTextRuns(items);
 
+    if (_debugSign) console.log(`[DBG] P1 ${sign.signIdentifier} tokens=`, roomTokens, `loc="${locationSource}"`);
+
     for (const token of roomTokens) {
       const tokenNorm = normId(token);
-      type RoomHit = { x: number; y: number };
+      type RoomHit = { x: number; y: number; raw: string };
       const hits: RoomHit[] = [];
 
       // Search individual items
       for (const item of items) {
         if (!item.str.trim()) continue;
-        if (roomMatch(normId(item.str), tokenNorm)) {
+        const iNorm = normId(item.str);
+        if (roomMatch(iNorm, tokenNorm)) {
           const [, , , , tx, ty] = item.transform;
           hits.push({
             x: Math.min(1, Math.max(0, tx / pageW)),
             y: Math.min(1, Math.max(0, 1 - ty / pageH)),
+            raw: item.str,
           });
         }
       }
@@ -390,10 +434,12 @@ function findSignLocation(
       // Search text runs (per-character CAD fragmentation)
       if (hits.length === 0) {
         for (const run of runsForRoom) {
-          if (roomMatch(normId(run.text), tokenNorm)) {
+          const rNorm = normId(run.text);
+          if (roomMatch(rNorm, tokenNorm)) {
             hits.push({
               x: Math.min(1, Math.max(0, run.midX / pageW)),
               y: Math.min(1, Math.max(0, 1 - run.midY / pageH)),
+              raw: run.text,
             });
           }
         }
@@ -401,12 +447,22 @@ function findSignLocation(
 
       if (hits.length === 0 || hits.length > 2) continue; // not found or too ambiguous
 
-      // If 2 hits (schedule + floor plan), prefer the one NOT in the top 15%
-      // of the page where title blocks / schedules typically live.
+      // ── Schedule-table detection ───────────────────────────────────────────
+      // Use the dense-column detector: if the hit has 2+ tightly-packed room
+      // numbers in the same x-band → it's in a schedule column → skip.
+      const floorPlanHits = hits.filter((h) => {
+        const inSchedule = isInScheduleColumn(h.x, h.y, _debugSign);
+        if (_debugSign) console.log(`[DBG]   token="${token}" hit"${h.raw}"@(${h.x.toFixed(3)},${h.y.toFixed(3)}) inSchedule=${inSchedule}`);
+        return !inSchedule;
+      });
+
+      if (floorPlanHits.length === 0) continue; // all hits are in schedule rows → skip
+
+      // Among floor-plan hits, if 2 exist prefer non-top-15%
       const preferred =
-        hits.length === 2
-          ? (hits.find((h) => h.y > 0.15) ?? hits[0]!)
-          : hits[0]!;
+        floorPlanHits.length === 2
+          ? (floorPlanHits.find((h) => h.y > 0.15) ?? floorPlanHits[0]!)
+          : floorPlanHits[0]!;
 
       return { x: preferred.x, y: preferred.y, matched: token };
     }
