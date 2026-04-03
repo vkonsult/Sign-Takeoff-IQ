@@ -1240,7 +1240,8 @@ export function SignReviewModal({
       const { typeToken, numberToken } = parseLocationParts(s.location);
       if (!typeToken || !numberToken) return false;
       const clusterResult = findPairedClusterMatch(phrases, typeToken, numberToken, s.signIdentifier ?? undefined);
-      return clusterResult !== null; // null = no cluster found; "ambiguous" or object = eligible
+      // Only send confirmed (non-null, non-ambiguous) Pass 0.5 matches to Gemini
+      return clusterResult !== null && clusterResult !== "ambiguous";
     }).slice(0, 20); // cap to backend max
 
     if (targetSigns.length === 0) return;
@@ -2062,7 +2063,7 @@ export function SignReviewModal({
                       smaller "✦" dot. Clicking any badge clears placement and re-queues the page. */}
                   {showOverlay && !drawMode && renderedW && renderedH && textMarkers.map((m) => {
                     const markerSign = signsOnCurrentPage.find((s) => s.id === m.signId);
-                    if (!markerSign?.placementSource) return null;
+                    if (markerSign?.placementSource !== "gemini_vision" && markerSign?.placementSource !== "user_confirmed") return null;
                     const cx = m.x * renderedW!;
                     const cy = m.y * renderedH!;
                     const r = m.isCurrent ? 18 : 12;
