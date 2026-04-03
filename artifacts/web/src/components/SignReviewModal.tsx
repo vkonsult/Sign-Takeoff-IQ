@@ -1207,13 +1207,17 @@ export function SignReviewModal({
     setVisualLocateFailed(new Set());
   }, [file?.id, pageNumber]);
 
-  // Auto-fire Gemini visual-locate for paired-cluster signs after phrases+markers are computed.
-  // Fires for ALL paired-cluster signs (typeToken + numberToken) that have not been confirmed
-  // yet. Excludes signs with stored placementSource (already confirmed in a prior session).
-  // After response:
-  //   - Top candidate (index 0) → auto-PATCH as "gemini_vision" (AI-placed)
-  //   - Alternatives (indices 1+) → stored in visualCandidates for user to optionally click
-  //   - No candidates → sign added to visualLocateFailed (marker suppressed)
+  // Auto-fire Gemini visual-locate for residential-unit paired-cluster signs ONLY — i.e.
+  // signs that (a) pass the isResidentialUnitLocation test, (b) do not already have a stored
+  // placementSource, and (c) can actually produce a Pass 0.5 (paired-cluster) result on this
+  // page. The phrases from serverPhrases are used to verify the cluster is present before
+  // sending to Gemini — this prevents sending signs whose location text simply looks like a
+  // residential unit but for which no matching cluster exists on the current page.
+  //
+  // Failure-safe: if the request fails the page key is cleared from the ref so annotation-band
+  // text markers fall back normally (no permanent suppression).
+  //
+  // Batching: signs are capped to 20 per request (backend enforces this too).
   useEffect(() => {
     if (!file || !serverPhrases) return;
 
@@ -1222,15 +1226,21 @@ export function SignReviewModal({
 
     // Build marker map for anchor hints (annotation-band text-matched positions)
     const markerMap = new Map(textMarkers.map((m) => [m.signId, m]));
+    const phrases = serverPhrases.phrases;
 
-    // Select RESIDENTIAL-UNIT paired-cluster signs that don't have a stored AI placement yet.
-    // Restricting to residential-unit types (UNIT, SUITE, APT, etc.) ensures non-residential
-    // paired-cluster signs (MECH, STAIR, etc.) are unaffected by the visual-locate pass.
+    // Select residential-unit signs that (1) have no stored AI placement, (2) pass
+    // isResidentialUnitLocation, AND (3) produce a non-null cluster result on this page.
+    // This gates visual-locate to confirmed Pass-0.5 matches only.
     const targetSigns = signsOnCurrentPage.filter((s) => {
-      if (s.placementSource != null) return false; // already has stored AI/user placement
+      if (s.placementSource != null) return false;
       if (!s.location) return false;
-      return isResidentialUnitLocation(s.location);
-    });
+      if (!isResidentialUnitLocation(s.location)) return false;
+      // Verify the paired cluster actually exists on this page before sending to Gemini
+      const { typeToken, numberToken } = parseLocationParts(s.location);
+      if (!typeToken || !numberToken) return false;
+      const clusterResult = findPairedClusterMatch(phrases, typeToken, numberToken, s.signIdentifier ?? undefined);
+      return clusterResult !== null; // null = no cluster found; "ambiguous" or object = eligible
+    }).slice(0, 20); // cap to backend max
 
     if (targetSigns.length === 0) return;
 
@@ -1268,13 +1278,15 @@ export function SignReviewModal({
         for (const r of data.results) {
           if (r.candidates.length === 0) {
             newFailed.add(r.signId);
-          } else if (r.candidates.length === 1) {
-            // Single unambiguous candidate: auto-apply immediately as gemini_vision
-            toAutoApply.push({ signId: r.signId, candidate: r.candidates[0]! });
           } else {
-            // Multiple plausible doors: require explicit user selection.
-            // Store all candidates as numbered dots (1, 2, 3) — user click persists.
-            newCandidates.set(r.signId, r.candidates.slice(0, 3));
+            // Always auto-apply the top candidate as gemini_vision (highest-confidence pick).
+            // This moves the marker to the correct door position without user interaction.
+            toAutoApply.push({ signId: r.signId, candidate: r.candidates[0]! });
+            // For 2-3 candidates, also store alternatives (index 1+) as numbered dots
+            // so the user can see exactly what was auto-chosen and override if needed.
+            if (r.candidates.length > 1) {
+              newCandidates.set(r.signId, r.candidates.slice(1, 3));
+            }
           }
         }
 
@@ -1308,7 +1320,11 @@ export function SignReviewModal({
             .catch((err) => console.error(`[visual-locate] auto-apply failed for ${signId}:`, err));
         }
       })
-      .catch((err) => console.error("[visual-locate] request failed:", err))
+      .catch((err) => {
+        console.error("[visual-locate] request failed:", err);
+        // Failure-safe: clear the page key so annotation-band markers fall back normally
+        visualLocateQueriedRef.current.delete(pageKey);
+      })
       .finally(() => setVisualLocating(false));
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [serverPhrases, textMarkers, file?.id, pageNumber]);
@@ -2073,20 +2089,19 @@ export function SignReviewModal({
                     );
                   })()}
 
-                  {/* Visual candidate dots — numbered teal buttons shown when Gemini returns 2+ candidates.
-                      (Single-candidate results are auto-applied immediately as gemini_vision.)
-                      Clicking any dot persists it as "user_confirmed" and clears the candidate list. */}
+                  {/* Visual candidate dots — alternative positions shown when Gemini returns 2-3 candidates.
+                      Top candidate (#1) is always auto-applied; these dots are alternatives (#2, #3).
+                      Clicking any dot overrides the auto-placed position and stores "user_confirmed". */}
                   {showOverlay && !drawMode && renderedW && renderedH && (
-                    Array.from(visualCandidates.entries()).flatMap(([signId, candidates]) =>
-                      candidates.map((c, idx) => {
+                    Array.from(visualCandidates.entries()).flatMap(([signId, altCandidates]) =>
+                      altCandidates.map((c, altIdx) => {
                         const cx = c.x * renderedW;
                         const cy = c.y * renderedH;
-                        const dotNumber = idx + 1;
-                        const isTopPick = idx === 0; // Highest-confidence candidate styled distinctly
+                        const dotNumber = altIdx + 2; // starts at 2 (top candidate #1 already applied)
                         return (
                           <button
-                            key={`vc-${signId}-${idx}`}
-                            title={`AI candidate ${dotNumber}: ${c.description ?? ""}\nConfidence: ${Math.round((c.confidence ?? 0) * 100)}%\n${isTopPick ? "Auto-applied — click to re-confirm" : "Click to use this position instead"}`}
+                            key={`vc-${signId}-${altIdx}`}
+                            title={`AI alternative ${dotNumber}: ${c.description ?? ""}\nConfidence: ${Math.round((c.confidence ?? 0) * 100)}%\nClick to use this position instead`}
                             onClick={() => confirmVisualPlacement(signId, c)}
                             style={{
                               position: "absolute",
@@ -2098,7 +2113,7 @@ export function SignReviewModal({
                               cursor: "pointer",
                               borderRadius: "50%",
                               border: `2px solid #06b6d4`,
-                              background: isTopPick ? "#06b6d455" : "#06b6d422",
+                              background: "#06b6d422",
                               color: "#06b6d4",
                               fontFamily: "monospace",
                               fontWeight: "bold",
@@ -2107,7 +2122,6 @@ export function SignReviewModal({
                               alignItems: "center",
                               justifyContent: "center",
                               pointerEvents: "all",
-                              boxShadow: isTopPick ? "0 0 8px #06b6d477" : "none",
                             }}
                           >
                             {dotNumber}
