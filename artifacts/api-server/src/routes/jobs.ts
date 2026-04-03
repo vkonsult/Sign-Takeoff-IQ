@@ -952,12 +952,15 @@ router.patch("/extracted-signs/:signId", async (req, res) => {
 
     // Only auto-verify when the user edits actual sign content fields.
     // Status-flag-only updates (hidden, reviewFlag) should not trigger verification.
+    // AI/system placement updates (placementSource present) also skip auto-verify — position
+    // confirmation by the AI is not the same as a human verifying the sign's content.
     const contentFields: (keyof typeof parsed.data)[] = [
       "sheetNumber", "detailReference", "signType", "signIdentifier", "quantity",
       "location", "dimensions", "mountingType", "finishColor", "illumination",
       "materials", "messageContent", "notes", "xPos", "yPos",
     ];
-    const hasContentEdit = contentFields.some((f) => parsed.data[f] !== undefined);
+    const isPlacementUpdate = parsed.data.placementSource !== undefined;
+    const hasContentEdit = !isPlacementUpdate && contentFields.some((f) => parsed.data[f] !== undefined);
     const updatePayload = hasContentEdit
       ? { ...parsed.data, userVerified: true }
       : { ...parsed.data };

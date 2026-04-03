@@ -1055,6 +1055,13 @@ export function SignReviewModal({
   }, [file?.id, pageNumber, jobId]);
 
   // Compute text markers from server phrases.
+  // A stable string that changes whenever any sign on the page has its xPos/yPos/placementSource
+  // updated. Used as a dependency for the marker-building effect so it re-fires after AI
+  // auto-applies placements without needing the full signsOnCurrentPage array reference.
+  const signPlacementKey = signsOnCurrentPage
+    .map((s) => `${s.id}:${s.xPos?.toFixed(4) ?? ""}:${s.yPos?.toFixed(4) ?? ""}:${s.placementSource ?? ""}`)
+    .join("|");
+
   // When phrases are available, markers use bbox centres + fuzzy matching.
   // When the fetch is still in-flight (serverPhrases null, failed false), we
   // wait. When the fetch failed, we render ghost markers so the active sign
@@ -1181,8 +1188,7 @@ export function SignReviewModal({
     } else {
       setTextSearchStatus("idle");
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [serverPhrases, phrasesFetchFailed, pageNumber, sign.id, signsOnCurrentPage.length, activeSign.id]);
+  }, [serverPhrases, phrasesFetchFailed, pageNumber, sign.id, signPlacementKey, activeSign.id, visualLocateFailed, visualCandidates]);
 
   // Clear visual candidates and failed set when the page or file changes
   useEffect(() => {
@@ -1251,12 +1257,11 @@ export function SignReviewModal({
           if (r.candidates.length === 0) {
             newFailed.add(r.signId);
           } else {
-            // Auto-apply top candidate as gemini_vision
+            // Auto-apply top candidate as gemini_vision (persists to DB immediately)
             toAutoApply.push({ signId: r.signId, candidate: r.candidates[0]! });
-            // Store alternatives for the user to optionally override
-            if (r.candidates.length > 1) {
-              newCandidates.set(r.signId, r.candidates.slice(1, 3));
-            }
+            // Store ALL candidates (including top) as numbered dots so user can see what was
+            // auto-chosen and click to override with any of them (numbered 1, 2, 3)
+            newCandidates.set(r.signId, r.candidates.slice(0, 3));
           }
         }
 
@@ -1631,7 +1636,7 @@ export function SignReviewModal({
             {!visualLocating && visualCandidates.size > 0 && (
               <span className="flex items-center gap-1 text-[10px] font-display font-semibold uppercase tracking-wide px-2 py-1 rounded" style={{ color: "#06b6d4", background: "#06b6d410", border: "1px solid #06b6d455" }}>
                 <Sparkles className="w-3 h-3" />
-                {Array.from(visualCandidates.values()).reduce((n, c) => n + c.length, 0)} alt. position{Array.from(visualCandidates.values()).reduce((n, c) => n + c.length, 0) !== 1 ? "s" : ""} available
+                AI located — confirm or pick alternative
               </span>
             )}
 
@@ -1990,19 +1995,20 @@ export function SignReviewModal({
                     );
                   })}
 
-                  {/* Visual candidate dots — numbered teal buttons for AI alternative suggestions.
-                      Candidate index 0 was auto-applied; these are alternatives (index 1+) shown as
-                      "Alt 2" / "Alt 3" buttons the user can click to override the auto-placed position. */}
+                  {/* Visual candidate dots — numbered teal buttons showing all AI-suggested positions.
+                      Candidate #1 (index 0) is the auto-applied top pick; #2 and #3 are alternatives.
+                      All are shown as numbered dots; clicking any persists it as "user_confirmed". */}
                   {showOverlay && !drawMode && renderedW && renderedH && (
-                    Array.from(visualCandidates.entries()).flatMap(([signId, altCandidates]) =>
-                      altCandidates.map((c, altIdx) => {
+                    Array.from(visualCandidates.entries()).flatMap(([signId, candidates]) =>
+                      candidates.map((c, idx) => {
                         const cx = c.x * renderedW;
                         const cy = c.y * renderedH;
-                        const altNumber = altIdx + 2; // starts at 2 (1 was auto-applied)
+                        const dotNumber = idx + 1;
+                        const isTopPick = idx === 0;
                         return (
                           <button
-                            key={`vc-${signId}-${altIdx}`}
-                            title={`AI alternative ${altNumber}: ${c.description}\nConfidence: ${Math.round(c.confidence * 100)}%\nClick to use this position instead`}
+                            key={`vc-${signId}-${idx}`}
+                            title={`AI candidate ${dotNumber}: ${c.description ?? ""}\nConfidence: ${Math.round((c.confidence ?? 0) * 100)}%\n${isTopPick ? "Auto-applied — click to re-confirm" : "Click to use this position instead"}`}
                             onClick={() => confirmVisualPlacement(signId, c)}
                             style={{
                               position: "absolute",
@@ -2013,8 +2019,8 @@ export function SignReviewModal({
                               zIndex: 15,
                               cursor: "pointer",
                               borderRadius: "50%",
-                              border: "2px solid #06b6d4",
-                              background: "#06b6d422",
+                              border: `2px solid #06b6d4`,
+                              background: isTopPick ? "#06b6d455" : "#06b6d422",
                               color: "#06b6d4",
                               fontFamily: "monospace",
                               fontWeight: "bold",
@@ -2023,9 +2029,10 @@ export function SignReviewModal({
                               alignItems: "center",
                               justifyContent: "center",
                               pointerEvents: "all",
+                              boxShadow: isTopPick ? "0 0 8px #06b6d477" : "none",
                             }}
                           >
-                            {altNumber}
+                            {dotNumber}
                           </button>
                         );
                       })
