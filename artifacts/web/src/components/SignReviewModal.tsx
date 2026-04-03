@@ -1204,19 +1204,10 @@ export function SignReviewModal({
       }
     }
 
-    // Ghost marker for active sign when text search fails — user can still see
-    // the green dot and drag it to the correct position.
-    if (!currentSignFound && signsOnCurrentPage.some((s) => s.id === activeSign.id)) {
-      markers.push({
-        x: 0.5,
-        y: 0.08,
-        signId: activeSign.id,
-        color: "#22c55e",
-        label: "?",
-        isCurrent: true,
-        placementScore: 0,
-      });
-    }
+    // When the active sign has no text match, we intentionally do NOT place a
+    // fallback/ghost marker at an arbitrary position.  The "Not found on this page"
+    // pill in the header already signals this clearly.  A dot at a wrong position
+    // is more confusing than no dot at all.
 
     setTextMarkers(markers);
     if (signsOnCurrentPage.some((s) => s.id === activeSign.id)) {
@@ -1495,6 +1486,14 @@ export function SignReviewModal({
   // Prefer the ResizeObserver-measured canvas size — it reads actual CSS pixels
   // from the DOM and is immune to any react-pdf internal rounding or scaling.
   // Fall back to the computed value when the canvas hasn't painted yet.
+  // Both axes use exactly the same measured canvas element — X and Y are always in
+  // the same coordinate space and use the same zoom level.
+  //
+  // Coordinate transform note:
+  //   pdf-words.ts stores phrase Y in TOP-DOWN space:  y0 = (pageH - pdfYTop) / pageH
+  //   Here we map to pixels:                           cy  = y0 * renderedH
+  //   Combined:  cy = (pageH - pdfYTop) / pageH × renderedH = (pageH - pdfYTop) × scale
+  //   This is exactly: screenY = (pageHeightInPdfUnits − pdfY) × scale  ✓
   const renderedW = measuredPageSize?.w ?? (nativeSize ? nativeSize.w * scale : null);
   const renderedH = measuredPageSize?.h ?? (nativeSize ? nativeSize.h * scale : null);
 
@@ -1766,6 +1765,8 @@ export function SignReviewModal({
               <div className="flex items-center gap-1.5 ml-2 overflow-x-auto max-w-[320px]">
                 {signsOnCurrentPage.map((s) => {
                   const isActive = s.id === activeSign.id;
+                  // A sign is "located" if it has a dot in textMarkers (text-matched, AI-placed, or manual).
+                  const isLocated = textMarkers.some((m) => m.signId === s.id);
                   return (
                     <button
                       key={s.id}
@@ -1785,6 +1786,22 @@ export function SignReviewModal({
                         <span className="inline-block w-1.5 h-1.5 rounded-full bg-white flex-shrink-0" />
                       )}
                       {s.signIdentifier ?? s.signType?.slice(0, 8) ?? "SIGN"}
+                      {!isLocated && (
+                        <span
+                          style={{
+                            fontSize: 8,
+                            fontWeight: 700,
+                            letterSpacing: "0.05em",
+                            background: "#ef444420",
+                            color: "#ef4444",
+                            border: "1px solid #ef444455",
+                            borderRadius: 3,
+                            padding: "0 3px",
+                          }}
+                        >
+                          UNLOCATED
+                        </span>
+                      )}
                     </button>
                   );
                 })}

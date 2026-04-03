@@ -1,0 +1,23 @@
+I need targeted fixes in SignReviewModal.tsx and extraction.ts. Do not rewrite these files — make surgical changes only.
+Fix 1 — SignReviewModal.tsx marker building effect (around line 1100)
+The fuzzy matcher is failing when Gemini returns verbose location strings that don't closely match the short printed text on the plan. Improve the matching logic in this order of priority:
+
+Token overlap score: Split both the sign's location string and the phrase text into uppercase tokens. Score = number of matching tokens / total unique tokens. Accept any match scoring above 0.4.
+Room number extraction: Use a regex like /\b[A-Z]?\d{3}[A-Z]?\b/g to pull room numbers from both strings. If the extracted room numbers match exactly, treat it as a confirmed match regardless of the rest of the string.
+Sign ID direct lookup: Before fuzzy matching, first check if the sign's signId (e.g. RI-33) appears verbatim in any phrase text. If yes, use that phrase as the anchor immediately.
+Only fall back to a ghost marker if all three methods above fail. Ghost markers should have opacity: 0.2 and not be counted in the marker total shown in the UI.
+
+Fix 2 — SignReviewModal.tsx SVG overlay (around line 1889)
+Ghost/unmatched markers (those placed by fallback) should render differently:
+
+Reduce opacity to 0.15
+Remove them from the visible count in the marker badge
+Add a separate "Unlocated signs" count badge in the toolbar showing how many failed to match
+Do not apply collision nudging to ghost markers — nudging a wrong position makes it more wrong
+
+Fix 3 — extraction.ts buildFloorPlanADAPrompt() location field instruction
+Find the part of the prompt that instructs Gemini how to format the location field. Replace or append with this exact instruction:
+"For the location field, use only the room identifier exactly as it appears printed on the plan — for example UNIT 2A 406B or ELEC A404. Do not add descriptive phrases, door positions, or narrative text. The location value must match the printed label verbatim so it can be found in the plan's text layer."
+Fix 4 — extraction.ts deduplication (line 1517 area)
+After all extraction passes complete, before returning results, run this dedup: group all signs by the composite key location.trim().toUpperCase() + '||' + signType.trim().toUpperCase(). Within each group, keep only the entry with the highest confidence score. If confidence is tied, prefer the entry where detailRef is non-empty. Discard all others.
+After making these four changes, confirm by telling me: (1) how many signs are in the current dataset before and after dedup, (2) what the match rate is — how many markers are now anchored vs ghost.
