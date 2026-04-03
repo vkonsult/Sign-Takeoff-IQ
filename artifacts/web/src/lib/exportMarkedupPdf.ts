@@ -29,9 +29,13 @@ export interface FileEntry {
  *
  * Derivation (for a MediaBox [0,0,W,H]):
  *   /Rotate 0:   x = nx*W,       y = (1−ny)*H
- *   /Rotate 90:  x = (1−ny)*W,   y = (1−nx)*H   (landscape: display w=H,h=W)
+ *   /Rotate 90:  x = ny*W,       y = nx*H        (landscape: display w=H,h=W)
  *   /Rotate 180: x = (1−nx)*W,   y = ny*H
- *   /Rotate 270: x = ny*W,       y = nx*H        (landscape: display w=H,h=W)
+ *   /Rotate 270: x = (1−ny)*W,   y = (1−nx)*H   (landscape: display w=H,h=W)
+ *
+ * Verified against the Python pdfplumber+ReportLab reference implementation:
+ *   /Rotate 90:  canvas_x = plumber_y = ny*(raw_w),  canvas_y = plumber_x = nx*(raw_h)
+ *   Display for /Rotate 90 is raw_h wide × raw_w tall; plumber_y=ny*raw_w, plumber_x=nx*raw_h.
  */
 function normalizedToMediaBox(
   nx: number,
@@ -42,9 +46,9 @@ function normalizedToMediaBox(
 ): { x: number; y: number } {
   const r = ((rotationDeg % 360) + 360) % 360;
   switch (r) {
-    case 90:  return { x: (1 - ny) * W, y: (1 - nx) * H };
+    case 90:  return { x: ny * W,       y: nx * H };
     case 180: return { x: (1 - nx) * W, y: ny * H };
-    case 270: return { x: ny * W,       y: nx * H };
+    case 270: return { x: (1 - ny) * W, y: (1 - nx) * H };
     default:  return { x: nx * W,       y: (1 - ny) * H };
   }
 }
