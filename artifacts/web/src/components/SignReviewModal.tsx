@@ -154,8 +154,9 @@ interface PdfPhrase {
 }
 
 interface TextMarker {
-  x: number;               // 0–1 bbox centre (page width)
-  y: number;               // 0–1 bbox centre (page height, top-down)
+  x: number;               // 0–1 final marker position (page width)  — may be offset from text
+  y: number;               // 0–1 final marker position (page height, top-down)
+  phraseCenter?: { x: number; y: number }; // 0–1 original phrase bbox centre (debug overlay)
   signId: string;
   color: string;
   label: string;
@@ -517,6 +518,72 @@ function findSignLocationFromPhrases(
   return null;
 }
 
+/**
+ * Given a matched phrase and all phrases on the page, compute the best marker
+ * position by offsetting away from the text toward open (low-density) space.
+ *
+ * Tries 4 directions (right, left, down, up) and picks the one with the
+ * least surrounding text density. Anti-stacking nudges the result if it
+ * lands too close to an already-placed marker.
+ */
+function computeMarkerOffset(
+  phrase: PdfPhrase,
+  allPhrases: PdfPhrase[],
+  placedMarkers: Array<{ x: number; y: number }>,
+): { x: number; y: number } {
+  const cx = (phrase.x0 + phrase.x1) / 2;
+  const cy = (phrase.y0 + phrase.y1) / 2;
+
+  // Offset magnitude: scale with phrase size, but enforce a minimum so there's
+  // always visible clearance. 0.07 normalized ≈ ~55–70 px at typical scale.
+  const phraseW = phrase.x1 - phrase.x0;
+  const phraseH = phrase.y1 - phrase.y0;
+  const dx = Math.max(phraseW * 2.5, 0.06);
+  const dy = Math.max(phraseH * 3.0, 0.05);
+
+  const candidates = [
+    { x: cx + dx, y: cy },   // right
+    { x: cx - dx, y: cy },   // left
+    { x: cx,      y: cy + dy }, // down
+    { x: cx,      y: cy - dy }, // up
+  ].filter((d) => d.x >= 0.01 && d.x <= 0.99 && d.y >= 0.01 && d.y <= 0.99);
+
+  if (candidates.length === 0) return { x: cx, y: cy }; // nowhere to go, use center
+
+  // Score each candidate by text density in a radius around it.
+  // Lower score = less text = better (more open space).
+  const DENSITY_RADIUS = Math.max(dx, dy) * 0.9;
+  function textDensity(nx: number, ny: number): number {
+    let score = 0;
+    for (const p of allPhrases) {
+      if (p === phrase) continue;
+      const pcx = (p.x0 + p.x1) / 2;
+      const pcy = (p.y0 + p.y1) / 2;
+      const dist = Math.hypot(nx - pcx, ny - pcy);
+      if (dist < DENSITY_RADIUS) score += 1 - dist / DENSITY_RADIUS;
+    }
+    return score;
+  }
+
+  const scored = candidates
+    .map((d) => ({ ...d, density: textDensity(d.x, d.y) }))
+    .sort((a, b) => a.density - b.density);
+
+  let { x, y } = scored[0]!;
+
+  // Anti-stacking: if an already-placed marker is too close, nudge further
+  // in the same offset direction from the phrase center.
+  const STACK_RADIUS = 0.04;
+  for (const m of placedMarkers) {
+    if (Math.hypot(x - m.x, y - m.y) < STACK_RADIUS) {
+      x = x + (x - cx) * 0.5;
+      y = y + (y - cy) * 0.5;
+    }
+  }
+
+  return { x, y };
+}
+
 export function SignReviewModal({
   sign,
   jobId,
@@ -677,16 +744,20 @@ export function SignReviewModal({
     let currentSignFound = false;
     // Use server phrases if available; empty array on failure (ghost-only path)
     const phrases = serverPhrases?.phrases ?? [];
+    // Track placed positions for anti-stacking in computeMarkerOffset
+    const placedPositions: Array<{ x: number; y: number }> = [];
 
     for (const s of signsOnCurrentPage) {
       const isCurrent = s.id === activeSign.id;
       const color = isCurrent ? "#22c55e" : (s.manuallyAdded ? "#a855f7" : "#eab308");
 
-      // Manually-placed markers: use stored coordinates directly.
+      // Manually-placed markers: use stored coordinates directly (no offset).
       if (s.manuallyAdded && s.xPos != null && s.yPos != null) {
+        const pos = { x: s.xPos, y: s.yPos };
+        placedPositions.push(pos);
         markers.push({
-          x: s.xPos,
-          y: s.yPos,
+          x: pos.x,
+          y: pos.y,
           signId: s.id,
           color,
           label: s.signIdentifier ?? s.signType?.slice(0, 6) ?? "NEW",
@@ -699,9 +770,14 @@ export function SignReviewModal({
 
       const loc = findSignLocationFromPhrases(phrases, s);
       if (loc) {
+        // Phrase centre is the raw match position; offset the marker away from
+        // the text toward the nearest open (low-density) space.
+        const offset = computeMarkerOffset(loc.phrase, phrases, placedPositions);
+        placedPositions.push(offset);
         markers.push({
-          x: loc.x,
-          y: loc.y,
+          x: offset.x,
+          y: offset.y,
+          phraseCenter: { x: loc.x, y: loc.y },
           signId: s.id,
           color,
           label: s.signIdentifier ?? s.signType?.slice(0, 6) ?? "SIGN",
@@ -1193,36 +1269,65 @@ export function SignReviewModal({
                       }}
                       viewBox={`0 0 ${renderedW} ${renderedH}`}
                     >
-                      {/* Debug: draw all extracted phrase bounding boxes */}
+                      {/* Debug overlay:
+                            - all phrases: faint blue rect
+                            - matched phrase: green bbox + blue text-center dot + red line to final marker
+                            - final marker position: red dot (drawn here; the normal circle also renders below) */}
                       {debugMode && serverPhrases && serverPhrases.phrases.map((p, i) => {
                         const px0 = p.x0 * renderedW;
                         const py0 = p.y0 * renderedH;
                         const pw  = (p.x1 - p.x0) * renderedW;
                         const ph  = (p.y1 - p.y0) * renderedH;
-                        const cx  = (p.x0 + p.x1) / 2 * renderedW;
-                        const cy  = (p.y0 + p.y1) / 2 * renderedH;
-                        const isMatched = textMarkers.some((m) => m.matchedPhrase === p);
+                        // Phrase bbox center (blue dot)
+                        const pcx = (p.x0 + p.x1) / 2 * renderedW;
+                        const pcy = (p.y0 + p.y1) / 2 * renderedH;
+
+                        const matchedMarker = textMarkers.find((m) => m.matchedPhrase === p);
+                        const isMatched = !!matchedMarker;
+
+                        // Final marker position (red dot) in px
+                        const mfx = matchedMarker ? matchedMarker.x * renderedW : null;
+                        const mfy = matchedMarker ? matchedMarker.y * renderedH : null;
+
                         return (
                           <g key={`dbg-${i}`}>
+                            {/* Phrase bounding box */}
                             <rect
                               x={px0} y={py0} width={pw} height={Math.max(ph, 2)}
-                              fill={isMatched ? "#22c55e22" : "#3b82f611"}
+                              fill={isMatched ? "#22c55e18" : "#3b82f608"}
                               stroke={isMatched ? "#22c55e" : "#3b82f6"}
                               strokeWidth={isMatched ? 1.5 : 0.5}
-                              opacity={0.7}
-                            />
-                            <circle cx={cx} cy={cy} r={2}
-                              fill={isMatched ? "#22c55e" : "#3b82f6"}
                               opacity={0.8}
                             />
-                            {isMatched && (
-                              <text x={cx} y={py0 - 2}
-                                textAnchor="middle" fill="#22c55e"
-                                fontSize={7} fontFamily="monospace"
-                                style={{ userSelect: "none" }}
-                              >
-                                {p.text.slice(0, 20)}
-                              </text>
+                            {isMatched ? (
+                              <>
+                                {/* Blue dot = text center */}
+                                <circle cx={pcx} cy={pcy} r={3}
+                                  fill="#3b82f6" opacity={0.9} />
+                                {/* Line from text center to final marker */}
+                                {mfx != null && mfy != null && (
+                                  <line x1={pcx} y1={pcy} x2={mfx} y2={mfy}
+                                    stroke="#ef4444" strokeWidth={1}
+                                    strokeDasharray="3 2" opacity={0.7} />
+                                )}
+                                {/* Red dot = final marker position */}
+                                {mfx != null && mfy != null && (
+                                  <circle cx={mfx} cy={mfy} r={4}
+                                    fill="#ef4444" opacity={0.85} />
+                                )}
+                                {/* Text label above phrase */}
+                                <text x={pcx} y={py0 - 2}
+                                  textAnchor="middle" fill="#22c55e"
+                                  fontSize={7} fontFamily="monospace"
+                                  style={{ userSelect: "none" }}
+                                >
+                                  {p.text.slice(0, 20)}
+                                </text>
+                              </>
+                            ) : (
+                              /* Faint center dot for unmatched phrases */
+                              <circle cx={pcx} cy={pcy} r={1.5}
+                                fill="#3b82f6" opacity={0.4} />
                             )}
                           </g>
                         );
