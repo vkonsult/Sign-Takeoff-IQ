@@ -257,27 +257,86 @@ function buildTextRuns(items: PdfTextItem[]): TextRun[] {
  *  2. Char-per-item  — Revit/AutoCAD fragmentation; matched by first grouping
  *                      adjacent glyphs into runs, then searching within runs
  */
+function normId(s: string): string {
+  return s.toLowerCase().replace(/[\s\-_]/g, "");
+}
+
+/** True when `needle` appears in `haystack` but is NOT part of a longer alphanumeric run */
+function exactBoundaryMatch(haystack: string, needle: string): boolean {
+  let idx = haystack.indexOf(needle);
+  while (idx !== -1) {
+    const before = idx > 0 ? haystack[idx - 1] : null;
+    const after = idx + needle.length < haystack.length ? haystack[idx + needle.length] : null;
+    const validBefore = before == null || !/[a-z0-9]/.test(before);
+    const validAfter = after == null || !/[a-z0-9]/.test(after);
+    if (validBefore && validAfter) return true;
+    idx = haystack.indexOf(needle, idx + 1);
+  }
+  return false;
+}
+
 function findSignLocation(
   items: PdfTextItem[],
   pageW: number,
   pageH: number,
   sign: ExtractedSign
 ): { x: number; y: number; matched: string } | null {
-  // Priority: signIdentifier first (unique callout code, most precise),
-  // then location (room name), then message content (sign text)
-  const targets = [
-    ...(sign.signIdentifier ? [sign.signIdentifier] : []),
+
+  // ── Pass 0: exact normalized identifier match ─────────────────────────────
+  // Sign identifiers like "RI-11" or "EL-04" are UNIQUE callout codes.
+  // We normalize (strip dashes/spaces) and search for the WHOLE identifier
+  // string at a word boundary. This avoids:
+  //   - "11" in room number "A111" matching RI-11's token "11"
+  //   - "ri" in "STAIR" / "FIRST FLOOR" matching RI-xx's token "ri"
+  // We return the FIRST match — identifiers appear once at the callout location,
+  // not in legends (legends list types, not specific numbered instances).
+  if (sign.signIdentifier && sign.signIdentifier.length >= 3) {
+    const idNorm = normId(sign.signIdentifier);
+    if (idNorm.length >= 3) {
+      // 0a: search individual items (fastest — most PDFs aren't char-fragmented)
+      for (const item of items) {
+        if (!item.str.trim()) continue;
+        const itemNorm = normId(item.str);
+        if (exactBoundaryMatch(itemNorm, idNorm)) {
+          const [, , , , tx, ty] = item.transform;
+          return {
+            x: Math.min(1, Math.max(0, tx / pageW)),
+            y: Math.min(1, Math.max(0, 1 - ty / pageH)),
+            matched: sign.signIdentifier,
+          };
+        }
+      }
+      // 0b: search text runs (handles per-char CAD fragmentation)
+      const runsEarly = buildTextRuns(items);
+      for (const run of runsEarly) {
+        const runNorm = normId(run.text);
+        if (exactBoundaryMatch(runNorm, idNorm)) {
+          return {
+            x: Math.min(1, Math.max(0, run.midX / pageW)),
+            y: Math.min(1, Math.max(0, 1 - run.midY / pageH)),
+            matched: sign.signIdentifier,
+          };
+        }
+      }
+    }
+  }
+
+  // ── Fallback targets: location then message content ───────────────────────
+  // Identifier wasn't found — try less-specific fields. We use interior
+  // preference here because generic text (e.g. "Unit 1A") can appear in
+  // both the floor-plan legend (edge) and the actual rooms (interior).
+  const fallbackTargets = [
     ...(sign.location ? [sign.location] : []),
     ...(sign.messageContent ? [sign.messageContent] : []),
   ].filter(Boolean) as string[];
 
-  if (targets.length === 0) return null;
+  if (fallbackTargets.length === 0) return null;
 
   // ── Pass 1: search individual items (fast path for well-formed PDFs) ──────
   type Scored = { score: number; x: number; y: number; matched: string };
   const candidates: Scored[] = [];
 
-  for (const target of targets) {
+  for (const target of fallbackTargets) {
     const targetTokens = tokenize(target);
     if (targetTokens.length === 0) continue;
 
@@ -300,13 +359,8 @@ function findSignLocation(
     }
   }
 
-  // ── Pick the best candidate: prefer score=1.0, then closest to page center.
-  // Legends and title blocks live at page corners/edges; actual callout labels
-  // are in the interior of the floor plan.  Choosing the interior-most candidate
-  // dramatically reduces "legend clustering" where every sign of the same type
-  // maps to the same legend row at the top-left of the page.
+  // For location/content fallback: apply interior preference to avoid legend matches.
   function interiorScore(c: Scored): number {
-    // Distance from center (0.5, 0.5) — lower is more interior
     const dx = c.x - 0.5;
     const dy = c.y - 0.5;
     return Math.sqrt(dx * dx + dy * dy);
@@ -314,12 +368,9 @@ function findSignLocation(
 
   if (candidates.length > 0) {
     const maxScore = candidates.reduce((m, c) => Math.max(m, c.score), 0);
-    // Only consider candidates that share the top match score
     const topCandidates = candidates.filter((c) => c.score === maxScore);
-    // Among equal-score candidates, pick the one nearest the page interior
     topCandidates.sort((a, b) => interiorScore(a) - interiorScore(b));
     const best = topCandidates[0]!;
-    // Require a decent score threshold
     if (best.score >= 0.6) return { x: best.x, y: best.y, matched: best.matched };
   }
 
@@ -330,7 +381,7 @@ function findSignLocation(
   type RunMatch = { x: number; y: number; matched: string };
   const runMatches: RunMatch[] = [];
 
-  for (const target of targets) {
+  for (const target of fallbackTargets) {
     const needle = target.toLowerCase().replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim();
     if (!needle) continue;
 
@@ -597,7 +648,7 @@ export function SignReviewModal({
           if (indices.length <= 1) continue;
           const cx = markers[indices[0]!]!.x;
           const cy = markers[indices[0]!]!.y;
-          const radius = 0.025 + 0.005 * (indices.length - 2); // grow radius for larger clusters
+          const radius = Math.min(0.04, 0.015 + 0.003 * (indices.length - 2)); // capped at 4% of page
           indices.forEach((idx, k) => {
             const angle = (2 * Math.PI * k) / indices.length - Math.PI / 2;
             markers[idx]!.x = Math.min(1, Math.max(0, cx + radius * Math.cos(angle)));
