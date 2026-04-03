@@ -744,11 +744,6 @@ export function SignReviewModal({
     let currentSignFound = false;
     // Use server phrases if available; empty array on failure (ghost-only path)
     const phrases = serverPhrases?.phrases ?? [];
-    // Track placed positions for anti-stacking in computeMarkerOffset
-    const placedPositions: Array<{ x: number; y: number }> = [];
-
-    console.log('[PLACEMENT-TEST] ACTIVE');
-    let matchedCount = 0;
 
     for (const s of signsOnCurrentPage) {
       const isCurrent = s.id === activeSign.id;
@@ -756,11 +751,9 @@ export function SignReviewModal({
 
       // Manually-placed markers: use stored coordinates directly (no offset).
       if (s.manuallyAdded && s.xPos != null && s.yPos != null) {
-        const pos = { x: s.xPos, y: s.yPos };
-        placedPositions.push(pos);
         markers.push({
-          x: pos.x,
-          y: pos.y,
+          x: s.xPos,
+          y: s.yPos,
           signId: s.id,
           color,
           label: s.signIdentifier ?? s.signType?.slice(0, 6) ?? "NEW",
@@ -773,31 +766,9 @@ export function SignReviewModal({
 
       const loc = findSignLocationFromPhrases(phrases, s);
       if (loc) {
-        if (!s.manuallyAdded) matchedCount++;
-        let finalX: number;
-        let finalY: number;
-
-        if (!s.manuallyAdded && matchedCount <= 5) {
-          finalX = loc.x;
-          finalY = loc.y;
-          console.log('[PLACEMENT-TEST]', {
-            signId: s.id,
-            phrase: loc.phrase.text,
-            bbox: loc.phrase.bbox,
-            center: { x: loc.x, y: loc.y },
-            finalX,
-            finalY,
-          });
-        } else {
-          const offset = computeMarkerOffset(loc.phrase, phrases, placedPositions);
-          finalX = offset.x;
-          finalY = offset.y;
-        }
-
-        placedPositions.push({ x: finalX, y: finalY });
         markers.push({
-          x: finalX,
-          y: finalY,
+          x: loc.x,
+          y: loc.y,
           phraseCenter: { x: loc.x, y: loc.y },
           signId: s.id,
           color,
@@ -807,6 +778,28 @@ export function SignReviewModal({
           matchedPhrase: loc.phrase,
         });
         if (isCurrent) currentSignFound = true;
+      }
+    }
+
+    // Minimal collision nudge: if two auto-matched markers would fully overlap,
+    // nudge the later one slightly. At most one nudge per marker, no cascading.
+    const COLLISION_THRESHOLD = 0.012;
+    for (let i = 0; i < markers.length; i++) {
+      const mi = markers[i]!;
+      if (mi.placementScore === 1.0) continue; // skip manually-placed
+      for (let j = 0; j < i; j++) {
+        const mj = markers[j]!;
+        if (Math.hypot(mi.x - mj.x, mi.y - mj.y) < COLLISION_THRESHOLD) {
+          // Nudge in whichever axis has more room to the boundary
+          const roomRight = 1 - mi.x;
+          const roomDown  = 1 - mi.y;
+          if (roomRight >= roomDown) {
+            mi.x = Math.min(1, mi.x + COLLISION_THRESHOLD);
+          } else {
+            mi.y = Math.min(1, mi.y + COLLISION_THRESHOLD);
+          }
+          break;
+        }
       }
     }
 
@@ -1270,23 +1263,23 @@ export function SignReviewModal({
                       }}
                       viewBox={`0 0 ${renderedW} ${renderedH}`}
                     >
-                      {/* Debug overlay:
+                      {/* Debug overlay (anchor-lock path):
                             - all phrases: faint blue rect
-                            - matched phrase: green bbox + blue text-center dot + red line to final marker
-                            - final marker position: red dot (drawn here; the normal circle also renders below) */}
+                            - matched phrase: green bbox + blue dot (anchor) + red dot (final, overlaps blue for locked markers)
+                            - labels get -LOCK suffix to confirm anchor-lock path is active */}
                       {debugMode && serverPhrases && serverPhrases.phrases.map((p, i) => {
                         const px0 = p.x0 * renderedW;
                         const py0 = p.y0 * renderedH;
                         const pw  = (p.x1 - p.x0) * renderedW;
                         const ph  = (p.y1 - p.y0) * renderedH;
-                        // Phrase bbox center (blue dot)
+                        // Phrase bbox center = anchor position (blue dot)
                         const pcx = (p.x0 + p.x1) / 2 * renderedW;
                         const pcy = (p.y0 + p.y1) / 2 * renderedH;
 
                         const matchedMarker = textMarkers.find((m) => m.matchedPhrase === p);
                         const isMatched = !!matchedMarker;
 
-                        // Final marker position (red dot) in px
+                        // Final marker position (red dot) in px — overlaps blue for anchor-locked markers
                         const mfx = matchedMarker ? matchedMarker.x * renderedW : null;
                         const mfy = matchedMarker ? matchedMarker.y * renderedH : null;
 
@@ -1302,27 +1295,21 @@ export function SignReviewModal({
                             />
                             {isMatched ? (
                               <>
-                                {/* Blue dot = text center */}
-                                <circle cx={pcx} cy={pcy} r={3}
-                                  fill="#3b82f6" opacity={0.9} />
-                                {/* Line from text center to final marker */}
-                                {mfx != null && mfy != null && (
-                                  <line x1={pcx} y1={pcy} x2={mfx} y2={mfy}
-                                    stroke="#ef4444" strokeWidth={1}
-                                    strokeDasharray="3 2" opacity={0.7} />
-                                )}
-                                {/* Red dot = final marker position */}
+                                {/* Red dot = final marker position (drawn first so blue overlaps it for locked markers) */}
                                 {mfx != null && mfy != null && (
                                   <circle cx={mfx} cy={mfy} r={4}
                                     fill="#ef4444" opacity={0.85} />
                                 )}
-                                {/* Text label above phrase */}
+                                {/* Blue dot = anchor (phrase center); overlaps red dot exactly for anchor-locked markers */}
+                                <circle cx={pcx} cy={pcy} r={3}
+                                  fill="#3b82f6" opacity={0.9} />
+                                {/* Text label above phrase with -LOCK suffix */}
                                 <text x={pcx} y={py0 - 2}
                                   textAnchor="middle" fill="#22c55e"
                                   fontSize={7} fontFamily="monospace"
                                   style={{ userSelect: "none" }}
                                 >
-                                  {p.text.slice(0, 20)}
+                                  {p.text.slice(0, 16)}-LOCK
                                 </text>
                               </>
                             ) : (
@@ -1387,7 +1374,7 @@ export function SignReviewModal({
                               style={{ userSelect: "none" }}
                               opacity={lowConfidence ? 0.7 : 1}
                             >
-                              {m.label}
+                              {debugMode && m.phraseCenter ? `${m.label}-LOCK` : m.label}
                             </text>
                           </g>
                         );
