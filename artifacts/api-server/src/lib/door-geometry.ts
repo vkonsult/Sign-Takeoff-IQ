@@ -70,6 +70,13 @@ export interface PageDoorMap {
   pathOpCount: number;
   /** All detected door arcs on the page */
   doors: DoorGeometry[];
+  /**
+   * Room-number token index built from PageWords phrases.
+   * Key: exact uppercase room-number token (e.g. "417B", "1A").
+   * Value: normalised anchor position of the label centroid.
+   * Computed once per page so matchSignsToDoors does not re-scan phrases per sign.
+   */
+  labels: Map<string, { x: number; y: number }>;
 }
 
 export interface DoorMatchCandidate {
@@ -117,9 +124,10 @@ async function getPdfjsLib(): Promise<PdfjsLib> {
   const imported = await import("pdfjs-dist/legacy/build/pdf.mjs");
   const lib = imported as unknown as PdfjsLib;
   try {
-    const req = (globalThis as Record<string, unknown>)["require"] as ((id: string) => unknown & { resolve?: (id: string) => string }) | undefined;
-    if (req && typeof (req as { resolve?: (id: string) => string }).resolve === "function") {
-      const workerPath = (req as { resolve: (id: string) => string }).resolve("pdfjs-dist/legacy/build/pdf.worker.min.mjs");
+    type NodeRequire = ((id: string) => unknown) & { resolve?: (id: string) => string };
+    const req = (globalThis as Record<string, unknown>)["require"] as NodeRequire | undefined;
+    if (req && typeof req.resolve === "function") {
+      const workerPath = (req.resolve as (id: string) => string)("pdfjs-dist/legacy/build/pdf.worker.min.mjs");
       lib.GlobalWorkerOptions.workerSrc = `file://${workerPath}`;
     }
   } catch {
@@ -132,27 +140,34 @@ async function getPdfjsLib(): Promise<PdfjsLib> {
 // ── Core geometry extraction ─────────────────────────────────────────────────
 
 /**
- * Walk through the pdfjs operator list and collect all bezier sub-paths.
- * Returns the extracted door map for the page.
+ * Walk through the pdfjs operator list and collect all bezier sub-paths,
+ * then build the room-number label index from `pageWords` (if provided).
  *
  * PDF coordinate system: origin bottom-left, y increases upward.
  * We flip y → normalized top-down before returning.
+ *
+ * @param pageWords  Optional pre-extracted text phrases. When supplied, the
+ *                   returned `PageDoorMap.labels` map is populated with exact
+ *                   room-number token → anchor position entries. Pass `null`
+ *                   to skip label indexing (e.g. when called without text).
  */
 export async function buildPageDoorMap(
   pdfPath: string,
   fileId: string,
   pageNum: number,
+  pageWords: PageWords | null = null,
 ): Promise<PageDoorMap> {
   const cacheKey = `${fileId}:${pageNum}`;
   const cached = doorMapCache.get(cacheKey);
-  if (cached) return cached;
+  // Invalidate cache if labels were not yet built but pageWords is now available
+  if (cached && (pageWords === null || cached.labels.size > 0)) return cached;
 
   let result: PageDoorMap;
   try {
-    result = await _extractDoorMap(pdfPath, pageNum);
+    result = await _extractDoorMap(pdfPath, pageNum, pageWords);
   } catch (err) {
     logger.warn({ err, fileId, pageNum }, "door-geometry: extraction failed, returning empty map");
-    result = { isVector: false, pathOpCount: 0, doors: [] };
+    result = { isVector: false, pathOpCount: 0, doors: [], labels: new Map() };
   }
 
   if (doorMapCache.size >= 100) {
@@ -163,7 +178,7 @@ export async function buildPageDoorMap(
   return result;
 }
 
-async function _extractDoorMap(pdfPath: string, pageNum: number): Promise<PageDoorMap> {
+async function _extractDoorMap(pdfPath: string, pageNum: number, pageWords: PageWords | null): Promise<PageDoorMap> {
   const lib = await getPdfjsLib();
   const rawBuffer = await fs.readFile(pdfPath);
   const data = new Uint8Array(rawBuffer);
@@ -188,6 +203,8 @@ async function _extractDoorMap(pdfPath: string, pageNum: number): Promise<PageDo
       minX: number; maxX: number; minY: number; maxY: number;
       hasCurve: boolean;
       segCount: number;
+      /** Length of the longest line segment in this sub-path (in PDF pts) */
+      maxLinePts: number;
     }
 
     const doors: DoorGeometry[] = [];
@@ -207,6 +224,7 @@ async function _extractDoorMap(pdfPath: string, pageNum: number): Promise<PageDo
         minX: x, maxX: x, minY: y, maxY: y,
         hasCurve: false,
         segCount: 0,
+        maxLinePts: 0,
       };
     };
 
@@ -240,26 +258,37 @@ async function _extractDoorMap(pdfPath: string, pageNum: number): Promise<PageDo
         const normW = nx1 - nx0;
         const normH = ny1 - ny0;
 
-        // Door arc heuristics:
-        // 1. Bounding box in door-size range (0.008 to 0.18 normalised — ~6-130pt on an 800pt page)
-        // 2. Aspect ratio roughly square-ish (0.2 to 5.0 — allows for some elongation due to perspective)
-        // 3. Minimum size threshold in pts (avoid tiny text-outline curves)
+        // ── Door arc heuristics (task spec: §Architecture notes) ─────────────
+        // 1. Bounding box aspect ratio 0.6–1.8 (quarter-circle is ~1.0 square)
+        // 2. Bounding box normalised size 0.01–0.12 (per task spec)
+        // 3. Minimum 6 pts to exclude tiny text-outline curves
+        // 4. Adjacent straight-segment (radius arm) with length ≈ arc radius (±40%)
+        //    A door swing always has at least one line segment from the pivot
+        //    to the arc start, approximately equal in length to the door radius.
+        // 5. Simple path: 1–8 segments (door swings are not complex shapes)
+        // 6. Pivot must be within page bounds (reject off-page title-block stamps)
         const minPts = 6;
-        const maxPts = 200; // max door width ~200pt (~2.8 inches at 72dpi)
-        const minNorm = 0.006;
-        const maxNorm = 0.20;
+        const maxPts = 200;
+        const minNorm = 0.01;  // tighter lower bound per task spec
+        const maxNorm = 0.12;  // tighter upper bound per task spec
 
         if (w < minPts || h < minPts || w > maxPts || h > maxPts) continue;
         if (normW < minNorm || normH < minNorm || normW > maxNorm || normH > maxNorm) continue;
 
+        // Tighter aspect ratio: quarter-circle bbox is nearly square
         const aspectRatio = normW / normH;
-        if (aspectRatio < 0.2 || aspectRatio > 5.0) continue;
+        if (aspectRatio < 0.6 || aspectRatio > 1.8) continue;
 
-        // Segment count check: door swings are simple (1-8 segments); reject complex shapes
-        if (sp.segCount > 10) continue;
+        // Segment count: simple door swings have 2–8 segments
+        if (sp.segCount < 2 || sp.segCount > 8) continue;
 
-        // Must also be within the page bounds (skip off-page elements such as
-        // title-block stamps whose coordinates fall outside [0,1] before clamping)
+        // Adjacent line check: the sub-path must contain a straight segment whose
+        // length is within 40% of the arc radius (half the larger bbox dimension).
+        const arcRadiusPts = Math.max(w, h) / 2;
+        const lineOk = sp.maxLinePts >= arcRadiusPts * 0.6 && sp.maxLinePts <= arcRadiusPts * 1.4;
+        if (!lineOk) continue;
+
+        // Pivot within page bounds — reject off-page elements (title-block stamps)
         const rawPivotNx = sp.start.x / pageW;
         const rawPivotNy = 1 - sp.start.y / pageH;
         if (rawPivotNx < 0 || rawPivotNx > 1 || rawPivotNy < 0 || rawPivotNy > 1) continue;
@@ -310,9 +339,13 @@ async function _extractDoorMap(pdfPath: string, pageNum: number): Promise<PageDo
         }
         case OPS_LINE_TO: {
           pathOpCount++;
+          const prevLx = cx;
+          const prevLy = cy;
           cx = flatArgs[0] ?? 0;
           cy = flatArgs[1] ?? 0;
           if (currentPath) {
+            const linePts = Math.sqrt((cx - prevLx) ** 2 + (cy - prevLy) ** 2);
+            if (linePts > currentPath.maxLinePts) currentPath.maxLinePts = linePts;
             extendBbox(currentPath, cx, cy);
             currentPath.segCount++;
           }
@@ -480,16 +513,37 @@ async function _extractDoorMap(pdfPath: string, pageNum: number): Promise<PageDo
     // We use 50 as threshold to distinguish raster (near-zero ops) from vector floor plans.
     const isVector = pathOpCount > 50;
 
+    // ── Build room-number label index from pageWords ──────────────────────────
+    // Keyed by the exact uppercase room-number token found in any phrase.
+    // This is computed once here so matchSignsToDoors does not re-scan phrases
+    // for every sign. We index ALL whitespace-delimited tokens from all phrases.
+    const labels = new Map<string, { x: number; y: number }>();
+    if (pageWords) {
+      for (const phrase of pageWords.phrases) {
+        const cx = (phrase.x0 + phrase.x1) / 2;
+        const cy = (phrase.y0 + phrase.y1) / 2;
+        const tokens = phrase.text.trim().toUpperCase().split(/\s+/);
+        for (const tok of tokens) {
+          if (tok.length === 0) continue;
+          // Only store the first occurrence of each token (most prominent label)
+          if (!labels.has(tok)) {
+            labels.set(tok, { x: cx, y: cy });
+          }
+        }
+      }
+    }
+
     logger.info({
       pageNum,
       pathOpCount,
       totalBezierOps,
       doorsFound: doors.length,
+      labelsIndexed: labels.size,
       isVector,
     }, "door-geometry: extraction complete");
 
     doc.destroy();
-    return { isVector, pathOpCount, doors };
+    return { isVector, pathOpCount, doors, labels };
   } catch (err) {
     doc.destroy();
     throw err;
@@ -531,7 +585,7 @@ const ORIENTATION_WEIGHT = 0.25;
  * @param searchRadius How far (normalised) to search for a door arc. Default 0.08.
  */
 export function matchSignsToDoors(
-  pageWords: PageWords,
+  _pageWords: PageWords | null,
   doorMap: PageDoorMap,
   signs: Array<{ signId: string; roomNumber?: string | null; anchorX?: number | null; anchorY?: number | null }>,
   searchRadius = 0.08,
@@ -550,23 +604,19 @@ export function matchSignsToDoors(
       continue;
     }
 
-    // ── Exact-token room-number matching ─────────────────────────────────────
-    // The room number must appear as a whole whitespace-delimited token in the
-    // phrase text. This avoids the ambiguity of startsWith/endsWith substring
-    // matches (e.g., "417B" should NOT match phrase "417BC" or "1417B").
-    const labelPhrases = pageWords.phrases.filter((p) => {
-      const tokens = p.text.trim().toUpperCase().split(/\s+/);
-      return tokens.includes(roomNum);
-    });
+    // ── Exact-token room-number lookup via pre-built labels index ─────────────
+    // doorMap.labels is keyed by exact uppercase whitespace-delimited tokens,
+    // built once during buildPageDoorMap. This avoids per-sign phrase scanning
+    // and prevents substring ambiguity (e.g., "417B" won't match "417BC").
+    const labelPos = doorMap.labels.get(roomNum);
 
     // Determine the anchor position for distance scoring
     let anchorX: number;
     let anchorY: number;
 
-    if (labelPhrases.length > 0) {
-      const ph = labelPhrases[0]!;
-      anchorX = (ph.x0 + ph.x1) / 2;
-      anchorY = (ph.y0 + ph.y1) / 2;
+    if (labelPos) {
+      anchorX = labelPos.x;
+      anchorY = labelPos.y;
     } else if (sign.anchorX != null && sign.anchorY != null) {
       anchorX = sign.anchorX;
       anchorY = sign.anchorY;

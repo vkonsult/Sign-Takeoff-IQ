@@ -1538,9 +1538,9 @@ export function SignReviewModal({
               Verified
             </span>
           )}
-          {(activeSign.placementSource === "user_confirmed" || activeSign.placementSource === "gemini_vision") && (
+          {(activeSign.placementSource === "user_confirmed" || activeSign.placementSource === "gemini_vision" || activeSign.placementSource === "vector_match") && (
             <button
-              title="Click to clear AI placement and re-run visual locate"
+              title={activeSign.placementSource === "vector_match" ? "Click to clear vector placement and re-run" : "Click to clear AI placement and re-run visual locate"}
               onClick={async () => {
                 try {
                   const r = await apiFetch(`/api/extracted-signs/${activeSign.id}`, {
@@ -1563,10 +1563,15 @@ export function SignReviewModal({
                 }
               }}
               className="flex items-center gap-1 text-[10px] font-display font-bold uppercase tracking-wider border px-2 py-0.5 rounded transition-opacity hover:opacity-70"
-              style={{ color: "#06b6d4", borderColor: "#06b6d455", background: "#06b6d410" }}
+              style={activeSign.placementSource === "vector_match"
+                ? { color: "#14b8a6", borderColor: "#14b8a655", background: "#14b8a610" }
+                : { color: "#06b6d4", borderColor: "#06b6d455", background: "#06b6d410" }}
             >
-              <Sparkles className="w-3 h-3" />
-              AI Placed · Reset
+              {activeSign.placementSource === "vector_match" ? (
+                <><span style={{ fontSize: "11px" }}>⬡</span> Vector Placed · Reset</>
+              ) : (
+                <><Sparkles className="w-3 h-3" /> AI Placed · Reset</>
+              )}
             </button>
           )}
           {activeSign.reviewFlag && (

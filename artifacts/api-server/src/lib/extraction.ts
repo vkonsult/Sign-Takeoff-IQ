@@ -2097,15 +2097,15 @@ export async function visualLocateDoors(
   let isVector = false;
 
   try {
-    const [doorMap, pageWords] = await Promise.all([
-      buildPageDoorMap(filePath, usableFileId, pageNum),
-      extractPagePhrases(filePath, usableFileId, pageNum),
-    ]);
+    // Extract text phrases first — needed to build the labels index inside buildPageDoorMap.
+    // Both operations use internal caches so this sequential call is cheap on repeat invocations.
+    const pageWords = await extractPagePhrases(filePath, usableFileId, pageNum);
+    const doorMap = await buildPageDoorMap(filePath, usableFileId, pageNum, pageWords);
 
     isVector = doorMap.isVector;
 
     if (isVector) {
-      const matches = matchSignsToDoors(pageWords, doorMap, signs);
+      const matches = matchSignsToDoors(null, doorMap, signs);
       vectorResults = matches.map((m) => ({ signId: m.signId, candidates: m.candidates }));
 
       logger.info({
