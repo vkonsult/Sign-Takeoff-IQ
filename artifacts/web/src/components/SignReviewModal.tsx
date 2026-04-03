@@ -1282,15 +1282,14 @@ export function SignReviewModal({
         for (const r of data.results) {
           if (r.candidates.length === 0) {
             newFailed.add(r.signId);
-          } else {
-            // Always auto-apply the top candidate as gemini_vision (highest-confidence pick).
-            // This moves the marker to the correct door position without user interaction.
+          } else if (r.candidates.length === 1) {
+            // Single unambiguous result — auto-apply immediately as gemini_vision.
             toAutoApply.push({ signId: r.signId, candidate: r.candidates[0]! });
-            // For 2-3 candidates, also store alternatives (index 1+) as numbered dots
-            // so the user can see exactly what was auto-chosen and override if needed.
-            if (r.candidates.length > 1) {
-              newCandidates.set(r.signId, r.candidates.slice(1, 3));
-            }
+          } else {
+            // Multiple candidates (2–3): do NOT auto-persist — require explicit user selection.
+            // All candidates are stored as numbered selectable dots (#1, #2, #3).
+            // The marker stays suppressed until the user clicks a dot (confirmVisualPlacement).
+            newCandidates.set(r.signId, r.candidates.slice(0, 3));
           }
         }
 
@@ -1671,7 +1670,7 @@ export function SignReviewModal({
             {!visualLocating && visualCandidates.size > 0 && (
               <span className="flex items-center gap-1 text-[10px] font-display font-semibold uppercase tracking-wide px-2 py-1 rounded" style={{ color: "#06b6d4", background: "#06b6d410", border: "1px solid #06b6d455" }}>
                 <Sparkles className="w-3 h-3" />
-                AI located — confirm or pick alternative
+                AI found {visualCandidates.size > 1 ? `${visualCandidates.size} signs` : "a sign"} — pick a numbered dot to confirm
               </span>
             )}
 
@@ -2150,19 +2149,19 @@ export function SignReviewModal({
                     );
                   })}
 
-                  {/* Visual candidate dots — alternative positions shown when Gemini returns 2-3 candidates.
-                      Top candidate (#1) is always auto-applied; these dots are alternatives (#2, #3).
-                      Clicking any dot overrides the auto-placed position and stores "user_confirmed". */}
+                  {/* Visual candidate dots — shown when Gemini returns 2-3 candidates requiring user selection.
+                      All candidates (including #1) are shown as numbered dots; none are auto-persisted.
+                      User must click a dot to confirm and persist the selected position. */}
                   {showOverlay && !drawMode && renderedW && renderedH && (
-                    Array.from(visualCandidates.entries()).flatMap(([signId, altCandidates]) =>
-                      altCandidates.map((c, altIdx) => {
+                    Array.from(visualCandidates.entries()).flatMap(([signId, allCandidates]) =>
+                      allCandidates.map((c, idx) => {
                         const cx = c.x * renderedW;
                         const cy = c.y * renderedH;
-                        const dotNumber = altIdx + 2; // starts at 2 (top candidate #1 already applied)
+                        const dotNumber = idx + 1; // all candidates are shown: #1, #2, #3
                         return (
                           <button
-                            key={`vc-${signId}-${altIdx}`}
-                            title={`AI alternative ${dotNumber}: ${c.description ?? ""}\nConfidence: ${Math.round((c.confidence ?? 0) * 100)}%\nClick to use this position instead`}
+                            key={`vc-${signId}-${idx}`}
+                            title={`AI suggestion ${dotNumber}: ${c.description ?? ""}\nConfidence: ${Math.round((c.confidence ?? 0) * 100)}%\nClick to confirm this position`}
                             onClick={() => confirmVisualPlacement(signId, c)}
                             style={{
                               position: "absolute",
