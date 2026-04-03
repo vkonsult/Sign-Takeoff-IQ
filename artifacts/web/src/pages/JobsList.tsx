@@ -1,14 +1,52 @@
 import { useState } from "react";
 import { AppShell } from "@/components/layout/Shell";
 import { useJobsList } from "@/hooks/use-takeoff";
+import { apiFetch } from "@/lib/apiClient";
 import { useQueryClient } from "@tanstack/react-query";
 import { getListJobsQueryKey } from "@workspace/api-client-react";
-import { format } from "date-fns";
+import { format, formatDistanceToNow } from "date-fns";
 import {
   FolderOpen, ChevronRight, FileText, CheckCircle2, Cpu,
   AlertTriangle, Trash2, X, Square, CheckSquare, MinusSquare,
 } from "lucide-react";
 import { Link } from "wouter";
+
+interface RecentUser {
+  userName: string;
+  userInitials: string;
+  at: string;
+  eventType?: string;
+}
+
+const ACTION_LABELS: Record<string, string> = {
+  job_opened: "opened",
+  scan_run: "ran scan on",
+  sign_updated: "edited signs in",
+  xlsx_exported: "exported XLSX for",
+  pdf_exported: "exported PDF for",
+};
+
+function StackedUserBadges({ users }: { users: RecentUser[] }) {
+  if (users.length === 0) return <span className="text-muted-foreground/30 text-xs">—</span>;
+  return (
+    <div className="flex items-center justify-center">
+      {users.map((u, i) => {
+        const action = u.eventType ? (ACTION_LABELS[u.eventType] ?? "touched") : "last active in";
+        const relTime = formatDistanceToNow(new Date(u.at), { addSuffix: true });
+        return (
+          <span
+            key={u.userName + i}
+            title={`${u.userName} ${action} this plan ${relTime}`}
+            className="inline-flex items-center justify-center w-7 h-7 rounded-full bg-primary/15 text-primary text-[11px] font-bold flex-shrink-0 ring-2 ring-card cursor-default"
+            style={{ marginLeft: i > 0 ? "-8px" : undefined, zIndex: users.length - i }}
+          >
+            {u.userInitials}
+          </span>
+        );
+      })}
+    </div>
+  );
+}
 
 export default function JobsList() {
   const { data, isLoading } = useJobsList();
@@ -61,7 +99,7 @@ export default function JobsList() {
     }
     setDeletingSingle(jobId);
     try {
-      const res = await fetch(`/api/jobs/${jobId}`, { method: "DELETE" });
+      const res = await apiFetch(`/api/jobs/${jobId}`, { method: "DELETE" });
       if (!res.ok) throw new Error("Delete failed");
       await queryClient.invalidateQueries({ queryKey: getListJobsQueryKey() });
       setSelected((prev) => { const n = new Set(prev); n.delete(jobId); return n; });
@@ -86,7 +124,7 @@ export default function JobsList() {
     }
     setBulkDeleting(true);
     try {
-      const res = await fetch("/api/jobs", {
+      const res = await apiFetch("/api/jobs", {
         method: "DELETE",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ jobIds: Array.from(selected) }),
@@ -132,7 +170,7 @@ export default function JobsList() {
         ) : (
           <div className="bg-card rounded-xl border border-border overflow-hidden shadow-lg">
             {/* Header row */}
-            <div className="grid grid-cols-[36px_1fr_100px_120px_180px_48px] gap-3 px-4 py-3 border-b border-border bg-secondary/50 text-xs font-display font-semibold uppercase tracking-wider text-muted-foreground items-center">
+            <div className="grid grid-cols-[36px_1fr_100px_120px_40px_180px_48px] gap-3 px-4 py-3 border-b border-border bg-secondary/50 text-xs font-display font-semibold uppercase tracking-wider text-muted-foreground items-center">
               {/* Select-all checkbox */}
               <button
                 onClick={toggleAll}
@@ -148,6 +186,7 @@ export default function JobsList() {
               <div>Job Name</div>
               <div className="text-center">Files</div>
               <div className="text-center">Status</div>
+              <div className="text-center" title="Last active user">User</div>
               <div className="text-right">Created</div>
               <div />
             </div>
@@ -159,10 +198,16 @@ export default function JobsList() {
 
               {jobs.map((job) => {
                 const isChecked = selected.has(job.id);
+                const jobAny = job as typeof job & {
+                  recentUsers?: RecentUser[];
+                  lastActivityAt?: string | null;
+                  lastActivityType?: string | null;
+                };
+                const recentUsers: RecentUser[] = jobAny.recentUsers ?? [];
                 return (
                   <div
                     key={job.id}
-                    className={`relative group grid grid-cols-[36px_1fr_100px_120px_180px_48px] gap-3 items-center transition-colors
+                    className={`relative group grid grid-cols-[36px_1fr_100px_120px_40px_180px_48px] gap-3 items-center transition-colors
                       ${isChecked ? "bg-primary/5 border-l-2 border-l-primary" : "hover:bg-secondary/40"}`}
                   >
                     {/* Checkbox */}
@@ -194,6 +239,10 @@ export default function JobsList() {
 
                       <div className="flex justify-center py-4">
                         <StatusIcon status={job.status} />
+                      </div>
+
+                      <div className="flex justify-center py-4">
+                        <StackedUserBadges users={recentUsers} />
                       </div>
 
                       <div className="text-right text-sm text-muted-foreground py-4">

@@ -52,12 +52,59 @@ lib/
 └── integrations-gemini-ai/ # Gemini AI wrapper (Replit-managed, no user API key)
 ```
 
+## Authentication & Multi-Tenancy
+
+Clerk is used for authentication. All API routes except `/api/healthz` require a valid Clerk session (cookie-based for web). Role hierarchy: `SUPER_ADMIN` → `ADMIN` → `SALES/ESTIMATOR/PROJECT_MANAGER`.
+
+- **`VITE_CLERK_PUBLISHABLE_KEY`**, **`CLERK_SECRET_KEY`**, **`CLERK_PUBLISHABLE_KEY`** — auto-provisioned secrets
+- **`SUPER_ADMIN_GUEST_TOKEN`** — optional secret; when set, `Authorization: Bearer <token>` bypasses Clerk for SUPER_ADMIN access
+
+### Admin Portals (Task #9 — complete)
+
+**Super Admin** routes (`/admin/*`) — platform-wide management, `requireRole("SUPER_ADMIN")` on all backend routes:
+- `/admin` → Dashboard (stats: org count, user count, job count via `GET /api/admin/stats`)
+- `/admin/organizations` → Org list with job count + last activity (`GET /api/admin/organizations`), create org with optional owner Clerk invitation (`POST /api/admin/organizations`), update org (`PATCH /api/admin/organizations/:orgId`), list members (`GET /api/admin/organizations/:orgId/members`)
+- `/admin/users` → All users across all orgs enriched with Clerk `lastSignInAt` (`GET /api/admin/users`)
+- Logo upload: `POST /api/admin/logo` (ADMIN+), served statically at `/api/logos/:filename` before auth
+
+**Tenant Admin** (settings sidebar — ADMIN only, not SUPER_ADMIN):
+- `/settings` → Company profile (`GET /PATCH /api/admin/org`)
+- `/settings/users` → Team members with last-login column (`GET /api/admin/org/members` enriched with Clerk `lastSignInAt`); create user (`POST /api/admin/users`), update role (`PATCH /api/admin/users/:membershipId`), remove (`DELETE /api/admin/users/:membershipId`)
+- User creation: admin sets password directly; Clerk `createUser` + DB membership row; no temp password returned
+
+**Onboarding wizard** (`/onboarding`):
+- 2-step form: Step 1 = company info (PATCHes org fields), Step 2 = logo upload (PATCHes logoUrl + `onboardingComplete: true`, then redirects to `/jobs`)
+- `AdminRoute` and `OnboardingRoute` redirect tenant ADMINs to `/onboarding` when `onboardingComplete = false`
+- Completing the wizard auto-redirects to `/jobs`
+
+**Frontend role detection** (`hooks/use-user-role.ts`):
+- Reads `user.publicMetadata.role` + `.organizationId` from Clerk JWT
+- Falls back to "SUPER_ADMIN" in guest (token) mode
+- Sidebar shows role-appropriate nav sections automatically
+- Frontend: `ClerkProvider` in `App.tsx`; `/sign-in` and `/sign-up` routes; `<Show>` guards on protected pages
+- API: `clerkMiddleware()` in `app.ts`; `requireAuth` from `src/middlewares/authMiddleware.ts`; `requireRole(...)` factory for role-based guards
+
 ## Database Schema
 
-Three tables in PostgreSQL:
+Five tables in PostgreSQL:
+
+### `organizations`
+- `id` UUID (PK)
+- `name`, `slug` (unique), `email`, `phone`, `address`, `website`, `logo_url` text
+- `onboarding_complete` boolean (default false)
+- `created_at`, `updated_at` timestamps
+
+### `organization_memberships`
+- `id` UUID (PK)
+- `organization_id` UUID (FK → organizations)
+- `clerk_user_id` text
+- `full_name`, `email` text (nullable)
+- `role` enum (SUPER_ADMIN | ADMIN | SALES | ESTIMATOR | PROJECT_MANAGER)
+- `created_at`, `updated_at` timestamps
 
 ### `jobs`
 - `id` UUID (PK)
+- `organization_id` UUID (FK → organizations, nullable)
 - `status` text (pending | processing | completed | failed)
 - `file_count` int
 - `error` text (nullable)
@@ -176,6 +223,23 @@ PDF pages are classified into three types: floor_plan, sign_schedule, or other.
 - `review_flag = true` when confidence < 0.7 or required fields are missing
 - XLSX export uses `exceljs` with conditional formatting (colored confidence cells, flagged row highlighting)
 - Vite proxy forwards `/api` requests to Express API server at port 8080
+
+## Activity Tracking
+
+All significant user actions are recorded to the `activity_logs` table (fire-and-forget, never blocks responses):
+
+- `job_opened` — when a user opens a job's detail page (`GET /jobs/:jobId`)
+- `scan_run` — when a scan/process is triggered (`POST /jobs/:jobId/process`)
+- `sign_updated` — when a sign field is edited (`PATCH /extracted-signs/:signId`)
+- `xlsx_exported` — when XLSX export is downloaded (`GET /jobs/:jobId/export`)
+
+**Role-scoped visibility**: SUPER_ADMIN sees all tenants + org filter; ADMIN sees own org; SALES/PM/Estimator sees own activity only.
+
+**`GET /activity`** — paginated activity feed (page size 50), filterable by `jobId`, `eventType`, `orgId` (SUPER_ADMIN only), `from` (ISO date).
+
+**`GET /jobs`** — includes `lastActivityAt`, `lastActivityUser`, `lastActivityInitials`, `lastActivityType` scalar subquery columns. The Jobs list renders a user initials badge with a tooltip showing who last touched the plan and when.
+
+**Frontend**: `/activity` route → `ActivityPage.tsx` (filterable table, event badges, user initials display, relative timestamps). Activity sidebar link added between "All Jobs" and "Training Import".
 
 ## Development Commands
 

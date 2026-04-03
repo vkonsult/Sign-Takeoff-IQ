@@ -7,6 +7,7 @@ import {
   getGetJobQueryKey,
   getListJobsQueryKey
 } from "@workspace/api-client-react";
+import { apiFetch } from "@/lib/apiClient";
 
 export function useJobsList() {
   const queryKey = getListJobsQueryKey();
@@ -57,7 +58,7 @@ export function useStartExtraction() {
 export function useUpdateJobName(jobId: string) {
   const queryClient = useQueryClient();
   return async (name: string) => {
-    const res = await fetch(`/api/jobs/${jobId}`, {
+    const res = await apiFetch(`/api/jobs/${jobId}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ name }),
@@ -68,6 +69,18 @@ export function useUpdateJobName(jobId: string) {
   };
 }
 
-export function downloadExport(jobId: string) {
-  window.location.href = `/api/jobs/${jobId}/export`;
+export async function downloadExport(jobId: string): Promise<void> {
+  const res = await apiFetch(`/api/jobs/${jobId}/export`);
+  if (!res.ok) throw new Error("Export failed");
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  const disposition = res.headers.get("content-disposition") ?? "";
+  const filenameMatch = disposition.match(/filename="?([^";\n]+)"?/);
+  a.download = filenameMatch?.[1] ?? `sign-takeoff-${jobId}.xlsx`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
 }

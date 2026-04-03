@@ -1,4 +1,5 @@
 import { PDFDocument, rgb, StandardFonts } from "pdf-lib";
+import { apiFetch } from "./apiClient";
 
 export interface VerificationMarker {
   pageNumber: number;
@@ -22,7 +23,7 @@ export async function exportVerificationPdf(
   jobName: string,
   markers: VerificationMarker[]
 ): Promise<void> {
-  const response = await fetch(`/api/jobs/${jobId}/files/${fileId}/pdf`);
+  const response = await apiFetch(`/api/jobs/${jobId}/files/${fileId}/pdf`);
   if (!response.ok) throw new Error("Failed to fetch training PDF");
   const pdfBytes = await response.arrayBuffer();
 

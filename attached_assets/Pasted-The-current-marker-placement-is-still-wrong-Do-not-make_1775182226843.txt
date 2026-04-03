@@ -1,0 +1,85 @@
+The current marker placement is still wrong. Do not make cosmetic changes. Find and fix the actual coordinate mapping bug.
+
+Task:
+Refactor marker placement so markers are drawn in the exact same coordinate system as the extracted PDF text.
+
+What to do:
+
+1. Source of truth
+- Use PyMuPDF (`fitz`) to extract words from the PDF with `page.get_text("words")`
+- Store each word as PDF coordinates: x0, y0, x1, y1, text
+- These PDF coordinates must remain the canonical coordinates until final drawing
+
+2. Rendering
+- Identify exactly how the plan image is rendered now:
+  - page rect width/height
+  - render zoom
+  - crop box vs media box
+  - any frontend CSS scaling
+  - canvas displayed width/height vs natural width/height
+- Remove any hidden extra scaling, padding, browser-fit logic, or grid snapping
+
+3. Coordinate transform
+- Create one explicit transform from PDF coordinates to displayed image coordinates
+- Do not estimate
+- Compute:
+  - scale_x = displayed_image_width / rendered_pdf_pixel_width
+  - scale_y = displayed_image_height / rendered_pdf_pixel_height
+- If the rendered image is letterboxed or padded, include x/y offsets
+- Final formula must be:
+  - screen_x = image_offset_x + rendered_x * scale_x
+  - screen_y = image_offset_y + rendered_y * scale_y
+
+4. Same-render pipeline
+- Render the page image from the same PyMuPDF page object and same zoom used for coordinate extraction
+- Do not extract coordinates from one render and draw on a differently scaled screenshot
+- Markers must be drawn against the exact rendered image generated in the backend
+
+5. Debug overlay
+Add a debug mode that draws:
+- bounding boxes around matched text labels
+- a small dot at the bbox center
+- the final marker point
+- the matched text string and confidence
+This is required so we can visually verify transform accuracy
+
+6. Matching
+- Match sign targets to extracted labels with RapidFuzz
+- Return the matched label bbox and confidence
+- If confidence is low, flag for review instead of guessing
+
+7. Output format
+Return per marker:
+{
+  "label_text": "UNIT 1A",
+  "pdf_bbox": [x0, y0, x1, y1],
+  "pdf_center": [cx, cy],
+  "rendered_point": [rx, ry],
+  "screen_point": [sx, sy],
+  "confidence": 0.93
+}
+
+8. Acceptance test
+Create a test route or function that:
+- loads one sample PDF page
+- extracts 10 labels
+- draws their bounding boxes and center points on the rendered image
+- saves a debug image
+Success = each box sits exactly on top of the visible text
+
+Important:
+- Delete all invisible grid logic
+- Delete all snapping logic
+- Delete all “nearest region/cell” logic
+- The bug is likely a transform mismatch, not text extraction
+- Fix the transform first, then marker placement
+
+Also add this one sentence above it in Replit:
+
+Do not rewrite the app broadly. Inspect the existing placement pipeline and patch the exact coordinate-system mismatch.
+
+What probably happened is Replit changed the matching logic but left the real bug untouched:
+
+PDF coordinates vs image coordinates mismatch
+backend render size different from frontend display size
+CSS scaling

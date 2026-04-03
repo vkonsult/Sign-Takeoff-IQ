@@ -27,3 +27,9 @@ timeoutMs = 20000
 
 [nix]
 channel = "stable-25_05"
+
+[userenv]
+
+[userenv.shared]
+SUPER_ADMIN_GUEST_TOKEN = "stiq-guest-2026"
+VITE_GUEST_TOKEN = "stiq-guest-2026"

@@ -5,7 +5,7 @@ const router: IRouter = Router();
 
 router.get("/healthz", (_req, res) => {
   const data = HealthCheckResponse.parse({ status: "ok" });
-  res.json(data);
+  res.json({ ...data, guestAvailable: !!process.env.SUPER_ADMIN_GUEST_TOKEN });
 });
 
 export default router;

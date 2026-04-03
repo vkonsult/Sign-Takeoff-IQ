@@ -1,7 +1,8 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { Document, Page, pdfjs } from "react-pdf";
 import "react-pdf/dist/Page/AnnotationLayer.css";
 import "react-pdf/dist/Page/TextLayer.css";
+import { usePdfBlob } from "@/hooks/use-pdf-blob";
 import {
   X,
   ChevronLeft,
@@ -29,9 +30,20 @@ export function SignSpecModal({ jobId, fileId, fileName, specPages, onClose }: S
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const pdfUrl = `/api/jobs/${jobId}/files/${fileId}/pdf`;
+  const { pdfBuffer, blobError } = usePdfBlob(`/api/jobs/${jobId}/files/${fileId}/pdf`);
+
+  useEffect(() => {
+    if (blobError) setError(blobError);
+  }, [blobError]);
+
   const currentPage = specPages[specIdx] ?? 1;
   const totalSpec = specPages.length;
+  // Memoized file object — creates a fresh Uint8Array copy so react-pdf's internal
+  // postMessage transfer never detaches the stored pdfBuffer reference.
+  const pdfFile = useMemo(
+    () => (pdfBuffer ? { data: new Uint8Array(pdfBuffer.slice(0)) } : null),
+    [pdfBuffer]
+  );
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -139,23 +151,25 @@ export function SignSpecModal({ jobId, fileId, fileName, specPages, onClose }: S
 
         {/* PDF Viewer */}
         <div className="flex-1 overflow-auto flex items-start justify-center p-6 bg-zinc-900">
+          {!pdfBuffer && !error && (
+            <div className="flex flex-col items-center gap-3 text-muted-foreground pt-20">
+              <Loader2 className="w-8 h-8 animate-spin" />
+              <p className="text-sm">Loading sign spec...</p>
+            </div>
+          )}
+          {!pdfBuffer && error && (
+            <div className="flex flex-col items-center gap-2 text-destructive pt-20">
+              <FileText className="w-8 h-8" />
+              <p className="text-sm">Failed to load PDF</p>
+              <p className="text-xs opacity-70">{error}</p>
+            </div>
+          )}
           <Document
-            file={pdfUrl}
+            file={pdfFile}
             onLoadSuccess={() => setLoading(false)}
             onLoadError={(err) => setError(err.message)}
-            loading={
-              <div className="flex flex-col items-center gap-3 text-muted-foreground pt-20">
-                <Loader2 className="w-8 h-8 animate-spin" />
-                <p className="text-sm">Loading sign spec...</p>
-              </div>
-            }
-            error={
-              <div className="flex flex-col items-center gap-2 text-destructive pt-20">
-                <FileText className="w-8 h-8" />
-                <p className="text-sm">Failed to load PDF</p>
-                {error && <p className="text-xs opacity-70">{error}</p>}
-              </div>
-            }
+            loading={null}
+            error={null}
           >
             <div className="shadow-2xl">
               <Page

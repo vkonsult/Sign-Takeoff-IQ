@@ -34,6 +34,7 @@ export const extractedSignsTable = pgTable("extracted_signs", {
   pageNumber: integer("page_number"),
   xPos: real("x_pos"),
   yPos: real("y_pos"),
+  placementSource: text("placement_source"),
   extractionMethod: text("extraction_method").default("text"),
   // Self-referential FK: both the text and image rows of a matched pair point to each other.
   // ON DELETE SET NULL so deleting one half of a pair does not cascade-delete the other.

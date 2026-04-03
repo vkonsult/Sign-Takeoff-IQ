@@ -8,51 +8,10 @@ import {
 } from "@workspace/db";
 
 import { ai } from "@workspace/integrations-gemini-ai";
-import { extractSignsFromPdf, extractSignsFromPdfImage, extractProjectInfo, type ProjectInfo, type VerifiedSignSummary } from "./extraction";
+import { extractSignsFromPdf, extractSignsFromPdfImageVerify, extractProjectInfo, type ProjectInfo, type VerifiedSignSummary, type TextContextSign, type VerificationItem, type ExtractedSignRow } from "./extraction";
 import { saveParsedResult } from "./storage";
 import { logger } from "./logger";
 
-// ── Sign matching helpers ─────────────────────────────────────────────────────
-// Match text signs against image signs using significant-word overlap scoring.
-// Requires BOTH type AND location overlap to reduce false-positive matches.
-
-type DbSign = typeof extractedSignsTable.$inferSelect;
-
-function normalize(s: string | null | undefined): string {
-  return (s ?? "").toLowerCase().replace(/[^a-z0-9 ]/g, " ").replace(/\s+/g, " ").trim();
-}
-
-function significantWords(s: string | null | undefined): Set<string> {
-  return new Set(normalize(s).split(" ").filter((w) => w.length >= 4));
-}
-
-function wordOverlapScore(a: string | null | undefined, b: string | null | undefined): number {
-  const wa = significantWords(a);
-  const wb = significantWords(b);
-  if (wa.size === 0 || wb.size === 0) return 0;
-  let shared = 0;
-  for (const w of wa) { if (wb.has(w)) shared++; }
-  return shared / Math.max(wa.size, wb.size);
-}
-
-function positionProximity(imgSign: DbSign, txtSign: DbSign): number {
-  if (imgSign.xPos == null || imgSign.yPos == null || txtSign.xPos == null || txtSign.yPos == null) return 0;
-  const dx = imgSign.xPos - txtSign.xPos;
-  const dy = imgSign.yPos - txtSign.yPos;
-  const dist = Math.sqrt(dx * dx + dy * dy);
-  return dist < 0.1 ? 1 : dist < 0.25 ? 0.5 : 0;
-}
-
-function isMatch(imgSign: DbSign, txtSign: DbSign): boolean {
-  const typeScore = wordOverlapScore(imgSign.signType, txtSign.signType);
-  const locScore = wordOverlapScore(imgSign.location, txtSign.location);
-  const posFactor = positionProximity(imgSign, txtSign);
-  if (typeScore >= 0.5 && locScore >= 0.5) return true;
-  if (typeScore >= 0.8 && locScore >= 0.2) return true;
-  if (locScore >= 0.8 && typeScore >= 0.2) return true;
-  if (posFactor > 0 && (typeScore >= 0.5 || locScore >= 0.5)) return true;
-  return false;
-}
 
 export async function processJob(jobId: string): Promise<void> {
   // ── Preserve verified + manually-added signs before clearing AI output ───
@@ -137,6 +96,7 @@ export async function processJob(jobId: string): Promise<void> {
 
   const allTextRows: InsertExtractedSign[] = [];
   const allImageRows: InsertExtractedSign[] = [];
+  const allVerifications: (VerificationItem & { fileId: string })[] = [];
   const parsedResults: Record<string, unknown>[] = [];
   let totalInputTokens = 0;
   let totalOutputTokens = 0;
@@ -178,20 +138,34 @@ export async function processJob(jobId: string): Promise<void> {
       const otherVerified = verifiedGlobal.filter((v) => !fileVerified.includes(v));
       const allVerifiedForFile = [...fileVerified, ...otherVerified];
 
-      // Run text and image extraction in parallel
-      const [textResult, imageResult] = await Promise.all([
-        extractSignsFromPdf(
-          file.storedPath,
-          ai,
-          projectContext,
-          allVerifiedForFile.length > 0 ? allVerifiedForFile : undefined,
-          crossJobVerified.length > 0 ? crossJobVerified : undefined
-        ),
-        extractSignsFromPdfImage(file.storedPath, ai).catch((err) => {
-          logger.warn({ err, fileId: file.id }, "Image extraction threw unexpectedly — using empty result");
-          return { rows: [], inputTokens: 0, outputTokens: 0, skipped: true as const, skipReason: "Internal error" };
-        }),
-      ]);
+      // Run text extraction FIRST, then use those results to drive the
+      // visual verification pass (text signs → context → verify/discover).
+      const textResult = await extractSignsFromPdf(
+        file.storedPath,
+        ai,
+        projectContext,
+        allVerifiedForFile.length > 0 ? allVerifiedForFile : undefined,
+        crossJobVerified.length > 0 ? crossJobVerified : undefined
+      );
+
+      // Build page → text-sign context map for the verification prompt
+      const textSignsByPage = new Map<number, TextContextSign[]>();
+      for (const row of textResult.rows) {
+        const pg = row.page_number ?? 1;
+        if (!textSignsByPage.has(pg)) textSignsByPage.set(pg, []);
+        textSignsByPage.get(pg)!.push({
+          sign_identifier: row.sign_identifier,
+          location: row.location,
+          sign_type: row.sign_type,
+          sheet_number: row.sheet_number,
+          page_number: row.page_number,
+        });
+      }
+
+      const imageResult = await extractSignsFromPdfImageVerify(file.storedPath, ai, textSignsByPage).catch((err) => {
+        logger.warn({ err, fileId: file.id }, "Visual verification threw unexpectedly — skipping");
+        return { verifications: [] as VerificationItem[], discoveries: [], inputTokens: 0, outputTokens: 0, skipped: true as const, skipReason: "Internal error" };
+      });
 
       totalInputTokens += textResult.inputTokens;
       totalOutputTokens += textResult.outputTokens;
@@ -208,12 +182,50 @@ export async function processJob(jobId: string): Promise<void> {
         fileName: file.originalName,
         pageCount: textResult.pageCount,
         rowCount: textResult.rows.length,
-        imageRowCount: imageResult.rows.length,
+        imageRowCount: imageResult.discoveries.length,
         imageSkipped: imageResult.skipped ?? false,
         rows: textResult.rows,
       });
 
+      // ── In-memory verification application ────────────────────────────────
+      // Build a quick-lookup from (sign_identifier|location) → verification status
+      // so we can apply CONFIRMED/NOT_FOUND boosts before inserting.
+      function findVerification(row: ExtractedSignRow): VerificationItem | undefined {
+        if (!imageResult.skipped) {
+          // Pass 1: match by sign_identifier (case-insensitive)
+          if (row.sign_identifier) {
+            const m = imageResult.verifications.find(
+              (v) => v.sign_identifier?.toLowerCase() === row.sign_identifier!.toLowerCase()
+            );
+            if (m) return m;
+          }
+          // Pass 2: match by location substring
+          if (row.location) {
+            const rLoc = row.location.toLowerCase();
+            const m = imageResult.verifications.find(
+              (v) => v.location != null && (v.location.toLowerCase().includes(rLoc) || rLoc.includes(v.location.toLowerCase()))
+            );
+            if (m) return m;
+          }
+        }
+        return undefined;
+      }
+
       for (const row of textResult.rows) {
+        const verif = findVerification(row);
+        let conf = row.confidence_score;
+        let flag = row.review_flag;
+
+        if (verif) {
+          if (verif.status === "CONFIRMED") {
+            conf = Math.min(1.0, conf + 0.15);
+            flag = conf < 0.75;
+          } else if (verif.status === "NOT_FOUND") {
+            flag = true; // visual pass couldn't find it — needs human review
+          }
+          // UNCERTAIN: leave unchanged
+        }
+
         allTextRows.push({
           jobId,
           jobFileId: file.id,
@@ -231,14 +243,16 @@ export async function processJob(jobId: string): Promise<void> {
           messageContent: row.message_content,
           notes: row.notes,
           pageNumber: row.page_number,
-          confidenceScore: row.confidence_score,
-          reviewFlag: row.review_flag,
+          confidenceScore: conf,
+          reviewFlag: flag,
           extractionMethod: "text",
           rawJson: row as unknown as Record<string, unknown>,
         });
       }
 
-      for (const row of imageResult.rows) {
+      // Visual-verification discoveries: signs the visual pass found that the
+      // text pass missed. Store as supplementary with reviewFlag=true.
+      for (const row of imageResult.discoveries) {
         allImageRows.push({
           jobId,
           jobFileId: file.id,
@@ -256,8 +270,8 @@ export async function processJob(jobId: string): Promise<void> {
           messageContent: row.message_content,
           notes: row.notes,
           pageNumber: row.page_number,
-          xPos: row.x_pos ?? null,
-          yPos: row.y_pos ?? null,
+          xPos: null,
+          yPos: null,
           confidenceScore: row.confidence_score,
           reviewFlag: true,
           extractionMethod: "image",
@@ -265,10 +279,22 @@ export async function processJob(jobId: string): Promise<void> {
         });
       }
 
+      // Collect verifications stats for the completion log (no longer needed for DB matching)
+      const confirmedCount = imageResult.verifications.filter(v => v.status === "CONFIRMED").length;
+      const notFoundCount = imageResult.verifications.filter(v => v.status === "NOT_FOUND").length;
+      allVerifications.push(...imageResult.verifications.map(v => ({ ...v, fileId: file.id })));
+
       if (imageResult.skipped) {
-        logger.info({ jobId, file: file.originalName, reason: imageResult.skipReason }, "Visual scan skipped for file");
+        logger.info({ jobId, file: file.originalName, reason: imageResult.skipReason }, "Visual verification skipped for file");
       } else {
-        logger.info({ jobId, file: file.originalName, imageRows: imageResult.rows.length }, "Visual scan complete for file");
+        logger.info({
+          jobId,
+          file: file.originalName,
+          verifications: imageResult.verifications.length,
+          confirmed: imageResult.verifications.filter(v => v.status === "CONFIRMED").length,
+          notFound: imageResult.verifications.filter(v => v.status === "NOT_FOUND").length,
+          discoveries: imageResult.discoveries.length,
+        }, "Visual verification complete for file");
       }
     } catch (err) {
       logger.error({ err, fileId: file.id, fileName: file.originalName }, "File extraction failed");
@@ -288,64 +314,20 @@ export async function processJob(jobId: string): Promise<void> {
     await db.insert(extractedSignsTable).values(allImageRows);
   }
 
-  // ── Matching pass: pair text signs with image signs ───────────────────────
-  // Re-fetch all signs for this job to get real DB IDs, then run greedy matching.
-  if (allImageRows.length > 0) {
-    const allInserted = await db
-      .select()
-      .from(extractedSignsTable)
-      .where(eq(extractedSignsTable.jobId, jobId));
-
-    const textSigns = allInserted.filter((s) => s.extractionMethod === "text" && !s.manuallyAdded && !s.userVerified);
-    const imageSigns = allInserted.filter((s) => s.extractionMethod === "image");
-
-    const matchedTextIds = new Set<string>();
-    const matchedImageIds = new Set<string>();
-    const pairs: Array<{ textId: string; imageId: string }> = [];
-
-    for (const imgSign of imageSigns) {
-      let bestTextSign: DbSign | null = null;
-      let bestTypeScore = 0;
-
-      for (const txtSign of textSigns) {
-        if (matchedTextIds.has(txtSign.id)) continue;
-        if (!isMatch(imgSign, txtSign)) continue;
-        const ts = wordOverlapScore(imgSign.signType, txtSign.signType);
-        if (ts > bestTypeScore) {
-          bestTypeScore = ts;
-          bestTextSign = txtSign;
-        }
-      }
-
-      if (bestTextSign) {
-        matchedTextIds.add(bestTextSign.id);
-        matchedImageIds.add(imgSign.id);
-        pairs.push({ textId: bestTextSign.id, imageId: imgSign.id });
-      }
-    }
-
-    // Persist pairings and symmetrically boost confidence on both rows
-    for (const { textId, imageId } of pairs) {
-      const txtSign = textSigns.find((s) => s.id === textId)!;
-      const imgSign = imageSigns.find((s) => s.id === imageId)!;
-
-      const txtBoosted = Math.min(1.0, (txtSign.confidenceScore ?? 0) + 0.15);
-      const imgBoosted = Math.min(1.0, (imgSign.confidenceScore ?? 0) + 0.15);
-
-      await db
-        .update(extractedSignsTable)
-        .set({ pairedSignId: imageId, confidenceScore: txtBoosted, reviewFlag: txtBoosted >= 0.6 ? false : true })
-        .where(eq(extractedSignsTable.id, textId));
-
-      await db
-        .update(extractedSignsTable)
-        .set({ pairedSignId: textId, confidenceScore: imgBoosted, reviewFlag: imgBoosted >= 0.6 ? false : true })
-        .where(eq(extractedSignsTable.id, imageId));
-    }
-
+  // Log overall verification stats (actual boosts applied in-memory per-file above)
+  if (allVerifications.length > 0) {
+    const confirmed = allVerifications.filter(v => v.status === "CONFIRMED").length;
+    const notFound = allVerifications.filter(v => v.status === "NOT_FOUND").length;
     logger.info(
-      { jobId, textSigns: textSigns.length, imageSigns: imageSigns.length, pairs: pairs.length },
-      "Sign matching complete"
+      {
+        jobId,
+        totalVerifications: allVerifications.length,
+        confirmed,
+        notFound,
+        uncertain: allVerifications.length - confirmed - notFound,
+        discoveries: allImageRows.length,
+      },
+      "Verification complete"
     );
   }
 

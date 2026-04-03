@@ -8,11 +8,13 @@ const DATA_DIR = process.env.DATA_DIR
 export const UPLOADS_DIR = path.join(DATA_DIR, "uploads");
 export const PARSED_DIR = path.join(DATA_DIR, "parsed");
 export const EXPORTS_DIR = path.join(DATA_DIR, "exports");
+export const LOGOS_DIR = path.join(DATA_DIR, "logos");
 
 export async function ensureDirectories(): Promise<void> {
   await fs.mkdir(UPLOADS_DIR, { recursive: true });
   await fs.mkdir(PARSED_DIR, { recursive: true });
   await fs.mkdir(EXPORTS_DIR, { recursive: true });
+  await fs.mkdir(LOGOS_DIR, { recursive: true });
 }
 
 export function getJobUploadDir(jobId: string): string {

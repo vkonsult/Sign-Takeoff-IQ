@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "fuser -k ${PORT:-22333}/tcp 2>/dev/null; sleep 1; vite --config vite.config.ts --host 0.0.0.0",
+    "dev": "vite --config vite.config.ts --host 0.0.0.0",
     "build": "vite build --config vite.config.ts",
     "serve": "vite preview --config vite.config.ts --host 0.0.0.0",
     "typecheck": "tsc -p tsconfig.json --noEmit"
@@ -75,6 +75,7 @@
     "zod": "catalog:"
   },
   "dependencies": {
+    "@clerk/react": "^6.1.4",
     "pdf-lib": "^1.17.1",
     "react-dropzone": "^15.0.0",
     "react-pdf": "^10.4.1"
