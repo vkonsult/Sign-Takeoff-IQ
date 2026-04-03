@@ -1,5 +1,4 @@
 import { PDFDocument, rgb, StandardFonts, PDFPage } from "pdf-lib";
-import { apiFetch } from "./apiClient";
 
 export interface MarkerSign {
   id: string;
@@ -27,7 +26,7 @@ export async function exportMarkedupPdf(
   const mergedPdf = await PDFDocument.create();
 
   for (const file of files) {
-    const response = await apiFetch(`/api/jobs/${jobId}/files/${file.id}/pdf`);
+    const response = await fetch(`/api/jobs/${jobId}/files/${file.id}/pdf`);
     if (!response.ok) throw new Error(`Failed to fetch PDF for file ${file.id}`);
     const pdfBytes = await response.arrayBuffer();
 

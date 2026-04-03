@@ -70,24 +70,13 @@ router.post("/upload", (req, res, next) => {
     return;
   }
 
-  const orgId = req.authUser?.organizationId ?? null;
-  if (!orgId && !req.authUser?.isSuperAdmin) {
-    res.status(403).json({ error: "No organization context. Please contact your administrator." });
-    return;
-  }
-
   try {
     const firstName = files[0]?.originalname ?? "Untitled Job";
     const jobName = firstName.replace(/\.pdf$/i, "").replace(/[_-]/g, " ").trim();
 
     const [job] = await db
       .insert(jobsTable)
-      .values({
-        name: jobName,
-        status: "pending",
-        fileCount: files.length,
-        organizationId: orgId,
-      })
+      .values({ name: jobName, status: "pending", fileCount: files.length })
       .returning();
 
     const uploadDir = await ensureJobUploadDir(job.id);

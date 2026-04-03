@@ -2,7 +2,6 @@ import { useState, useRef, useEffect } from "react";
 import { useRoute } from "wouter";
 import { useQueryClient } from "@tanstack/react-query";
 import { AppShell } from "@/components/layout/Shell";
-import { apiFetch } from "@/lib/apiClient";
 import { useJobDetails, useStartExtraction, downloadExport, useUpdateJobName } from "@/hooks/use-takeoff";
 import { SignReviewModal } from "@/components/SignReviewModal";
 import { SignSpecModal } from "@/components/SignSpecModal";
@@ -17,7 +16,6 @@ import {
   Loader2,
   ListFilter,
   Pencil,
-  PenLine,
   Zap,
   MapPin,
   ChevronDown,
@@ -30,9 +28,8 @@ import {
   EyeOff,
   RefreshCw,
   BarChart2,
-  RotateCcw,
 } from "lucide-react";
-import { format, formatDistanceToNow } from "date-fns";
+import { format } from "date-fns";
 import { exportMarkedupPdf } from "@/lib/exportMarkedupPdf";
 
 export default function JobDetails() {
@@ -83,7 +80,7 @@ export default function JobDetails() {
 
   const handleExport = () => {
     if (jobId) {
-      downloadExport(jobId).catch((err) => console.error("Export failed:", err));
+      downloadExport(jobId);
     }
   };
 
@@ -93,6 +90,8 @@ export default function JobDetails() {
     if (!data || exportingPdf) return;
     setExportingPdf(true);
     try {
+      // Use markerSigns which includes image-pass signs with xPos/yPos coordinates
+      // in addition to any text/manual signs that have position data.
       const sourceSigns = (data as { markerSigns?: typeof data.extractedSigns }).markerSigns ?? data.extractedSigns;
       const markedSigns = sourceSigns.filter(
         (s) => s.xPos != null && s.yPos != null && s.pageNumber != null
@@ -103,7 +102,6 @@ export default function JobDetails() {
         data.files,
         markedSigns
       );
-      apiFetch(`/api/jobs/${jobId}/log-pdf-export`, { method: "POST" }).catch(() => {});
     } catch (err) {
       console.error("PDF export failed:", err);
       alert("Failed to export marked-up PDF. Please try again.");
@@ -115,15 +113,6 @@ export default function JobDetails() {
   const [showHidden, setShowHidden] = useState(false);
   const [sortField, setSortField] = useState<string | null>(null);
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
-
-  const PROCESSING_TIMEOUT_SECONDS = 5 * 60;
-  const [processingSeconds, setProcessingSeconds] = useState(0);
-  const isProcessingNow = (data?.job?.status === "processing") || extractMutation.isPending;
-  useEffect(() => {
-    if (!isProcessingNow) { setProcessingSeconds(0); return; }
-    const id = setInterval(() => setProcessingSeconds((s) => s + 1), 1000);
-    return () => clearInterval(id);
-  }, [isProcessingNow]);
 
   const handleSort = (field: string) => {
     if (sortField === field) {
@@ -164,7 +153,7 @@ export default function JobDetails() {
     });
     // Persist to server; revert optimistic update on any failure
     try {
-      const res = await apiFetch(`/api/extracted-signs/${signId}`, {
+      const res = await fetch(`/api/extracted-signs/${signId}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ hidden: next }),
@@ -235,13 +224,6 @@ export default function JobDetails() {
   }
 
   const { job, files, totalSigns, flaggedCount, highConfidenceCount } = data;
-  const dataAny = data as typeof data & {
-    lastScan?: { at: string; userName: string; userInitials: string } | null;
-    lastEdit?: { at: string; userName: string; userInitials: string } | null;
-  };
-  const lastScan = dataAny.lastScan ?? null;
-  const lastEdit = dataAny.lastEdit ?? null;
-
   // Show all signs: text, manual, and image-only (visual-only finds).
   // Paired image signs are excluded by the API (their data is in the paired text row).
   const extractedSigns = data.extractedSigns;
@@ -336,38 +318,6 @@ export default function JobDetails() {
                   </span>
                 )}
               </div>
-              {(lastScan || lastEdit) && (
-                <div className="flex flex-wrap gap-x-4 gap-y-1 mt-1">
-                  {lastScan && (
-                    <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                      <Zap className="w-3 h-3 text-primary/70 flex-shrink-0" />
-                      Last scanned by{" "}
-                      <span
-                        className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-primary/15 text-primary text-[9px] font-bold flex-shrink-0"
-                        title={lastScan.userName}
-                      >
-                        {lastScan.userInitials}
-                      </span>
-                      <span className="font-medium text-foreground/70">{lastScan.userName}</span>
-                      {" — "}{formatDistanceToNow(new Date(lastScan.at), { addSuffix: true })}
-                    </span>
-                  )}
-                  {lastEdit && (
-                    <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                      <PenLine className="w-3 h-3 text-accent/70 flex-shrink-0" />
-                      Last edited by{" "}
-                      <span
-                        className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-accent/15 text-accent text-[9px] font-bold flex-shrink-0"
-                        title={lastEdit.userName}
-                      >
-                        {lastEdit.userInitials}
-                      </span>
-                      <span className="font-medium text-foreground/70">{lastEdit.userName}</span>
-                      {" — "}{formatDistanceToNow(new Date(lastEdit.at), { addSuffix: true })}
-                    </span>
-                  )}
-                </div>
-              )}
               
               {isFailed && job.error && (
                 <div className="mt-3 text-sm text-destructive bg-destructive/10 px-3 py-2 rounded border border-destructive/20 inline-block">
@@ -446,30 +396,10 @@ export default function JobDetails() {
               <p className="text-muted-foreground font-mono text-sm max-w-md mx-auto leading-relaxed">
                 Running text and visual scans in parallel. Gemini AI is reading plan text, identifying sign schedules, and visually scanning floor plans. Large files may take 3–6 minutes.
               </p>
-
-              <div className="mt-2 text-xs text-muted-foreground/60 font-mono tabular-nums">
-                {Math.floor(processingSeconds / 60)}:{String(processingSeconds % 60).padStart(2, "0")} elapsed
-              </div>
               
-              <div className="mt-4 w-full bg-secondary rounded-full h-1.5 overflow-hidden">
+              <div className="mt-8 w-full bg-secondary rounded-full h-1.5 overflow-hidden">
                 <div className="h-full bg-primary w-1/2 animate-[progress_2s_ease-in-out_infinite_alternate]" style={{ transformOrigin: 'left' }}></div>
               </div>
-
-              {processingSeconds >= PROCESSING_TIMEOUT_SECONDS && (
-                <div className="mt-8 flex flex-col items-center gap-3">
-                  <p className="text-sm text-muted-foreground">
-                    This is taking longer than expected. You can try restarting the extraction.
-                  </p>
-                  <button
-                    onClick={handleStartExtraction}
-                    disabled={extractMutation.isPending}
-                    className="flex items-center gap-2 px-4 py-2 rounded-md bg-primary/10 border border-primary/30 text-primary text-sm font-medium hover:bg-primary/20 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                  >
-                    <RotateCcw className="w-4 h-4" />
-                    Retry Extraction
-                  </button>
-                </div>
-              )}
             </div>
           ) : isCompleted ? (
             <div className="flex flex-col h-full">

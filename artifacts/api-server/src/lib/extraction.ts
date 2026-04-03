@@ -2,8 +2,6 @@ import fs from "fs/promises";
 import pdfParse from "pdf-parse/lib/pdf-parse.js";
 import { z } from "zod";
 import { logger } from "./logger";
-import { buildPageDoorMap, matchSignsToDoors } from "./door-geometry";
-import { extractPagePhrases } from "./pdf-words";
 
 export interface ExtractedSignRow {
   sheet_number: string | null;
@@ -1184,64 +1182,58 @@ async function callGeminiMultimodal(
 
 // ─── IMAGE EXTRACTION PROMPT ──────────────────────────────────────────────────
 
-const IMAGE_EXTRACTION_PROMPT = `You are an expert sign contractor performing a VISUAL CROSS-VERIFICATION sign takeoff from architectural plan documents.
+const IMAGE_EXTRACTION_PROMPT = `You are an expert sign contractor performing a visual sign takeoff from architectural plan documents.
 
-CRITICAL MISSION: This is a second-pass visual scan whose primary purpose is to cross-verify a text-extraction pass that has already run. Your job is to visually CONFIRM signs found by the text pass AND independently find any signs the text pass may have missed. A large architectural floor plan will have dozens to hundreds of sign callouts — returning fewer than 10 results for a multi-room floor plan is almost certainly wrong. Scan aggressively.
+You are viewing the actual PDF pages as images. Your task is to identify ALL sign-related elements visible in these documents by looking at the visual content — callout bubbles, leader lines, room tag balloons, ADA symbols, sign schedule tables, and any text labeling actual sign locations on the floor plan.
 
-You are viewing the actual PDF pages as images. Scan every square inch of each page systematically. Look for:
-- Small circled or triangled numbers/letters at room entries and doorways (these are ADA/Room ID callouts)
-- Triangular "flag" symbols with a reference code pointing to a wall location
-- Diamond, hexagonal, or other shaped callout bubbles with sign type codes
-- Leader lines connecting a code to a physical location
-- Room name labels next to doors (these often indicate a Room ID sign)
-- "EXIT" text or exit sign symbols above doors or at stair entries
-- Fire extinguisher, AED, or safety sign symbols
-- Wayfinding arrows or directory indicators
-- Any alphanumeric code like "RI-101", "S-1", "A", "EX", "1A" placed near a door, room corner, or corridor
-- Sign schedule tables listing sign types, quantities, and locations
-- Keynote callouts referencing sign types in the keynote legend
+For each unique sign or sign entry you can visually identify, extract these fields. Use null if not visible:
 
-IMPORTANT — DO NOT MISS SMALL CALLOUTS:
-ADA floor plans often have very small (6–8pt font) circular or triangular callout symbols scattered throughout the floor plan. These are easy to overlook. Zoom in mentally on every doorway and room entry. Every room with a door almost certainly has a Room ID sign callout.
-
-For each sign callout you visually identify, extract these fields (use null if not visible):
-
-- sheet_number: Plan sheet number from title block (e.g. "A-101", "S-1")
-- detail_reference: The callout code visible in the bubble or triangle (e.g. "1", "A", "RI-01", "EX")
-- sign_type: Type of sign (e.g. "Room ID", "Exit", "ADA Restroom", "Wayfinding", "Fire Extinguisher", "Stairwell")
-- sign_identifier: The unique sign code if visible (e.g. "S-01", "EX-1", "TYPE A"). Use detail_reference if no separate identifier.
-- quantity: Integer count of this sign at this location. Default 1.
-- location: Room name, space name, or positional description visible near the callout (e.g. "Room 101 - Storage", "Main Lobby", "North Exit")
-- dimensions: Physical size if shown in legend or schedule (e.g. '6" x 8"')
-- mounting_type: How it is mounted if visible (e.g. "Wall Mounted", "Post Mounted", "Overhead")
-- finish_color: Finish or color if visible
+- sheet_number: The plan sheet number from the title block or page header (e.g. "A-101", "S-1")
+- detail_reference: Any callout number or reference bubble visible (e.g. "1", "A", "SN-01")
+- sign_type: The type of sign (e.g. "Room ID", "Exit", "ADA Restroom", "Wayfinding", "Building ID", "Fire Extinguisher")
+- sign_identifier: The sign code or label that uniquely identifies it (e.g. "S-01", "EX-1", "TYPE A")
+- quantity: Number of signs of this type visible (integer). Default to 1.
+- location: Where the sign is located — use the visible room label, space name, or positional description (e.g. "Room 101", "Main Lobby", "North Stairwell Level 2")
+- dimensions: Physical dimensions if shown in the legend or schedule (e.g. '6" x 8"', '24" x 36"')
+- mounting_type: Mounting method if visible or implied (e.g. "Wall Mounted", "Post Mounted")
+- finish_color: Finish or color if visible in the legend
 - illumination: Lighting type if specified
 - materials: Materials if specified
-- message_content: The text message of the sign if visible (e.g. "EXIT", "RESTROOMS", "STAIR A")
-- notes: Any special notes in callouts or legends
-- page_number: 1-indexed page number where you see this callout
-- x_position: Normalized horizontal position 0.0–1.0 of the callout bubble/symbol on its page
-- y_position: Normalized vertical position 0.0–1.0 of the callout bubble/symbol on its page
-- confidence_score: 0.9 = clearly visible; 0.75 = small but readable; 0.6 = partially obscured or inferred; 0.5 = best guess
-- review_flag: true if confidence_score < 0.75
+- message_content: The text content of the sign if visible (e.g. "EXIT", "RESTROOMS", "ELECTRICAL ROOM")
+- notes: Any special notes visible in callouts or legends
+- page_number: The page number (1-indexed) where you see this sign. The PDF is provided in page order.
+- x_position: Normalized horizontal position (0.0 = left edge, 1.0 = right edge) of where this sign callout appears on its page. Estimate visually.
+- y_position: Normalized vertical position (0.0 = top edge, 1.0 = bottom edge) of where this sign callout appears on its page. Estimate visually.
+- confidence_score: 0.9 = clearly visible callout; 0.7 = visible but partially obscured; 0.5 = inferred from context
+- review_flag: true if confidence_score < 0.7
 
-READ NUMBERS WITH EXTREME CARE:
-- Room numbers and reference codes are highly precise. "SHOP 113" ≠ "SHOP 118". "RI-105" ≠ "RI-106".
-- Zoom in mentally on each digit. Visually similar: 1 vs I vs l, 3 vs 8, 0 vs 6 vs 8, 5 vs 6, 7 vs 1.
-- If you cannot confidently read a digit, set confidence_score ≤ 0.6, review_flag = true, and record what you can see.
+IMPORTANT RULES:
+- Focus on what you can SEE in the document, not what you infer from code requirements
+- Include every visible sign callout, symbol, and schedule row
+- Do NOT fabricate signs — only report what is visible
+- Return ONLY a valid JSON array. No markdown, no code blocks, no explanation.
+- Each entry must include x_position and y_position as numbers between 0 and 1.
+- If no signs are visible in the document, return an empty array: []
 
-MARKER PLACEMENT:
-- x_position / y_position must point to the callout bubble or triangle symbol, NOT the room centroid or room name.
-- For a leader-line callout, place the coordinate at the arrowhead or bubble end.
+CRITICAL — READ NUMBERS WITH EXTREME CARE:
+- Room numbers, sign IDs, and reference codes are highly precise. A single wrong digit changes the meaning entirely (e.g. "SHOP 113" ≠ "SHOP 118", "RI-105" ≠ "RI-106").
+- Zoom in mentally on each number before transcribing it. Do not guess or round.
+- Visually similar digits to watch for: 1 vs I vs l, 3 vs 8, 0 vs 6 vs 8, 5 vs 6, 7 vs 1.
+- If you cannot confidently read a number or room label, set confidence_score ≤ 0.6 and review_flag = true, and report the digits you can see.
+- For x_position and y_position: place the coordinate at the sign callout bubble or leader-line endpoint — NOT at the center of the room. The callout is typically at the edge of the labeled space.
 
-LEGEND EXCLUSION — READ CAREFULLY:
-- Architectural plans have a legend/symbol key box (usually in a corner) listing what each symbol means. These entries are DEFINITIONS, not actual sign locations. DO NOT extract them.
-- Only extract callouts that are placed at a real physical location on the floor plan (attached to a room, corridor, or door via a leader line or proximity).
-- Exception: sign SCHEDULE tables (rows listing sign IDs with quantities and locations) ARE valid — extract every row.
+MARKER ACCURACY:
+- x_position and y_position must point to the exact callout label or bubble for the sign, not to the room centroid.
+- If the sign has a visible bubble or triangle marker with a reference code, place your coordinate at that symbol.
+- Do not place the coordinate at the room name text block — use the sign callout itself.
 
-PRECISION RULE: Quality matters far more than quantity. Only report sign callouts you can actually see and confidently identify in the image. A page with few or no actual sign callouts is perfectly valid — do not invent or infer entries. Set confidence_score ≥ 0.70 for all reported items; if you cannot reach 0.70 confidence, omit that entry entirely. Hallucinated or guessed entries cause serious harm to the workflow.
+LEGEND / SYMBOL KEY EXCLUSION (critical):
+- Architectural plans often contain a "Life Safety Legend", "Signage Legend", "Symbol Key", or "Drawing Legend" box — typically a bordered table in the corner of the page that lists what each symbol means.
+- DO NOT extract any entries from these legend or symbol-key boxes. They are definitions, not actual sign locations.
+- Only extract callouts that point to a real physical location on the floor plan with a leader line or bubble label. A callout that is inside a bordered legend table is a definition — skip it.
+- If an entire page appears to be a legend or symbol-key sheet (no actual floor plan rooms visible), return an empty array for that page.
 
-Return ONLY a valid JSON array. No markdown fences, no explanation, no commentary.`;
+IMPORTANT: Return ONLY the JSON array. No markdown fences, no explanation.`;
 
 const ImageSignRowSchema = z.object({
   sheet_number: z.string().nullable().optional().default(null),
@@ -1266,20 +1258,8 @@ const ImageSignRowSchema = z.object({
     .optional()
     .default(null)
     .transform((v) => (v !== null && v !== undefined && typeof v === "number" ? Math.round(v) : (v as number | null))),
-  // Accept 0-1 (normalized) OR 0-100 (percentage) — normalize either to 0-1.
-  // Clamp to [0, 1] so pixel-coord outliers don't break validation.
-  x_position: z
-    .number()
-    .nullable()
-    .optional()
-    .default(null)
-    .transform((v) => (v === null || v === undefined ? null : v > 1 && v <= 100 ? v / 100 : Math.min(1, Math.max(0, v)))),
-  y_position: z
-    .number()
-    .nullable()
-    .optional()
-    .default(null)
-    .transform((v) => (v === null || v === undefined ? null : v > 1 && v <= 100 ? v / 100 : Math.min(1, Math.max(0, v)))),
+  x_position: z.number().min(0).max(1).nullable().optional().default(null),
+  y_position: z.number().min(0).max(1).nullable().optional().default(null),
   confidence_score: z.number().min(0).max(1).optional(),
   review_flag: z.boolean().optional(),
 });
@@ -1357,279 +1337,6 @@ function parseImageExtractionResponse(raw: string, source: string): ExtractedSig
 const MAX_INLINE_PDF_BYTES = 19 * 1024 * 1024; // 19 MB — leaves headroom for base64 overhead
 // Max pages per image-extraction batch (keeps each batch under 20 MB for most plans)
 const IMAGE_BATCH_PAGES = 25;
-
-// ─── VERIFICATION-MODE VISUAL PASS ────────────────────────────────────────────
-// Instead of asking Gemini to independently discover all signs (hallucination-
-// prone), we give it the text-pass results and ask:
-//   TASK 1 — Verify: Can you see each of these signs in the image?
-//   TASK 2 — Discover: Any high-confidence signs clearly not in the list?
-
-export interface TextContextSign {
-  sign_identifier: string | null;
-  location: string | null;
-  sign_type: string | null;
-  sheet_number: string | null;
-  page_number: number | null;
-}
-
-export interface VerificationItem {
-  sign_identifier: string | null;
-  location: string | null;
-  page_number: number | null;
-  status: "CONFIRMED" | "UNCERTAIN" | "NOT_FOUND";
-  confidence: number;
-}
-
-export interface VerifyResult {
-  verifications: VerificationItem[];
-  discoveries: ExtractedSignRow[];
-  inputTokens: number;
-  outputTokens: number;
-  skipped: boolean;
-  skipReason?: string;
-}
-
-const VerificationItemSchema = z.object({
-  sign_identifier: z.string().nullable().optional().default(null),
-  location: z.string().nullable().optional().default(null),
-  page_number: z
-    .union([z.number(), z.string().transform((s) => { const n = parseInt(s, 10); return isNaN(n) ? null : n; }), z.null()])
-    .optional()
-    .default(null),
-  status: z.enum(["CONFIRMED", "UNCERTAIN", "NOT_FOUND"]).default("UNCERTAIN"),
-  confidence: z.number().min(0).max(1).optional().default(0.7),
-});
-
-const DiscoveryItemSchema = z.object({
-  sheet_number: z.string().nullable().optional().default(null),
-  sign_identifier: z.string().nullable().optional().default(null),
-  sign_type: z.string().nullable().optional().default(null),
-  location: z.string().nullable().optional().default(null),
-  detail_reference: z.string().nullable().optional().default(null),
-  message_content: z.string().nullable().optional().default(null),
-  page_number: z
-    .union([z.number(), z.string().transform((s) => { const n = parseInt(s, 10); return isNaN(n) ? null : n; }), z.null()])
-    .optional()
-    .default(null),
-  confidence: z.number().min(0).max(1).optional().default(0.8),
-});
-
-const VerificationResponseSchema = z.object({
-  verifications: z.array(VerificationItemSchema).default([]),
-  discoveries: z.array(DiscoveryItemSchema).default([]),
-});
-
-function buildVerificationPrompt(textSignsByPage: Map<number, TextContextSign[]>): string {
-  const pages = Array.from(textSignsByPage.entries()).sort(([a], [b]) => a - b);
-  const signListLines: string[] = [];
-
-  for (const [pageNum, signs] of pages) {
-    if (signs.length === 0) continue;
-    signListLines.push(`\n--- PAGE ${pageNum} ---`);
-    for (const s of signs) {
-      const parts: string[] = [];
-      if (s.sign_identifier) parts.push(`ID: "${s.sign_identifier}"`);
-      if (s.sign_type) parts.push(`Type: ${s.sign_type}`);
-      if (s.location) parts.push(`Location: "${s.location}"`);
-      signListLines.push(`  • ${parts.join(" | ")}`);
-    }
-  }
-
-  const totalSigns = Array.from(textSignsByPage.values()).reduce((n, v) => n + v.length, 0);
-
-  return `You are verifying architectural floor plan signs found by a text-extraction pass.
-
-TEXT EXTRACTION FOUND ${totalSigns} SIGN(S) ACROSS ${pages.length} PAGE(S):
-${signListLines.join("\n")}
-
-TASK 1 — VERIFY (required for every sign listed above):
-For each sign, look at the corresponding page image and determine:
-• CONFIRMED  — You can clearly see a sign callout, identifier, or room label at/near this location
-• UNCERTAIN  — Something is probably there but you cannot read it clearly
-• NOT_FOUND  — You genuinely cannot see any evidence of this sign on the image
-
-TASK 2 — DISCOVER (optional, high-confidence only):
-Are there any clearly visible sign callouts in the images that are NOT in the list above?
-Only include discoveries where you are ≥ 0.80 confident it is a real, placed sign callout (not a legend definition or symbol key entry). If uncertain, omit it. False positives are worse than missed signs.
-
-Return ONLY valid JSON in exactly this format — no markdown fences, no extra text:
-{
-  "verifications": [
-    {"sign_identifier": "B101", "location": "LOBBY", "page_number": 1, "status": "CONFIRMED", "confidence": 0.95},
-    {"sign_identifier": "B102", "location": "TENANT STOR", "page_number": 1, "status": "CONFIRMED", "confidence": 0.90}
-  ],
-  "discoveries": [
-    {"sheet_number": "A1", "sign_identifier": "EX-1", "sign_type": "Exit", "location": "Stair A", "page_number": 1, "confidence": 0.85}
-  ]
-}`;
-}
-
-function parseVerificationResponse(raw: string, label: string): { verifications: VerificationItem[]; discoveries: ExtractedSignRow[] } {
-  let cleaned = raw.trim();
-  const fenceMatch = cleaned.match(/```(?:json)?\n?([\s\S]*?)```/);
-  if (fenceMatch) cleaned = fenceMatch[1]!.trim();
-
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(cleaned);
-  } catch {
-    logger.warn({ label, raw: cleaned.slice(0, 500) }, "Verification response not valid JSON — trying to extract JSON object");
-    const objMatch = cleaned.match(/\{[\s\S]*\}/);
-    if (!objMatch) {
-      logger.error({ label }, "Could not extract JSON from verification response");
-      return { verifications: [], discoveries: [] };
-    }
-    try {
-      parsed = JSON.parse(objMatch[0]);
-    } catch {
-      logger.error({ label }, "Failed to parse extracted JSON from verification response");
-      return { verifications: [], discoveries: [] };
-    }
-  }
-
-  const result = VerificationResponseSchema.safeParse(parsed);
-  if (!result.success) {
-    logger.warn({ label, errors: result.error.flatten() }, "Verification schema validation failed — using defaults");
-    return { verifications: [], discoveries: [] };
-  }
-
-  const verifications: VerificationItem[] = result.data.verifications.map((v) => ({
-    sign_identifier: v.sign_identifier,
-    location: v.location,
-    page_number: v.page_number as number | null,
-    status: v.status,
-    confidence: v.confidence,
-  }));
-
-  const discoveries: ExtractedSignRow[] = result.data.discoveries
-    .filter((d) => (d.confidence ?? 0) >= 0.80)
-    .map((d) => ({
-      sheet_number: d.sheet_number ?? null,
-      detail_reference: d.detail_reference ?? null,
-      sign_type: d.sign_type ?? null,
-      sign_identifier: d.sign_identifier ?? null,
-      quantity: null,
-      location: d.location ?? null,
-      dimensions: null,
-      mounting_type: null,
-      finish_color: null,
-      illumination: null,
-      materials: null,
-      message_content: d.message_content ?? null,
-      notes: "Discovered by visual verification pass",
-      page_number: d.page_number as number | null,
-      x_pos: null,
-      y_pos: null,
-      confidence_score: Math.min(0.85, d.confidence ?? 0.80),
-      review_flag: true, // visual-only discoveries always need review
-    }));
-
-  logger.info({ label, verifications: verifications.length, confirmed: verifications.filter(v => v.status === "CONFIRMED").length, discoveries: discoveries.length }, "Verification response parsed");
-  return { verifications, discoveries };
-}
-
-export async function extractSignsFromPdfImageVerify(
-  filePath: string,
-  ai: GeminiAI,
-  textSignsByPage: Map<number, TextContextSign[]>
-): Promise<VerifyResult> {
-  if (textSignsByPage.size === 0) {
-    return { verifications: [], discoveries: [], inputTokens: 0, outputTokens: 0, skipped: true, skipReason: "No text signs to verify" };
-  }
-
-  let fileBuffer: Buffer;
-  try {
-    fileBuffer = await fs.readFile(filePath);
-  } catch (err) {
-    logger.error({ err, filePath }, "Verification: could not read PDF file");
-    return { verifications: [], discoveries: [], inputTokens: 0, outputTokens: 0, skipped: true, skipReason: "Could not read PDF file" };
-  }
-
-  const fileName = filePath.split("/").pop() ?? "file.pdf";
-  const prompt = buildVerificationPrompt(textSignsByPage);
-
-  if (fileBuffer.length <= MAX_INLINE_PDF_BYTES) {
-    const pdfBase64 = fileBuffer.toString("base64");
-    const label = `verify-${fileName}`;
-    logger.info({ fileName, sizeBytes: fileBuffer.length, totalSigns: Array.from(textSignsByPage.values()).reduce((n, v) => n + v.length, 0) }, "Visual verification: single-pass");
-    try {
-      const { text, inputTokens, outputTokens } = await callGeminiMultimodal(prompt, pdfBase64, ai, label);
-      const { verifications, discoveries } = parseVerificationResponse(text, label);
-      logger.info({ verifications: verifications.length, discoveries: discoveries.length, inputTokens, outputTokens }, "Visual verification complete (single-pass)");
-      return { verifications, discoveries, inputTokens, outputTokens, skipped: false };
-    } catch (err) {
-      logger.error({ err, fileName }, "Visual verification call failed");
-      return { verifications: [], discoveries: [], inputTokens: 0, outputTokens: 0, skipped: true, skipReason: "Gemini call failed" };
-    }
-  }
-
-  // Large PDF: batch by pages, filter text signs for each batch
-  logger.info({ fileName, sizeBytes: fileBuffer.length }, "Visual verification: PDF too large — splitting into batches");
-  let { PDFDocument } = await import("pdf-lib");
-  let srcDoc: import("pdf-lib").PDFDocument;
-  try {
-    srcDoc = await PDFDocument.load(fileBuffer, { ignoreEncryption: true });
-  } catch (err) {
-    logger.error({ err, fileName }, "Verification: pdf-lib failed to load PDF");
-    return { verifications: [], discoveries: [], inputTokens: 0, outputTokens: 0, skipped: true, skipReason: "PDF could not be parsed" };
-  }
-
-  const totalPages = srcDoc.getPageCount();
-  const allVerifications: VerificationItem[] = [];
-  const allDiscoveries: ExtractedSignRow[] = [];
-  let totalIn = 0;
-  let totalOut = 0;
-
-  for (let startPage = 0; startPage < totalPages; startPage += IMAGE_BATCH_PAGES) {
-    const endPage = Math.min(startPage + IMAGE_BATCH_PAGES, totalPages);
-    const pageIndices = Array.from({ length: endPage - startPage }, (_, i) => startPage + i);
-
-    // Build a sub-map containing only signs for these pages (1-indexed)
-    const batchMap = new Map<number, TextContextSign[]>();
-    for (let p = startPage + 1; p <= endPage; p++) {
-      const signs = textSignsByPage.get(p);
-      if (signs && signs.length > 0) batchMap.set(p, signs);
-    }
-    if (batchMap.size === 0) continue; // no signs on these pages — skip visual call
-
-    let batchPdfBytes: Uint8Array;
-    try {
-      const batchDoc = await PDFDocument.create();
-      const copiedPages = await batchDoc.copyPages(srcDoc, pageIndices);
-      for (const page of copiedPages) batchDoc.addPage(page);
-      batchPdfBytes = await batchDoc.save();
-    } catch (err) {
-      logger.warn({ err, startPage, endPage }, "Verification: failed to create batch PDF — skipping batch");
-      continue;
-    }
-
-    if (batchPdfBytes.length > MAX_INLINE_PDF_BYTES) {
-      logger.warn({ startPage, endPage }, "Verification: batch too large — skipping");
-      continue;
-    }
-
-    const batchPrompt = buildVerificationPrompt(batchMap);
-    const pdfBase64 = Buffer.from(batchPdfBytes).toString("base64");
-    const label = `verify-${fileName}-p${startPage + 1}-${endPage}`;
-
-    try {
-      const { text, inputTokens, outputTokens } = await callGeminiMultimodal(batchPrompt, pdfBase64, ai, label);
-      const { verifications, discoveries } = parseVerificationResponse(text, label);
-      // Offset page numbers for discoveries back to full-doc coordinates
-      for (const d of discoveries) {
-        if (d.page_number != null) d.page_number = d.page_number + startPage;
-      }
-      allVerifications.push(...verifications);
-      allDiscoveries.push(...discoveries);
-      totalIn += inputTokens;
-      totalOut += outputTokens;
-    } catch (err) {
-      logger.warn({ err, label }, "Verification batch call failed — skipping batch");
-    }
-  }
-
-  return { verifications: allVerifications, discoveries: allDiscoveries, inputTokens: totalIn, outputTokens: totalOut, skipped: false };
-}
 
 export async function extractSignsFromPdfImage(
   filePath: string,
@@ -1939,225 +1646,4 @@ export async function extractSignsFromPdf(
   );
 
   return { rows: allRows, pageCount: numPages, rawText, inputTokens: totalInputTokens, outputTokens: totalOutputTokens, pageStats };
-}
-
-// ─── VISUAL LOCATE ──────────────────────────────────────────────────────────
-
-export interface VisualLocateCandidate {
-  x: number;
-  y: number;
-  description: string;
-  confidence: number;
-}
-
-export interface VisualLocateResult {
-  signId: string;
-  candidates: VisualLocateCandidate[];
-  /** Origin of the placement result: "vector" = deterministic pipeline, "gemini" = AI fallback */
-  source?: "vector" | "gemini";
-}
-
-const VISUAL_LOCATE_PROMPT = `You are looking at a single architectural floor plan page. Your task is to find the exact entrance or door opening location for each residential unit sign listed below.
-
-The coordinates you return must be normalized values relative to the PAGE (not the paper):
-  x = 0.0 means the left edge,  x = 1.0 means the right edge
-  y = 0.0 means the top edge,   y = 1.0 means the bottom edge
-
-Each sign entry includes:
-- signId: unique identifier you MUST copy exactly into your response
-- location: the full sign location string (e.g. "UNIT 1A 417B")
-- typeToken: the unit type part (e.g. "UNIT 1A")
-- roomNumber: the specific room/unit number (e.g. "417B")
-- anchorHint: approximate (x,y) of the annotation-band label for that room — the ACTUAL door is physically nearby but at a different y-position; use this as a search anchor
-
-Signs to locate:
-SIGNS_PLACEHOLDER
-
-Return a JSON array with exactly one object per sign:
-[
-  {
-    "signId": "<exact signId from input — do not modify>",
-    "candidates": [
-      {"x": 0.45, "y": 0.32, "description": "Door gap at unit 417B in east corridor", "confidence": 0.85}
-    ]
-  }
-]
-
-Rules:
-- Return exactly one object per signId, even if you return empty candidates.
-- Provide up to 3 candidates per sign ordered by confidence (highest first).
-- x and y MUST be normalized floats in [0.0, 1.0].
-- Focus on the door threshold/opening, not the label position.
-- If no door is visible for a sign, return an empty candidates array.
-- Return ONLY valid JSON. No markdown, no code blocks, no explanation.`;
-
-export interface VisualLocateSign {
-  signId: string;
-  signType?: string | null;
-  location?: string | null;
-  signIdentifier?: string | null;
-  roomNumber?: string | null;
-  typeToken?: string | null;
-  anchorX?: number | null;
-  anchorY?: number | null;
-}
-
-/** Internal: call Gemini to locate doors for a subset of signs on a PDF page. */
-async function _callGeminiForDoors(
-  filePath: string,
-  pageNum: number,
-  signs: VisualLocateSign[],
-  ai: GeminiAI,
-): Promise<VisualLocateResult[]> {
-  if (signs.length === 0) return [];
-  try {
-    const fileBuffer = await fs.readFile(filePath);
-    const { PDFDocument } = await import("pdf-lib");
-    const srcDoc = await PDFDocument.load(fileBuffer, { ignoreEncryption: true });
-    const pageIdx = pageNum - 1;
-    if (pageIdx < 0 || pageIdx >= srcDoc.getPageCount()) {
-      return signs.map((s) => ({ signId: s.signId, candidates: [] }));
-    }
-    const pageDoc = await PDFDocument.create();
-    const [copiedPage] = await pageDoc.copyPages(srcDoc, [pageIdx]);
-    pageDoc.addPage(copiedPage);
-    const pageBytes = await pageDoc.save();
-    const pdfBase64 = Buffer.from(pageBytes).toString("base64");
-
-    const signsJson = JSON.stringify(signs.map((s) => ({
-      signId: s.signId,
-      location: s.location ?? "",
-      typeToken: s.typeToken ?? "",
-      roomNumber: s.roomNumber ?? "",
-      anchorHint: s.anchorX != null && s.anchorY != null
-        ? `annotation label near (${s.anchorX.toFixed(3)}, ${s.anchorY.toFixed(3)})`
-        : "not available",
-    })));
-    const prompt = VISUAL_LOCATE_PROMPT.replace("SIGNS_PLACEHOLDER", signsJson);
-
-    let raw = "";
-    try {
-      const { text } = await callGeminiMultimodal(prompt, pdfBase64, ai, `visual-locate-p${pageNum}`);
-      raw = text;
-    } catch (err) {
-      logger.error({ err }, "_callGeminiForDoors: Gemini call failed");
-    }
-
-    if (!raw) return signs.map((s) => ({ signId: s.signId, candidates: [] }));
-
-    try {
-      const cleaned = raw.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
-      const parsed = JSON.parse(cleaned) as VisualLocateResult[];
-      if (!Array.isArray(parsed)) throw new Error("Response is not an array");
-      const resultMap = new Map(parsed.map((r) => [r.signId, r]));
-      return signs.map((s) => {
-        const entry = resultMap.get(s.signId);
-        if (!entry) return { signId: s.signId, candidates: [] };
-        const validCandidates = (entry.candidates ?? []).filter(
-          (c) => typeof c.x === "number" && typeof c.y === "number" &&
-            c.x >= 0 && c.x <= 1 && c.y >= 0 && c.y <= 1,
-        ).slice(0, 3);
-        return { signId: s.signId, candidates: validCandidates };
-      });
-    } catch (err) {
-      logger.error({ err, raw: raw.slice(0, 300) }, "_callGeminiForDoors: JSON parse failed");
-      return signs.map((s) => ({ signId: s.signId, candidates: [] }));
-    }
-  } catch (err) {
-    logger.error({ err }, "_callGeminiForDoors: failed");
-    return signs.map((s) => ({ signId: s.signId, candidates: [] }));
-  }
-}
-
-/**
- * Orchestrate door placement for residential unit signs.
- *
- * Strategy:
- *  1. Build a page-level door map using the deterministic vector pipeline (once per page).
- *  2. Match each sign's room number to its nearest door arc.
- *  3. For signs that got confident vector matches → return directly (no AI call).
- *  4. For unresolved signs (vector page but no match, OR raster page) → call Gemini.
- *  5. If Gemini also fails → return empty candidates.
- *
- * Returns { results, method } where method is "vector" | "gemini" | "hybrid".
- */
-export async function visualLocateDoors(
-  filePath: string,
-  pageNum: number,
-  signs: VisualLocateSign[],
-  ai: GeminiAI,
-  fileId?: string,
-): Promise<{ results: VisualLocateResult[]; method: "vector" | "gemini" | "hybrid" }> {
-  if (signs.length === 0) return { results: [], method: "vector" };
-
-  // ── Step 1: Try deterministic vector pipeline ──────────────────────────────
-  const usableFileId = fileId ?? filePath; // fallback key for cache
-
-  let vectorResults: VisualLocateResult[] = signs.map((s) => ({ signId: s.signId, candidates: [] }));
-  let isVector = false;
-
-  try {
-    // Extract text phrases first — needed to build the labels index inside buildPageDoorMap.
-    // Both operations use internal caches so this sequential call is cheap on repeat invocations.
-    const pageWords = await extractPagePhrases(filePath, usableFileId, pageNum);
-    const doorMap = await buildPageDoorMap(filePath, usableFileId, pageNum, pageWords);
-
-    isVector = doorMap.isVector;
-
-    if (isVector) {
-      const matches = matchSignsToDoors(null, doorMap, signs);
-      vectorResults = matches.map((m) => ({ signId: m.signId, candidates: m.candidates }));
-
-      logger.info({
-        pageNum,
-        isVector,
-        doorsFound: doorMap.doors.length,
-        signsTotal: signs.length,
-        signsResolved: matches.filter((m) => m.candidates.length > 0).length,
-      }, "visual-locate: vector pass complete");
-    }
-  } catch (err) {
-    logger.warn({ err, pageNum }, "visual-locate: vector pass failed, falling back to Gemini");
-  }
-
-  // Determine which signs are fully resolved by the vector pass
-  const vectorResolved = new Set<string>();
-  for (const r of vectorResults) {
-    if (r.candidates.length > 0) vectorResolved.add(r.signId);
-  }
-
-  // Signs that still need Gemini (no vector match, or page is raster)
-  const unresolved = signs.filter((s) => !vectorResolved.has(s.signId));
-
-  if (unresolved.length === 0) {
-    // All signs matched by the vector pipeline — no Gemini call needed
-    const tagged: VisualLocateResult[] = vectorResults.map((r) => ({ ...r, source: "vector" as const }));
-    return { results: tagged, method: "vector" };
-  }
-
-  // ── Step 2: Gemini fallback for unresolved signs ───────────────────────────
-  logger.info({
-    pageNum,
-    unresolvedCount: unresolved.length,
-    reason: isVector ? "vector_no_door_found" : "raster_page",
-  }, "visual-locate: falling back to Gemini for unresolved signs");
-
-  const geminiResults = await _callGeminiForDoors(filePath, pageNum, unresolved, ai);
-
-  // ── Step 3: Merge results (tag each result with its origin) ───────────────
-  const geminiById = new Map(geminiResults.map((r) => [r.signId, r]));
-  const finalResults: VisualLocateResult[] = signs.map((s) => {
-    if (vectorResolved.has(s.signId)) {
-      const base = vectorResults.find((r) => r.signId === s.signId) ?? { signId: s.signId, candidates: [] };
-      return { ...base, source: "vector" as const };
-    }
-    const base = geminiById.get(s.signId) ?? { signId: s.signId, candidates: [] };
-    return { ...base, source: "gemini" as const };
-  });
-
-  // Method reflects actual execution path regardless of whether Gemini produced results.
-  // Gemini was invoked (step 2) so the path is either "hybrid" (vector also helped) or "gemini".
-  const method = vectorResolved.size > 0 ? "hybrid" : "gemini";
-
-  return { results: finalResults, method };
 }

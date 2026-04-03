@@ -1,6 +1,5 @@
 import { useState, useCallback, useRef } from "react";
 import { useLocation } from "wouter";
-import { apiFetch } from "@/lib/apiClient";
 import { AppShell } from "@/components/layout/Shell";
 import {
   Upload,
@@ -196,7 +195,7 @@ export default function Training() {
     try {
       // Fake stage transition: after ~3s move to "verifying" label
       const stageTimer = setTimeout(() => setUploadStage("verifying"), 3000);
-      const res = await apiFetch("/api/training", {
+      const res = await fetch("/api/training", {
         method: "POST",
         body: form,
       });

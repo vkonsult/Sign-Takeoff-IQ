@@ -1,7 +1,6 @@
 import { pgTable, uuid, text, integer, timestamp, pgEnum } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod/v4";
-import { organizationsTable } from "./organizations";
 
 export const jobStatusEnum = pgEnum("job_status", [
   "pending",
@@ -12,7 +11,6 @@ export const jobStatusEnum = pgEnum("job_status", [
 
 export const jobsTable = pgTable("jobs", {
   id: uuid("id").primaryKey().defaultRandom(),
-  organizationId: uuid("organization_id").references(() => organizationsTable.id, { onDelete: "set null" }),
   name: text("name"),
   status: jobStatusEnum("status").notNull().default("pending"),
   fileCount: integer("file_count").notNull().default(0),

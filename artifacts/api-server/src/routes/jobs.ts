@@ -1,112 +1,30 @@
-import { Router, type IRouter, type Request, type Response } from "express";
-import { eq, desc, inArray, and, or, ne, isNull, isNotNull, not, SQL, sql, getTableColumns } from "drizzle-orm";
+import { Router, type IRouter } from "express";
+import { eq, desc, inArray, and, or, ne, isNull, isNotNull, not } from "drizzle-orm";
 import { db } from "@workspace/db";
 import {
   jobsTable,
   jobFilesTable,
   extractedSignsTable,
-  activityLogsTable,
 } from "@workspace/db";
 import { buildExcelExport } from "../lib/export";
 import { getJobExportPath } from "../lib/storage";
-import { extractPagePhrases } from "../lib/pdf-words";
 import { processJob } from "../lib/process-job";
-import { extractSignsFromPdfImage, extractSignsFromPdf, visualLocateDoors } from "../lib/extraction";
+import { extractSignsFromPdfImage, extractSignsFromPdf } from "../lib/extraction";
 import { ai } from "@workspace/integrations-gemini-ai";
 import fs from "fs/promises";
 import fsSync from "fs";
 import { z } from "zod/v4";
-import { requireRole } from "../middlewares/authMiddleware";
-import { recordActivity } from "../lib/record-activity";
 
 const router: IRouter = Router();
 
-function orgFilter(req: Request): SQL | undefined | "FORBIDDEN" {
-  const user = req.authUser;
-  if (!user || user.isSuperAdmin) return undefined;
-  if (user.organizationId) return eq(jobsTable.organizationId, user.organizationId);
-  return "FORBIDDEN";
-}
-
-async function getJobWithOrgCheck(req: Request, res: Response, jobId: string) {
-  const user = req.authUser;
-  if (user && !user.isSuperAdmin && !user.organizationId) {
-    res.status(403).json({ error: "No organization context" });
-    return null;
-  }
-  const [job] = await db.select().from(jobsTable).where(eq(jobsTable.id, jobId));
-  if (!job) {
-    res.status(404).json({ error: "Job not found" });
-    return null;
-  }
-  if (user && !user.isSuperAdmin) {
-    if (job.organizationId !== user.organizationId) {
-      res.status(403).json({ error: "Access denied" });
-      return null;
-    }
-  }
-  return job;
-}
-
 router.get("/jobs", async (req, res) => {
   try {
-    const filter = orgFilter(req);
-    if (filter === "FORBIDDEN") {
-      res.status(403).json({ error: "No organization context" });
-      return;
-    }
     const jobs = await db
-      .select({
-        ...getTableColumns(jobsTable),
-        lastActivityAt: sql<string | null>`(SELECT created_at FROM activity_logs WHERE job_id = ${jobsTable.id} ORDER BY created_at DESC LIMIT 1)`.as("last_activity_at"),
-        lastActivityUser: sql<string | null>`(SELECT user_name FROM activity_logs WHERE job_id = ${jobsTable.id} ORDER BY created_at DESC LIMIT 1)`.as("last_activity_user"),
-        lastActivityInitials: sql<string | null>`(SELECT user_initials FROM activity_logs WHERE job_id = ${jobsTable.id} ORDER BY created_at DESC LIMIT 1)`.as("last_activity_initials"),
-        lastActivityType: sql<string | null>`(SELECT event_type FROM activity_logs WHERE job_id = ${jobsTable.id} ORDER BY created_at DESC LIMIT 1)`.as("last_activity_type"),
-      })
+      .select()
       .from(jobsTable)
-      .where(filter)
       .orderBy(desc(jobsTable.createdAt));
 
-    const jobIds = jobs.map((j) => j.id);
-
-    // DISTINCT ON (job_id, user_id) gets the most recent event per user per job in one query.
-    // JS then takes the top 2 per job (already deduplicated).
-    const recentUsersByJob = new Map<string, { userName: string; userInitials: string; at: Date; eventType: string }[]>();
-    if (jobIds.length > 0) {
-      const perUserRows = await db
-        .selectDistinctOn([activityLogsTable.jobId, activityLogsTable.userId], {
-          jobId: activityLogsTable.jobId,
-          userId: activityLogsTable.userId,
-          userName: activityLogsTable.userName,
-          userInitials: activityLogsTable.userInitials,
-          at: activityLogsTable.createdAt,
-          eventType: activityLogsTable.eventType,
-        })
-        .from(activityLogsTable)
-        .where(inArray(activityLogsTable.jobId, jobIds))
-        .orderBy(activityLogsTable.jobId, activityLogsTable.userId, desc(activityLogsTable.createdAt));
-
-      // Sort by most-recently-active across all users, then pick top 2 per job
-      perUserRows.sort((a, b) => b.at.getTime() - a.at.getTime());
-      for (const row of perUserRows) {
-        if (!row.jobId) continue;
-        const list = recentUsersByJob.get(row.jobId) ?? [];
-        if (list.length < 2) {
-          list.push({ userName: row.userName, userInitials: row.userInitials, at: row.at, eventType: row.eventType });
-          recentUsersByJob.set(row.jobId, list);
-        }
-      }
-    }
-
-    const enriched = jobs.map((j) => {
-      const users = recentUsersByJob.get(j.id) ?? [];
-      return {
-        ...j,
-        recentUsers: users.map((u) => ({ userName: u.userName, userInitials: u.userInitials, at: u.at, eventType: u.eventType })),
-      };
-    });
-
-    res.json({ jobs: enriched });
+    res.json({ jobs });
   } catch (err) {
     req.log.error({ err }, "Failed to list jobs");
     res.status(500).json({ error: "Failed to list jobs" });
@@ -121,9 +39,7 @@ router.delete("/jobs/:jobId", async (req, res) => {
   }
 
   try {
-    const job = await getJobWithOrgCheck(req, res, jobId);
-    if (!job) return;
-
+    // Collect stored file paths before cascade-delete removes the rows
     const files = await db
       .select({ storedPath: jobFilesTable.storedPath })
       .from(jobFilesTable)
@@ -139,6 +55,7 @@ router.delete("/jobs/:jobId", async (req, res) => {
       return;
     }
 
+    // Best-effort: clean up uploaded PDF files from disk
     for (const f of files) {
       try {
         await fs.unlink(f.storedPath);
@@ -166,35 +83,21 @@ router.delete("/jobs", async (req, res) => {
 
   const ids = jobIds as string[];
 
-  const user = req.authUser;
-  if (user && !user.isSuperAdmin && !user.organizationId) {
-    res.status(403).json({ error: "No organization context" });
-    return;
-  }
-
   try {
-    const orgCondition = user && !user.isSuperAdmin
-      ? eq(jobsTable.organizationId, user.organizationId)
-      : undefined;
-
-    // Collect file paths BEFORE deleting so ON DELETE CASCADE doesn't wipe them first.
-    const filesToDelete = await db
-      .select({ storedPath: jobFilesTable.storedPath, jobId: jobFilesTable.jobId })
+    // Collect all stored PDF paths before deletion
+    const files = await db
+      .select({ storedPath: jobFilesTable.storedPath })
       .from(jobFilesTable)
-      .innerJoin(jobsTable, eq(jobFilesTable.jobId, jobsTable.id))
-      .where(and(inArray(jobsTable.id, ids), orgCondition));
+      .where(inArray(jobFilesTable.jobId, ids));
 
-    // Delete jobs — org-scoped; only authorized rows are removed.
+    // Cascade delete handles extracted_signs and job_files rows
     const deleted = await db
       .delete(jobsTable)
-      .where(and(inArray(jobsTable.id, ids), orgCondition))
+      .where(inArray(jobsTable.id, ids))
       .returning({ id: jobsTable.id });
 
-    const deletedIds = new Set(deleted.map((r) => r.id));
-
-    // Only unlink disk files for jobs that were actually deleted.
-    for (const f of filesToDelete) {
-      if (!deletedIds.has(f.jobId)) continue;
+    // Best-effort: clean up PDF files from disk
+    for (const f of files) {
       try {
         await fs.unlink(f.storedPath);
       } catch {
@@ -218,8 +121,11 @@ router.get("/jobs/:jobId", async (req, res) => {
   }
 
   try {
-    const job = await getJobWithOrgCheck(req, res, jobId);
-    if (!job) return;
+    const [job] = await db.select().from(jobsTable).where(eq(jobsTable.id, jobId));
+    if (!job) {
+      res.status(404).json({ error: "Job not found" });
+      return;
+    }
 
     const files = await db
       .select()
@@ -280,34 +186,8 @@ router.get("/jobs/:jobId", async (req, res) => {
     const combinedOutputTokens = (job.outputTokens ?? 0) + (job.imageOutputTokens ?? 0);
     const combinedCost = combinedInputTokens * COST_INPUT + combinedOutputTokens * COST_OUTPUT;
 
-    const [lastScanRow] = await db
-      .select({
-        at: activityLogsTable.createdAt,
-        userName: activityLogsTable.userName,
-        userInitials: activityLogsTable.userInitials,
-      })
-      .from(activityLogsTable)
-      .where(and(eq(activityLogsTable.jobId, jobId), eq(activityLogsTable.eventType, "scan_run")))
-      .orderBy(desc(activityLogsTable.createdAt))
-      .limit(1);
-
-    const [lastEditRow] = await db
-      .select({
-        at: activityLogsTable.createdAt,
-        userName: activityLogsTable.userName,
-        userInitials: activityLogsTable.userInitials,
-      })
-      .from(activityLogsTable)
-      .where(and(eq(activityLogsTable.jobId, jobId), eq(activityLogsTable.eventType, "sign_updated")))
-      .orderBy(desc(activityLogsTable.createdAt))
-      .limit(1);
-
-    recordActivity(req, "job_opened", jobId);
-
     res.json({
       job,
-      lastScan: lastScanRow ?? null,
-      lastEdit: lastEditRow ?? null,
       files: files.map((f) => ({
         id: f.id,
         originalName: f.originalName,
@@ -325,6 +205,8 @@ router.get("/jobs/:jobId", async (req, res) => {
         outputTokens: combinedOutputTokens,
         totalCost: combinedCost,
       },
+      // All signs that have x/y coordinates (includes image-pass signs);
+      // used by floor-plan marker overlays and "Export Marked PDF".
       markerSigns,
     });
   } catch (err) {
@@ -351,9 +233,6 @@ router.patch("/jobs/:jobId", async (req, res) => {
   }
 
   try {
-    const job = await getJobWithOrgCheck(req, res, jobId);
-    if (!job) return;
-
     const [updated] = await db
       .update(jobsTable)
       .set({ name: parsed.data.name, updatedAt: new Date() })
@@ -381,8 +260,11 @@ router.post("/jobs/:jobId/process", async (req, res) => {
   }
 
   try {
-    const job = await getJobWithOrgCheck(req, res, jobId);
-    if (!job) return;
+    const [job] = await db.select().from(jobsTable).where(eq(jobsTable.id, jobId));
+    if (!job) {
+      res.status(404).json({ error: "Job not found" });
+      return;
+    }
 
     if (job.status === "processing") {
       res.status(409).json({ error: "Job is already processing" });
@@ -394,8 +276,6 @@ router.post("/jobs/:jobId/process", async (req, res) => {
 
     const [updated] = await db.select().from(jobsTable).where(eq(jobsTable.id, jobId));
     const extractedCount = (await db.select().from(extractedSignsTable).where(eq(extractedSignsTable.jobId, jobId))).length;
-    recordActivity(req, "scan_run", jobId);
-
     res.json({
       success: true,
       status: updated?.status,
@@ -423,8 +303,11 @@ router.post("/jobs/:jobId/compare", async (req, res) => {
   }
 
   try {
-    const job = await getJobWithOrgCheck(req, res, jobId);
-    if (!job) return;
+    const [job] = await db.select().from(jobsTable).where(eq(jobsTable.id, jobId));
+    if (!job) {
+      res.status(404).json({ error: "Job not found" });
+      return;
+    }
 
     if (job.status !== "completed") {
       res.status(422).json({ error: "Job must be completed before running comparison" });
@@ -726,9 +609,6 @@ router.get("/jobs/:jobId/files/:fileId/pdf", async (req, res) => {
   }
 
   try {
-    const _job = await getJobWithOrgCheck(req, res, jobId);
-    if (!_job) return;
-
     const [file] = await db
       .select()
       .from(jobFilesTable)
@@ -778,49 +658,6 @@ router.get("/jobs/:jobId/files/:fileId/pdf", async (req, res) => {
   }
 });
 
-// ── Word / phrase extraction for marker placement ──────────────────────────
-// Returns text phrases with full bounding boxes (normalised 0–1) for a single
-// page of the uploaded PDF.  Results are cached in memory per (fileId, pageNum).
-router.get("/jobs/:jobId/files/:fileId/pages/:pageNum/words", async (req, res) => {
-  const { jobId, fileId, pageNum } = req.params;
-  const pageNumInt = parseInt(pageNum ?? "", 10);
-
-  if (!jobId || !fileId || isNaN(pageNumInt) || pageNumInt < 1) {
-    res.status(400).json({ error: "Invalid parameters" });
-    return;
-  }
-
-  try {
-    const _job = await getJobWithOrgCheck(req, res, jobId);
-    if (!_job) return;
-
-    const [file] = await db
-      .select()
-      .from(jobFilesTable)
-      .where(eq(jobFilesTable.id, fileId));
-
-    if (!file || file.jobId !== jobId) {
-      res.status(404).json({ error: "File not found" });
-      return;
-    }
-
-    try {
-      await fs.access(file.storedPath);
-    } catch {
-      res.status(404).json({ error: "PDF file not found on disk" });
-      return;
-    }
-
-    const result = await extractPagePhrases(file.storedPath, fileId, pageNumInt);
-
-    res.setHeader("Cache-Control", "private, max-age=300");
-    res.json(result);
-  } catch (err) {
-    req.log.error({ err, fileId, pageNum }, "Failed to extract page words");
-    res.status(500).json({ error: "Failed to extract page words" });
-  }
-});
-
 const CreateSignSchema = z.object({
   jobId: z.string().uuid(),
   jobFileId: z.string().uuid().nullable().optional(),
@@ -841,9 +678,6 @@ router.post("/extracted-signs", async (req, res) => {
   }
 
   try {
-    const _job = await getJobWithOrgCheck(req, res, parsed.data.jobId);
-    if (!_job) return;
-
     const [sign] = await db
       .insert(extractedSignsTable)
       .values({
@@ -871,19 +705,6 @@ router.delete("/extracted-signs/:signId", async (req, res) => {
   }
 
   try {
-    const [existing] = await db
-      .select()
-      .from(extractedSignsTable)
-      .where(eq(extractedSignsTable.id, signId));
-
-    if (!existing) {
-      res.status(404).json({ error: "Sign not found" });
-      return;
-    }
-
-    const _job = await getJobWithOrgCheck(req, res, existing.jobId);
-    if (!_job) return;
-
     const [deleted] = await db
       .delete(extractedSignsTable)
       .where(eq(extractedSignsTable.id, signId))
@@ -920,7 +741,6 @@ const UpdateSignSchema = z.object({
   hidden: z.boolean().optional(),
   xPos: z.number().min(0).max(1).nullable().optional(),
   yPos: z.number().min(0).max(1).nullable().optional(),
-  placementSource: z.enum(["text_match", "vector_match", "gemini_vision", "user_confirmed", "manual"]).nullable().optional(),
 });
 
 router.patch("/extracted-signs/:signId", async (req, res) => {
@@ -947,20 +767,14 @@ router.patch("/extracted-signs/:signId", async (req, res) => {
       return;
     }
 
-    const _job = await getJobWithOrgCheck(req, res, existing.jobId);
-    if (!_job) return;
-
     // Only auto-verify when the user edits actual sign content fields.
     // Status-flag-only updates (hidden, reviewFlag) should not trigger verification.
-    // AI/system placement updates (placementSource present) also skip auto-verify — position
-    // confirmation by the AI is not the same as a human verifying the sign's content.
     const contentFields: (keyof typeof parsed.data)[] = [
       "sheetNumber", "detailReference", "signType", "signIdentifier", "quantity",
       "location", "dimensions", "mountingType", "finishColor", "illumination",
       "materials", "messageContent", "notes", "xPos", "yPos",
     ];
-    const isPlacementUpdate = parsed.data.placementSource !== undefined;
-    const hasContentEdit = !isPlacementUpdate && contentFields.some((f) => parsed.data[f] !== undefined);
+    const hasContentEdit = contentFields.some((f) => parsed.data[f] !== undefined);
     const updatePayload = hasContentEdit
       ? { ...parsed.data, userVerified: true }
       : { ...parsed.data };
@@ -971,95 +785,11 @@ router.patch("/extracted-signs/:signId", async (req, res) => {
       .where(eq(extractedSignsTable.id, signId))
       .returning();
 
-    recordActivity(req, "sign_updated", existing.jobId);
-
     res.json({ sign: updated });
     req.log.info({ signId, userVerified: hasContentEdit }, "Sign updated");
   } catch (err) {
     req.log.error({ err, signId }, "Failed to update sign");
     res.status(500).json({ error: "Failed to update sign" });
-  }
-});
-
-const VisualLocateSchema = z.object({
-  fileId: z.string().uuid(),
-  pageNumber: z.number().int().positive(),
-  signs: z.array(z.object({
-    signId: z.string().uuid(),
-    signType: z.string().nullable().optional(),
-    location: z.string().nullable().optional(),
-    signIdentifier: z.string().nullable().optional(),
-    roomNumber: z.string().nullable().optional(),
-    typeToken: z.string().nullable().optional(),
-    anchorX: z.number().min(0).max(1).nullable().optional(),
-    anchorY: z.number().min(0).max(1).nullable().optional(),
-  })).min(1).max(20),
-});
-
-router.post("/jobs/:jobId/visual-locate", async (req, res) => {
-  const { jobId } = req.params;
-  if (!jobId) {
-    res.status(400).json({ error: "Job ID required" });
-    return;
-  }
-
-  const parsed = VisualLocateSchema.safeParse(req.body);
-  if (!parsed.success) {
-    res.status(400).json({ error: "Invalid request body", details: parsed.error.issues });
-    return;
-  }
-
-  try {
-    const job = await getJobWithOrgCheck(req, res, jobId);
-    if (!job) return;
-
-    const [file] = await db
-      .select()
-      .from(jobFilesTable)
-      .where(eq(jobFilesTable.id, parsed.data.fileId));
-
-    if (!file || file.jobId !== jobId) {
-      res.status(404).json({ error: "File not found" });
-      return;
-    }
-
-    try {
-      await fs.access(file.storedPath);
-    } catch {
-      res.status(404).json({ error: "PDF file not found on disk" });
-      return;
-    }
-
-    const { results, method } = await visualLocateDoors(
-      file.storedPath,
-      parsed.data.pageNumber,
-      parsed.data.signs,
-      ai,
-      parsed.data.fileId,
-    );
-
-    req.log.info({ jobId, pageNumber: parsed.data.pageNumber, signCount: parsed.data.signs.length, method }, "visual-locate complete");
-    res.json({ results, method });
-  } catch (err) {
-    req.log.error({ err, jobId }, "visual-locate failed");
-    res.status(500).json({ error: "visual-locate failed", details: String(err) });
-  }
-});
-
-router.post("/jobs/:jobId/log-pdf-export", async (req, res) => {
-  const { jobId } = req.params;
-  if (!jobId) {
-    res.status(400).json({ error: "Job ID required" });
-    return;
-  }
-  try {
-    const job = await getJobWithOrgCheck(req, res, jobId);
-    if (!job) return;
-    recordActivity(req, "pdf_exported", jobId);
-    res.json({ ok: true });
-  } catch (err) {
-    req.log.error({ err, jobId }, "Failed to log PDF export");
-    res.status(500).json({ error: "Failed to log" });
   }
 });
 
@@ -1071,8 +801,11 @@ router.get("/jobs/:jobId/export", async (req, res) => {
   }
 
   try {
-    const job = await getJobWithOrgCheck(req, res, jobId);
-    if (!job) return;
+    const [job] = await db.select().from(jobsTable).where(eq(jobsTable.id, jobId));
+    if (!job) {
+      res.status(404).json({ error: "Job not found" });
+      return;
+    }
 
     if (job.status !== "completed") {
       res.status(422).json({ error: "Job must be completed before exporting" });
@@ -1107,7 +840,6 @@ router.get("/jobs/:jobId/export", async (req, res) => {
     const fileBuffer = await fs.readFile(exportPath);
     res.send(fileBuffer);
 
-    recordActivity(req, "xlsx_exported", jobId);
     req.log.info({ jobId, signCount: signs.length, fileName }, "Export served");
   } catch (err) {
     req.log.error({ err, jobId }, "Export failed");

@@ -201,13 +201,6 @@ router.post(
         return;
       }
 
-      // ── Org check ─────────────────────────────────────────────────────────
-      const orgId = req.authUser?.organizationId ?? null;
-      if (!orgId && !req.authUser?.isSuperAdmin) {
-        res.status(403).json({ error: "No organization context. Please contact your administrator." });
-        return;
-      }
-
       // ── Create job ────────────────────────────────────────────────────────
       const jobName = pdfFile.originalname
         .replace(/\.pdf$/i, "")
@@ -220,7 +213,6 @@ router.post(
           name: jobName,
           status: "completed",
           fileCount: 1,
-          organizationId: orgId,
         })
         .returning();
 
