@@ -920,7 +920,7 @@ const UpdateSignSchema = z.object({
   hidden: z.boolean().optional(),
   xPos: z.number().min(0).max(1).nullable().optional(),
   yPos: z.number().min(0).max(1).nullable().optional(),
-  placementSource: z.enum(["text_match", "gemini_vision", "user_confirmed", "manual"]).nullable().optional(),
+  placementSource: z.enum(["text_match", "vector_match", "gemini_vision", "user_confirmed", "manual"]).nullable().optional(),
 });
 
 router.patch("/extracted-signs/:signId", async (req, res) => {
@@ -1030,15 +1030,16 @@ router.post("/jobs/:jobId/visual-locate", async (req, res) => {
       return;
     }
 
-    const results = await visualLocateDoors(
+    const { results, method } = await visualLocateDoors(
       file.storedPath,
       parsed.data.pageNumber,
       parsed.data.signs,
       ai,
+      parsed.data.fileId,
     );
 
-    req.log.info({ jobId, pageNumber: parsed.data.pageNumber, signCount: parsed.data.signs.length }, "visual-locate complete");
-    res.json({ results });
+    req.log.info({ jobId, pageNumber: parsed.data.pageNumber, signCount: parsed.data.signs.length, method }, "visual-locate complete");
+    res.json({ results, method });
   } catch (err) {
     req.log.error({ err, jobId }, "visual-locate failed");
     res.status(500).json({ error: "visual-locate failed", details: String(err) });

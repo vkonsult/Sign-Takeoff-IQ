@@ -1274,8 +1274,8 @@ export function SignReviewModal({
       }),
     })
       .then((r) => r.ok ? r.json() : Promise.reject(new Error("non-ok")))
-      .then((data: { results: { signId: string; candidates: VisualCandidate[] }[] }) => {
-        const toAutoApply: Array<{ signId: string; candidate: VisualCandidate }> = [];
+      .then((data: { results: { signId: string; candidates: VisualCandidate[]; source?: "vector" | "gemini" }[]; method?: string }) => {
+        const toAutoApply: Array<{ signId: string; candidate: VisualCandidate; placementSource: string }> = [];
         const newCandidates = new Map<string, VisualCandidate[]>();
         const newFailed = new Set<string>();
 
@@ -1283,8 +1283,10 @@ export function SignReviewModal({
           if (r.candidates.length === 0) {
             newFailed.add(r.signId);
           } else if (r.candidates.length === 1) {
-            // Single unambiguous result — auto-apply immediately as gemini_vision.
-            toAutoApply.push({ signId: r.signId, candidate: r.candidates[0]! });
+            // Single unambiguous result — auto-apply immediately.
+            // Use vector_match for vector pipeline results, gemini_vision for AI results.
+            const placementSource = r.source === "vector" ? "vector_match" : "gemini_vision";
+            toAutoApply.push({ signId: r.signId, candidate: r.candidates[0]!, placementSource });
           } else {
             // Multiple candidates (2–3): do NOT auto-persist — require explicit user selection.
             // All candidates are stored as numbered selectable dots (#1, #2, #3).
@@ -1304,15 +1306,15 @@ export function SignReviewModal({
           return next;
         });
 
-        // Auto-PATCH top candidates as gemini_vision (fire-and-forget — UI updates via setLocalSigns)
-        for (const { signId, candidate } of toAutoApply) {
+        // Auto-PATCH top candidates (fire-and-forget — UI updates via setLocalSigns)
+        for (const { signId, candidate, placementSource } of toAutoApply) {
           apiFetch(`/api/extracted-signs/${signId}`, {
             method: "PATCH",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
               xPos: candidate.x,
               yPos: candidate.y,
-              placementSource: "gemini_vision",
+              placementSource,
             }),
           })
             .then((r) => r.ok ? r.json() : Promise.reject(new Error("non-ok")))
@@ -2057,12 +2059,16 @@ export function SignReviewModal({
                     );
                   })}
 
-                  {/* AI-placed badge ON each AI-placed marker — shown for all signs with a placementSource.
-                      The active sign shows a full "✦ AI · Reset" clickable label; inactive signs show a
-                      smaller "✦" dot. Clicking any badge clears placement and re-queues the page. */}
+                  {/* Placement badge ON each AI/vector-placed marker.
+                      vector_match → teal hexagon badge "⬡ Vector · Reset"
+                      gemini_vision / user_confirmed → cyan star badge "✦ AI · Reset"
+                      Active sign shows full label; inactive shows small dot. */}
                   {showOverlay && !drawMode && renderedW && renderedH && textMarkers.map((m) => {
                     const markerSign = signsOnCurrentPage.find((s) => s.id === m.signId);
-                    if (markerSign?.placementSource !== "gemini_vision" && markerSign?.placementSource !== "user_confirmed") return null;
+                    const ps = markerSign?.placementSource;
+                    if (ps !== "gemini_vision" && ps !== "user_confirmed" && ps !== "vector_match") return null;
+                    const isVector = ps === "vector_match";
+                    const badgeColor = isVector ? "#0d9488" : "#06b6d4"; // teal-600 vs cyan-500
                     const cx = m.x * renderedW!;
                     const cy = m.y * renderedH!;
                     const r = m.isCurrent ? 18 : 12;
@@ -2087,10 +2093,13 @@ export function SignReviewModal({
                         console.error("[visual-locate] marker badge reset failed:", err);
                       }
                     };
+                    const titleText = isVector
+                      ? "Vector placed (deterministic) — click to reset and re-run"
+                      : `AI placed (${ps === "gemini_vision" ? "auto" : "user confirmed"}) — click to reset and re-run`;
                     return isCurrent ? (
                       <button
                         key={`ai-badge-${m.signId}`}
-                        title={`AI placed (${markerSign.placementSource === "gemini_vision" ? "auto" : "user confirmed"}) — click to reset and re-run`}
+                        title={titleText}
                         onClick={handleReset}
                         style={{
                           position: "absolute",
@@ -2100,7 +2109,7 @@ export function SignReviewModal({
                           height: 18,
                           paddingInline: 6,
                           borderRadius: 4,
-                          background: "#06b6d4",
+                          background: badgeColor,
                           color: "#fff",
                           border: "none",
                           display: "flex",
@@ -2116,12 +2125,12 @@ export function SignReviewModal({
                           whiteSpace: "nowrap",
                         }}
                       >
-                        ✦ AI · Reset
+                        {isVector ? "⬡ Vector · Reset" : "✦ AI · Reset"}
                       </button>
                     ) : (
                       <button
                         key={`ai-badge-${m.signId}`}
-                        title={`AI placed (${markerSign.placementSource === "gemini_vision" ? "auto" : "user confirmed"}) — click to reset`}
+                        title={titleText}
                         onClick={handleReset}
                         style={{
                           position: "absolute",
@@ -2131,7 +2140,7 @@ export function SignReviewModal({
                           width: 14,
                           height: 14,
                           borderRadius: "50%",
-                          background: "#06b6d4",
+                          background: badgeColor,
                           color: "#fff",
                           border: "none",
                           display: "flex",
@@ -2144,7 +2153,7 @@ export function SignReviewModal({
                           pointerEvents: "all",
                         }}
                       >
-                        ✦
+                        {isVector ? "⬡" : "✦"}
                       </button>
                     );
                   })}

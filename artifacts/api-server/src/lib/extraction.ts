@@ -2,6 +2,8 @@ import fs from "fs/promises";
 import pdfParse from "pdf-parse/lib/pdf-parse.js";
 import { z } from "zod";
 import { logger } from "./logger";
+import { buildPageDoorMap, matchSignsToDoors } from "./door-geometry";
+import { extractPagePhrases } from "./pdf-words";
 
 export interface ExtractedSignRow {
   sheet_number: string | null;
@@ -1951,6 +1953,8 @@ export interface VisualLocateCandidate {
 export interface VisualLocateResult {
   signId: string;
   candidates: VisualLocateCandidate[];
+  /** Origin of the placement result: "vector" = deterministic pipeline, "gemini" = AI fallback */
+  source?: "vector" | "gemini";
 }
 
 const VISUAL_LOCATE_PROMPT = `You are looking at a single architectural floor plan page. Your task is to find the exact entrance or door opening location for each residential unit sign listed below.
@@ -1998,71 +2002,163 @@ export interface VisualLocateSign {
   anchorY?: number | null;
 }
 
-export async function visualLocateDoors(
+/** Internal: call Gemini to locate doors for a subset of signs on a PDF page. */
+async function _callGeminiForDoors(
   filePath: string,
   pageNum: number,
   signs: VisualLocateSign[],
   ai: GeminiAI,
 ): Promise<VisualLocateResult[]> {
   if (signs.length === 0) return [];
-
-  const fileBuffer = await fs.readFile(filePath);
-  const { PDFDocument } = await import("pdf-lib");
-  let srcDoc: import("pdf-lib").PDFDocument;
   try {
-    srcDoc = await PDFDocument.load(fileBuffer, { ignoreEncryption: true });
+    const fileBuffer = await fs.readFile(filePath);
+    const { PDFDocument } = await import("pdf-lib");
+    const srcDoc = await PDFDocument.load(fileBuffer, { ignoreEncryption: true });
+    const pageIdx = pageNum - 1;
+    if (pageIdx < 0 || pageIdx >= srcDoc.getPageCount()) {
+      return signs.map((s) => ({ signId: s.signId, candidates: [] }));
+    }
+    const pageDoc = await PDFDocument.create();
+    const [copiedPage] = await pageDoc.copyPages(srcDoc, [pageIdx]);
+    pageDoc.addPage(copiedPage);
+    const pageBytes = await pageDoc.save();
+    const pdfBase64 = Buffer.from(pageBytes).toString("base64");
+
+    const signsJson = JSON.stringify(signs.map((s) => ({
+      signId: s.signId,
+      location: s.location ?? "",
+      typeToken: s.typeToken ?? "",
+      roomNumber: s.roomNumber ?? "",
+      anchorHint: s.anchorX != null && s.anchorY != null
+        ? `annotation label near (${s.anchorX.toFixed(3)}, ${s.anchorY.toFixed(3)})`
+        : "not available",
+    })));
+    const prompt = VISUAL_LOCATE_PROMPT.replace("SIGNS_PLACEHOLDER", signsJson);
+
+    let raw = "";
+    try {
+      const { text } = await callGeminiMultimodal(prompt, pdfBase64, ai, `visual-locate-p${pageNum}`);
+      raw = text;
+    } catch (err) {
+      logger.error({ err }, "_callGeminiForDoors: Gemini call failed");
+    }
+
+    if (!raw) return signs.map((s) => ({ signId: s.signId, candidates: [] }));
+
+    try {
+      const cleaned = raw.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
+      const parsed = JSON.parse(cleaned) as VisualLocateResult[];
+      if (!Array.isArray(parsed)) throw new Error("Response is not an array");
+      const resultMap = new Map(parsed.map((r) => [r.signId, r]));
+      return signs.map((s) => {
+        const entry = resultMap.get(s.signId);
+        if (!entry) return { signId: s.signId, candidates: [] };
+        const validCandidates = (entry.candidates ?? []).filter(
+          (c) => typeof c.x === "number" && typeof c.y === "number" &&
+            c.x >= 0 && c.x <= 1 && c.y >= 0 && c.y <= 1,
+        ).slice(0, 3);
+        return { signId: s.signId, candidates: validCandidates };
+      });
+    } catch (err) {
+      logger.error({ err, raw: raw.slice(0, 300) }, "_callGeminiForDoors: JSON parse failed");
+      return signs.map((s) => ({ signId: s.signId, candidates: [] }));
+    }
   } catch (err) {
-    logger.error({ err, filePath }, "visualLocateDoors: pdf-lib failed to load");
+    logger.error({ err }, "_callGeminiForDoors: failed");
     return signs.map((s) => ({ signId: s.signId, candidates: [] }));
   }
+}
 
-  const pageIdx = pageNum - 1;
-  if (pageIdx < 0 || pageIdx >= srcDoc.getPageCount()) {
-    logger.warn({ pageNum, total: srcDoc.getPageCount() }, "visualLocateDoors: page out of range");
-    return signs.map((s) => ({ signId: s.signId, candidates: [] }));
-  }
+/**
+ * Orchestrate door placement for residential unit signs.
+ *
+ * Strategy:
+ *  1. Build a page-level door map using the deterministic vector pipeline (once per page).
+ *  2. Match each sign's room number to its nearest door arc.
+ *  3. For signs that got confident vector matches → return directly (no AI call).
+ *  4. For unresolved signs (vector page but no match, OR raster page) → call Gemini.
+ *  5. If Gemini also fails → return empty candidates.
+ *
+ * Returns { results, method } where method is "vector" | "gemini" | "hybrid".
+ */
+export async function visualLocateDoors(
+  filePath: string,
+  pageNum: number,
+  signs: VisualLocateSign[],
+  ai: GeminiAI,
+  fileId?: string,
+): Promise<{ results: VisualLocateResult[]; method: "vector" | "gemini" | "hybrid" }> {
+  if (signs.length === 0) return { results: [], method: "vector" };
 
-  const pageDoc = await PDFDocument.create();
-  const [copiedPage] = await pageDoc.copyPages(srcDoc, [pageIdx]);
-  pageDoc.addPage(copiedPage);
-  const pageBytes = await pageDoc.save();
-  const pdfBase64 = Buffer.from(pageBytes).toString("base64");
+  // ── Step 1: Try deterministic vector pipeline ──────────────────────────────
+  const usableFileId = fileId ?? filePath; // fallback key for cache
 
-  const signsJson = JSON.stringify(signs.map((s) => ({
-    signId: s.signId,
-    location: s.location ?? "",
-    typeToken: s.typeToken ?? "",
-    roomNumber: s.roomNumber ?? "",
-    anchorHint: s.anchorX != null && s.anchorY != null
-      ? `annotation label near (${s.anchorX.toFixed(3)}, ${s.anchorY.toFixed(3)})`
-      : "not available",
-  })));
-  const prompt = VISUAL_LOCATE_PROMPT.replace("SIGNS_PLACEHOLDER", signsJson);
+  let vectorResults: VisualLocateResult[] = signs.map((s) => ({ signId: s.signId, candidates: [] }));
+  let isVector = false;
 
-  let raw = "";
   try {
-    const { text } = await callGeminiMultimodal(prompt, pdfBase64, ai, `visual-locate-p${pageNum}`);
-    raw = text;
+    const [doorMap, pageWords] = await Promise.all([
+      buildPageDoorMap(filePath, usableFileId, pageNum),
+      extractPagePhrases(filePath, usableFileId, pageNum),
+    ]);
+
+    isVector = doorMap.isVector;
+
+    if (isVector) {
+      const matches = matchSignsToDoors(pageWords, doorMap, signs);
+      vectorResults = matches.map((m) => ({ signId: m.signId, candidates: m.candidates }));
+
+      logger.info({
+        pageNum,
+        isVector,
+        doorsFound: doorMap.doors.length,
+        signsTotal: signs.length,
+        signsResolved: matches.filter((m) => m.candidates.length > 0).length,
+      }, "visual-locate: vector pass complete");
+    }
   } catch (err) {
-    logger.error({ err }, "visualLocateDoors: Gemini call failed");
-    return signs.map((s) => ({ signId: s.signId, candidates: [] }));
+    logger.warn({ err, pageNum }, "visual-locate: vector pass failed, falling back to Gemini");
   }
 
-  try {
-    const cleaned = raw.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
-    const parsed = JSON.parse(cleaned) as VisualLocateResult[];
-    if (!Array.isArray(parsed)) throw new Error("Response is not an array");
-    const resultMap = new Map(parsed.map((r) => [r.signId, r]));
-    return signs.map((s) => {
-      const entry = resultMap.get(s.signId);
-      if (!entry) return { signId: s.signId, candidates: [] };
-      const validCandidates = (entry.candidates ?? []).filter(
-        (c) => typeof c.x === "number" && typeof c.y === "number" && c.x >= 0 && c.x <= 1 && c.y >= 0 && c.y <= 1
-      ).slice(0, 3);
-      return { signId: s.signId, candidates: validCandidates };
-    });
-  } catch (err) {
-    logger.error({ err, raw: raw.slice(0, 300) }, "visualLocateDoors: JSON parse failed");
-    return signs.map((s) => ({ signId: s.signId, candidates: [] }));
+  // Determine which signs are fully resolved by the vector pass
+  const vectorResolved = new Set<string>();
+  for (const r of vectorResults) {
+    if (r.candidates.length > 0) vectorResolved.add(r.signId);
   }
+
+  // Signs that still need Gemini (no vector match, or page is raster)
+  const unresolved = signs.filter((s) => !vectorResolved.has(s.signId));
+
+  if (unresolved.length === 0) {
+    // All signs matched by the vector pipeline — no Gemini call needed
+    const tagged: VisualLocateResult[] = vectorResults.map((r) => ({ ...r, source: "vector" as const }));
+    return { results: tagged, method: "vector" };
+  }
+
+  // ── Step 2: Gemini fallback for unresolved signs ───────────────────────────
+  logger.info({
+    pageNum,
+    unresolvedCount: unresolved.length,
+    reason: isVector ? "vector_no_door_found" : "raster_page",
+  }, "visual-locate: falling back to Gemini for unresolved signs");
+
+  const geminiResults = await _callGeminiForDoors(filePath, pageNum, unresolved, ai);
+
+  // ── Step 3: Merge results (tag each result with its origin) ───────────────
+  const geminiById = new Map(geminiResults.map((r) => [r.signId, r]));
+  const finalResults: VisualLocateResult[] = signs.map((s) => {
+    if (vectorResolved.has(s.signId)) {
+      const base = vectorResults.find((r) => r.signId === s.signId) ?? { signId: s.signId, candidates: [] };
+      return { ...base, source: "vector" as const };
+    }
+    const base = geminiById.get(s.signId) ?? { signId: s.signId, candidates: [] };
+    return { ...base, source: "gemini" as const };
+  });
+
+  const geminiResolved = geminiResults.filter((r) => r.candidates.length > 0).length;
+  const method = vectorResolved.size > 0 && geminiResolved > 0 ? "hybrid"
+    : vectorResolved.size > 0 ? "vector"
+    : "gemini";
+
+  return { results: finalResults, method };
 }
