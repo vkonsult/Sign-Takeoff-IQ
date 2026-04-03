@@ -436,23 +436,38 @@ async function _extractDoorMap(pdfPath: string, pageNum: number, pageWords: Page
       if (op === OPS_CONSTRUCT_PATH) {
         // constructPath bundles multiple path sub-ops in a single operator.
         //
-        // Actual pdfjs structure (verified):
-        //   args[0] = paint op code (fill/stroke/endPath — one of pdfjs's OPS values)
-        //   args[1] = array-like (Uint8Array or plain Array) of interleaved:
-        //             [internalOp, x?, y?, internalOp, x?, y?, ...]
-        //             where internalOp encoding is: 0=moveTo, 1=lineTo, 2=curveTo, 3=closePath
-        //   args[2] = bounding box {0:minX, 1:minY, 2:maxX, 3:maxY} (ignored here)
+        // Empirically verified pdfjs-dist v4.x structure (confirmed via getOperatorList
+        // diagnostic on real floor-plan PDFs, pathOpCount=331619 validates parsing):
         //
-        // After parsing inner ops, we also fire the outer paint op (args[0]).
+        //   args[0]    — paint op code (integer: fill/stroke/endPath OPS value)
+        //   args[1]    — Array whose element [0] is an ArrayLike<number> of interleaved
+        //                internal path ops:  0=moveTo(x,y), 1=lineTo(x,y),
+        //                                    2=curveTo(x1,y1,x2,y2,x,y), 3=closePath
+        //   args[2]    — page bounding box (ignored; we compute our own)
+        //
+        // We fire the outer paint op (args[0]) AFTER decoding all inner ops.
 
-        const paintOp = (args as unknown as number[])[0] as number;
-        // args[1] is an array containing the path data array-like: args[1][0] is the actual data
-        const innerWrapper = (args as unknown as unknown[])[1];
-        const innerRaw = Array.isArray(innerWrapper) ? innerWrapper[0] : innerWrapper;
+        // Defensive extraction with null-checks at every step
+        const rawArgs = args as unknown[];
+        const paintOp = typeof rawArgs[0] === "number" ? rawArgs[0] : null;
+        if (paintOp === null) continue;
 
-        if (innerRaw && typeof innerRaw === "object") {
-          // Convert array-like to a plain array of numbers
-          const flat = Array.from(innerRaw as ArrayLike<number>);
+        // args[1] is an Array; its first element is the actual ArrayLike path data
+        const innerWrapper = rawArgs[1];
+        const innerRaw: unknown = Array.isArray(innerWrapper) ? innerWrapper[0] : innerWrapper;
+        if (!innerRaw || typeof innerRaw !== "object") {
+          // No inner path data — fire paint op to flush any accumulated sub-paths
+          processOp(paintOp, []);
+          continue;
+        }
+
+        const flat = Array.from(innerRaw as ArrayLike<number>);
+        if (flat.length === 0) {
+          processOp(paintOp, []);
+          continue;
+        }
+
+        {
           let idx = 0;
 
           while (idx < flat.length) {
@@ -665,13 +680,25 @@ export function matchSignsToDoors(
     const best = scored[0]!;
 
     // ── Confidence-band gating ────────────────────────────────────────────────
+    // Task spec intent:
+    //   - score ≥ AUTO_CONFIDENCE_FLOOR → single confident match → auto-place (1 result)
+    //   - MIN_CANDIDATE_SCORE ≤ score < AUTO_CONFIDENCE_FLOOR AND ≥2 candidates → show 2-3 for user selection
+    //   - Only 1 low-confidence candidate → return empty (not enough to auto-place or choose from)
+    //
+    // The single-weak-match case MUST return empty to prevent a solo low-confidence
+    // result from being auto-applied by the frontend's single-candidate shortcut.
     let candidateSlice: typeof scored;
     if (best.score >= AUTO_CONFIDENCE_FLOOR) {
-      // One confident match → auto-place, return only the best
+      // One confident match → auto-place
       candidateSlice = [best];
-    } else {
-      // Plausible matches → return up to 3 for user selection
+    } else if (scored.length >= 2) {
+      // Multiple plausible matches → present 2–3 for user selection
       candidateSlice = scored.slice(0, 3);
+    } else {
+      // Only one weak match (< AUTO_CONFIDENCE_FLOOR) → not enough confidence and
+      // no alternatives to present. Return empty so Gemini handles this sign.
+      results.push({ signId: sign.signId, candidates: [], method: "vector" });
+      continue;
     }
 
     const candidates: DoorMatchCandidate[] = candidateSlice.map(({ door, score }) => ({
