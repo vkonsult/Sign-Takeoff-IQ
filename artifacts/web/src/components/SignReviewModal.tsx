@@ -354,6 +354,64 @@ function roomMatch(phraseNorm: string, tokenNorm: string): boolean {
 }
 
 /**
+ * Returns a tight bbox covering only the tokens in matchedText within phrase.
+ * Splits phrase.text by whitespace, estimates x-positions proportionally by
+ * character count, finds the contiguous run of words that best matches the
+ * matchedText tokens, and returns { x0, x1, y0, y1 }.
+ * Falls back to the full phrase bbox if no matching run is found.
+ */
+function tightBboxForTokens(
+  phrase: PdfPhrase,
+  matchedText: string,
+): { x0: number; x1: number; y0: number; y1: number } {
+  const phraseWords = phrase.text.split(/\s+/).filter(Boolean);
+  if (phraseWords.length === 0) return phrase;
+
+  const matchWords = matchedText
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((w) => w.toUpperCase());
+  if (matchWords.length === 0) return phrase;
+
+  const totalChars = phraseWords.reduce((s, w) => s + w.length, 0);
+  const span = phrase.x1 - phrase.x0;
+
+  let charOffset = 0;
+  const wordPositions: { x0: number; x1: number }[] = phraseWords.map((w) => {
+    const wx0 = phrase.x0 + (charOffset / totalChars) * span;
+    const wx1 = phrase.x0 + ((charOffset + w.length) / totalChars) * span;
+    charOffset += w.length;
+    return { x0: wx0, x1: wx1 };
+  });
+
+  let bestRunStart = -1;
+  let bestRunScore = 0;
+
+  for (let i = 0; i <= phraseWords.length - matchWords.length; i++) {
+    let matches = 0;
+    for (let j = 0; j < matchWords.length; j++) {
+      if (phraseWords[i + j]!.toUpperCase() === matchWords[j]) matches++;
+    }
+    const score = matches / matchWords.length;
+    if (score > bestRunScore) {
+      bestRunScore = score;
+      bestRunStart = i;
+    }
+  }
+
+  if (bestRunStart < 0 || bestRunScore < 0.5) return phrase;
+
+  const runEnd = bestRunStart + matchWords.length - 1;
+  return {
+    x0: wordPositions[bestRunStart]!.x0,
+    x1: wordPositions[runEnd]!.x1,
+    y0: phrase.y0,
+    y1: phrase.y1,
+  };
+}
+
+/**
  * Given server-extracted phrases for one PDF page and a sign, find the best
  * matching position using bbox centres.
  *
@@ -438,9 +496,10 @@ function findSignLocationFromPhrases(
 
       // Map pass-1 raw score to a confidence ≥ 0.8
       const confidence = 0.8 + (chosen.score - PASS1_THRESHOLD) / (1 - PASS1_THRESHOLD) * 0.2;
+      const tight1 = tightBboxForTokens(chosen.phrase, sign.location ?? chosen.phrase.text);
       return {
-        x: chosen.x,
-        y: chosen.y,
+        x: (tight1.x0 + tight1.x1) / 2,
+        y: (tight1.y0 + tight1.y1) / 2,
         matched: chosen.phrase.text,
         score: Math.min(1.0, confidence),
         phrase: chosen.phrase,
@@ -491,7 +550,8 @@ function findSignLocationFromPhrases(
         preferred = ranked[0]!;
       }
 
-      return { x: preferred.x, y: preferred.y, matched: token, score: 0.75, phrase: preferred.phrase };
+      const tight2 = tightBboxForTokens(preferred.phrase, token);
+      return { x: (tight2.x0 + tight2.x1) / 2, y: (tight2.y0 + tight2.y1) / 2, matched: token, score: 0.75, phrase: preferred.phrase };
     }
   }
 
@@ -505,9 +565,10 @@ function findSignLocationFromPhrases(
       if (score > bestScore) { bestScore = score; bestPhrase = p; }
     }
     if (bestScore >= FUZZY_MATCH_THRESHOLD && bestPhrase) {
+      const tight3 = tightBboxForTokens(bestPhrase, locationSource);
       return {
-        x: (bestPhrase.x0 + bestPhrase.x1) / 2,
-        y: (bestPhrase.y0 + bestPhrase.y1) / 2,
+        x: (tight3.x0 + tight3.x1) / 2,
+        y: (tight3.y0 + tight3.y1) / 2,
         matched: bestPhrase.text,
         score: bestScore,
         phrase: bestPhrase,

@@ -215,7 +215,7 @@ export async function extractPagePhrases(
 
     const gap = currX - (prevX + prevW);
     const sameLine = Math.abs(currY - prevY) <= 3;
-    const adjacent = gap < prevW * 3;
+    const adjacent = gap < prevW * 1.2;
 
     if (sameLine && adjacent) {
       group.push({ item, gapPts: Math.max(0, gap) });
