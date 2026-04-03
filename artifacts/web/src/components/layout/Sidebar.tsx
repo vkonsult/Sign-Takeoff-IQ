@@ -19,7 +19,7 @@ import { useJobsList } from "@/hooks/use-takeoff";
 import { format } from "date-fns";
 import { useClerk, useUser } from "@clerk/react";
 import { useUserRole } from "@/hooks/use-user-role";
-import { isGuestMode } from "@/lib/apiClient";
+import { isGuestMode, clearGuestToken } from "@/lib/apiClient";
 
 const SIDEBAR_ACTION_LABELS: Record<string, string> = {
   job_opened: "opened",
@@ -35,11 +35,21 @@ interface SidebarProps {
 }
 
 export function Sidebar({ collapsed, onToggle }: SidebarProps) {
-  const [location] = useLocation();
+  const [location, setLocation] = useLocation();
   const { data, isLoading } = useJobsList();
   const { signOut } = useClerk();
   const { user } = useUser();
   const { role, isAdmin, isSuperAdmin } = useUserRole();
+
+  function handleSignOut() {
+    if (isGuestMode()) {
+      clearGuestToken();
+      setLocation("/");
+      window.location.reload();
+    } else {
+      signOut();
+    }
+  }
 
   const mainNavItems = [
     { href: "/new-upload", label: "New Upload", icon: FileUp },
@@ -276,16 +286,14 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
                 {initials}
               </div>
             </NavTooltip>
-            {!guestMode && (
-              <NavTooltip label="Sign out">
-                <button
-                  onClick={() => signOut()}
-                  className="flex items-center justify-center w-9 h-9 rounded-md text-muted-foreground hover:bg-destructive/10 hover:text-destructive transition-all"
-                >
-                  <LogOut className="w-4 h-4 opacity-70" />
-                </button>
-              </NavTooltip>
-            )}
+            <NavTooltip label={guestMode ? "Exit guest mode" : "Sign out"}>
+              <button
+                onClick={handleSignOut}
+                className="flex items-center justify-center w-9 h-9 rounded-md text-muted-foreground hover:bg-destructive/10 hover:text-destructive transition-all"
+              >
+                <LogOut className="w-4 h-4 opacity-70" />
+              </button>
+            </NavTooltip>
             <NavTooltip label="Expand sidebar">
               <button
                 onClick={onToggle}
@@ -305,15 +313,13 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
                 <p className="text-xs font-medium text-foreground truncate">{displayName}</p>
                 <p className="text-[10px] text-muted-foreground truncate">{roleLabel}</p>
               </div>
-              {!guestMode && (
-                <button
-                  onClick={() => signOut()}
-                  title="Sign out"
-                  className="p-1 rounded text-muted-foreground hover:text-destructive transition-colors"
-                >
-                  <LogOut className="w-3.5 h-3.5" />
-                </button>
-              )}
+              <button
+                onClick={handleSignOut}
+                title={guestMode ? "Exit guest mode" : "Sign out"}
+                className="p-1 rounded text-muted-foreground hover:text-destructive transition-colors"
+              >
+                <LogOut className="w-3.5 h-3.5" />
+              </button>
             </div>
             <button
               onClick={onToggle}
