@@ -283,62 +283,91 @@ function findSignLocation(
 ): { x: number; y: number; matched: string } | null {
 
   // ── Pass 0: exact normalized identifier match ─────────────────────────────
-  // Sign identifiers like "RI-11" or "EL-04" are UNIQUE callout codes.
-  // We normalize (strip dashes/spaces) and search for the WHOLE identifier
-  // string at a word boundary. This avoids:
-  //   - "11" in room number "A111" matching RI-11's token "11"
-  //   - "ri" in "STAIR" / "FIRST FLOOR" matching RI-xx's token "ri"
-  // We return the FIRST match — identifiers appear once at the callout location,
-  // not in legends (legends list types, not specific numbered instances).
+  // Sign identifiers like "RI-56" or "EL-04" appear in TWO places on a plan:
+  //   1. The callout bubble at the unit door (the CORRECT position)
+  //   2. A sign schedule table listing all signs on the sheet (WRONG position)
+  // We collect ALL occurrences first. If exactly ONE is found, it's the callout
+  // → use it. If multiple are found, we can't reliably tell callout from schedule
+  // → fall through to room-number matching instead.
   if (sign.signIdentifier && sign.signIdentifier.length >= 3) {
     const idNorm = normId(sign.signIdentifier);
     if (idNorm.length >= 3) {
-      // 0a: search individual items (fastest — most PDFs aren't char-fragmented)
+      type IdHit = { x: number; y: number };
+      const idHits: IdHit[] = [];
+
+      // 0a: search individual items
       for (const item of items) {
         if (!item.str.trim()) continue;
-        const itemNorm = normId(item.str);
-        if (exactBoundaryMatch(itemNorm, idNorm)) {
+        if (exactBoundaryMatch(normId(item.str), idNorm)) {
           const [, , , , tx, ty] = item.transform;
-          return {
+          idHits.push({
             x: Math.min(1, Math.max(0, tx / pageW)),
             y: Math.min(1, Math.max(0, 1 - ty / pageH)),
-            matched: sign.signIdentifier,
-          };
+          });
         }
       }
-      // 0b: search text runs (handles per-char CAD fragmentation)
-      const runsEarly = buildTextRuns(items);
-      for (const run of runsEarly) {
-        const runNorm = normId(run.text);
-        if (exactBoundaryMatch(runNorm, idNorm)) {
-          return {
-            x: Math.min(1, Math.max(0, run.midX / pageW)),
-            y: Math.min(1, Math.max(0, 1 - run.midY / pageH)),
-            matched: sign.signIdentifier,
-          };
+
+      // 0b: search text runs if nothing found via items
+      if (idHits.length === 0) {
+        const runsEarly = buildTextRuns(items);
+        for (const run of runsEarly) {
+          if (exactBoundaryMatch(normId(run.text), idNorm)) {
+            idHits.push({
+              x: Math.min(1, Math.max(0, run.midX / pageW)),
+              y: Math.min(1, Math.max(0, 1 - run.midY / pageH)),
+            });
+          }
         }
+      }
+
+      // Only trust the identifier if it appears exactly once — that's the callout.
+      // Multiple occurrences mean schedule + callout; we can't tell them apart.
+      if (idHits.length === 1) {
+        return { x: idHits[0]!.x, y: idHits[0]!.y, matched: sign.signIdentifier };
       }
     }
   }
 
   // ── Pass 1: room/unit number search from location field ──────────────────
-  // Room numbers like "A101", "B203", "101" are highly specific labels that
-  // appear ONCE on a floor plan at the actual unit door. We extract these
-  // tokens from the location field and look for an EXACT boundary match on
-  // the page. We only accept the match if the token appears ≤ 2 times
-  // (unique enough to be reliable). Longer tokens are tried first.
+  // Room numbers like "A101", "B203", "101B" are specific labels visible on
+  // each unit door on the floor plan. We extract these tokens from the location
+  // field and search the text layer.
   //
-  // If no confident unique match is found we return null — NO marker is
-  // better than a wrong one. The user can manually place flagged signs.
+  // Key subtleties handled here:
+  //   - CAD PDFs often label units as "B101B" (building prefix + room) while
+  //     Gemini extracts just "101B". We allow a SINGLE letter building prefix
+  //     so "b101b" matches token "101b".
+  //   - Dimension annotations like "134'-4"" give pure-numeric token "134".
+  //     We REQUIRE at least one letter in the token to skip these.
+  //   - Tokens appearing > 2 times are non-unique (e.g., a corridor type code
+  //     that repeats), so we skip them → no marker rather than a wrong one.
+  //   - When 2 hits exist (schedule + floor plan), we prefer the hit that is
+  //     NOT in the top 15% of the page (title block / schedule area).
+
+  // Returns true if itemNorm is an exact match or differs from tokenNorm by
+  // exactly one leading letter (handles building-prefix labels like "b101b").
+  function roomMatch(itemNorm: string, tokenNorm: string): boolean {
+    if (exactBoundaryMatch(itemNorm, tokenNorm)) return true;
+    // Allow one leading letter prefix (e.g. "b101b" matching "101b")
+    if (
+      itemNorm.length === tokenNorm.length + 1 &&
+      /^[a-z]/.test(itemNorm) &&
+      itemNorm.slice(1) === tokenNorm
+    )
+      return true;
+    return false;
+  }
+
   const locationSource = [sign.location, sign.messageContent].filter(Boolean).join(" ");
   if (locationSource) {
-    // Extract room-number-like tokens: optional letter prefix + 2–4 digits +
-    // optional letter suffix. Min total length of 3 to skip single-char codes.
-    const roomTokens = (locationSource.match(/\b[A-Za-z]{0,2}\d{2,4}[A-Za-z]?\b/g) ?? [])
+    // Extract tokens that contain BOTH letters and digits — this filters out
+    // pure-numeric dimension values (e.g. "134") while keeping "101B", "A105".
+    const roomTokens = (
+      locationSource.match(/\b(?:[A-Za-z]{1,2}\d{2,4}[A-Za-z]?|\d{2,4}[A-Za-z]{1,2})\b/g) ?? []
+    )
       .filter((t) => t.length >= 3)
       .sort((a, b) => b.length - a.length); // longest (most specific) first
 
-    // Also try the full text runs for character-fragmented PDFs
     const runsForRoom = buildTextRuns(items);
 
     for (const token of roomTokens) {
@@ -349,7 +378,7 @@ function findSignLocation(
       // Search individual items
       for (const item of items) {
         if (!item.str.trim()) continue;
-        if (exactBoundaryMatch(normId(item.str), tokenNorm)) {
+        if (roomMatch(normId(item.str), tokenNorm)) {
           const [, , , , tx, ty] = item.transform;
           hits.push({
             x: Math.min(1, Math.max(0, tx / pageW)),
@@ -358,10 +387,10 @@ function findSignLocation(
         }
       }
 
-      // Search text runs (fragmented CAD PDFs)
+      // Search text runs (per-character CAD fragmentation)
       if (hits.length === 0) {
         for (const run of runsForRoom) {
-          if (exactBoundaryMatch(normId(run.text), tokenNorm)) {
+          if (roomMatch(normId(run.text), tokenNorm)) {
             hits.push({
               x: Math.min(1, Math.max(0, run.midX / pageW)),
               y: Math.min(1, Math.max(0, 1 - run.midY / pageH)),
@@ -370,10 +399,16 @@ function findSignLocation(
         }
       }
 
-      // Accept only if the token is unique on this page (≤ 2 occurrences)
-      if (hits.length >= 1 && hits.length <= 2) {
-        return { x: hits[0]!.x, y: hits[0]!.y, matched: token };
-      }
+      if (hits.length === 0 || hits.length > 2) continue; // not found or too ambiguous
+
+      // If 2 hits (schedule + floor plan), prefer the one NOT in the top 15%
+      // of the page where title blocks / schedules typically live.
+      const preferred =
+        hits.length === 2
+          ? (hits.find((h) => h.y > 0.15) ?? hits[0]!)
+          : hits[0]!;
+
+      return { x: preferred.x, y: preferred.y, matched: token };
     }
   }
 
