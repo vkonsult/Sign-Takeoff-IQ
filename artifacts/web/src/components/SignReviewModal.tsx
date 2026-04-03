@@ -662,7 +662,11 @@ function findSignLocationFromPhrases(
 
   // ── Pass 0: exact identifier ───────────────────────────────────────────────
   // Uses ALL phrases (not margin-filtered) so that callout bubbles near edges
-  // are still found. Requires the ID to appear exactly once on the page.
+  // are still found.
+  // Single hit: use it directly (score 1.0).
+  // Multiple hits: score each by how well nearby phrases match the location string,
+  //   then pick the best if there's a clear winner (score gap ≥ 0.15). Otherwise
+  //   fall through so later passes can disambiguate.
   if (sign.signIdentifier && sign.signIdentifier.length >= 3) {
     const idNorm = normId(sign.signIdentifier);
     if (idNorm.length >= 3) {
@@ -674,6 +678,27 @@ function findSignLocationFromPhrases(
       }
       if (idHits.length === 1) {
         return { x: idHits[0]!.x, y: idHits[0]!.y, matched: sign.signIdentifier, score: 1.0, phrase: idHits[0]!.phrase };
+      }
+      if (idHits.length > 1 && sign.location) {
+        // For each candidate, score nearby phrases (within 0.12 radius) against the location string
+        const NEIGHBOR_RADIUS = 0.12;
+        const scored = idHits.map((hit) => {
+          const neighbors = phrases.filter((p) => {
+            const px = (p.x0 + p.x1) / 2;
+            const py = (p.y0 + p.y1) / 2;
+            return Math.hypot(px - hit.x, py - hit.y) <= NEIGHBOR_RADIUS;
+          });
+          const neighborText = neighbors.map((p) => p.text).join(" ");
+          const score = phraseMatchScore(neighborText, sign.location!);
+          return { ...hit, neighborScore: score };
+        });
+        scored.sort((a, b) => b.neighborScore - a.neighborScore);
+        const best = scored[0]!;
+        const second = scored[1];
+        if (!second || best.neighborScore - second.neighborScore >= 0.15) {
+          return { x: best.x, y: best.y, matched: sign.signIdentifier, score: 0.95, phrase: best.phrase };
+        }
+        // Ambiguous multi-hit: fall through to Pass 0.5 / 1
       }
     }
   }

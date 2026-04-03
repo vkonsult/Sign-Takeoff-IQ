@@ -10,7 +10,7 @@ import {
 import { buildExcelExport } from "../lib/export";
 import { getJobExportPath } from "../lib/storage";
 import { extractPagePhrases } from "../lib/pdf-words";
-import { processJob } from "../lib/process-job";
+import { processJob, deduplicateSignRows } from "../lib/process-job";
 import { extractSignsFromPdfImage, extractSignsFromPdf, visualLocateDoors } from "../lib/extraction";
 import { ai } from "@workspace/integrations-gemini-ai";
 import fs from "fs/promises";
@@ -538,8 +538,21 @@ router.post("/jobs/:jobId/compare", async (req, res) => {
     const imageSkipReasons = [...new Set(imageResults.flatMap((r) => r.skipReason ? [r.skipReason] : []))];
     const imageSkipReason = imageSkipReasons.length > 0 ? imageSkipReasons.join("; ") : null;
 
-    const textRows = textResults.flatMap((r) => r.rows.map((row) => buildTextRow(row, r.file)));
-    const imageRows = imageResults.flatMap((r) => r.rows.map((row) => buildImageRow(row, r.file)));
+    const rawTextRows = textResults.flatMap((r) => r.rows.map((row) => buildTextRow(row, r.file)));
+    const rawImageRows = imageResults.flatMap((r) => r.rows.map((row) => buildImageRow(row, r.file)));
+
+    const textRows = deduplicateSignRows(rawTextRows);
+    const textSeenKeys = new Set(
+      textRows
+        .filter((r) => r.location && r.signType)
+        .map((r) => `${r.location!.toLowerCase().trim()}||${r.signType!.toLowerCase().trim()}`),
+    );
+    const imageRows = deduplicateSignRows(
+      rawImageRows.filter((r) => {
+        if (!r.location || !r.signType) return true;
+        return !textSeenKeys.has(`${r.location.toLowerCase().trim()}||${r.signType.toLowerCase().trim()}`);
+      }),
+    );
 
     if (textRows.length > 0) {
       await db.insert(extractedSignsTable).values(textRows);

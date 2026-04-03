@@ -1,0 +1,14 @@
+Fix 3 critical issues with sign detection accuracy and marker placement:
+ISSUE 1 — Deduplicate signs before writing to xlsx and UI
+After all AI extraction passes complete, run a deduplication step. Group signs by location + signType as a composite key. When duplicates exist, keep the entry that has a populated detailRef field and higher confidence score. Discard the ghost entry (the one with empty detailRef, confidence 0.85, and note "Discovered by visual verification pass"). Do NOT deduplicate entries that share only location but have different sign types — for example ELEC A404 correctly has both an Electrical Hazard sign and a Room ID sign at the same location.
+ISSUE 2 — Fix marker placement using real PDF text coordinates
+Stop guessing marker positions. Use pdf.js getTextContent() on each page to extract every text item with its real X/Y transform coordinates. When placing a marker for a sign, look up the room label text (e.g. "UNIT 2A 406B") in the extracted text items and use that item's transform[4] (x) and transform[5] (y) as the anchor. Convert from PDF coordinate space to screen/viewport coordinates using pageViewport.convertToViewportPoint(x, y). If no text match is found for a sign, place the marker at a fallback position and flag it as unlocated rather than guessing.
+ISSUE 3 — Update the Gemini prompt to reduce hallucinated duplicates
+Add these rules to the system prompt sent to Gemini:
+
+Each physical door or room should produce exactly ONE Room ID sign entry. Do not list the same room twice.
+Do not add signs based on code requirements alone — only output signs that have a visible sign symbol or label on the plan.
+Electrical rooms, mechanical rooms, and lobbies may correctly have multiple sign types (Room ID + Electrical Hazard, or Room ID + Evacuation Map) — these are valid multiple entries sharing one location and should be kept.
+Output each sign exactly once. If you detect the same room label in both a structured pass and a visual verification pass, merge them into one entry.
+
+After implementing all three fixes, re-run the extraction on the currently loaded plan and verify: total sign count should drop (fewer duplicates), markers should snap to printed room labels on the plan, and the xlsx should have no rows with empty Detail/Ref that duplicate a row that has a Detail/Ref for the same location and sign type.

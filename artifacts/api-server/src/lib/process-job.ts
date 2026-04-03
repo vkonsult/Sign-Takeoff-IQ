@@ -13,6 +13,42 @@ import { saveParsedResult } from "./storage";
 import { logger } from "./logger";
 
 
+/**
+ * Deduplicates sign rows before DB insertion.
+ * Key: location + signType (normalized, lowercased). Only applied when both are non-null —
+ * rows missing either field are kept as-is to avoid accidental merging of unrelated signs.
+ * When a duplicate pair is found, the entry with a detailReference wins; if both/neither have
+ * one, the higher confidenceScore is kept.
+ */
+export function deduplicateSignRows(rows: InsertExtractedSign[]): InsertExtractedSign[] {
+  const seenKeys = new Map<string, number>(); // composite key → index in `out`
+  const out: InsertExtractedSign[] = [];
+
+  for (const row of rows) {
+    if (!row.location || !row.signType) {
+      out.push(row);
+      continue;
+    }
+    const key = `${row.location.toLowerCase().trim()}||${row.signType.toLowerCase().trim()}`;
+    const existingIdx = seenKeys.get(key);
+    if (existingIdx === undefined) {
+      seenKeys.set(key, out.length);
+      out.push(row);
+    } else {
+      const existing = out[existingIdx]!;
+      const preferNew =
+        (row.detailReference && !existing.detailReference) ||
+        (!!row.detailReference === !!existing.detailReference &&
+          (row.confidenceScore ?? 0) > (existing.confidenceScore ?? 0));
+      if (preferNew) {
+        out[existingIdx] = row;
+      }
+      // else: discard `row` — existing is better
+    }
+  }
+  return out;
+}
+
 export async function processJob(jobId: string): Promise<void> {
   // ── Preserve verified + manually-added signs before clearing AI output ───
   const existingSigns = await db
@@ -306,12 +342,36 @@ export async function processJob(jobId: string): Promise<void> {
     }
   }
 
-  // Insert text rows first, then image rows
-  if (allTextRows.length > 0) {
-    await db.insert(extractedSignsTable).values(allTextRows);
+  // Deduplicate within each pass, then remove cross-pass duplicates from image rows
+  const dedupedTextRows = deduplicateSignRows(allTextRows);
+  const textSeenKeys = new Set(
+    dedupedTextRows
+      .filter((r) => r.location && r.signType)
+      .map((r) => `${r.location!.toLowerCase().trim()}||${r.signType!.toLowerCase().trim()}`),
+  );
+  const dedupedImageRows = deduplicateSignRows(
+    allImageRows.filter((r) => {
+      if (!r.location || !r.signType) return true;
+      return !textSeenKeys.has(`${r.location.toLowerCase().trim()}||${r.signType.toLowerCase().trim()}`);
+    }),
+  );
+
+  logger.info(
+    {
+      jobId,
+      textBefore: allTextRows.length,
+      textAfter: dedupedTextRows.length,
+      imageBefore: allImageRows.length,
+      imageAfter: dedupedImageRows.length,
+    },
+    "Sign deduplication complete",
+  );
+
+  if (dedupedTextRows.length > 0) {
+    await db.insert(extractedSignsTable).values(dedupedTextRows);
   }
-  if (allImageRows.length > 0) {
-    await db.insert(extractedSignsTable).values(allImageRows);
+  if (dedupedImageRows.length > 0) {
+    await db.insert(extractedSignsTable).values(dedupedImageRows);
   }
 
   // Log overall verification stats (actual boosts applied in-memory per-file above)

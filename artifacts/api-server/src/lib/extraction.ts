@@ -66,6 +66,13 @@ IMPORTANT RULES:
 - If the document contains NO sign-related information, return an empty JSON array: []
 - NEVER explain why there are no signs. ONLY output the JSON array (even if it is empty).
 
+DEDUPLICATION RULES:
+- Each physical door or room produces exactly ONE entry per sign type. Do NOT output the same room + sign type combination twice, even if the room label appears in both a schedule table and as a callout on a floor plan page.
+- Do NOT add signs based on building code requirements alone. Only output signs that have a visible sign symbol, callout bubble, schedule row, or label present on the plan itself.
+- A single location (e.g., "Electrical Room 101A") may correctly have MULTIPLE entries with DIFFERENT sign types (Room ID + Electrical Hazard + Evacuation Map). These are valid distinct entries and must all be kept — do NOT collapse them.
+- If the same room label appears in both a structured schedule pass and a visual scan of the floor plan, output it ONCE. Prefer the entry with the most complete data (detail_reference, dimensions, mounting_type populated).
+- Do NOT output a sign entry solely because it is code-required for that occupancy type if no actual sign symbol or annotation is visible in the document.
+
 SIGN SCHEDULE / SPECIFICATION PAGES:
 ---
 `;
