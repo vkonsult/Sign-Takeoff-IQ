@@ -300,21 +300,35 @@ function findSignLocation(
     }
   }
 
-  // ── Pass 0.5: if any candidate has score 1.0 (all tokens matched), return immediately ──
-  const perfectMatch = candidates.find((c) => c.score === 1.0);
-  if (perfectMatch) {
-    return { x: perfectMatch.x, y: perfectMatch.y, matched: perfectMatch.matched };
+  // ── Pick the best candidate: prefer score=1.0, then closest to page center.
+  // Legends and title blocks live at page corners/edges; actual callout labels
+  // are in the interior of the floor plan.  Choosing the interior-most candidate
+  // dramatically reduces "legend clustering" where every sign of the same type
+  // maps to the same legend row at the top-left of the page.
+  function interiorScore(c: Scored): number {
+    // Distance from center (0.5, 0.5) — lower is more interior
+    const dx = c.x - 0.5;
+    const dy = c.y - 0.5;
+    return Math.sqrt(dx * dx + dy * dy);
   }
 
   if (candidates.length > 0) {
-    candidates.sort((a, b) => b.score - a.score);
-    // Only return partial matches if they score reasonably well (>= 0.6)
-    const best = candidates[0]!;
+    const maxScore = candidates.reduce((m, c) => Math.max(m, c.score), 0);
+    // Only consider candidates that share the top match score
+    const topCandidates = candidates.filter((c) => c.score === maxScore);
+    // Among equal-score candidates, pick the one nearest the page interior
+    topCandidates.sort((a, b) => interiorScore(a) - interiorScore(b));
+    const best = topCandidates[0]!;
+    // Require a decent score threshold
     if (best.score >= 0.6) return { x: best.x, y: best.y, matched: best.matched };
   }
 
   // ── Pass 2: reconstruct text runs (handles per-character fragmentation) ───
   const runs = buildTextRuns(items);
+
+  // Collect all run matches across all targets, then pick interior-most
+  type RunMatch = { x: number; y: number; matched: string };
+  const runMatches: RunMatch[] = [];
 
   for (const target of targets) {
     const needle = target.toLowerCase().replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim();
@@ -324,11 +338,11 @@ function findSignLocation(
     for (const run of runs) {
       const haystack = run.text.toLowerCase().replace(/[^a-z0-9\s]/g, " ");
       if (haystack.includes(needle) || needle.split(" ").some((word) => word.length >= 3 && haystack.includes(word))) {
-        return {
+        runMatches.push({
           x: Math.min(1, Math.max(0, run.midX / pageW)),
           y: Math.min(1, Math.max(0, 1 - run.midY / pageH)),
           matched: target,
-        };
+        });
       }
     }
 
@@ -349,19 +363,28 @@ function findSignLocation(
 
         const haystack = combined.toLowerCase().replace(/[^a-z0-9\s]/g, " ");
         if (haystack.includes(needle)) {
-          // Use position midpoint of the window
           const allX = windowRuns.map((r2) => r2.midX);
           const allY = windowRuns.map((r2) => r2.midY);
           const avgX = allX.reduce((a, b) => a + b, 0) / allX.length;
           const avgY = allY.reduce((a, b) => a + b, 0) / allY.length;
-          return {
+          runMatches.push({
             x: Math.min(1, Math.max(0, avgX / pageW)),
             y: Math.min(1, Math.max(0, 1 - avgY / pageH)),
             matched: target,
-          };
+          });
         }
       }
     }
+  }
+
+  // Pick the interior-most run match (same heuristic as Pass 1)
+  if (runMatches.length > 0) {
+    runMatches.sort((a, b) => {
+      const da = Math.sqrt((a.x - 0.5) ** 2 + (a.y - 0.5) ** 2);
+      const db = Math.sqrt((b.x - 0.5) ** 2 + (b.y - 0.5) ** 2);
+      return da - db;
+    });
+    return runMatches[0]!;
   }
 
   return null;
@@ -555,6 +578,30 @@ export function SignReviewModal({
             color: "#22c55e",
             label: "?",
             isCurrent: true,
+          });
+        }
+
+        // ── Cluster deduplication: spread markers that landed at the same
+        // position into a small circle so they remain individually clickable.
+        // This handles residual cases where text-search still finds the same
+        // PDF text item for multiple signs (e.g., a legend row that appears
+        // multiple times in the text layer at exactly the same coordinate).
+        const CLUSTER_EPS = 0.015; // ~1.5% of page width/height
+        const posGroups = new Map<string, number[]>();
+        markers.forEach((m, i) => {
+          const key = `${Math.round(m.x / CLUSTER_EPS)},${Math.round(m.y / CLUSTER_EPS)}`;
+          if (!posGroups.has(key)) posGroups.set(key, []);
+          posGroups.get(key)!.push(i);
+        });
+        for (const indices of posGroups.values()) {
+          if (indices.length <= 1) continue;
+          const cx = markers[indices[0]!]!.x;
+          const cy = markers[indices[0]!]!.y;
+          const radius = 0.025 + 0.005 * (indices.length - 2); // grow radius for larger clusters
+          indices.forEach((idx, k) => {
+            const angle = (2 * Math.PI * k) / indices.length - Math.PI / 2;
+            markers[idx]!.x = Math.min(1, Math.max(0, cx + radius * Math.cos(angle)));
+            markers[idx]!.y = Math.min(1, Math.max(0, cy + radius * Math.sin(angle)));
           });
         }
 
