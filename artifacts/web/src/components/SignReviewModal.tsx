@@ -282,8 +282,6 @@ function findSignLocation(
   sign: ExtractedSign
 ): { x: number; y: number; matched: string } | null {
 
-  const _debugSign = ["RI-56", "RI-57", "RI-01", "RI-07", "EL-01"].includes(sign.signIdentifier ?? "");
-
   // ── Pass 0: exact normalized identifier match ─────────────────────────────
   // Sign identifiers like "RI-56" or "EL-04" appear in TWO places on a plan:
   //   1. The callout bubble at the unit door (the CORRECT position)
@@ -321,8 +319,6 @@ function findSignLocation(
           }
         }
       }
-
-      if (_debugSign) console.log(`[DBG] P0 ${sign.signIdentifier} idHits=${idHits.length}`, idHits.map(h => `(${h.x.toFixed(3)},${h.y.toFixed(3)})`));
 
       // Only trust the identifier if it appears exactly once — that's the callout.
       // Multiple occurrences mean schedule + callout; we can't tell them apart.
@@ -362,40 +358,49 @@ function findSignLocation(
     return false;
   }
 
-  // Detect if a hit is inside a sign-schedule TABLE COLUMN rather than an
-  // isolated floor-plan unit label.
+  // Verify that a room-number hit is at a FLOOR-PLAN position (inside a room)
+  // rather than a SCHEDULE TABLE position.
   //
-  // Key observation: schedule table rows are packed tight (~0.5–1.5% y-apart).
-  // Floor-plan unit labels are spread out (each unit takes 3–7% of page height).
+  // Strategy: "context co-location." In the floor plan, the room number and its
+  // context words (unit type, room name, building prefix) are printed TOGETHER
+  // inside the same small room box — within 3.5% of page space. In a schedule
+  // table the same words are in separate columns, typically 5–15% apart in x.
   //
-  // Strategy: for the hit position (hx, hy), count how many OTHER room-number-
-  // pattern text items are in the same NARROW x-band (±2%) AND within a CLOSE
-  // y-range (0.5%–2%) — indicating adjacent schedule rows. If 2 or more such
-  // tightly-packed neighbours exist → the hit is in a schedule column → skip.
+  // We extract context words from the full location string, excluding the room
+  // number token we already matched, and check whether ANY of those context
+  // words appears within CONTEXT_RADIUS of the hit.
   //
-  // This is immune to stairwell labels (AS2-1, BS2-1) and other false triggers
-  // because those labels don't cluster into tight columns of room numbers.
-  const ROOM_NUM_RE = /^(?:[a-z]{1,2}\d{2,4}[a-z]?|\d{2,4}[a-z]{1,2})$/;
-  function isInScheduleColumn(hx: number, hy: number, debug = false): boolean {
-    const X_TOL = 0.025; // ±2.5% x = same column
-    const Y_MIN = 0.004; // skip items at essentially the same y (same item)
-    const Y_CLOSE = 0.025; // within 2.5% y = tightly-packed schedule row
-    let closeCount = 0;
+  // Examples:
+  //   "UNIT 1A 125A" token="125A" → look for "UNIT","1A" near hit
+  //   "CORR A118"    token="A118" → look for "CORR" near hit
+  //   "FITNESS A123" token="A123" → look for "FITNESS" near hit
+  const CONTEXT_RADIUS = 0.05; // 5% of page — snug enough to exclude table columns
+  function hasContextNearHit(locationSrc: string, tokenNorm: string, hx: number, hy: number): boolean {
+    // Collect all words/codes from the location string, excluding the matched token.
+    const words = (locationSrc.match(/\S+/g) ?? [])
+      .map((w) => normId(w))
+      .filter((w) => w.length >= 2 && w !== tokenNorm);
+    if (words.length === 0) return true; // no context to check → accept
+
     for (const item of items) {
       if (!item.str.trim()) continue;
       const iNorm = normId(item.str);
-      if (!ROOM_NUM_RE.test(iNorm)) continue;
+      // Accept if ANY context word is a substring match with this item
+      const matches = words.some(
+        (w) =>
+          iNorm === w ||
+          (w.length >= 3 && iNorm.includes(w)) ||
+          (iNorm.length >= 3 && w.includes(iNorm)),
+      );
+      if (!matches) continue;
       const [, , , , tx, ty] = item.transform;
       const ix = tx / pageW;
       const iy = 1 - ty / pageH;
-      const dx = Math.abs(ix - hx);
-      const dy = Math.abs(iy - hy);
-      if (dx <= X_TOL && dy > Y_MIN && dy <= Y_CLOSE) {
-        closeCount++;
-        if (debug) console.log(`[DBG]   → close column neighbour: "${item.str}" norm="${iNorm}" @(${ix.toFixed(3)},${iy.toFixed(3)}) dy=${dy.toFixed(3)}`);
-      }
+      const dx = ix - hx;
+      const dy = iy - hy;
+      if (Math.sqrt(dx * dx + dy * dy) <= CONTEXT_RADIUS) return true;
     }
-    return closeCount >= 2; // 2+ tightly-spaced room numbers → schedule table
+    return false; // no context word found near the hit → likely a schedule entry
   }
 
   const locationSource = [sign.location, sign.messageContent].filter(Boolean).join(" ");
@@ -409,8 +414,6 @@ function findSignLocation(
       .sort((a, b) => b.length - a.length); // longest (most specific) first
 
     const runsForRoom = buildTextRuns(items);
-
-    if (_debugSign) console.log(`[DBG] P1 ${sign.signIdentifier} tokens=`, roomTokens, `loc="${locationSource}"`);
 
     for (const token of roomTokens) {
       const tokenNorm = normId(token);
@@ -447,14 +450,11 @@ function findSignLocation(
 
       if (hits.length === 0 || hits.length > 2) continue; // not found or too ambiguous
 
-      // ── Schedule-table detection ───────────────────────────────────────────
-      // Use the dense-column detector: if the hit has 2+ tightly-packed room
-      // numbers in the same x-band → it's in a schedule column → skip.
-      const floorPlanHits = hits.filter((h) => {
-        const inSchedule = isInScheduleColumn(h.x, h.y, _debugSign);
-        if (_debugSign) console.log(`[DBG]   token="${token}" hit"${h.raw}"@(${h.x.toFixed(3)},${h.y.toFixed(3)}) inSchedule=${inSchedule}`);
-        return !inSchedule;
-      });
+      // ── Floor-plan verification ────────────────────────────────────────────
+      // Keep only hits where the location's context words appear within
+      // CONTEXT_RADIUS of the hit — confirming it's a floor-plan room label,
+      // not a schedule-table entry (where the same text is in distant columns).
+      const floorPlanHits = hits.filter((h) => hasContextNearHit(locationSource, tokenNorm, h.x, h.y));
 
       if (floorPlanHits.length === 0) continue; // all hits are in schedule rows → skip
 
