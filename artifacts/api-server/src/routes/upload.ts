@@ -6,6 +6,7 @@ import { db } from "@workspace/db";
 import { jobsTable, jobFilesTable } from "@workspace/db";
 import { ensureJobUploadDir } from "../lib/storage";
 import { processJob } from "../lib/process-job";
+import { processJobHeuristic } from "../lib/process-job-heuristic";
 
 const router: IRouter = Router();
 
@@ -80,6 +81,9 @@ router.post("/upload", (req, res, next) => {
     const firstName = files[0]?.originalname ?? "Untitled Job";
     const jobName = firstName.replace(/\.pdf$/i, "").replace(/[_-]/g, " ").trim();
 
+    // Optional form field: "method" = "gemini" (default) | "heuristic"
+    const scanMethod = req.body?.method === "heuristic" ? "heuristic" : "gemini";
+
     const [job] = await db
       .insert(jobsTable)
       .values({
@@ -87,6 +91,7 @@ router.post("/upload", (req, res, next) => {
         status: "pending",
         fileCount: files.length,
         organizationId: orgId,
+        scanMethod,
       })
       .returning();
 
@@ -107,7 +112,7 @@ router.post("/upload", (req, res, next) => {
 
     await db.insert(jobFilesTable).values(fileRecords);
 
-    req.log.info({ jobId: job.id, fileCount: files.length }, "Upload complete, auto-starting extraction");
+    req.log.info({ jobId: job.id, fileCount: files.length, scanMethod }, "Upload complete, auto-starting extraction");
 
     res.status(201).json({
       jobId: job.id,
@@ -115,9 +120,15 @@ router.post("/upload", (req, res, next) => {
       message: `Successfully uploaded ${files.length} file(s). Extraction starting automatically.`,
     });
 
-    processJob(job.id).catch((err) => {
-      req.log.error({ err, jobId: job.id }, "Auto-triggered extraction failed");
-    });
+    if (scanMethod === "heuristic") {
+      processJobHeuristic(job.id).catch((err) => {
+        req.log.error({ err, jobId: job.id }, "Auto-triggered heuristic extraction failed");
+      });
+    } else {
+      processJob(job.id).catch((err) => {
+        req.log.error({ err, jobId: job.id }, "Auto-triggered extraction failed");
+      });
+    }
   } catch (err) {
     req.log.error({ err }, "Upload failed");
     res.status(500).json({ error: "Upload failed", details: String(err) });

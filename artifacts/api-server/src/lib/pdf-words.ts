@@ -47,6 +47,7 @@ interface PdfjsPage {
 }
 
 interface PdfjsDocument {
+  numPages: number;
   getPage(num: number): Promise<PdfjsPage>;
   destroy(): void;
 }
@@ -304,4 +305,18 @@ export async function extractPagePhrases(
   phraseCache.set(cacheKey, result);
 
   return result;
+}
+
+/**
+ * Return the number of pages in a PDF without extracting any text.
+ * Used by the heuristic extractor to know how many pages to iterate.
+ */
+export async function getPdfPageCount(pdfPath: string): Promise<number> {
+  const lib = await getPdfjs();
+  const rawBuffer = await fs.readFile(pdfPath);
+  const data = new Uint8Array(rawBuffer);
+  const doc = await lib.getDocument({ data, disableAutoFetch: true, disableStream: true }).promise;
+  const count = doc.numPages;
+  doc.destroy();
+  return count;
 }

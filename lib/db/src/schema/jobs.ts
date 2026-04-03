@@ -26,6 +26,7 @@ export const jobsTable = pgTable("jobs", {
   projectAddress: text("project_address"),
   projectCity: text("project_city"),
   projectState: text("project_state"),
+  scanMethod: text("scan_method").default("gemini"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
