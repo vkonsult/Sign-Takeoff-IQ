@@ -193,36 +193,33 @@ function exactBoundaryMatch(haystack: string, needle: string): boolean {
   return false;
 }
 
-/** Jaro string similarity in [0, 1]. */
-function jaro(s: string, t: string): number {
-  if (s === t) return 1;
-  if (!s.length || !t.length) return 0;
-  const matchDist = Math.max(Math.floor(Math.max(s.length, t.length) / 2) - 1, 0);
-  const sMatch = new Array(s.length).fill(false);
-  const tMatch = new Array(t.length).fill(false);
-  let matches = 0;
-  for (let i = 0; i < s.length; i++) {
-    const lo = Math.max(0, i - matchDist);
-    const hi = Math.min(i + matchDist + 1, t.length);
-    for (let j = lo; j < hi; j++) {
-      if (tMatch[j] || s[i] !== t[j]) continue;
-      sMatch[i] = true; tMatch[j] = true; matches++; break;
+/** Levenshtein edit distance between two strings. */
+function levenshtein(s: string, t: string): number {
+  const m = s.length, n = t.length;
+  // Use two rolling rows to keep memory O(n)
+  let prev = Array.from({ length: n + 1 }, (_, j) => j);
+  let curr = new Array<number>(n + 1);
+  for (let i = 1; i <= m; i++) {
+    curr[0] = i;
+    for (let j = 1; j <= n; j++) {
+      curr[j] = s[i - 1] === t[j - 1]
+        ? prev[j - 1]!
+        : 1 + Math.min(prev[j]!, curr[j - 1]!, prev[j - 1]!);
     }
+    [prev, curr] = [curr, prev];
   }
-  if (!matches) return 0;
-  let trans = 0;
-  let k = 0;
-  for (let i = 0; i < s.length; i++) {
-    if (!sMatch[i]) continue;
-    while (!tMatch[k]) k++;
-    if (s[i] !== t[k]) trans++;
-    k++;
-  }
-  return (matches / s.length + matches / t.length + (matches - trans / 2) / matches) / 3;
+  return prev[n]!;
+}
+
+/** Levenshtein similarity in [0, 1]: 1 − normalised edit distance. */
+function levenshteinSim(a: string, b: string): number {
+  if (a === b) return 1;
+  if (!a.length || !b.length) return 0;
+  return 1 - levenshtein(a, b) / Math.max(a.length, b.length);
 }
 
 /**
- * Combined phrase-match score: 70% token overlap + 30% Jaro similarity.
+ * Combined phrase-match score: 70% token overlap + 30% Levenshtein similarity.
  * Operates on normalised (lower-case, punctuation stripped) forms.
  */
 function phraseMatchScore(phraseText: string, query: string): number {
@@ -233,8 +230,8 @@ function phraseMatchScore(phraseText: string, query: string): number {
   const qt = tokenize(qn);
   const shared = pt.filter((tok) => qt.includes(tok)).length;
   const tokenScore = shared / Math.max(pt.length, qt.length, 1);
-  const jaroScore = jaro(pn, qn);
-  return tokenScore * 0.7 + jaroScore * 0.3;
+  const levScore = levenshteinSim(pn, qn);
+  return tokenScore * 0.7 + levScore * 0.3;
 }
 
 /**
@@ -411,6 +408,9 @@ export function SignReviewModal({
   // ── Highlight / marker state ────────────────────────────────────────────
   type ServerPhraseData = { pageWidth: number; pageHeight: number; phrases: PdfPhrase[] };
   const [serverPhrases, setServerPhrases] = useState<ServerPhraseData | null>(null);
+  // Track whether the most recent phrase fetch failed so we can show ghost markers
+  // even when phrases are unavailable (rather than clearing markers silently).
+  const [phrasesFetchFailed, setPhrasesFetchFailed] = useState(false);
   const [textMarkers, setTextMarkers] = useState<TextMarker[]>([]);
   const [nativeSize, setNativeSize] = useState<{ w: number; h: number } | null>(null);
 
@@ -465,31 +465,36 @@ export function SignReviewModal({
   useEffect(() => {
     if (!file) {
       setServerPhrases(null);
+      setPhrasesFetchFailed(false);
       return;
     }
     setServerPhrases(null);
+    setPhrasesFetchFailed(false);
     let cancelled = false;
     apiFetch(`/api/jobs/${jobId}/files/${file.id}/pages/${pageNumber}/words`)
-      .then((res) => (res.ok ? res.json() : null))
-      .then((data: { pageWidth: number; pageHeight: number; phrases: PdfPhrase[] } | null) => {
-        if (!cancelled && data) setServerPhrases(data);
+      .then((res) => (res.ok ? res.json() : Promise.reject(new Error("non-ok"))))
+      .then((data: { pageWidth: number; pageHeight: number; phrases: PdfPhrase[] }) => {
+        if (!cancelled) setServerPhrases(data);
       })
-      .catch(() => { /* silently fail — ghost marker will appear for active sign */ });
+      .catch(() => {
+        if (!cancelled) setPhrasesFetchFailed(true);
+      });
     return () => { cancelled = true; };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [file?.id, pageNumber, jobId]);
 
   // Compute text markers from server phrases.
+  // When phrases are available, markers use bbox centres + fuzzy matching.
+  // When the fetch is still in-flight (serverPhrases null, failed false), we
+  // wait. When the fetch failed, we render ghost markers so the active sign
+  // is always visually represented.
   // activeSign.id is a dep so colors re-compute when user clicks a marker.
   useEffect(() => {
-    if (!serverPhrases) {
-      setTextMarkers([]);
-      setTextSearchStatus("idle");
-      return;
-    }
+    // Still loading — keep whatever markers were already showing
+    if (!serverPhrases && !phrasesFetchFailed) return;
 
     // Set native page size from server data so the SVG overlay scales correctly.
-    setNativeSize({ w: serverPhrases.pageWidth, h: serverPhrases.pageHeight });
+    if (serverPhrases) setNativeSize({ w: serverPhrases.pageWidth, h: serverPhrases.pageHeight });
 
     if (signsOnCurrentPage.length === 0) {
       setTextMarkers([]);
@@ -499,7 +504,8 @@ export function SignReviewModal({
 
     const markers: TextMarker[] = [];
     let currentSignFound = false;
-    const { phrases } = serverPhrases;
+    // Use server phrases if available; empty array on failure (ghost-only path)
+    const phrases = serverPhrases?.phrases ?? [];
 
     for (const s of signsOnCurrentPage) {
       const isCurrent = s.id === activeSign.id;
@@ -576,7 +582,7 @@ export function SignReviewModal({
       setTextSearchStatus("idle");
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [serverPhrases, pageNumber, sign.id, signsOnCurrentPage.length, activeSign.id]);
+  }, [serverPhrases, phrasesFetchFailed, pageNumber, sign.id, signsOnCurrentPage.length, activeSign.id]);
 
   const handleField = useCallback(
     (field: keyof FormState, value: string | boolean) => {

@@ -14,38 +14,94 @@ export interface PageWords {
   phrases: PdfPhrase[];
 }
 
-// In-memory phrase cache keyed by `fileId:pageNum`
+// ── Typed interfaces for pdfjs-dist objects we interact with ─────────────
+// We define our own narrow interfaces rather than relying on the full
+// pdfjs-dist type package, which has a different shape for the legacy build.
+
+interface PdfjsTextItem {
+  str: string;
+  transform: [number, number, number, number, number, number];
+  width: number;
+  height: number;
+}
+
+interface PdfjsTextContent {
+  items: Array<PdfjsTextItem | Record<string, unknown>>;
+}
+
+interface PdfjsViewport {
+  width: number;
+  height: number;
+}
+
+interface PdfjsPage {
+  getViewport(opts: { scale: number }): PdfjsViewport;
+  getTextContent(): Promise<PdfjsTextContent>;
+}
+
+interface PdfjsDocument {
+  getPage(num: number): Promise<PdfjsPage>;
+  destroy(): void;
+}
+
+interface PdfjsGetDocumentTask {
+  promise: Promise<PdfjsDocument>;
+}
+
+interface PdfjsGetDocumentOpts {
+  data: Uint8Array;
+  disableAutoFetch: boolean;
+  disableStream: boolean;
+}
+
+interface PdfjsLib {
+  getDocument(opts: PdfjsGetDocumentOpts): PdfjsGetDocumentTask;
+  GlobalWorkerOptions: { workerSrc: string };
+}
+
+// ── In-memory phrase cache keyed by `fileId:pageNum` ─────────────────────
 const phraseCache = new Map<string, PageWords>();
 
 // ── pdfjs-dist lazy loader ────────────────────────────────────────────────
 // Must use the "legacy" build in Node.js — the standard build references
 // browser-only APIs (DOMMatrix, CanvasRenderingContext2D, …) at module
 // load time.  The legacy build ships Node.js-compatible polyfills.
-let pdfjsModule: { getDocument: (opts: unknown) => { promise: Promise<unknown> } } | null = null;
+let pdfjsLib: PdfjsLib | null = null;
 
-async function getPdfjs() {
-  if (pdfjsModule) return pdfjsModule;
+async function getPdfjs(): Promise<PdfjsLib> {
+  if (pdfjsLib) return pdfjsLib;
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const lib = await import("pdfjs-dist/legacy/build/pdf.mjs") as any;
+  // Dynamic import resolved at runtime — the legacy build is a sibling of the
+  // main pdfjs-dist package entry and is guaranteed present for pdfjs-dist ≥ 4.
+  const imported = await import("pdfjs-dist/legacy/build/pdf.mjs");
+  const lib = imported as unknown as PdfjsLib;
 
   // Configure worker for Node.js once.
   // We use the globalThis.require injected by the esbuild banner to resolve
   // the worker path inside node_modules — this avoids hard-coding any path.
   try {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const req = (globalThis as any).require as NodeRequire | undefined;
+    // The esbuild build banner injects: globalThis.require = createRequire(import.meta.url)
+    const req = (globalThis as Record<string, unknown>)["require"] as (NodeRequire & { resolve: (id: string) => string }) | undefined;
     if (req?.resolve) {
       const workerPath = req.resolve("pdfjs-dist/legacy/build/pdf.worker.min.mjs");
       lib.GlobalWorkerOptions.workerSrc = `file://${workerPath}`;
     }
   } catch {
-    // Fallback: empty string → pdfjs falls back to synchronous in-process mode
+    // Fallback: empty string → pdfjs uses synchronous in-process mode
     lib.GlobalWorkerOptions.workerSrc = "";
   }
 
-  pdfjsModule = { getDocument: lib.getDocument };
-  return pdfjsModule;
+  pdfjsLib = lib;
+  return lib;
+}
+
+// ── Type guard: distinguishes real TextItem from TextMarkedContent ────────
+function isTextItem(item: PdfjsTextItem | Record<string, unknown>): item is PdfjsTextItem {
+  return (
+    typeof (item as PdfjsTextItem).str === "string" &&
+    Array.isArray((item as PdfjsTextItem).transform) &&
+    typeof (item as PdfjsTextItem).width === "number"
+  );
 }
 
 // ── Core extractor ────────────────────────────────────────────────────────
@@ -69,69 +125,57 @@ export async function extractPagePhrases(
   const cached = phraseCache.get(cacheKey);
   if (cached) return cached;
 
-  const { getDocument } = await getPdfjs();
+  const lib = await getPdfjs();
 
   const rawBuffer = await fs.readFile(pdfPath);
   const data = new Uint8Array(rawBuffer);
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const doc = await (getDocument({ data, disableAutoFetch: true, disableStream: true }) as any).promise;
+  const doc = await lib.getDocument({ data, disableAutoFetch: true, disableStream: true }).promise;
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const page = await doc.getPage(pageNum) as any;
+  const page = await doc.getPage(pageNum);
   const viewport = page.getViewport({ scale: 1.0 });
-  const pageW: number = viewport.width;
-  const pageH: number = viewport.height;
+  const pageW = viewport.width;
+  const pageH = viewport.height;
 
   const content = await page.getTextContent();
 
-  interface RawItem {
-    str: string;
-    transform: number[];
-    width: number;
-    height: number;
-  }
-
-  // Filter to real text items (ignore TextMarkedContent / whitespace-only)
-  const items = (content.items as unknown as RawItem[]).filter(
-    (it) => typeof it.str === "string" && it.str.trim().length > 0,
-  );
+  // Filter to real text items (TextItem, not TextMarkedContent) with visible text
+  const items = content.items
+    .filter(isTextItem)
+    .filter((it) => it.str.trim().length > 0);
 
   // Sort top-to-bottom (high Y first in PDF space), left-to-right on same line
   const sorted = [...items].sort((a, b) => {
-    const ay = a.transform[5]!;
-    const by_ = b.transform[5]!;
+    const ay = a.transform[5];
+    const by_ = b.transform[5];
     if (Math.abs(ay - by_) > 3) return by_ - ay; // different lines
-    return a.transform[4]! - b.transform[4]!;     // same line → left to right
+    return a.transform[4] - b.transform[4];       // same line → left to right
   });
 
   const phrases: PdfPhrase[] = [];
-  let group: RawItem[] | null = null;
+  let group: PdfjsTextItem[] | null = null;
 
-  function flushGroup() {
+  function flushGroup(): void {
     if (!group || group.length === 0) return;
 
-    // Full bounding box across all items in the group
-    const minX = Math.min(...group.map((i) => i.transform[4]!));
-    const maxX = Math.max(...group.map((i) => i.transform[4]! + i.width));
+    const minX = Math.min(...group.map((i) => i.transform[4]));
+    const maxX = Math.max(...group.map((i) => i.transform[4] + i.width));
     // In PDF space y increases upward; transform[5] = baseline (bottom of glyph)
     // Top of glyph = baseline + height
-    const minBaseline = Math.min(...group.map((i) => i.transform[5]!));
-    const maxBaseline = Math.max(...group.map((i) => i.transform[5]!));
+    const minBaseline = Math.min(...group.map((i) => i.transform[5]));
+    const maxBaseline = Math.max(...group.map((i) => i.transform[5]));
     const maxH = Math.max(...group.map((i) => Math.abs(i.height)));
 
-    const topPdf = maxBaseline + (maxH || 8);  // top edge (PDF space, y-up)
-    const botPdf = minBaseline;                 // bottom edge
+    const topPdf = maxBaseline + (maxH || 8); // top edge (PDF space, y-up)
+    const botPdf = minBaseline;               // bottom edge
 
     // Convert to normalised top-down coordinates
-    const x0 = Math.min(1, Math.max(0, minX / pageW));
-    const x1 = Math.min(1, Math.max(0, maxX / pageW));
-    const y0 = Math.min(1, Math.max(0, 1 - topPdf / pageH)); // top in top-down
-    const y1 = Math.min(1, Math.max(0, 1 - botPdf / pageH)); // bottom in top-down
-
     phrases.push({
       text: group.map((i) => i.str).join(""),
-      x0, y0, x1, y1,
+      x0: Math.min(1, Math.max(0, minX / pageW)),
+      x1: Math.min(1, Math.max(0, maxX / pageW)),
+      y0: Math.min(1, Math.max(0, 1 - topPdf / pageH)), // top in top-down
+      y1: Math.min(1, Math.max(0, 1 - botPdf / pageH)), // bottom in top-down
     });
     group = null;
   }
@@ -143,11 +187,11 @@ export async function extractPagePhrases(
     }
 
     const prev = group[group.length - 1]!;
-    const prevY = prev.transform[5]!;
-    const prevX = prev.transform[4]!;
+    const prevY = prev.transform[5];
+    const prevX = prev.transform[4];
     const prevW = prev.width || 8;
-    const currY = item.transform[5]!;
-    const currX = item.transform[4]!;
+    const currY = item.transform[5];
+    const currX = item.transform[4];
 
     const sameLine = Math.abs(currY - prevY) <= 3;
     const adjacent = currX - (prevX + prevW) < prevW * 3;
@@ -167,7 +211,7 @@ export async function extractPagePhrases(
 
   // Cap cache to ~200 pages to avoid unbounded memory growth on long-running servers
   if (phraseCache.size >= 200) {
-    const firstKey = phraseCache.keys().next().value;
+    const firstKey = phraseCache.keys().next().value as string | undefined;
     if (firstKey) phraseCache.delete(firstKey);
   }
   phraseCache.set(cacheKey, result);
