@@ -731,9 +731,6 @@ const SIGN_SCHEDULE_KEYWORDS = [
   // CSI specification section patterns (Section 10 14 00 SIGNAGE and similar)
   "section 10 14",        // CSI division 10 signage spec
   "10 14 00",             // exact CSI section number
-  "part 1 - general",     // CSI format Part 1/2/3 headers
-  "part 2 - products",
-  "part 3 - execution",
   "photopolymer",         // AAB/ADA sign substrate used in spec sections
   "aab-compliant",        // Massachusetts Architectural Access Board
   "aab compliant",
@@ -795,9 +792,9 @@ const SIGN_SCHEDULE_FILENAME_SIGNALS = [
   "sign schedule", "sign-schedule", "signage schedule",
   "signage-schedule", "sign list", "sign index",
   "sign program", "signage program",
-  // Spec / specification documents (e.g. "Specs_Signage.pdf", "10-14-00.pdf")
+  // Spec / specification documents (e.g. "Specs_Signage.pdf", "10-14-00.pdf", "signage-spec.pdf")
   "specs_signage", "spec_signage", "signage_spec", "signage-spec",
-  "specification", "10-14-00", "10_14_00", "101400",
+  "specification", "10-14-00", "10-14", "10_14_00", "10_14", "101400",
 ];
 
 function filenameClassificationBoost(filename: string): { floorPlan: number; signSchedule: number } {
