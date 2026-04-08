@@ -828,14 +828,22 @@ function classifyPage(pageNum: number, text: string, filenameBoost?: { floorPlan
   let type: PageType = "other";
 
   // When a filename strongly implies a type (boost ≥ 8), that classification
-  // locks in unless the opposing TEXT score exceeds the boosted score by an
-  // additional half-boost margin.  This prevents high floor-plan text scores
-  // (from dimensions / room labels common to all architectural sheets) from
-  // overriding a clear sign-schedule filename.
+  // locks in unless the opposing TEXT score OVERWHELMINGLY dominates.  This is
+  // especially important for signage-schedule files, which are wide architectural
+  // drawing sheets that naturally contain many room-label words (elevator, stair,
+  // lobby, level) that would otherwise trigger a floor-plan mis-classification.
   const STRONG_BOOST = 8;
   if (boost.signSchedule >= STRONG_BOOST) {
-    // Filename says "sign schedule" — floor plan must be much higher to override
-    if (floorPlanScore >= 4 && floorPlanScore > signScheduleScore + boost.signSchedule * 0.5) {
+    // Filename explicitly says "sign schedule". Only allow floor_plan to override
+    // if the floor plan TEXT score is at least 3× the sign schedule TEXT score
+    // AND exceeds the full boosted sign schedule total by the boost amount.
+    // A plain signage-schedule drawing sheet with incidental room words should
+    // NEVER be reclassified as a floor plan.
+    const ssOverrideThreshold = Math.max(
+      textSignScheduleScore * 3 + boost.signSchedule,
+      textSignScheduleScore + boost.signSchedule * 2,
+    );
+    if (textFloorPlanScore >= 4 && textFloorPlanScore > ssOverrideThreshold) {
       type = "floor_plan";
     } else {
       type = "sign_schedule";
