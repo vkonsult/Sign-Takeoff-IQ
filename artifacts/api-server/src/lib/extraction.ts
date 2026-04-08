@@ -410,7 +410,7 @@ function buildTrainingContext(trainingSigns: VerifiedSignSummary[]): string {
   return `\n\n${blocks.join("\n\n")}\n`;
 }
 
-function buildFloorPlanADAPrompt(projectContext?: ProjectInfo, signScheduleContext?: string, verifiedSigns?: VerifiedSignSummary[], trainingContext?: VerifiedSignSummary[]): string {
+function buildFloorPlanADAPrompt(projectContext?: ProjectInfo, signScheduleContext?: string, verifiedSigns?: VerifiedSignSummary[], trainingContext?: VerifiedSignSummary[], specTypeContext?: string): string {
   const locationLine = projectContext?.address || projectContext?.city || projectContext?.state
     ? `\nPROJECT LOCATION: ${[projectContext.address, projectContext.city, projectContext.state, projectContext.zip].filter(Boolean).join(", ")}`
     : "";
@@ -420,6 +420,9 @@ function buildFloorPlanADAPrompt(projectContext?: ProjectInfo, signScheduleConte
   const stateRules = getStateSpecificRules(projectContext?.state ?? null);
   const scheduleCtx = signScheduleContext
     ? `\n\nSIGN SCHEDULE / SPECIFICATION CONTEXT (for reference only — do NOT re-list these as output rows; use them to understand sign types, identifiers, and specs defined for this project):\n---\n${signScheduleContext.slice(0, 10000)}\n---\n`
+    : "";
+  const specCtx = specTypeContext
+    ? `\n\nPROJECT SIGN TYPE CATALOG FROM SPECIFICATION (for reference only — use these definitions to correctly identify and describe sign types; do NOT generate separate output rows for the spec definitions themselves):\n---\n${specTypeContext.slice(0, 12000)}\n---\n`
     : "";
   const verifiedCtx = verifiedSigns && verifiedSigns.length > 0 ? buildVerifiedContext(verifiedSigns) : "";
   const trainingCtx = trainingContext && trainingContext.length > 0 ? buildTrainingContext(trainingContext) : "";
@@ -653,7 +656,7 @@ LEGEND / SYMBOL KEY EXCLUSION (important):
 - Only extract sign entries from actual room labels, space designations, and code requirements applicable to the real spaces shown in the floor plan — not from the legend.
 
 FLOOR PLAN PAGES (with page markers):
-${scheduleCtx}${trainingCtx}${verifiedCtx}---
+${scheduleCtx}${specCtx}${trainingCtx}${verifiedCtx}---
 `;
 }
 
@@ -875,7 +878,7 @@ function classifyPage(pageNum: number, text: string, filenameBoost?: { floorPlan
 
 // ─── PDF TEXT EXTRACTION ──────────────────────────────────────────────────────
 
-async function extractTextFromPdf(filePath: string): Promise<{
+export async function extractTextFromPdf(filePath: string): Promise<{
   pages: ScoredPage[];
   numPages: number;
 }> {
@@ -1947,6 +1950,46 @@ export async function extractProjectInfo(
   return { info: { project_name: null, address: null, city: null, state: null, zip: null, occupancy_type: null, ahj: null }, inputTokens: 0, outputTokens: 0 };
 }
 
+// ─── SPEC FILE HELPERS ────────────────────────────────────────────────────────
+
+/**
+ * Returns true when the uploaded filename clearly indicates a CSI specification
+ * document (Section 10 14 00 SIGNAGE, "Specs_Signage", etc.) rather than a
+ * drawing with actual sign location data.  Used by process-job to route spec
+ * files to context injection instead of standalone sign-row extraction.
+ */
+export function isSpecFile(filename: string): boolean {
+  const lower = filename.toLowerCase().replace(/[^a-z0-9]/g, " ");
+  // CSI section 10 14 XX patterns (e.g. "10-14-00", "10_14", "101400")
+  if (/10\s*14/.test(lower)) return true;
+  // Explicit "spec(s)" or "specification" near "sign" or "signage"
+  if ((lower.includes("spec") || lower.includes("specification")) &&
+    (lower.includes("sign") || lower.includes("signage"))) return true;
+  return false;
+}
+
+/**
+ * Formats raw spec PDF text into a context block that can be injected into
+ * schedule / floor-plan prompts so Gemini knows the project's sign type
+ * definitions (materials, mounting rules, compliance notes) before it reads
+ * the actual data sheets.
+ */
+export function buildSpecContextString(rawText: string): string {
+  if (!rawText || rawText.trim().length < 50) return "";
+  const truncated = rawText.slice(0, 18000);
+  return (
+    "\n\nPROJECT SIGN TYPE CATALOG FROM SPECIFICATION:\n" +
+    "The following sign type definitions come from the project's CSI Specification Section (SIGNAGE).\n" +
+    "When you encounter sign type codes (e.g. 1A, 2A, 2D, 3A, 4A, 5B, 9A …) referenced in the\n" +
+    "schedule or visible on floor plans, use these definitions to populate the materials,\n" +
+    "mounting_type, and notes fields for those entries.  Do NOT generate separate rows for each\n" +
+    "spec type definition — the definitions are context only.\n" +
+    "---\n" +
+    truncated +
+    "\n---\n"
+  );
+}
+
 // ─── MAIN EXPORT ──────────────────────────────────────────────────────────────
 
 export interface PageStats {
@@ -1960,7 +2003,8 @@ export async function extractSignsFromPdf(
   ai: GeminiAI,
   projectContext?: ProjectInfo,
   verifiedSigns?: VerifiedSignSummary[],
-  trainingContext?: VerifiedSignSummary[]
+  trainingContext?: VerifiedSignSummary[],
+  specTypeContext?: string
 ): Promise<{ rows: ExtractedSignRow[]; pageCount: number; rawText: string; inputTokens: number; outputTokens: number; pageStats: PageStats }> {
   const { pages, numPages } = await extractTextFromPdf(filePath);
 
@@ -1983,8 +2027,13 @@ export async function extractSignsFromPdf(
   if (signScheduleBlock.trim().length > 50) {
     signScheduleContext = signScheduleBlock; // also passed as reference context to Pass 2
     logger.info({ filePath: filePath.split("/").pop() }, "Running sign schedule extraction pass");
+    // Inject spec type definitions (from a companion spec file) at the top of the
+    // schedule prompt so Gemini can map type codes → materials/mounting/notes.
+    const schedulePromptPrefix = specTypeContext
+      ? SIGN_SCHEDULE_PROMPT + specTypeContext + "\n\nSIGN SCHEDULE / FLOOR PLAN PAGES:\n"
+      : SIGN_SCHEDULE_PROMPT;
     const { text: scheduleText, inputTokens: si, outputTokens: so } = await callGemini(
-      SIGN_SCHEDULE_PROMPT + signScheduleBlock,
+      schedulePromptPrefix + signScheduleBlock,
       ai,
       "sign-schedule"
     );
@@ -2037,7 +2086,7 @@ export async function extractSignsFromPdf(
     // Pre-build the prompt once (it's the same for all batches) then fire all
     // batches concurrently.  For a 5-page PDF with 5 batches this cuts latency
     // from 5 × T to T (limited by the slowest batch, not the sum).
-    const floorPlanPromptPrefix = buildFloorPlanADAPrompt(projectContext, signScheduleContext, verifiedSigns, trainingContext);
+    const floorPlanPromptPrefix = buildFloorPlanADAPrompt(projectContext, signScheduleContext, verifiedSigns, trainingContext, specTypeContext);
 
     const batchResults = await Promise.all(
       batches.map(async (batch, batchIdx) => {

@@ -8,7 +8,7 @@ import {
 } from "@workspace/db";
 
 import { ai } from "@workspace/integrations-gemini-ai";
-import { extractSignsFromPdf, extractSignsFromPdfImageVerify, extractProjectInfo, type ProjectInfo, type VerifiedSignSummary, type TextContextSign, type VerificationItem, type ExtractedSignRow } from "./extraction";
+import { extractSignsFromPdf, extractSignsFromPdfImageVerify, extractProjectInfo, extractTextFromPdf, isSpecFile, buildSpecContextString, type ProjectInfo, type VerifiedSignSummary, type TextContextSign, type VerificationItem, type ExtractedSignRow } from "./extraction";
 import { saveParsedResult } from "./storage";
 import { logger } from "./logger";
 
@@ -166,6 +166,44 @@ export async function processJob(jobId: string): Promise<void> {
     logger.warn({ err, jobId }, "Project info extraction failed — continuing without location context");
   }
 
+  // ── Spec vs data file routing ─────────────────────────────────────────────
+  // When a job includes both a CSI specification document AND drawing files
+  // (floor plans / signage schedules), the spec is read as instructional context
+  // that enriches how the drawing files are extracted — it does NOT generate
+  // standalone sign rows of its own.
+  const specFiles = files.filter((f) => isSpecFile(f.originalName));
+  const dataFiles = files.filter((f) => !isSpecFile(f.originalName));
+  const hasDataFiles = dataFiles.length > 0;
+
+  let specTypeContext: string | undefined;
+  if (specFiles.length > 0 && hasDataFiles) {
+    logger.info({ jobId, specFiles: specFiles.map((f) => f.originalName) }, "Spec files detected — extracting type catalog for context injection");
+    const specTexts: string[] = [];
+    for (const specFile of specFiles) {
+      try {
+        const { pages } = await extractTextFromPdf(specFile.storedPath);
+        const raw = pages.map((p) => p.text).join("\n");
+        specTexts.push(raw);
+        // Still record page count / text for the spec file in the DB
+        await db
+          .update(jobFilesTable)
+          .set({ pageCount: pages.length, extractedText: raw.slice(0, 10000) })
+          .where(eq(jobFilesTable.id, specFile.id));
+        logger.info({ fileName: specFile.originalName, pages: pages.length }, "Spec file text extracted for context");
+      } catch (err) {
+        logger.warn({ err, fileName: specFile.originalName }, "Failed to extract spec file text for context");
+      }
+    }
+    if (specTexts.length > 0) {
+      specTypeContext = buildSpecContextString(specTexts.join("\n\n--- SPEC FILE SEPARATOR ---\n\n"));
+      logger.info({ chars: specTypeContext.length }, "Spec type context built — will inject into drawing file prompts");
+    }
+  }
+
+  // Files to actually run sign extraction on: data files when they exist;
+  // fall back to all files (treating them as data) when only specs were uploaded.
+  const filesToProcess = hasDataFiles ? dataFiles : files;
+
   // ── PASSES 1–3: Text + visual extraction — all files in parallel ─────────────
   // Within each file: text extraction runs first, then visual verification uses
   // its results.  Across files: all pipelines run concurrently so a 4-file job
@@ -180,7 +218,7 @@ export async function processJob(jobId: string): Promise<void> {
     | { ok: false; file: typeof files[number]; error: string };
 
   const fileResults: FileResult[] = await Promise.all(
-    files.map(async (file): Promise<FileResult> => {
+    filesToProcess.map(async (file): Promise<FileResult> => {
       try {
         logger.info({ jobId, file: file.originalName }, "Extracting signs from file");
         const fileVerified = verifiedByFile[file.id] ?? [];
@@ -192,7 +230,8 @@ export async function processJob(jobId: string): Promise<void> {
           ai,
           projectContext,
           allVerifiedForFile.length > 0 ? allVerifiedForFile : undefined,
-          crossJobVerified.length > 0 ? crossJobVerified : undefined
+          crossJobVerified.length > 0 ? crossJobVerified : undefined,
+          specTypeContext
         );
 
         // Build page → text-sign context map for the visual verification prompt
