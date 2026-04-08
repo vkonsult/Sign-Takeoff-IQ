@@ -89,8 +89,34 @@ DEDUPLICATION RULES:
 - Do NOT output a sign entry solely because it is code-required for that occupancy type if no actual sign symbol or annotation is visible in the document.
 
 SIGN SCHEDULE / SPECIFICATION PAGES:
----
+When you encounter a structured sign schedule table (even if split across multiple columns), extract every row. If the table has separate columns per floor/level (e.g. "Lower Level | Main Level | Upper Level"), treat each column independently and include the floor/level name in the location.
+
+MULTI-COLUMN / MULTI-FLOOR SCHEDULE TABLES:
+When a page contains parallel floor-level columns (e.g. "Signage Schedule - Lower Level", "Signage Schedule - Main Level", "Signage Schedule - Upper Level" side by side):
+- Process each column independently from left to right.
+- Within each column, room sections appear as room-number + room-name headings (e.g. "101" followed by "PORCH", or "201 STAIR / ELEVATOR LOBBY"). Use the most recent room section heading as the location for all sign rows beneath it until the next room heading.
+- Sign rows follow the pattern: [Sign Type Code] [Quantity] [Signage Text] [Glass Backer: Yes/No] [Comments].
+- Map the sign type code (e.g. "2A", "2D", "3A", "4A") to the sign_identifier field.
+- Map the signage text to the message_content field.
+- If the Glass Backer column is "Yes", append "glass backer" to the materials field.
+- If there are comment letter codes (A, B, G, etc.), append them to the notes field as "Comment: A" etc.
+- A "Typical Sign Types" diagram column may appear on the far right with dimension callouts (e.g. "6 1/2\"", "8 1/4\"", "11\"", "7 1/2\""). Associate these dimensions with the corresponding sign type codes shown in the diagram (e.g. type 1A = "6 1/2\" x 8 1/4\"") and use them to populate the dimensions field for rows with that type code.
+- Include the floor/level name in the location, e.g. "101 PORCH — Lower Level", "201 STAIR / ELEVATOR LOBBY — Main Level".
+
+CSI SPECIFICATION SECTION PAGES (e.g. Section 10 14 00 SIGNAGE):
+When the document is a CSI-format specification section listing sign type definitions (e.g. "Types 1A and 1B Interior Room Signage", "Type 3A Interior Wayfinding Signage"):
+- Extract each defined sign type as a separate entry.
+- Use the type code (e.g. "1A", "1B", "2A", "3A", "4D", "9B") as sign_identifier.
+- Use the category name (e.g. "Interior Room Sign", "Interior Exit Discharge Sign", "Interior Wayfinding Sign", "Exterior Door ID Sign") as sign_type.
+- Capture the substrate/material (e.g. "Photopolymer", "Cast Aluminum", "Painted Aluminum", "Acrylic", "Reflective vinyl on stainless steel") in the materials field.
+- Capture mounting height and location rules (e.g. "60 inches AFF to centerline, latch side of door", "directly above fire extinguisher cabinet") in the mounting_type field.
+- Capture compliance codes and special requirements (e.g. "AAB-compliant", "ADA compliant", "524 CMR 35.00", "UL Listed", "mechanically fastened, flush mounted") in the notes field.
+- Set quantity to 1 — this is a type definition, not a per-location count.
+- Set location to null — location comes from the signage schedule, not the spec.
+- Set confidence_score to 0.7 (dimensions are referenced to the schedule, so key fields are missing) and review_flag to true.
+- Do NOT extract procedural spec content (Part 1 General administrative sections, submittals, warranty, quality assurance, delivery, environmental conditions — only extract sections that define actual sign types under 1.1 SUMMARY or equivalent).
 `;
+
 
 // ─── PROJECT INFO PROMPT ──────────────────────────────────────────────────────
 
@@ -702,6 +728,29 @@ const SIGN_SCHEDULE_KEYWORDS = [
   "message", "copy", "substrate", "face material",
   "sign program", "exterior signage", "interior signage",
   "tenant identification", "suite number",
+  // CSI specification section patterns (Section 10 14 00 SIGNAGE and similar)
+  "section 10 14",        // CSI division 10 signage spec
+  "10 14 00",             // exact CSI section number
+  "part 1 - general",     // CSI format Part 1/2/3 headers
+  "part 2 - products",
+  "part 3 - execution",
+  "photopolymer",         // AAB/ADA sign substrate used in spec sections
+  "aab-compliant",        // Massachusetts Architectural Access Board
+  "aab compliant",
+  "above finished floor", // mounting height description in specs
+  "above finish floor",
+  "latch side",           // ADA mounting rule in specs
+  "interior room signage",
+  "interior exit discharge",
+  "interior wayfinding",
+  "interior informational",
+  "areas of rescue assistance",
+  "egress plan",
+  "assistive listening",
+  "glass backer",         // column header in multi-floor schedule tables
+  "signage text",         // column header in multi-floor schedule tables
+  "lower level", "upper level", // floor-level column headers in schedule sheets
+  "typical sign types",   // diagram label in multi-floor schedule sheets
 ];
 
 function scoreForFloorPlan(text: string): number {
@@ -746,6 +795,9 @@ const SIGN_SCHEDULE_FILENAME_SIGNALS = [
   "sign schedule", "sign-schedule", "signage schedule",
   "signage-schedule", "sign list", "sign index",
   "sign program", "signage program",
+  // Spec / specification documents (e.g. "Specs_Signage.pdf", "10-14-00.pdf")
+  "specs_signage", "spec_signage", "signage_spec", "signage-spec",
+  "specification", "10-14-00", "10_14_00", "101400",
 ];
 
 function filenameClassificationBoost(filename: string): { floorPlan: number; signSchedule: number } {
@@ -1216,7 +1268,7 @@ async function callGeminiMultimodal(
 
 const IMAGE_EXTRACTION_PROMPT = `You are an expert sign contractor performing a VISUAL CROSS-VERIFICATION sign takeoff from architectural plan documents.
 
-CRITICAL MISSION: This is a second-pass visual scan whose primary purpose is to cross-verify a text-extraction pass that has already run. Your job is to visually CONFIRM signs found by the text pass AND independently find any signs the text pass may have missed. A large architectural floor plan will have dozens to hundreds of sign callouts — returning fewer than 10 results for a multi-room floor plan is almost certainly wrong. Scan aggressively.
+CRITICAL MISSION: This is a second-pass visual scan whose primary purpose is to cross-verify a text-extraction pass that has already run. Your job is to visually CONFIRM signs found by the text pass AND independently find any signs the text pass may have missed. A large architectural floor plan will have dozens to hundreds of sign callouts — returning fewer than 10 results for a multi-room floor plan is almost certainly wrong. Scan aggressively. NOTE: This prompt also applies when the PDF is a signage schedule sheet or a CSI specification section — see the special instructions at the bottom.
 
 You are viewing the actual PDF pages as images. Scan every square inch of each page systematically. Look for:
 - Small circled or triangled numbers/letters at room entries and doorways (these are ADA/Room ID callouts)
@@ -1268,6 +1320,21 @@ LEGEND EXCLUSION — READ CAREFULLY:
 - Architectural plans have a legend/symbol key box (usually in a corner) listing what each symbol means. These entries are DEFINITIONS, not actual sign locations. DO NOT extract them.
 - Only extract callouts that are placed at a real physical location on the floor plan (attached to a room, corridor, or door via a leader line or proximity).
 - Exception: sign SCHEDULE tables (rows listing sign IDs with quantities and locations) ARE valid — extract every row.
+
+MULTI-COLUMN SIGNAGE SCHEDULE SHEETS:
+If the page is a wide drawing sheet with parallel floor-level columns (e.g. "Signage Schedule - Lower Level", "Signage Schedule - Main Level", "Signage Schedule - Upper Level" side by side), read each column independently:
+- Room section headings (larger/bolder text with a room number and name, e.g. "101 PORCH", "201 STAIR / ELEVATOR LOBBY") define the location for all sign rows beneath them in that column until the next room heading.
+- Sign rows follow the pattern: [Type Code] [Qty] [Signage Text] [Glass Backer Yes/No] [Comment codes].
+- Include the floor/level name in the location, e.g. "101 PORCH — Lower Level".
+- A "TYPICAL SIGN TYPES" diagram on the right shows dimension callouts (e.g. "6 1/2\"", "8 1/4\"", "11\"") per type code — read these and populate the dimensions field for matching type codes.
+- "Glass Backer: Yes" → add "glass backer" to materials. Comment codes (A, B, G) → add to notes.
+- Set x_position and y_position to null for schedule rows.
+
+CSI SPECIFICATION SECTION PAGES:
+If the page is a CSI-format spec section defining sign types (e.g. "Section 10 14 00 SIGNAGE", "PART 1 — GENERAL" with sign type definitions like "Types 1A and 1B Interior Room Signage"):
+- sign_identifier = type code (e.g. "1A", "2A", "3A"). sign_type = category name. materials = substrate (Photopolymer, Aluminum). mounting_type = AFF rule. notes = compliance (AAB-compliant, ADA, CMR code).
+- Set location = null, quantity = 1, x_position = null, y_position = null, confidence_score = 0.7, review_flag = true.
+- Skip administrative content (submittals, warranty, quality assurance, delivery).
 
 PRECISION RULE: Quality matters far more than quantity. Only report sign callouts you can actually see and confidently identify in the image. A page with few or no actual sign callouts is perfectly valid — do not invent or infer entries. Set confidence_score ≥ 0.70 for all reported items; if you cannot reach 0.70 confidence, omit that entry entirely. Hallucinated or guessed entries cause serious harm to the workflow.
 
