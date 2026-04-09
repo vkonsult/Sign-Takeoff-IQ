@@ -770,6 +770,7 @@ function scoreForSignSchedule(text: string): number {
 }
 
 type PageType = "floor_plan" | "sign_schedule" | "other";
+type TitleBlockType = "floor_plan" | "sign_schedule" | "other" | "unknown";
 
 interface ScoredPage {
   pageNum: number;
@@ -777,6 +778,208 @@ interface ScoredPage {
   floorPlanScore: number;
   signScheduleScore: number;
   type: PageType;
+  titleBlockType: TitleBlockType;
+}
+
+// ─── TITLE BLOCK CLASSIFIER ──────────────────────────────────────────────────
+
+// Drawing number prefix patterns that indicate a non-floor-plan, non-sign sheet.
+// These prefixes appear in the title block of every architectural drawing.
+const OTHER_DRAWING_NUMBER_PATTERNS: RegExp[] = [
+  /\bG-\d{3}/i,         // General: cover sheets, notes, sheet index
+  /\bS-\d{3}/i,         // Structural
+  /\bM-\d{3}/i,         // Mechanical
+  /\bP-\d{3}/i,         // Plumbing
+  /\bE-\d{3}/i,         // Electrical
+  /\bC-\d{3}/i,         // Civil
+  /\bL-\d{3}/i,         // Landscape
+  /\bFP-\d{3}/i,        // Fire Protection
+  /\bFPL?-\d{3}/i,      // Fire Protection (alt)
+  // Architectural A2.x–A9.x (excluding sign numbers A10-A12)
+  /\bA[2-9]\.\d{1,3}\b/i,
+];
+
+// Drawing number patterns that indicate a floor plan sheet.
+const FLOOR_PLAN_DRAWING_NUMBER_PATTERNS: RegExp[] = [
+  /\bA0\.\d{1,3}\b/i,   // A0.x — general/site plans but often floor plan drawings
+  /\bA1\.\d{1,3}\b/i,   // A1.x — classic floor plan sheet number
+];
+
+// Drawing number patterns that indicate a sign schedule / signage sheet.
+const SIGN_SCHEDULE_DRAWING_NUMBER_PATTERNS: RegExp[] = [
+  /\bA1[012]\.\d{1,3}\b/i,  // A10.x, A11.x, A12.x — signage sheets
+  /\bSP-\d+/i,              // Sign plan prefix
+  /\bSN-\d+/i,              // Signage numbering prefix
+];
+
+// High-confidence title phrases that unambiguously identify a non-floor-plan,
+// non-sign-schedule sheet.  These are specific enough that a false match on a
+// real floor plan page is extremely unlikely, so they are trusted standalone
+// (no drawing-number requirement).
+const OTHER_TITLE_KEYWORDS_STANDALONE: string[] = [
+  "cover sheet",
+  "title sheet",
+  "title page",
+  "vicinity map",
+  "area map",
+  "exterior elevation",
+  "interior elevation",
+  "building elevation",
+  "building section",
+  "wall section",
+  "stair section",
+  "roof plan",
+  "demolition plan",
+  "framing plan",
+  "foundation plan",
+  "sheet index",
+  "drawing index",
+];
+
+// Broader title phrases that indicate "other" but can also appear on floor plan
+// sheets as call-outs or notes.  These are only trusted when the page also
+// carries ANY recognizable drawing number (floor-plan, other, or sign prefix),
+// which anchors the match to the actual title block rather than incidental text.
+const OTHER_TITLE_KEYWORDS_NUMBER_REQUIRED: string[] = [
+  "site plan",
+  "reflected ceiling plan",
+  "door schedule",
+  "window schedule",
+  "finish schedule",
+  "room finish schedule",
+  "general notes",
+  "abbreviations",
+  "landscape plan",
+  "grading plan",
+  "utility plan",
+  "electrical plan",
+  "mechanical plan",
+  "plumbing plan",
+  "fire protection plan",
+  "structural plan",
+  "civil plan",
+  "detail sheet",
+  "keynote legend",
+];
+
+// Title keywords that clearly mark a page as a floor plan.
+const FLOOR_PLAN_TITLE_KEYWORDS: string[] = [
+  "floor plan",
+  "level plan",
+  "first floor plan",
+  "second floor plan",
+  "third floor plan",
+  "fourth floor plan",
+  "fifth floor plan",
+  "ground floor plan",
+  "basement plan",
+  "mezzanine plan",
+  "penthouse plan",
+  "parking plan",
+];
+
+// Title keywords that clearly mark a page as a sign schedule.
+// These are specific enough to be trusted standalone (no drawing-number required).
+const SIGN_SCHEDULE_TITLE_KEYWORDS: string[] = [
+  "sign schedule",
+  "signage schedule",
+  "sign plan",
+  "sign detail",
+  "signage detail",
+  "sign elevation",
+  "sign criteria",
+  "signage criteria",
+  "sign program",
+  "signage program",
+];
+
+/**
+ * Attempt to classify a page using the drawing title block.
+ *
+ * The title block in architectural drawings is found in the bottom-right corner
+ * and typically contains:
+ *   - A drawing number (e.g. "A1.1", "G-001", "S-201")
+ *   - A drawing title (e.g. "FIRST FLOOR PLAN", "COVER SHEET")
+ *
+ * Classification rules (evaluated in order):
+ *
+ * 1. Sign schedule title keyword (standalone) → "sign_schedule"
+ * 2. Sign schedule drawing number → "sign_schedule"
+ * 3. Floor plan title keyword + floor plan drawing number → "floor_plan"
+ * 4. High-confidence "other" title keyword (standalone) → "other"
+ * 5. Any "other" drawing number (G-x, S-x, A2-A9, etc.) → "other"
+ * 6. Floor plan drawing number + number-required "other" title keyword → "other"
+ *    (e.g. A0.1 SITE PLAN — A0.x matches FP number but "SITE PLAN" overrides)
+ * 7. Floor plan drawing number alone (no matching title) → "unknown"
+ * 8. No recognisable title-block signal → "unknown"
+ *
+ * Returning "unknown" causes the caller to fall through to keyword heuristics.
+ */
+function detectTitleBlock(text: string): TitleBlockType {
+  const upper = text.toUpperCase();
+
+  // ── 1. Sign schedule title keywords (standalone, very specific) ─────────────
+  for (const kw of SIGN_SCHEDULE_TITLE_KEYWORDS) {
+    if (upper.includes(kw.toUpperCase())) {
+      return "sign_schedule";
+    }
+  }
+
+  // ── 2. Sign schedule drawing number patterns ─────────────────────────────────
+  for (const pattern of SIGN_SCHEDULE_DRAWING_NUMBER_PATTERNS) {
+    if (pattern.test(text)) {
+      return "sign_schedule";
+    }
+  }
+
+  // Gather drawing-number presence flags (reused in multiple steps below).
+  const hasFpNumber = FLOOR_PLAN_DRAWING_NUMBER_PATTERNS.some((p) => p.test(text));
+  const hasFpTitle = FLOOR_PLAN_TITLE_KEYWORDS.some((kw) => upper.includes(kw.toUpperCase()));
+  const hasOtherNumber = OTHER_DRAWING_NUMBER_PATTERNS.some((p) => p.test(text));
+  const hasAnyNumber = hasFpNumber || hasOtherNumber;
+
+  // ── 3. Floor plan: requires BOTH a floor-plan drawing number AND title ───────
+  // Requiring both signals greatly reduces false positives from pages that
+  // contain "FLOOR PLAN" only in a note or call-out, not in the title block.
+  if (hasFpNumber && hasFpTitle) {
+    return "floor_plan";
+  }
+
+  // ── 4. High-confidence "other" title keywords (standalone) ──────────────────
+  // These phrases are specific enough that they won't appear incidentally on
+  // floor plan sheets; trust them without requiring a drawing number.
+  for (const kw of OTHER_TITLE_KEYWORDS_STANDALONE) {
+    if (upper.includes(kw.toUpperCase())) {
+      return "other";
+    }
+  }
+
+  // ── 5. Any "other" drawing number → confidently not a floor plan ─────────────
+  // Structural/MEP/civil/general drawing numbers (G-x, S-x, M-x, etc.) and
+  // A2.x–A9.x all indicate the sheet is not a floor plan or sign schedule.
+  if (hasOtherNumber) {
+    return "other";
+  }
+
+  // ── 6. Floor plan drawing number + number-required "other" title keyword ─────
+  // Handles edge cases like "A0.1 SITE PLAN" where a floor-plan-number sheet
+  // has a title that clearly identifies it as a non-floor-plan drawing.
+  // These keywords are only trusted when a drawing number is present on the page,
+  // because on their own they commonly appear in notes on floor plan sheets.
+  if (hasAnyNumber) {
+    for (const kw of OTHER_TITLE_KEYWORDS_NUMBER_REQUIRED) {
+      if (upper.includes(kw.toUpperCase())) {
+        return "other";
+      }
+    }
+  }
+
+  // ── 7. Floor plan drawing number alone (no matching title) → unknown ─────────
+  if (hasFpNumber) {
+    return "unknown";
+  }
+
+  return "unknown";
 }
 
 // Keywords in a filename that strongly suggest this is a floor plan PDF.
@@ -811,6 +1014,35 @@ function filenameClassificationBoost(filename: string): { floorPlan: number; sig
 }
 
 function classifyPage(pageNum: number, text: string, filenameBoost?: { floorPlan: number; signSchedule: number }): ScoredPage {
+  // ── Title block pre-check ────────────────────────────────────────────────────
+  // Read the drawing number and title from the title block (bottom-right corner
+  // of every architectural sheet). If the title block clearly identifies the
+  // page type, return immediately — no keyword scoring, no AI call.
+  const titleBlockType = detectTitleBlock(text);
+  if (titleBlockType === "other") {
+    return { pageNum, text, floorPlanScore: 0, signScheduleScore: 0, type: "other", titleBlockType };
+  }
+  if (titleBlockType === "sign_schedule") {
+    // Still apply the legend-page guard: a legend page that happens to contain
+    // sign-schedule title keywords should not be extracted.
+    const legendScore = scoreForLegendPage(text);
+    const textFloorPlanScore = scoreForFloorPlan(text);
+    if (legendScore >= 3 && textFloorPlanScore < 10) {
+      return { pageNum, text, floorPlanScore: textFloorPlanScore, signScheduleScore: 0, type: "other", titleBlockType };
+    }
+    return { pageNum, text, floorPlanScore: 0, signScheduleScore: 0, type: "sign_schedule", titleBlockType };
+  }
+  if (titleBlockType === "floor_plan") {
+    // Still apply the legend-page guard.
+    const legendScore = scoreForLegendPage(text);
+    const textFloorPlanScore = scoreForFloorPlan(text);
+    if (legendScore >= 3 && textFloorPlanScore < 10) {
+      return { pageNum, text, floorPlanScore: textFloorPlanScore, signScheduleScore: 0, type: "other", titleBlockType };
+    }
+    return { pageNum, text, floorPlanScore: 0, signScheduleScore: 0, type: "floor_plan", titleBlockType };
+  }
+
+  // titleBlockType === "unknown" — fall through to existing heuristic scoring.
   const textFloorPlanScore = scoreForFloorPlan(text);
   const textSignScheduleScore = scoreForSignSchedule(text);
 
@@ -825,7 +1057,7 @@ function classifyPage(pageNum: number, text: string, filenameBoost?: { floorPlan
   // room content alongside a small legend box.
   const legendScore = scoreForLegendPage(text);
   if (legendScore >= 3 && textFloorPlanScore < 10) {
-    return { pageNum, text, floorPlanScore: textFloorPlanScore, signScheduleScore: textSignScheduleScore, type: "other" };
+    return { pageNum, text, floorPlanScore: textFloorPlanScore, signScheduleScore: textSignScheduleScore, type: "other", titleBlockType };
   }
 
   let type: PageType = "other";
@@ -873,7 +1105,7 @@ function classifyPage(pageNum: number, text: string, filenameBoost?: { floorPlan
     }
   }
 
-  return { pageNum, text, floorPlanScore: textFloorPlanScore, signScheduleScore: textSignScheduleScore, type };
+  return { pageNum, text, floorPlanScore: textFloorPlanScore, signScheduleScore: textSignScheduleScore, type, titleBlockType };
 }
 
 // ─── PDF TEXT EXTRACTION ──────────────────────────────────────────────────────
@@ -914,6 +1146,7 @@ export async function extractTextFromPdf(filePath: string): Promise<{
 
     const fpCount = pages.filter((p) => p.type === "floor_plan").length;
     const ssCount = pages.filter((p) => p.type === "sign_schedule").length;
+    const titleBlockCount = pages.filter((p) => p.titleBlockType !== "unknown").length;
 
     logger.info(
       {
@@ -922,6 +1155,7 @@ export async function extractTextFromPdf(filePath: string): Promise<{
         floorPlanPages: fpCount,
         signSchedulePages: ssCount,
         otherPages: pages.length - fpCount - ssCount,
+        titleBlockClassified: titleBlockCount,
         filenameBoost: boost.floorPlan > 0 ? "floor_plan" : boost.signSchedule > 0 ? "sign_schedule" : "none",
       },
       "PDF pages classified"
@@ -1996,6 +2230,7 @@ export interface PageStats {
   floorPlanPages: number[];
   signSchedulePages: number[];
   otherPages: number[];
+  titleBlockClassifiedPages?: number[];
 }
 
 export async function extractSignsFromPdf(
@@ -2235,6 +2470,7 @@ export async function extractSignsFromPdf(
     floorPlanPages:    pages.filter((p) => p.type === "floor_plan").map((p) => p.pageNum).sort((a, b) => a - b),
     signSchedulePages: pages.filter((p) => p.type === "sign_schedule").map((p) => p.pageNum).sort((a, b) => a - b),
     otherPages:        pages.filter((p) => p.type === "other").map((p) => p.pageNum).sort((a, b) => a - b),
+    titleBlockClassifiedPages: pages.filter((p) => p.titleBlockType !== "unknown").map((p) => p.pageNum).sort((a, b) => a - b),
   };
 
   // ── Source-level dedup ────────────────────────────────────────────────────
