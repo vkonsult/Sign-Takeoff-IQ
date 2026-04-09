@@ -101,11 +101,7 @@ function FilePdfViewer({
   onSignUpdated: (signId: string, xPos: number, yPos: number) => void;
   onEditSign: (sign: SignMarker) => void;
 }) {
-  const rawFloorPlanPages = file.pageStats?.floorPlanPages ?? [];
-  const floorPlanPages =
-    rawFloorPlanPages.length > 0
-      ? rawFloorPlanPages
-      : Array.from({ length: file.pageCount ?? 1 }, (_, i) => i + 1);
+  const floorPlanPages = file.pageStats?.floorPlanPages ?? [];
 
   const [pageIdx, setPageIdx] = useState(0);
   const pageNumber = floorPlanPages[pageIdx] ?? 1;
@@ -526,7 +522,7 @@ export function FloorPlanViewer({
   onEditSign,
 }: FloorPlanViewerProps) {
   const floorPlanFiles = files.filter(
-    (f) => (f.pageStats?.floorPlanPages?.length ?? 0) > 0 || (f.pageCount ?? 0) > 0
+    (f) => (f.pageStats?.floorPlanPages?.length ?? 0) > 0
   );
 
   const [selectedFileId, setSelectedFileId] = useState<string>(
