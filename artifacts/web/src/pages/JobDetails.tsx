@@ -6,6 +6,8 @@ import { apiFetch } from "@/lib/apiClient";
 import { useJobDetails, useStartExtraction, downloadExport, useUpdateJobName } from "@/hooks/use-takeoff";
 import { SignReviewModal } from "@/components/SignReviewModal";
 import { SignSpecModal } from "@/components/SignSpecModal";
+import { FloorPlanViewer } from "@/components/FloorPlanViewer";
+import type { SignMarker } from "@/components/FloorPlanViewer";
 import { getGetJobQueryKey } from "@workspace/api-client-react";
 import { 
   FileText, 
@@ -115,6 +117,7 @@ export default function JobDetails() {
   const [showHidden, setShowHidden] = useState(false);
   const [sortField, setSortField] = useState<string | null>(null);
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
+  const [activeTab, setActiveTab] = useState<"table" | "floorplans">("table");
 
   const PROCESSING_TIMEOUT_SECONDS = 5 * 60;
   const [processingSeconds, setProcessingSeconds] = useState(0);
@@ -210,6 +213,19 @@ export default function JobDetails() {
         ...old,
         extractedSigns: newSigns,
         totalSigns: newSigns.length,
+      };
+    });
+  };
+
+  const handleSignUpdated = (signId: string, xPos: number, yPos: number) => {
+    queryClient.setQueryData(getGetJobQueryKey(jobId), (old: typeof data) => {
+      if (!old) return old;
+      const patch = { xPos, yPos, placementSource: "manual" };
+      return {
+        ...old,
+        extractedSigns: old.extractedSigns.map((s) =>
+          s.id === signId ? { ...s, ...patch } : s
+        ),
       };
     });
   };
@@ -497,14 +513,55 @@ export default function JobDetails() {
                 />
               </div>
               
-              {/* Sheets Analysis Panel */}
-              <SheetsPanel files={files} onOpenSpec={setSpecViewer} />
+              {/* View tabs */}
+              <div className="flex-none flex items-center border-b border-border bg-secondary/20">
+                <div className="flex items-center px-4 gap-0">
+                  <button
+                    onClick={() => setActiveTab("table")}
+                    className={`flex items-center gap-1.5 px-4 py-2.5 text-[11px] font-display font-semibold uppercase tracking-wide border-b-2 transition-all ${
+                      activeTab === "table"
+                        ? "border-primary text-primary"
+                        : "border-transparent text-muted-foreground hover:text-foreground"
+                    }`}
+                  >
+                    <ListFilter className="w-3.5 h-3.5" />
+                    Sign Table
+                  </button>
+                  <button
+                    onClick={() => setActiveTab("floorplans")}
+                    className={`flex items-center gap-1.5 px-4 py-2.5 text-[11px] font-display font-semibold uppercase tracking-wide border-b-2 transition-all ${
+                      activeTab === "floorplans"
+                        ? "border-primary text-primary"
+                        : "border-transparent text-muted-foreground hover:text-foreground"
+                    }`}
+                  >
+                    <MapPin className="w-3.5 h-3.5" />
+                    Floor Plans
+                  </button>
+                </div>
+              </div>
 
-              {/* Sign Type Summary Panel */}
-              <SignSummaryPanel signs={extractedSigns} />
+              {activeTab === "floorplans" ? (
+                <div className="flex-1 min-h-0">
+                  <FloorPlanViewer
+                    jobId={jobId}
+                    files={files}
+                    signs={extractedSigns}
+                    onSignAdded={handleSignAdded}
+                    onSignUpdated={handleSignUpdated}
+                    onEditSign={(sign) => setReviewSign(sign as SignRow)}
+                  />
+                </div>
+              ) : (
+                <>
+                  {/* Sheets Analysis Panel */}
+                  <SheetsPanel files={files} onOpenSpec={setSpecViewer} />
 
-              {/* Data Table Container */}
-              <div className="flex-1 overflow-auto bg-card border-t border-border">
+                  {/* Sign Type Summary Panel */}
+                  <SignSummaryPanel signs={extractedSigns} />
+
+                  {/* Data Table Container */}
+                  <div className="flex-1 overflow-auto bg-card border-t border-border">
                 {/* Show Hidden toggle bar — only visible when there are hidden signs */}
                 {hiddenSigns.length > 0 && (
                   <div className="flex items-center gap-3 px-4 py-2 bg-secondary/60 border-b border-border/60">
@@ -685,6 +742,8 @@ export default function JobDetails() {
                   </table>
                 </div>
               </div>
+                </>
+              )}
             </div>
           ) : (
             <div className="flex-1 p-8 max-w-3xl mx-auto w-full">
