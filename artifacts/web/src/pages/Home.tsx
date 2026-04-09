@@ -1,10 +1,9 @@
 import { useState, useCallback } from "react";
 import { useLocation } from "wouter";
 import { useDropzone } from "react-dropzone";
-import { UploadCloud, FileText, X, ChevronRight, AlertCircle, Zap } from "lucide-react";
+import { UploadCloud, FileText, X, ChevronRight, AlertCircle } from "lucide-react";
 import { AppShell } from "@/components/layout/Shell";
 import { useUploadJobFiles } from "@/hooks/use-takeoff";
-import { apiFetch } from "@/lib/apiClient";
 import { formatBytes } from "@/lib/utils";
 import { motion, AnimatePresence } from "framer-motion";
 
@@ -12,10 +11,6 @@ export default function Home() {
   const [, setLocation] = useLocation();
   const [files, setFiles] = useState<File[]>([]);
   const uploadMutation = useUploadJobFiles();
-
-  // Heuristic ("Claude") upload state — separate from the Gemini mutation
-  const [heuristicPending, setHeuristicPending] = useState(false);
-  const [heuristicError, setHeuristicError] = useState<string | null>(null);
 
   const onDrop = useCallback((acceptedFiles: File[]) => {
     setFiles(prev => [...prev, ...acceptedFiles]);
@@ -42,28 +37,6 @@ export default function Home() {
       setLocation(`/jobs/${result.jobId}`);
     } catch (error) {
       console.error("Upload failed", error);
-    }
-  };
-
-  const handleUploadHeuristic = async () => {
-    if (files.length === 0 || heuristicPending) return;
-    setHeuristicPending(true);
-    setHeuristicError(null);
-    try {
-      const formData = new FormData();
-      for (const file of files) formData.append("files", file);
-      formData.append("method", "heuristic");
-      const res = await apiFetch("/api/upload", { method: "POST", body: formData });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({ error: res.statusText }));
-        throw new Error((body as { error?: string }).error ?? res.statusText);
-      }
-      const data = await res.json() as { jobId: string };
-      setLocation(`/jobs/${data.jobId}`);
-    } catch (err) {
-      setHeuristicError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setHeuristicPending(false);
     }
   };
 
@@ -113,15 +86,6 @@ export default function Home() {
                 <div>
                   <strong className="font-semibold block mb-1">Upload failed</strong>
                   {uploadMutation.error?.message || "An unexpected error occurred during upload."}
-                </div>
-              </div>
-            )}
-            {heuristicError && (
-              <div className="p-4 rounded-lg bg-destructive/10 border border-destructive/20 text-destructive text-sm flex items-start gap-3">
-                <AlertCircle className="w-5 h-5 shrink-0" />
-                <div>
-                  <strong className="font-semibold block mb-1">Heuristic scan failed</strong>
-                  {heuristicError}
                 </div>
               </div>
             )}
@@ -176,14 +140,13 @@ export default function Home() {
               </AnimatePresence>
             </div>
 
-            <div className="pt-4 mt-4 border-t border-border space-y-2">
-              {/* Primary — Gemini AI extraction */}
+            <div className="pt-4 mt-4 border-t border-border">
               <button
                 onClick={handleUpload}
-                disabled={files.length === 0 || uploadMutation.isPending || heuristicPending}
+                disabled={files.length === 0 || uploadMutation.isPending}
                 className={`
                   w-full py-3 px-4 rounded-lg font-display font-semibold uppercase tracking-wider text-sm flex items-center justify-center gap-2 transition-all duration-300
-                  ${files.length > 0 && !uploadMutation.isPending && !heuristicPending
+                  ${files.length > 0 && !uploadMutation.isPending
                     ? "bg-primary text-primary-foreground hover:bg-primary/90 shadow-[0_0_20px_rgba(255,170,0,0.15)] hover:shadow-[0_0_25px_rgba(255,170,0,0.25)]" 
                     : "bg-secondary text-muted-foreground cursor-not-allowed"}
                 `}
@@ -195,32 +158,8 @@ export default function Home() {
                   </>
                 ) : (
                   <>
-                    Upload & Scan (Gemini)
+                    Upload & Scan
                     <ChevronRight className="w-4 h-4" />
-                  </>
-                )}
-              </button>
-
-              {/* Secondary — Heuristic (Python-port) extraction */}
-              <button
-                onClick={handleUploadHeuristic}
-                disabled={files.length === 0 || heuristicPending || uploadMutation.isPending}
-                className={`
-                  w-full py-3 px-4 rounded-lg font-display font-semibold uppercase tracking-wider text-sm flex items-center justify-center gap-2 transition-all duration-300 border
-                  ${files.length > 0 && !heuristicPending && !uploadMutation.isPending
-                    ? "bg-secondary/80 border-border text-foreground hover:bg-secondary hover:border-primary/50 hover:text-primary"
-                    : "bg-secondary/40 border-border/40 text-muted-foreground cursor-not-allowed"}
-                `}
-              >
-                {heuristicPending ? (
-                  <>
-                    <div className="w-4 h-4 border-2 border-current border-t-transparent rounded-full animate-spin" />
-                    Uploading...
-                  </>
-                ) : (
-                  <>
-                    <Zap className="w-4 h-4" />
-                    Upload & Scan Claude
                   </>
                 )}
               </button>
