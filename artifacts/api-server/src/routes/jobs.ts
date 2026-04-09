@@ -9,7 +9,7 @@ import {
 } from "@workspace/db";
 import { buildExcelExport } from "../lib/export";
 import { getJobExportPath } from "../lib/storage";
-import { extractPagePhrases } from "../lib/pdf-words";
+import { extractPagePhrases, detectFloorPlanBbox } from "../lib/pdf-words";
 import { processJob, deduplicateSignRows } from "../lib/process-job";
 import { extractSignsFromPdfImage, extractSignsFromPdf, visualLocateDoors } from "../lib/extraction";
 import { ai } from "@workspace/integrations-gemini-ai";
@@ -825,9 +825,10 @@ router.get("/jobs/:jobId/files/:fileId/pages/:pageNum/words", async (req, res) =
     }
 
     const result = await extractPagePhrases(file.storedPath, fileId, pageNumInt);
+    const floorPlanBbox = detectFloorPlanBbox(result.phrases);
 
     res.setHeader("Cache-Control", "private, max-age=300");
-    res.json(result);
+    res.json({ ...result, floorPlanBbox });
   } catch (err) {
     req.log.error({ err, fileId, pageNum }, "Failed to extract page words");
     res.status(500).json({ error: "Failed to extract page words" });

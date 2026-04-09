@@ -307,6 +307,293 @@ export async function extractPagePhrases(
   return result;
 }
 
+// ── Location-to-coordinates matcher ─────────────────────────────────────────
+// Ports the token-overlap / room-number matching approach from SignReviewModal
+// so that x_pos / y_pos can be populated at extraction time without a browser.
+
+function _tokenize(text: string): string[] {
+  return [
+    ...new Set(
+      text
+        .toLowerCase()
+        .replace(/[^a-z0-9\s]/g, " ")
+        .split(/\s+/)
+        .filter((t) => t.length >= 2)
+    ),
+  ];
+}
+
+function _normId(s: string): string {
+  return s.toLowerCase().replace(/[\s\-_]/g, "");
+}
+
+function _exactBoundaryMatch(haystack: string, needle: string): boolean {
+  let idx = haystack.indexOf(needle);
+  while (idx !== -1) {
+    const before = idx > 0 ? haystack[idx - 1] : null;
+    const after =
+      idx + needle.length < haystack.length ? haystack[idx + needle.length] : null;
+    const validBefore = before == null || !/[a-z0-9]/.test(before);
+    const validAfter = after == null || !/[a-z0-9]/.test(after);
+    if (validBefore && validAfter) return true;
+    idx = haystack.indexOf(needle, idx + 1);
+  }
+  return false;
+}
+
+function _levenshtein(s: string, t: string): number {
+  const m = s.length,
+    n = t.length;
+  let prev = Array.from({ length: n + 1 }, (_, j) => j);
+  let curr = new Array<number>(n + 1);
+  for (let i = 1; i <= m; i++) {
+    curr[0] = i;
+    for (let j = 1; j <= n; j++) {
+      curr[j] =
+        s[i - 1] === t[j - 1]
+          ? prev[j - 1]!
+          : 1 + Math.min(prev[j]!, curr[j - 1]!, prev[j - 1]!);
+    }
+    [prev, curr] = [curr, prev];
+  }
+  return prev[n]!;
+}
+
+function _levenshteinSim(a: string, b: string): number {
+  if (a === b) return 1;
+  if (!a.length || !b.length) return 0;
+  return 1 - _levenshtein(a, b) / Math.max(a.length, b.length);
+}
+
+function _phraseMatchScore(phraseText: string, query: string): number {
+  const pn = phraseText
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  const qn = query
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!pn || !qn) return 0;
+  const pt = _tokenize(pn);
+  const qt = _tokenize(qn);
+  if (!pt.length || !qt.length) return 0;
+  let total = 0;
+  for (const qtok of qt) {
+    let best = 0;
+    for (const ptok of pt) {
+      if (qtok === ptok) { best = 1; break; }
+      const [shorter, longer] =
+        qtok.length <= ptok.length ? [qtok, ptok] : [ptok, qtok];
+      if (longer.startsWith(shorter)) {
+        best = Math.max(best, shorter.length / longer.length);
+      }
+      best = Math.max(best, _levenshteinSim(qtok, ptok));
+    }
+    total += best;
+  }
+  return total / qt.length;
+}
+
+export interface MatchedCoords {
+  xPos: number;
+  yPos: number;
+}
+
+/**
+ * Given the page's word phrases and the floor plan bbox, finds the phrase whose
+ * text best matches the sign's location / signIdentifier using token-overlap and
+ * room-number matching.  Returns the phrase centre normalised to [0, 1].
+ *
+ * Only considers phrases whose centre falls inside floorPlanBbox (with small tolerance).
+ * Returns null when no confident match is found (score < 0.5).
+ */
+export function matchLocationToCoords(
+  phrases: PdfPhrase[],
+  floorPlanBbox: FloorPlanBbox | null,
+  location: string | null | undefined,
+  signIdentifier: string | null | undefined,
+): MatchedCoords | null {
+  const query = [location, signIdentifier].filter(Boolean).join(" ").trim();
+  if (!query) return null;
+
+  // Require a valid floor plan bbox — if the page has no detected drawing region,
+  // return null so xPos/yPos stay null (no guessing on schedule/title-block pages).
+  if (!floorPlanBbox) return null;
+
+  // Filter phrases to those inside the floor plan area
+  const BBOX_TOLERANCE = 0.02;
+  const drawingPhrases = phrases.filter((p) => {
+    const cx = (p.x0 + p.x1) / 2;
+    const cy = (p.y0 + p.y1) / 2;
+    return (
+      cx >= floorPlanBbox.x0 - BBOX_TOLERANCE &&
+      cx <= floorPlanBbox.x1 + BBOX_TOLERANCE &&
+      cy >= floorPlanBbox.y0 - BBOX_TOLERANCE &&
+      cy <= floorPlanBbox.y1 + BBOX_TOLERANCE
+    );
+  });
+
+  if (drawingPhrases.length === 0) return null;
+
+  // Score each phrase
+  const ROOM_NUM_RE =
+    /\b(?:[A-Za-z]{1,2}\d{2,4}[A-Za-z]?|\d{2,4}[A-Za-z]{1,2})\b/g;
+  const roomTokens = (query.match(ROOM_NUM_RE) ?? []).map((t) => _normId(t));
+
+  let best: { score: number; cx: number; cy: number } | null = null;
+
+  for (const p of drawingPhrases) {
+    const cx = (p.x0 + p.x1) / 2;
+    const cy = (p.y0 + p.y1) / 2;
+    const pn = _normId(p.text);
+
+    // Room-number exact match gets a high bonus
+    let score = _phraseMatchScore(p.text, query);
+    if (roomTokens.length > 0) {
+      const hasRoomMatch = roomTokens.some((rt) => _exactBoundaryMatch(pn, rt));
+      if (hasRoomMatch) score = Math.max(score, 0.85);
+    }
+
+    if (!best || score > best.score) {
+      best = { score, cx, cy };
+    }
+  }
+
+  if (!best || best.score < 0.5) return null;
+  return { xPos: best.cx, yPos: best.cy };
+}
+
+export interface FloorPlanBbox {
+  x0: number; // 0–1 normalised left edge
+  y0: number; // 0–1 normalised top edge
+  x1: number; // 0–1 normalised right edge
+  y1: number; // 0–1 normalised bottom edge
+}
+
+/**
+ * Detect the floor plan drawing region on a page by identifying "table-like"
+ * vertical strips — narrow x-ranges with ≥ 8 items at roughly uniform y-spacing.
+ * These strips correspond to sign-schedule columns or title blocks.  The floor
+ * plan bbox is the page region that excludes those strips and any dense text zones.
+ *
+ * Returns null when the heuristic cannot find a clear drawing region
+ * (e.g. the page is entirely schedule tables).
+ */
+export function detectFloorPlanBbox(phrases: PdfPhrase[]): FloorPlanBbox | null {
+  if (phrases.length === 0) return null;
+
+  // ── Step 1: identify schedule/table columns by clustering phrases into
+  // narrow vertical strips (x-bands of width ≤ 0.15) that have ≥ 8 items
+  // spaced at roughly uniform vertical intervals.
+  const STRIP_WIDTH = 0.15;
+  const MIN_ITEMS_IN_STRIP = 8;
+
+  // Collect centre-x of each phrase
+  const cxList = phrases.map((p) => (p.x0 + p.x1) / 2);
+
+  // Identify table-column x-ranges: sort by cx, slide a window
+  const sorted = [...cxList].sort((a, b) => a - b);
+  const tableXRanges: Array<{ lo: number; hi: number }> = [];
+
+  let winStart = 0;
+  for (let i = 1; i <= sorted.length; i++) {
+    const spanEnd = i < sorted.length ? sorted[i]! : sorted[sorted.length - 1]! + 1;
+    const spanStart = sorted[winStart]!;
+    if (spanEnd - spanStart > STRIP_WIDTH || i === sorted.length) {
+      const count = i - winStart;
+      if (count >= MIN_ITEMS_IN_STRIP) {
+        // Check uniform y-spacing (std dev of cy gaps is small relative to mean gap)
+        const stripPhrases = phrases.filter((p) => {
+          const cx = (p.x0 + p.x1) / 2;
+          return cx >= spanStart - 0.01 && cx <= spanStart + STRIP_WIDTH + 0.01;
+        });
+        const cys = stripPhrases.map((p) => (p.y0 + p.y1) / 2).sort((a, b) => a - b);
+        if (cys.length >= MIN_ITEMS_IN_STRIP) {
+          const gaps: number[] = [];
+          for (let g = 1; g < cys.length; g++) gaps.push(cys[g]! - cys[g - 1]!);
+          if (gaps.length > 0) {
+            const meanGap = gaps.reduce((s, v) => s + v, 0) / gaps.length;
+            const stdGap = Math.sqrt(
+              gaps.reduce((s, v) => s + (v - meanGap) ** 2, 0) / gaps.length
+            );
+            // Uniform spacing: std < 50% of mean gap; only flag as table column
+            // when the mean gap is small (≤ 0.08) indicating dense row spacing
+            if (meanGap <= 0.08 && stdGap < meanGap * 0.5) {
+              tableXRanges.push({
+                lo: Math.min(...stripPhrases.map((p) => p.x0)),
+                hi: Math.max(...stripPhrases.map((p) => p.x1)),
+              });
+            }
+          }
+        }
+      }
+      winStart = i;
+    }
+  }
+
+  // ── Step 2: merge overlapping/adjacent table x-ranges into contiguous
+  // "excluded" zones.  Then find the largest x-gap that is NOT excluded.
+  const merged = tableXRanges
+    .sort((a, b) => a.lo - b.lo)
+    .reduce<Array<{ lo: number; hi: number }>>((acc, r) => {
+      if (acc.length === 0) return [r];
+      const last = acc[acc.length - 1]!;
+      if (r.lo <= last.hi + 0.02) {
+        last.hi = Math.max(last.hi, r.hi);
+        return acc;
+      }
+      acc.push({ ...r });
+      return acc;
+    }, []);
+
+  // The floor plan drawing region is the contiguous x-gap (between excluded zones)
+  // that spans the largest horizontal extent.  Fall back to [0, 1] if no table zones.
+  let drawX0 = 0;
+  let drawX1 = 1;
+
+  if (merged.length > 0) {
+    // Candidate gaps: before first zone, between zones, after last zone
+    const gaps: Array<{ lo: number; hi: number }> = [];
+    gaps.push({ lo: 0, hi: merged[0]!.lo });
+    for (let i = 1; i < merged.length; i++) {
+      gaps.push({ lo: merged[i - 1]!.hi, hi: merged[i]!.lo });
+    }
+    gaps.push({ lo: merged[merged.length - 1]!.hi, hi: 1 });
+
+    const largest = gaps.reduce((best, g) =>
+      g.hi - g.lo > best.hi - best.lo ? g : best
+    );
+    // Only trust the gap when it is at least 0.2 wide (otherwise the whole page
+    // is a schedule and there's no discernible drawing region)
+    if (largest.hi - largest.lo >= 0.2) {
+      drawX0 = largest.lo;
+      drawX1 = largest.hi;
+    }
+    // If no usable gap, return null so the caller knows there's no floor plan bbox
+    else {
+      return null;
+    }
+  }
+
+  // ── Step 3: determine y-extent.  Ignore phrases that are entirely inside
+  // the excluded x-zones; the floor plan drawing area y-bounds come from the
+  // remaining phrases.
+  const drawPhrases = phrases.filter((p) => {
+    const cx = (p.x0 + p.x1) / 2;
+    return cx >= drawX0 && cx <= drawX1;
+  });
+
+  if (drawPhrases.length === 0) return null;
+
+  const y0 = Math.min(...drawPhrases.map((p) => p.y0));
+  const y1 = Math.max(...drawPhrases.map((p) => p.y1));
+
+  return { x0: drawX0, y0, x1: drawX1, y1 };
+}
+
 /**
  * Return the number of pages in a PDF without extracting any text.
  * Used by the heuristic extractor to know how many pages to iterate.

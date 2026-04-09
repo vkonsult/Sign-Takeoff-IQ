@@ -11,6 +11,7 @@ import { ai } from "@workspace/integrations-gemini-ai";
 import { extractSignsFromPdf, extractSignsFromPdfImageVerify, extractProjectInfo, extractTextFromPdf, isSpecFile, buildSpecContextString, type ProjectInfo, type VerifiedSignSummary, type TextContextSign, type VerificationItem, type ExtractedSignRow } from "./extraction";
 import { saveParsedResult } from "./storage";
 import { logger } from "./logger";
+import { extractPagePhrases, detectFloorPlanBbox, matchLocationToCoords, type PdfPhrase, type FloorPlanBbox } from "./pdf-words";
 
 
 /**
@@ -391,6 +392,61 @@ export async function processJob(jobId: string): Promise<void> {
     }
   }
 
+  // ── Word-match coordinate assignment ──────────────────────────────────────
+  // For each sign that has a pageNumber and jobFileId, extract page words and
+  // run the location match.  Results are cached per (fileId, pageNum) by
+  // extractPagePhrases so this is efficient even across many signs on same page.
+  //
+  // We build a cache of (fileId:pageNum) → { phrases, bbox } to avoid repeated
+  // PDF parses within this job run (extractPagePhrases has its own process-level
+  // cache, but we also cache the bbox derivation here).
+  type PageCache = { phrases: PdfPhrase[]; bbox: FloorPlanBbox | null };
+  const pageCache = new Map<string, PageCache>();
+
+  async function getPageData(fileStoredPath: string, fileId: string, page: number): Promise<PageCache> {
+    const key = `${fileId}:${page}`;
+    const cached = pageCache.get(key);
+    if (cached) return cached;
+    try {
+      const pageWords = await extractPagePhrases(fileStoredPath, fileId, page);
+      const bbox = detectFloorPlanBbox(pageWords.phrases);
+      const entry: PageCache = { phrases: pageWords.phrases, bbox };
+      pageCache.set(key, entry);
+      return entry;
+    } catch {
+      const entry: PageCache = { phrases: [], bbox: null };
+      pageCache.set(key, entry);
+      return entry;
+    }
+  }
+
+  // Build a quick lookup for file storedPath by fileId
+  const filePathById = new Map<string, string>(
+    filesToProcess.map((f) => [f.id, f.storedPath])
+  );
+
+  async function assignCoords(rows: InsertExtractedSign[]): Promise<InsertExtractedSign[]> {
+    return Promise.all(
+      rows.map(async (row) => {
+        // Skip rows that already have a manually placed position
+        if (row.xPos != null && row.yPos != null) return row;
+        if (!row.jobFileId || !row.pageNumber) return row;
+        const storedPath = filePathById.get(row.jobFileId);
+        if (!storedPath) return row;
+        try {
+          const { phrases, bbox } = await getPageData(storedPath, row.jobFileId, row.pageNumber);
+          const match = matchLocationToCoords(phrases, bbox, row.location, row.signIdentifier);
+          if (match) {
+            return { ...row, xPos: match.xPos, yPos: match.yPos, placementSource: "word_match" };
+          }
+        } catch (err) {
+          logger.debug({ err, signId: row.signIdentifier, location: row.location }, "Word-match failed for sign");
+        }
+        return row;
+      })
+    );
+  }
+
   // Deduplicate within each pass, then remove cross-pass duplicates from image rows
   const dedupedTextRows = deduplicateSignRows(allTextRows);
   const textSeenKeys = new Set(
@@ -416,11 +472,19 @@ export async function processJob(jobId: string): Promise<void> {
     "Sign deduplication complete",
   );
 
-  if (dedupedTextRows.length > 0) {
-    await db.insert(extractedSignsTable).values(dedupedTextRows);
+  // Run word-match coordinate assignment on both sets of rows
+  const coordedTextRows = await assignCoords(dedupedTextRows);
+  const coordedImageRows = await assignCoords(dedupedImageRows);
+
+  const matchedText = coordedTextRows.filter((r) => r.placementSource === "word_match").length;
+  const matchedImage = coordedImageRows.filter((r) => r.placementSource === "word_match").length;
+  logger.info({ jobId, textRows: coordedTextRows.length, matchedText, imageRows: coordedImageRows.length, matchedImage }, "Word-match coordinate assignment complete");
+
+  if (coordedTextRows.length > 0) {
+    await db.insert(extractedSignsTable).values(coordedTextRows);
   }
-  if (dedupedImageRows.length > 0) {
-    await db.insert(extractedSignsTable).values(dedupedImageRows);
+  if (coordedImageRows.length > 0) {
+    await db.insert(extractedSignsTable).values(coordedImageRows);
   }
 
   // Log overall verification stats (actual boosts applied in-memory per-file above)

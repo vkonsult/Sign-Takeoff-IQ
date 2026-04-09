@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useMemo } from "react";
+import { useState, useRef, useEffect, useMemo, useCallback } from "react";
 import { Document, Page, pdfjs } from "react-pdf";
 import "react-pdf/dist/Page/AnnotationLayer.css";
 import "react-pdf/dist/Page/TextLayer.css";
@@ -15,6 +15,7 @@ import {
 
 pdfjs.GlobalWorkerOptions.workerSrc = `${import.meta.env.BASE_URL}pdf.worker.min.mjs`;
 
+// ── Sign type color palette ──────────────────────────────────────────────────
 const SIGN_TYPE_COLORS: Record<string, string> = {
   wayfinding: "#3B82F6",
   directional: "#10B981",
@@ -45,6 +46,7 @@ function getSignColor(signType: string | null | undefined): string {
   return "#6B7280";
 }
 
+// ── Public types (kept compatible so JobDetails.tsx needs no changes) ────────
 export interface SignMarker {
   id: string;
   jobFileId?: string | null;
@@ -53,6 +55,8 @@ export interface SignMarker {
   yPos?: number | null;
   signType?: string | null;
   signIdentifier?: string | null;
+  location?: string | null;
+  placementSource?: string | null;
   manuallyAdded?: boolean | null;
   userVerified?: boolean | null;
 }
@@ -77,15 +81,155 @@ interface FloorPlanViewerProps {
   onEditSign: (sign: SignMarker) => void;
 }
 
-type DragState = {
+// ── Words API types ──────────────────────────────────────────────────────────
+interface PdfPhrase {
+  text: string;
+  x0: number;
+  y0: number;
+  x1: number;
+  y1: number;
+}
+
+interface FloorPlanBbox {
+  x0: number;
+  y0: number;
+  x1: number;
+  y1: number;
+}
+
+interface WordsResponse {
+  phrases: PdfPhrase[];
+  floorPlanBbox: FloorPlanBbox | null;
+}
+
+// ── Client-side location matcher (mirrors server logic) ──────────────────────
+function normId(s: string): string {
+  return s.toLowerCase().replace(/[\s\-_]/g, "");
+}
+
+function exactBoundaryMatch(haystack: string, needle: string): boolean {
+  let idx = haystack.indexOf(needle);
+  while (idx !== -1) {
+    const before = idx > 0 ? haystack[idx - 1] : null;
+    const after = idx + needle.length < haystack.length ? haystack[idx + needle.length] : null;
+    if ((before == null || !/[a-z0-9]/.test(before)) && (after == null || !/[a-z0-9]/.test(after)))
+      return true;
+    idx = haystack.indexOf(needle, idx + 1);
+  }
+  return false;
+}
+
+function tokenize(text: string): string[] {
+  return [...new Set(text.toLowerCase().replace(/[^a-z0-9\s]/g, " ").split(/\s+/).filter((t) => t.length >= 2))];
+}
+
+function levenshtein(s: string, t: string): number {
+  const m = s.length, n = t.length;
+  let prev = Array.from({ length: n + 1 }, (_, j) => j);
+  let curr = new Array<number>(n + 1);
+  for (let i = 1; i <= m; i++) {
+    curr[0] = i;
+    for (let j = 1; j <= n; j++) {
+      curr[j] = s[i - 1] === t[j - 1] ? prev[j - 1]! : 1 + Math.min(prev[j]!, curr[j - 1]!, prev[j - 1]!);
+    }
+    [prev, curr] = [curr, prev];
+  }
+  return prev[n]!;
+}
+
+function levenshteinSim(a: string, b: string): number {
+  if (a === b) return 1;
+  if (!a.length || !b.length) return 0;
+  return 1 - levenshtein(a, b) / Math.max(a.length, b.length);
+}
+
+function phraseMatchScore(phraseText: string, query: string): number {
+  const pn = phraseText.toLowerCase().replace(/[^a-z0-9]/g, " ").replace(/\s+/g, " ").trim();
+  const qn = query.toLowerCase().replace(/[^a-z0-9]/g, " ").replace(/\s+/g, " ").trim();
+  if (!pn || !qn) return 0;
+  const pt = tokenize(pn);
+  const qt = tokenize(qn);
+  if (!pt.length || !qt.length) return 0;
+  let total = 0;
+  for (const qtok of qt) {
+    let best = 0;
+    for (const ptok of pt) {
+      if (qtok === ptok) { best = 1; break; }
+      const [shorter, longer] = qtok.length <= ptok.length ? [qtok, ptok] : [ptok, qtok];
+      if (longer.startsWith(shorter)) best = Math.max(best, shorter.length / longer.length);
+      best = Math.max(best, levenshteinSim(qtok, ptok));
+    }
+    total += best;
+  }
+  return total / qt.length;
+}
+
+function matchLocationToCoords(
+  phrases: PdfPhrase[],
+  floorPlanBbox: FloorPlanBbox,
+  location: string | null | undefined,
+  signIdentifier: string | null | undefined,
+): { xPos: number; yPos: number } | null {
+  const query = [location, signIdentifier].filter(Boolean).join(" ").trim();
+  if (!query) return null;
+
+  const BBOX_TOLERANCE = 0.02;
+  const drawingPhrases = phrases.filter((p) => {
+    const cx = (p.x0 + p.x1) / 2;
+    const cy = (p.y0 + p.y1) / 2;
+    return (
+      cx >= floorPlanBbox.x0 - BBOX_TOLERANCE &&
+      cx <= floorPlanBbox.x1 + BBOX_TOLERANCE &&
+      cy >= floorPlanBbox.y0 - BBOX_TOLERANCE &&
+      cy <= floorPlanBbox.y1 + BBOX_TOLERANCE
+    );
+  });
+
+  if (!drawingPhrases.length) return null;
+
+  const ROOM_NUM_RE = /\b(?:[A-Za-z]{1,2}\d{2,4}[A-Za-z]?|\d{2,4}[A-Za-z]{1,2})\b/g;
+  const roomTokens = (query.match(ROOM_NUM_RE) ?? []).map((t) => normId(t));
+
+  let best: { score: number; cx: number; cy: number } | null = null;
+  for (const p of drawingPhrases) {
+    const cx = (p.x0 + p.x1) / 2;
+    const cy = (p.y0 + p.y1) / 2;
+    const pn = normId(p.text);
+    let score = phraseMatchScore(p.text, query);
+    if (roomTokens.length > 0 && roomTokens.some((rt) => exactBoundaryMatch(pn, rt))) {
+      score = Math.max(score, 0.85);
+    }
+    if (!best || score > best.score) best = { score, cx, cy };
+  }
+
+  if (!best || best.score < 0.5) return null;
+  return { xPos: best.cx, yPos: best.cy };
+}
+
+// ── Drag state ──────────────────────────────────────────────────────────────
+interface DragState {
   signId: string;
   startClientX: number;
   startClientY: number;
   currentX: number;
   currentY: number;
   moved: boolean;
-};
+}
 
+// ── Tooltip state ────────────────────────────────────────────────────────────
+interface TooltipState {
+  x: number;
+  y: number;
+  sign: SignMarker;
+}
+
+// ── Resolved marker (has coordinates) ───────────────────────────────────────
+interface ResolvedMarker extends SignMarker {
+  resolvedX: number;
+  resolvedY: number;
+}
+
+// ── FilePdfViewer ────────────────────────────────────────────────────────────
 function FilePdfViewer({
   jobId,
   file,
@@ -106,12 +250,9 @@ function FilePdfViewer({
   const [pageIdx, setPageIdx] = useState(0);
   const pageNumber = floorPlanPages[pageIdx] ?? 1;
 
-  const { pdfBuffer, blobError } = usePdfBlob(
-    `/api/jobs/${jobId}/files/${file.id}/pdf`
-  );
+  const { pdfBuffer, blobError } = usePdfBlob(`/api/jobs/${jobId}/files/${file.id}/pdf`);
   const pdfFile = useMemo(
-    () =>
-      pdfBuffer ? { data: new Uint8Array(pdfBuffer.slice(0)) } : null,
+    () => (pdfBuffer ? { data: new Uint8Array(pdfBuffer.slice(0)) } : null),
     [pdfBuffer]
   );
 
@@ -119,15 +260,16 @@ function FilePdfViewer({
   const [scale, setScale] = useState(1.0);
   const containerRef = useRef<HTMLDivElement>(null);
   const pageWrapRef = useRef<HTMLDivElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
 
-  const [pageSize, setPageSize] = useState<{ w: number; h: number } | null>(
-    null
-  );
+  // Pixel dimensions of the rendered react-pdf canvas
+  const [pageSize, setPageSize] = useState<{ w: number; h: number } | null>(null);
   const pageSizeRef = useRef<{ w: number; h: number } | null>(null);
   useEffect(() => {
     pageSizeRef.current = pageSize;
   }, [pageSize]);
 
+  // Observe the react-pdf canvas dimensions
   useEffect(() => {
     const el = pageWrapRef.current;
     if (!el) return;
@@ -143,36 +285,156 @@ function FilePdfViewer({
     return () => ro.disconnect();
   }, []);
 
+  // Words data from the API
+  const [wordsData, setWordsData] = useState<WordsResponse | null>(null);
+  const wordsDataRef = useRef<WordsResponse | null>(null);
+  useEffect(() => {
+    wordsDataRef.current = wordsData;
+  }, [wordsData]);
+
+  useEffect(() => {
+    setWordsData(null);
+    apiFetch(`/api/jobs/${jobId}/files/${file.id}/pages/${pageNumber}/words`)
+      .then((r) => r.json() as Promise<WordsResponse>)
+      .then((data) => setWordsData(data))
+      .catch(() => setWordsData(null));
+  }, [jobId, file.id, pageNumber]);
+
+  // Add marker mode
   const [addMarkerMode, setAddMarkerMode] = useState(false);
   const addMarkerModeRef = useRef(false);
   useEffect(() => {
     addMarkerModeRef.current = addMarkerMode;
   }, [addMarkerMode]);
 
+  // Drag state
   const [drag, setDrag] = useState<DragState | null>(null);
   const dragRef = useRef<DragState | null>(null);
 
-  const pageMarkersRef = useRef<SignMarker[]>([]);
+  // Tooltip state
+  const [tooltip, setTooltip] = useState<TooltipState | null>(null);
 
-  const pageMarkers = useMemo(
+  // Resolve markers: use DB coords if placementSource === "word_match" or xPos/yPos already set,
+  // otherwise fall back to client-side match using words data.
+  const pageMarkersRaw = useMemo(
     () =>
       signs.filter(
         (s) =>
           s.jobFileId === file.id &&
-          s.xPos != null &&
-          s.yPos != null &&
           (s.pageNumber ?? 1) === pageNumber
       ),
     [signs, file.id, pageNumber]
   );
-  useEffect(() => {
-    pageMarkersRef.current = pageMarkers;
-  }, [pageMarkers]);
 
-  const getPageCoords = (e: React.PointerEvent): { x: number; y: number } | null => {
+  const resolvedMarkers = useMemo<ResolvedMarker[]>(() => {
+    // Without words data we can't resolve positions reliably — wait for it.
+    // Without a floor plan bbox on the page, we have no valid drawing region.
+    if (!wordsData) return [];
+    const bbox = wordsData.floorPlanBbox;
+    if (!bbox) return []; // schedule/title-block page: no drawing region
+
+    const TOLERANCE = 0.05;
+
+    const result: ResolvedMarker[] = [];
+    for (const m of pageMarkersRaw) {
+      const src = m.placementSource ?? "";
+      const isWordMatch = src === "word_match";
+      const isManual = src === "manual";
+
+      if ((isWordMatch || isManual) && m.xPos != null && m.yPos != null) {
+        // Trust server-assigned or manually-placed coordinates.
+        // Still verify they fall inside the floor plan bbox (with tolerance).
+        const inside =
+          m.xPos >= bbox.x0 - TOLERANCE &&
+          m.xPos <= bbox.x1 + TOLERANCE &&
+          m.yPos >= bbox.y0 - TOLERANCE &&
+          m.yPos <= bbox.y1 + TOLERANCE;
+        if (inside) {
+          result.push({ ...m, resolvedX: m.xPos, resolvedY: m.yPos });
+        }
+      } else {
+        // No trusted DB coords: run client-side word-match inside the bbox.
+        const match = matchLocationToCoords(
+          wordsData.phrases,
+          bbox,
+          m.location,
+          m.signIdentifier
+        );
+        if (match) {
+          result.push({ ...m, resolvedX: match.xPos, resolvedY: match.yPos });
+        }
+      }
+    }
+    return result;
+  }, [pageMarkersRaw, wordsData]);
+
+  const resolvedMarkersRef = useRef<ResolvedMarker[]>([]);
+  useEffect(() => {
+    resolvedMarkersRef.current = resolvedMarkers;
+  }, [resolvedMarkers]);
+
+  // ── Canvas drawing ──────────────────────────────────────────────────────────
+  const drawCanvas = useCallback(() => {
+    const canvas = canvasRef.current;
+    const ps = pageSizeRef.current;
+    if (!canvas || !ps) return;
+    canvas.width = ps.w;
+    canvas.height = ps.h;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    ctx.clearRect(0, 0, ps.w, ps.h);
+
+    const markers = resolvedMarkersRef.current;
+    const dragState = dragRef.current;
+
+    const DOT_R = 5.5;
+
+    for (const m of markers) {
+      const isDragging = dragState?.signId === m.id;
+      const cx = isDragging ? dragState!.currentX * ps.w : m.resolvedX * ps.w;
+      const cy = isDragging ? dragState!.currentY * ps.h : m.resolvedY * ps.h;
+      const color = getSignColor(m.signType);
+
+      // Outer drag ring
+      if (isDragging) {
+        ctx.beginPath();
+        ctx.arc(cx, cy, DOT_R * 2.4, 0, Math.PI * 2);
+        ctx.setLineDash([4, 3]);
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 1.2;
+        ctx.globalAlpha = 0.6;
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.globalAlpha = 1;
+      }
+
+      // Fill circle at 70% opacity
+      ctx.beginPath();
+      ctx.arc(cx, cy, DOT_R, 0, Math.PI * 2);
+      ctx.globalAlpha = 0.7;
+      ctx.fillStyle = color;
+      ctx.fill();
+      ctx.globalAlpha = 1;
+
+      // Solid stroke at full opacity
+      ctx.beginPath();
+      ctx.arc(cx, cy, DOT_R, 0, Math.PI * 2);
+      ctx.strokeStyle = color;
+      ctx.lineWidth = isDragging ? 2 : 1.5;
+      ctx.stroke();
+    }
+  }, [resolvedMarkers]);
+
+  // Redraw canvas whenever resolved markers, page size, or drag changes
+  useEffect(() => {
+    drawCanvas();
+  }, [drawCanvas, resolvedMarkers, pageSize]);
+
+  // ── Pointer helpers ──────────────────────────────────────────────────────────
+  const getPageCoords = (e: React.PointerEvent | MouseEvent): { x: number; y: number } | null => {
     const wrap = pageWrapRef.current;
     if (!wrap) return null;
-    const canvas = wrap.querySelector("canvas");
+    const canvas = wrap.querySelector("canvas:not([data-overlay])") as HTMLCanvasElement | null;
     if (!canvas) return null;
     const rect = canvas.getBoundingClientRect();
     return {
@@ -181,32 +443,31 @@ function FilePdfViewer({
     };
   };
 
-  const findHitMarker = (x: number, y: number): SignMarker | null => {
+  const HIT_RADIUS = 0.025;
+  const findHitMarker = (x: number, y: number): ResolvedMarker | null => {
     const ps = pageSizeRef.current;
     if (!ps) return null;
-    const hitPx = Math.max(16, Math.min(ps.w, ps.h) * 0.05);
-    for (const m of pageMarkersRef.current) {
-      const dx = (m.xPos! - x) * ps.w;
-      const dy = (m.yPos! - y) * ps.h;
-      if (Math.hypot(dx, dy) <= hitPx) return m;
+    for (const m of resolvedMarkersRef.current) {
+      const dx = (m.resolvedX - x) * ps.w;
+      const dy = (m.resolvedY - y) * ps.h;
+      if (Math.hypot(dx, dy) <= Math.max(16, Math.min(ps.w, ps.h) * HIT_RADIUS)) return m;
     }
     return null;
   };
 
-  const handlePointerDown = (e: React.PointerEvent<SVGSVGElement>) => {
+  const handleCanvasPointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
     if (e.button !== 0) return;
     const coords = getPageCoords(e);
     if (!coords) return;
     const hit = findHitMarker(coords.x, coords.y);
     if (hit) {
       e.currentTarget.setPointerCapture(e.pointerId);
-      e.stopPropagation();
       const ds: DragState = {
         signId: hit.id,
         startClientX: e.clientX,
         startClientY: e.clientY,
-        currentX: hit.xPos!,
-        currentY: hit.yPos!,
+        currentX: hit.resolvedX,
+        currentY: hit.resolvedY,
         moved: false,
       };
       dragRef.current = ds;
@@ -214,28 +475,45 @@ function FilePdfViewer({
     }
   };
 
-  const handlePointerMove = (e: React.PointerEvent<SVGSVGElement>) => {
-    const ds = dragRef.current;
-    if (!ds) return;
+  const handleCanvasPointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
     const coords = getPageCoords(e);
     if (!coords) return;
-    const dx = e.clientX - ds.startClientX;
-    const dy = e.clientY - ds.startClientY;
-    const moved = Math.hypot(dx, dy) > 5;
-    const updated: DragState = {
-      ...ds,
-      currentX: coords.x,
-      currentY: coords.y,
-      moved,
-    };
-    dragRef.current = updated;
-    setDrag({ ...updated });
+
+    const ds = dragRef.current;
+    if (ds) {
+      const dx = e.clientX - ds.startClientX;
+      const dy = e.clientY - ds.startClientY;
+      const moved = Math.hypot(dx, dy) > 5;
+      const updated: DragState = { ...ds, currentX: coords.x, currentY: coords.y, moved };
+      dragRef.current = updated;
+      setDrag({ ...updated });
+      drawCanvas();
+      return;
+    }
+
+    // Tooltip: show on hover
+    const hit = findHitMarker(coords.x, coords.y);
+    if (hit) {
+      const ps = pageSizeRef.current;
+      const overlay = canvasRef.current;
+      if (ps && overlay) {
+        const rect = overlay.getBoundingClientRect();
+        setTooltip({
+          x: e.clientX - rect.left,
+          y: e.clientY - rect.top - 12,
+          sign: hit,
+        });
+      }
+    } else {
+      setTooltip(null);
+    }
   };
 
-  const handlePointerUp = async (e: React.PointerEvent<SVGSVGElement>) => {
+  const handleCanvasPointerUp = async (e: React.PointerEvent<HTMLCanvasElement>) => {
     const ds = dragRef.current;
     dragRef.current = null;
     setDrag(null);
+    setTooltip(null);
 
     if (ds) {
       if (ds.moved) {
@@ -243,11 +521,7 @@ function FilePdfViewer({
           const res = await apiFetch(`/api/extracted-signs/${ds.signId}`, {
             method: "PATCH",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              xPos: ds.currentX,
-              yPos: ds.currentY,
-              placementSource: "manual",
-            }),
+            body: JSON.stringify({ xPos: ds.currentX, yPos: ds.currentY, placementSource: "manual" }),
           });
           if (res.ok) {
             onSignUpdated(ds.signId, ds.currentX, ds.currentY);
@@ -256,9 +530,10 @@ function FilePdfViewer({
           console.error("Failed to update marker position", err);
         }
       } else {
-        const sign = pageMarkersRef.current.find((m) => m.id === ds.signId);
+        const sign = resolvedMarkersRef.current.find((m) => m.id === ds.signId);
         if (sign) onEditSign(sign);
       }
+      drawCanvas();
       return;
     }
 
@@ -267,28 +542,38 @@ function FilePdfViewer({
     if (!coords) return;
     if (findHitMarker(coords.x, coords.y)) return;
 
+    // Require a valid floor plan bbox — block placement on schedule/title-block pages.
+    const bbox = wordsDataRef.current?.floorPlanBbox ?? null;
+    if (!bbox) return; // no detected drawing region on this page
+
+    const TOL = 0.05;
+    if (
+      coords.x < bbox.x0 - TOL || coords.x > bbox.x1 + TOL ||
+      coords.y < bbox.y0 - TOL || coords.y > bbox.y1 + TOL
+    ) return; // outside the floor plan area
+
     try {
       const res = await apiFetch("/api/extracted-signs", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          jobId,
-          jobFileId: file.id,
-          pageNumber,
-          xPos: coords.x,
-          yPos: coords.y,
-        }),
+        body: JSON.stringify({ jobId, jobFileId: file.id, pageNumber, xPos: coords.x, yPos: coords.y }),
       });
       if (res.ok) {
         const data = (await res.json()) as { sign: unknown };
         onSignAdded(data.sign);
+        setAddMarkerMode(false);
       }
     } catch (err) {
       console.error("Failed to add marker", err);
     }
   };
 
-  const dotR = pageSize ? Math.max(10, Math.min(pageSize.w, pageSize.h) * 0.022) : 12;
+  // Redraw on drag change
+  useEffect(() => {
+    drawCanvas();
+  }, [drag, drawCanvas]);
+
+  const pageMarkerCount = resolvedMarkers.length;
 
   return (
     <div className="flex flex-col h-full min-h-0">
@@ -308,9 +593,7 @@ function FilePdfViewer({
               <span className="text-muted-foreground/50">(pg {pageNumber})</span>
             </span>
             <button
-              onClick={() =>
-                setPageIdx((i) => Math.min(floorPlanPages.length - 1, i + 1))
-              }
+              onClick={() => setPageIdx((i) => Math.min(floorPlanPages.length - 1, i + 1))}
               disabled={pageIdx === floorPlanPages.length - 1}
               className="p-1 rounded text-muted-foreground hover:text-foreground hover:bg-secondary disabled:opacity-30 transition-colors"
             >
@@ -327,7 +610,7 @@ function FilePdfViewer({
         <div className="flex-1" />
 
         <span className="text-xs text-muted-foreground font-mono">
-          {pageMarkers.length} marker{pageMarkers.length !== 1 ? "s" : ""}
+          {pageMarkerCount} marker{pageMarkerCount !== 1 ? "s" : ""}
         </span>
 
         <button
@@ -406,87 +689,53 @@ function FilePdfViewer({
                 }}
               />
 
-              {/* SVG overlay — pointer events captured here for add + drag */}
+              {/* Canvas overlay — same size as react-pdf canvas */}
               {pageSize && (
-                <svg
+                <canvas
+                  ref={canvasRef}
+                  data-overlay="true"
+                  width={pageSize.w}
+                  height={pageSize.h}
                   style={{
                     position: "absolute",
                     top: 0,
                     left: 0,
                     width: pageSize.w,
                     height: pageSize.h,
-                    overflow: "visible",
-                    pointerEvents:
-                      addMarkerMode || pageMarkers.length > 0 ? "all" : "none",
-                    cursor: addMarkerMode ? "crosshair" : "default",
+                    pointerEvents: addMarkerMode || resolvedMarkers.length > 0 ? "all" : "none",
+                    cursor: addMarkerMode
+                      ? "crosshair"
+                      : drag
+                      ? "grabbing"
+                      : "default",
                     zIndex: 5,
                   }}
-                  viewBox={`0 0 ${pageSize.w} ${pageSize.h}`}
-                  onPointerDown={handlePointerDown}
-                  onPointerMove={handlePointerMove}
-                  onPointerUp={handlePointerUp}
-                >
-                  {pageMarkers.map((m) => {
-                    const isDragging = drag?.signId === m.id;
-                    const cx = isDragging
-                      ? drag.currentX * pageSize.w
-                      : m.xPos! * pageSize.w;
-                    const cy = isDragging
-                      ? drag.currentY * pageSize.h
-                      : m.yPos! * pageSize.h;
-                    const color = getSignColor(m.signType);
-                    const r = dotR;
-                    const label =
-                      (m.signIdentifier || m.signType || "?").slice(0, 10);
+                  onPointerDown={handleCanvasPointerDown}
+                  onPointerMove={handleCanvasPointerMove}
+                  onPointerUp={handleCanvasPointerUp}
+                  onPointerLeave={() => setTooltip(null)}
+                />
+              )}
 
-                    return (
-                      <g
-                        key={m.id}
-                        style={{
-                          cursor: isDragging ? "grabbing" : "grab",
-                        }}
-                      >
-                        {/* Outer glow ring when dragging */}
-                        {isDragging && (
-                          <circle
-                            cx={cx}
-                            cy={cy}
-                            r={r * 2.2}
-                            fill="none"
-                            stroke={color}
-                            strokeWidth={1}
-                            strokeDasharray="4 3"
-                            opacity={0.5}
-                          />
-                        )}
-                        {/* Main filled circle */}
-                        <circle
-                          cx={cx}
-                          cy={cy}
-                          r={r * 1.4}
-                          fill={`${color}2a`}
-                          stroke={color}
-                          strokeWidth={isDragging ? 2.5 : 1.5}
-                        />
-                        {/* Center dot */}
-                        <circle cx={cx} cy={cy} r={r * 0.3} fill={color} />
-                        {/* Label above */}
-                        <text
-                          x={cx}
-                          y={cy - r * 1.4 - 4}
-                          textAnchor="middle"
-                          fill={color}
-                          fontSize={Math.max(8, r * 0.85)}
-                          fontWeight="bold"
-                          fontFamily="monospace"
-                          style={{ userSelect: "none", pointerEvents: "none" }}
-                        >
-                          {label}
-                        </text>
-                      </g>
-                    );
-                  })}
-                </svg>
+              {/* Floating tooltip */}
+              {tooltip && pageSize && (
+                <div
+                  style={{
+                    position: "absolute",
+                    left: Math.min(tooltip.x + 10, pageSize.w - 160),
+                    top: Math.max(tooltip.y - 36, 4),
+                    zIndex: 20,
+                    pointerEvents: "none",
+                  }}
+                  className="px-2 py-1 rounded-md bg-background/95 border border-border shadow-lg text-[11px] font-mono whitespace-nowrap max-w-[200px] truncate"
+                >
+                  <span
+                    className="inline-block w-2 h-2 rounded-full mr-1.5 align-middle"
+                    style={{ background: getSignColor(tooltip.sign.signType) }}
+                  />
+                  {tooltip.sign.signType ?? "unknown"}
+                  {tooltip.sign.signIdentifier ? ` · ${tooltip.sign.signIdentifier}` : ""}
+                </div>
               )}
 
               {/* Add-marker hint overlay */}
@@ -502,7 +751,7 @@ function FilePdfViewer({
                   }}
                   className="px-3 py-1.5 rounded-full bg-primary/90 text-primary-foreground text-[10px] font-bold uppercase tracking-wider shadow-lg whitespace-nowrap"
                 >
-                  Click anywhere to place a marker · Press again to cancel
+                  Click on floor plan to place a marker · Press again to cancel
                 </div>
               )}
             </div>
@@ -513,6 +762,7 @@ function FilePdfViewer({
   );
 }
 
+// ── Main FloorPlanViewer ─────────────────────────────────────────────────────
 export function FloorPlanViewer({
   jobId,
   files,
