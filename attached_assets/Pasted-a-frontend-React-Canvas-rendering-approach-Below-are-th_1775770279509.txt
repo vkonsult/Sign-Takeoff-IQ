@@ -1,0 +1,27 @@
+a frontend React/Canvas rendering approach. Below are the details regarding the coordinate system, scaling logic, and rendering approach.
+
+1. Coordinate System and Scaling Logic
+The system uses a multi-layered coordinate approach to bridge the gap between PDF points and screen pixels:
+
+Source Coordinate System (PDF Points): The initial coordinates (x, y) for markers are extracted from the PDF using PyMuPDF (and sometimes pdfplumber). In server/pdf_processor.py, the function _extract_page_words_fitz captures word positions in PDF points (typically 72 DPI). These coordinates are stored in the database as the "ground truth" for the marker locations.
+Backend Rendering Scale (2.0x): When the backend generates the floor plan image for the frontend (via the /api/page_image endpoint in server/main.py), it applies a 2.0x zoom matrix (_fitz.Matrix(2.0, 2.0)). This renders the PDF page to a JPEG at double the base resolution for better clarity.
+Frontend Reference Scale (RENDER_SCALE = 2.0): The frontend React component (artifacts/sign-takeoff/src/pages/floor-plan.tsx) uses a constant RENDER_SCALE = 2.0 to match the backend's rendering.
+Mapping to Canvas: To place a marker on the canvas, the stored PDF coordinates are multiplied by RENDER_SCALE: px = r.x * RENDER_SCALE.
+Vertical Offset: An additional markerYOffset = 32 is added to the Y-coordinate (py = r.y * RENDER_SCALE + 32) to place the marker slightly above the detected room number label.
+Dynamic Zoom/Pan: The markers are rendered on a <canvas> element that sits on top of the floor plan <img>. Both the image and the canvas are wrapped in a div that is transformed using CSS translate3d and scale. The scaling factor is derived from a zoomLevel (20% to 400%).
+2. Rendering Approach
+The rendering is handled by a dedicated drawMarkers loop in FloorPlan.tsx:
+
+Canvas-based Overlays: Markers are drawn using the HTML5 Canvas API (CanvasRenderingContext2D). This approach allows for smooth rendering of hundreds of markers without the performance overhead of many DOM elements.
+Marker Visuals:
+Shapes: Standard markers are drawn as circles (ctx.arc). If a sign type starts with "ADA:", the marker is drawn as a diamond (drawDiamond helper).
+Colors: Markers use the color assigned to their specific sign type (e.g., #E91E63 for Restroom Signs), parsed into RGBA for transparency.
+Interaction States:
+Active/Highlighted: Uses a pulse animation (requestAnimationFrame) with a glowing outer ring and a text label showing the room name and sign type.
+Dragging: When a user moves a marker, the canvas clears and redraws the marker at the mouse position in real-time.
+Input Mapping: To handle clicks or drags accurately, getCanvasCoords calculates the relative position of the mouse on the canvas by accounting for the canvas's getBoundingClientRect and the scaleRatio between the canvas's internal width and its displayed size.
+Summary of Key Files
+server/pdf_processor.py: Extracts coordinates from PDF words/OCR in base points.
+server/main.py: Renders PDF pages to JPEG at 2.0x scale.
+**`artifacts/sign
+-takeoff/src/pages/floor-plan.tsx**: Manages the<canvas>rendering, coordinate mapping (x * 2.0`), and interactive logic (dragging, clicking).
