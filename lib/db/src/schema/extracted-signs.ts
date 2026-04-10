@@ -42,6 +42,7 @@ export const extractedSignsTable = pgTable("extracted_signs", {
     (): AnyPgColumn => extractedSignsTable.id,
     { onDelete: "set null" }
   ),
+  adaRequired: boolean("ada_required").default(false),
   manuallyAdded: boolean("manually_added").notNull().default(false),
   userVerified: boolean("user_verified").notNull().default(false),
   hidden: boolean("hidden").notNull().default(false),

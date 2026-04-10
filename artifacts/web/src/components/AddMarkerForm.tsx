@@ -48,6 +48,7 @@ export function AddMarkerForm({ pending, onSave, onCancel }: Props) {
   const [signType, setSignType] = useState("");
   const [signIdentifier, setSignIdentifier] = useState("");
   const [quantity, setQuantity] = useState(1);
+  const [adaRequired, setAdaRequired] = useState(false);
   const [messageContent, setMessageContent] = useState("");
   const [notes, setNotes] = useState("");
   const [saving, setSaving] = useState(false);
@@ -74,6 +75,7 @@ export function AddMarkerForm({ pending, onSave, onCancel }: Props) {
           signType: signType || null,
           signIdentifier: signIdentifier.trim() || null,
           quantity: quantity || 1,
+          adaRequired,
           messageContent: messageContent.trim() || null,
           notes: notes.trim() || null,
           placementSource: "manual",
@@ -176,6 +178,22 @@ export function AddMarkerForm({ pending, onSave, onCancel }: Props) {
                 className="w-full px-2.5 py-1.5 rounded-md border border-border bg-secondary/50 text-sm text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:border-primary/60 focus:ring-1 focus:ring-primary/20"
               />
             </div>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <input
+              id="ada-required"
+              type="checkbox"
+              checked={adaRequired}
+              onChange={(e) => setAdaRequired(e.target.checked)}
+              className="h-4 w-4 rounded border-border bg-secondary/50 text-primary accent-primary cursor-pointer"
+            />
+            <label
+              htmlFor="ada-required"
+              className="text-sm text-foreground cursor-pointer select-none"
+            >
+              ADA Required
+            </label>
           </div>
 
           <div>
