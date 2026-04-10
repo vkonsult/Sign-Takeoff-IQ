@@ -28,7 +28,7 @@ import {
 
 pdfjs.GlobalWorkerOptions.workerSrc = `${import.meta.env.BASE_URL}pdf.worker.min.mjs`;
 
-interface ExtractedSign {
+export interface ExtractedSign {
   id: string;
   jobId?: string;
   jobFileId?: string | null;

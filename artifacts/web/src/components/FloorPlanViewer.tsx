@@ -555,8 +555,8 @@ function FilePdfViewer({
         {/* Zoom controls */}
         <div className="flex items-center gap-0.5">
           <button
-            onClick={() => setScale((s) => Math.max(0.25, s - 0.15))}
-            disabled={scale <= 0.25}
+            onClick={() => setScale((s) => Math.max(0.3, s - 0.15))}
+            disabled={scale <= 0.3}
             className="p-1.5 rounded hover:bg-secondary disabled:opacity-30 transition-colors"
             title="Zoom out"
           >
@@ -573,8 +573,8 @@ function FilePdfViewer({
             Fit
           </button>
           <button
-            onClick={() => setScale((s) => Math.min(3.0, s + 0.15))}
-            disabled={scale >= 3.0}
+            onClick={() => setScale((s) => Math.min(2.5, s + 0.15))}
+            disabled={scale >= 2.5}
             className="p-1.5 rounded hover:bg-secondary disabled:opacity-30 transition-colors"
             title="Zoom in"
           >
@@ -656,7 +656,7 @@ function FilePdfViewer({
                     const cw = containerRef.current.clientWidth - 32;
                     if (cw > 0 && width > 0) {
                       hasSetScaleRef.current = true;
-                      const fit = Math.min(1.5, Math.max(0.25, cw / width));
+                      const fit = Math.min(1.2, Math.max(0.3, cw / width));
                       setFitScale(fit);
                       setScale(fit);
                     }

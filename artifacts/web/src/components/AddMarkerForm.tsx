@@ -8,6 +8,7 @@ import {
 } from "@/components/ui/dialog";
 import { apiFetch } from "@/lib/apiClient";
 import { MapPin, Loader2 } from "lucide-react";
+import type { ExtractedSign } from "@/components/SignReviewModal";
 
 const SIGN_TYPES = [
   "Room ID",
@@ -37,12 +38,9 @@ export interface PendingMarker {
   jobId: string;
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-type SavedSign = any;
-
 interface Props {
   pending: PendingMarker;
-  onSave: (sign: SavedSign) => void;
+  onSave: (sign: ExtractedSign) => void;
   onCancel: () => void;
 }
 
@@ -88,7 +86,7 @@ export function AddMarkerForm({ pending, onSave, onCancel }: Props) {
         const text = await res.text().catch(() => "Unknown error");
         throw new Error(text);
       }
-      const data = (await res.json()) as { sign: SavedSign };
+      const data = (await res.json()) as { sign: ExtractedSign };
       onSave(data.sign);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to save sign");
