@@ -269,16 +269,21 @@ function FilePdfViewer({
     pageSizeRef.current = pageSize;
   }, [pageSize]);
 
-  // Observe the react-pdf canvas dimensions
+  // Observe the react-pdf canvas dimensions — only update if values actually changed
   useEffect(() => {
     const el = pageWrapRef.current;
     if (!el) return;
     const ro = new ResizeObserver(() => {
-      const canvas = el.querySelector("canvas");
+      const canvas = el.querySelector("canvas:not([data-overlay])") as HTMLCanvasElement | null;
       if (canvas) {
-        const s = { w: canvas.offsetWidth, h: canvas.offsetHeight };
-        setPageSize(s);
-        pageSizeRef.current = s;
+        const w = canvas.offsetWidth;
+        const h = canvas.offsetHeight;
+        if (w > 0 && h > 0) {
+          setPageSize((prev) => {
+            if (prev && prev.w === w && prev.h === h) return prev;
+            return { w, h };
+          });
+        }
       }
     });
     ro.observe(el);
@@ -378,8 +383,13 @@ function FilePdfViewer({
     const canvas = canvasRef.current;
     const ps = pageSizeRef.current;
     if (!canvas || !ps) return;
-    canvas.width = ps.w;
-    canvas.height = ps.h;
+    // Only resize the backing buffer when dimensions actually change.
+    // Setting canvas.width always clears the canvas; doing it every frame
+    // causes visible flickering.
+    if (canvas.width !== ps.w || canvas.height !== ps.h) {
+      canvas.width = ps.w;
+      canvas.height = ps.h;
+    }
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
     ctx.clearRect(0, 0, ps.w, ps.h);

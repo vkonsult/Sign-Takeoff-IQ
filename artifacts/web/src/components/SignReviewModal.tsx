@@ -2207,61 +2207,44 @@ export function SignReviewModal({
                       {textMarkers.map((m) => {
                         const cx = m.x * renderedW;
                         const cy = m.y * renderedH;
-                        const r = m.isCurrent ? 18 : 12;
                         const isHovered = m.signId === hoveredMarkerId;
                         const isGhost = m.isGhost === true;
-                        const lowConfidence = m.placementScore < 0.7 && !m.isCurrent && !isGhost;
-                        // Ghost markers render at 0.15 opacity as placeholders
-                        const markerOpacity = isGhost ? 0.15 : (lowConfidence ? 0.7 : 1);
+                        // Dot radius: active sign slightly larger
+                        const dotR = m.isCurrent ? 7 : 5;
+                        const markerOpacity = isGhost ? 0.15 : 1;
                         return (
                           <g key={m.signId} opacity={markerOpacity}>
-                            {/* Outer glow ring for active sign (only non-ghost) */}
+                            {/* Clean ring for active sign only */}
                             {m.isCurrent && !isGhost && (
                               <circle
-                                cx={cx} cy={cy} r={r + 6}
+                                cx={cx} cy={cy} r={dotR + 5}
                                 fill="none" stroke={m.color}
-                                strokeWidth={1.5} strokeDasharray="4 3"
-                                opacity={0.7}
-                              />
-                            )}
-                            {/* Dashed ring for low-confidence placement */}
-                            {lowConfidence && (
-                              <circle
-                                cx={cx} cy={cy} r={r + 5}
-                                fill="none" stroke={m.color}
-                                strokeWidth={1} strokeDasharray="3 3"
-                                opacity={0.45}
+                                strokeWidth={1.5}
+                                opacity={0.8}
                               />
                             )}
                             {/* Hover ring */}
                             {isHovered && !m.isCurrent && !isGhost && (
                               <circle
-                                cx={cx} cy={cy} r={r + 5}
+                                cx={cx} cy={cy} r={dotR + 4}
                                 fill="none" stroke={m.color}
                                 strokeWidth={1} opacity={0.5}
                               />
                             )}
-                            {/* Filled circle */}
-                            <circle
-                              cx={cx} cy={cy} r={r}
-                              fill={`${m.color}${lowConfidence || isGhost ? "22" : "33"}`}
-                              stroke={m.color}
-                              strokeWidth={m.isCurrent ? 2.5 : 1.5}
-                              strokeDasharray={lowConfidence || isGhost ? "4 2" : undefined}
-                            />
-                            {/* Pin dot */}
-                            <circle cx={cx} cy={cy} r={3} fill={m.color} />
-                            {/* Label */}
-                            <text
-                              x={cx} y={cy - r - 5}
-                              textAnchor="middle" fill={m.color}
-                              fontSize={m.isCurrent ? 10 : 8}
-                              fontWeight="bold" fontFamily="monospace"
-                              style={{ userSelect: "none" }}
-                              opacity={lowConfidence ? 0.7 : 1}
-                            >
-                              {debugMode && m.phraseCenter ? `${m.label}-LOCK` : m.label}
-                            </text>
+                            {/* Solid dot */}
+                            <circle cx={cx} cy={cy} r={dotR} fill={m.color} />
+                            {/* Label — only for active sign */}
+                            {m.isCurrent && !isGhost && (
+                              <text
+                                x={cx} y={cy - dotR - 7}
+                                textAnchor="middle" fill={m.color}
+                                fontSize={9}
+                                fontWeight="bold" fontFamily="monospace"
+                                style={{ userSelect: "none" }}
+                              >
+                                {debugMode && m.phraseCenter ? `${m.label}-LOCK` : m.label}
+                              </text>
+                            )}
                           </g>
                         );
                       })}
