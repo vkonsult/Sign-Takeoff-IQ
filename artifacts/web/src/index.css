@@ -86,7 +86,11 @@
     @apply border-border;
   }
 
-  a {
+  a,
+  a:focus,
+  a:focus-visible,
+  a:hover,
+  a:active {
     outline: none;
   }
 
