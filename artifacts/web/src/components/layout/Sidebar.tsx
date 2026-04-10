@@ -105,7 +105,7 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
           <Link
             href={href}
             className={cn(
-              "flex items-center justify-center w-9 h-9 rounded-md transition-all duration-200",
+              "flex items-center justify-center w-9 h-9 rounded-md transition-all duration-200 outline-none",
               isActive
                 ? "bg-secondary text-primary border border-border"
                 : "text-muted-foreground hover:bg-secondary/50 hover:text-foreground"
@@ -120,7 +120,7 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
       <Link
         href={href}
         className={cn(
-          "flex items-center gap-3 px-3 py-2 rounded-md text-sm font-medium transition-all duration-200",
+          "flex items-center gap-3 px-3 py-2 rounded-md text-sm font-medium transition-all duration-200 outline-none",
           isActive
             ? "bg-secondary text-primary border border-border"
             : "text-muted-foreground hover:bg-secondary/50 hover:text-foreground"
@@ -232,7 +232,7 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
                     key={job.id}
                     href={`/jobs/${job.id}`}
                     className={cn(
-                      "flex flex-col gap-1 px-3 py-2 rounded-md border border-transparent transition-all",
+                      "flex flex-col gap-1 px-3 py-2 rounded-md border border-transparent transition-all outline-none",
                       location === `/jobs/${job.id}`
                         ? "bg-secondary border-border"
                         : "hover:bg-secondary/30"
