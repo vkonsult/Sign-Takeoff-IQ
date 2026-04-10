@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useMemo, useCallback } from "react";
+import { useState, useRef, useEffect, useMemo } from "react";
 import { Document, Page, pdfjs } from "react-pdf";
 import "react-pdf/dist/Page/AnnotationLayer.css";
 import "react-pdf/dist/Page/TextLayer.css";
@@ -260,35 +260,7 @@ function FilePdfViewer({
   const [scale, setScale] = useState(1.0);
   const containerRef = useRef<HTMLDivElement>(null);
   const pageWrapRef = useRef<HTMLDivElement>(null);
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-
-  // Pixel dimensions of the rendered react-pdf canvas
-  const [pageSize, setPageSize] = useState<{ w: number; h: number } | null>(null);
-  const pageSizeRef = useRef<{ w: number; h: number } | null>(null);
-  useEffect(() => {
-    pageSizeRef.current = pageSize;
-  }, [pageSize]);
-
-  // Observe the react-pdf canvas dimensions — only update if values actually changed
-  useEffect(() => {
-    const el = pageWrapRef.current;
-    if (!el) return;
-    const ro = new ResizeObserver(() => {
-      const canvas = el.querySelector("canvas:not([data-overlay])") as HTMLCanvasElement | null;
-      if (canvas) {
-        const w = canvas.offsetWidth;
-        const h = canvas.offsetHeight;
-        if (w > 0 && h > 0) {
-          setPageSize((prev) => {
-            if (prev && prev.w === w && prev.h === h) return prev;
-            return { w, h };
-          });
-        }
-      }
-    });
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, []);
+  const svgRef = useRef<SVGSVGElement>(null);
 
   // Words data from the API
   const [wordsData, setWordsData] = useState<WordsResponse | null>(null);
@@ -373,90 +345,32 @@ function FilePdfViewer({
     return result;
   }, [pageMarkersRaw, wordsData]);
 
-  const resolvedMarkersRef = useRef<ResolvedMarker[]>([]);
-  useEffect(() => {
-    resolvedMarkersRef.current = resolvedMarkers;
-  }, [resolvedMarkers]);
-
-  // ── Canvas drawing ──────────────────────────────────────────────────────────
-  const drawCanvas = useCallback(() => {
-    const canvas = canvasRef.current;
-    const ps = pageSizeRef.current;
-    if (!canvas || !ps) return;
-    // Only resize the backing buffer when dimensions actually change.
-    // Setting canvas.width always clears the canvas; doing it every frame
-    // causes visible flickering.
-    if (canvas.width !== ps.w || canvas.height !== ps.h) {
-      canvas.width = ps.w;
-      canvas.height = ps.h;
-    }
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
-    ctx.clearRect(0, 0, ps.w, ps.h);
-
-    const markers = resolvedMarkersRef.current;
-    const dragState = dragRef.current;
-
-    const DOT_R = 5;
-
-    for (const m of markers) {
-      const isDragging = dragState?.signId === m.id;
-      const cx = isDragging ? dragState!.currentX * ps.w : m.resolvedX * ps.w;
-      const cy = isDragging ? dragState!.currentY * ps.h : m.resolvedY * ps.h;
-      const color = getSignColor(m.signType);
-
-      // Outer drag ring
-      if (isDragging) {
-        ctx.beginPath();
-        ctx.arc(cx, cy, DOT_R * 2.4, 0, Math.PI * 2);
-        ctx.setLineDash([4, 3]);
-        ctx.strokeStyle = color;
-        ctx.lineWidth = 1.2;
-        ctx.globalAlpha = 0.6;
-        ctx.stroke();
-        ctx.setLineDash([]);
-        ctx.globalAlpha = 1;
-      }
-
-      // Solid opaque dot — no border
-      ctx.beginPath();
-      ctx.arc(cx, cy, DOT_R, 0, Math.PI * 2);
-      ctx.fillStyle = color;
-      ctx.fill();
-    }
-  }, [resolvedMarkers]);
-
-  // Redraw canvas whenever resolved markers, page size, or drag changes
-  useEffect(() => {
-    drawCanvas();
-  }, [drawCanvas, resolvedMarkers, pageSize]);
-
   // ── Pointer helpers ──────────────────────────────────────────────────────────
   const getPageCoords = (e: React.PointerEvent | MouseEvent): { x: number; y: number } | null => {
-    const wrap = pageWrapRef.current;
-    if (!wrap) return null;
-    const canvas = wrap.querySelector("canvas:not([data-overlay])") as HTMLCanvasElement | null;
-    if (!canvas) return null;
-    const rect = canvas.getBoundingClientRect();
+    const svg = svgRef.current;
+    if (!svg) return null;
+    const rect = svg.getBoundingClientRect();
+    if (!rect.width || !rect.height) return null;
     return {
       x: Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width)),
       y: Math.max(0, Math.min(1, (e.clientY - rect.top) / rect.height)),
     };
   };
 
-  const HIT_RADIUS = 0.025;
   const findHitMarker = (x: number, y: number): ResolvedMarker | null => {
-    const ps = pageSizeRef.current;
-    if (!ps) return null;
-    for (const m of resolvedMarkersRef.current) {
-      const dx = (m.resolvedX - x) * ps.w;
-      const dy = (m.resolvedY - y) * ps.h;
-      if (Math.hypot(dx, dy) <= Math.max(16, Math.min(ps.w, ps.h) * HIT_RADIUS)) return m;
+    const svg = svgRef.current;
+    if (!svg) return null;
+    const rect = svg.getBoundingClientRect();
+    const HIT_PX = Math.max(16, Math.min(rect.width, rect.height) * 0.025);
+    for (const m of resolvedMarkers) {
+      const dx = (m.resolvedX - x) * rect.width;
+      const dy = (m.resolvedY - y) * rect.height;
+      if (Math.hypot(dx, dy) <= HIT_PX) return m;
     }
     return null;
   };
 
-  const handleCanvasPointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
+  const handleSvgPointerDown = (e: React.PointerEvent<SVGSVGElement>) => {
     if (e.button !== 0) return;
     const coords = getPageCoords(e);
     if (!coords) return;
@@ -476,7 +390,7 @@ function FilePdfViewer({
     }
   };
 
-  const handleCanvasPointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
+  const handleSvgPointerMove = (e: React.PointerEvent<SVGSVGElement>) => {
     const coords = getPageCoords(e);
     if (!coords) return;
 
@@ -488,17 +402,15 @@ function FilePdfViewer({
       const updated: DragState = { ...ds, currentX: coords.x, currentY: coords.y, moved };
       dragRef.current = updated;
       setDrag({ ...updated });
-      drawCanvas();
       return;
     }
 
     // Tooltip: show on hover
     const hit = findHitMarker(coords.x, coords.y);
     if (hit) {
-      const ps = pageSizeRef.current;
-      const overlay = canvasRef.current;
-      if (ps && overlay) {
-        const rect = overlay.getBoundingClientRect();
+      const svg = svgRef.current;
+      if (svg) {
+        const rect = svg.getBoundingClientRect();
         setTooltip({
           x: e.clientX - rect.left,
           y: e.clientY - rect.top - 12,
@@ -510,7 +422,7 @@ function FilePdfViewer({
     }
   };
 
-  const handleCanvasPointerUp = async (e: React.PointerEvent<HTMLCanvasElement>) => {
+  const handleSvgPointerUp = async (e: React.PointerEvent<SVGSVGElement>) => {
     const ds = dragRef.current;
     dragRef.current = null;
     setDrag(null);
@@ -531,10 +443,9 @@ function FilePdfViewer({
           console.error("Failed to update marker position", err);
         }
       } else {
-        const sign = resolvedMarkersRef.current.find((m) => m.id === ds.signId);
+        const sign = resolvedMarkers.find((m) => m.id === ds.signId);
         if (sign) onEditSign(sign);
       }
-      drawCanvas();
       return;
     }
 
@@ -568,11 +479,6 @@ function FilePdfViewer({
       console.error("Failed to add marker", err);
     }
   };
-
-  // Redraw on drag change
-  useEffect(() => {
-    drawCanvas();
-  }, [drag, drawCanvas]);
 
   const pageMarkerCount = resolvedMarkers.length;
 
@@ -690,40 +596,56 @@ function FilePdfViewer({
                 }}
               />
 
-              {/* Canvas overlay — same size as react-pdf canvas */}
-              {pageSize && (
-                <canvas
-                  ref={canvasRef}
-                  data-overlay="true"
-                  width={pageSize.w}
-                  height={pageSize.h}
-                  style={{
-                    position: "absolute",
-                    top: 0,
-                    left: 0,
-                    width: pageSize.w,
-                    height: pageSize.h,
-                    pointerEvents: addMarkerMode || resolvedMarkers.length > 0 ? "all" : "none",
-                    cursor: addMarkerMode
-                      ? "crosshair"
-                      : drag
-                      ? "grabbing"
-                      : "default",
-                    zIndex: 5,
-                  }}
-                  onPointerDown={handleCanvasPointerDown}
-                  onPointerMove={handleCanvasPointerMove}
-                  onPointerUp={handleCanvasPointerUp}
-                  onPointerLeave={() => setTooltip(null)}
-                />
-              )}
+              {/* SVG overlay — fills the page div, renders markers at percentage coords */}
+              <svg
+                ref={svgRef}
+                style={{
+                  position: "absolute",
+                  top: 0,
+                  left: 0,
+                  width: "100%",
+                  height: "100%",
+                  overflow: "visible",
+                  pointerEvents: addMarkerMode || resolvedMarkers.length > 0 ? "all" : "none",
+                  cursor: addMarkerMode ? "crosshair" : drag ? "grabbing" : "default",
+                  zIndex: 5,
+                }}
+                onPointerDown={handleSvgPointerDown}
+                onPointerMove={handleSvgPointerMove}
+                onPointerUp={handleSvgPointerUp}
+                onPointerLeave={() => setTooltip(null)}
+              >
+                {resolvedMarkers.map((m) => {
+                  const isDragging = drag?.signId === m.id;
+                  const cx = `${(isDragging ? drag!.currentX : m.resolvedX) * 100}%`;
+                  const cy = `${(isDragging ? drag!.currentY : m.resolvedY) * 100}%`;
+                  const color = getSignColor(m.signType);
+                  return (
+                    <g key={m.id}>
+                      {isDragging && (
+                        <circle
+                          cx={cx}
+                          cy={cy}
+                          r={12}
+                          fill="none"
+                          stroke={color}
+                          strokeWidth={1.2}
+                          strokeDasharray="4 3"
+                          opacity={0.6}
+                        />
+                      )}
+                      <circle cx={cx} cy={cy} r={5} fill={color} />
+                    </g>
+                  );
+                })}
+              </svg>
 
               {/* Floating tooltip */}
-              {tooltip && pageSize && (
+              {tooltip && (
                 <div
                   style={{
                     position: "absolute",
-                    left: Math.min(tooltip.x + 10, pageSize.w - 160),
+                    left: tooltip.x + 10,
                     top: Math.max(tooltip.y - 36, 4),
                     zIndex: 20,
                     pointerEvents: "none",
