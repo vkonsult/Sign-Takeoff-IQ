@@ -33,6 +33,7 @@ import {
   RefreshCw,
   BarChart2,
   RotateCcw,
+  LayoutGrid,
 } from "lucide-react";
 import { format, formatDistanceToNow } from "date-fns";
 import { exportMarkedupPdf } from "@/lib/exportMarkedupPdf";
@@ -117,7 +118,7 @@ export default function JobDetails() {
   const [showHidden, setShowHidden] = useState(false);
   const [sortField, setSortField] = useState<string | null>(null);
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
-  const [activeTab, setActiveTab] = useState<"table" | "floorplans">("table");
+  const [activeTab, setActiveTab] = useState<"table" | "sheets" | "summary" | "floorplans">("table");
 
   const PROCESSING_TIMEOUT_SECONDS = 5 * 60;
   const [processingSeconds, setProcessingSeconds] = useState(0);
@@ -528,6 +529,28 @@ export default function JobDetails() {
                     Sign Table
                   </button>
                   <button
+                    onClick={() => setActiveTab("sheets")}
+                    className={`flex items-center gap-1.5 px-4 py-2.5 text-[11px] font-display font-semibold uppercase tracking-wide border-b-2 transition-all ${
+                      activeTab === "sheets"
+                        ? "border-primary text-primary"
+                        : "border-transparent text-muted-foreground hover:text-foreground"
+                    }`}
+                  >
+                    <LayoutGrid className="w-3.5 h-3.5" />
+                    Sheets Analysis
+                  </button>
+                  <button
+                    onClick={() => setActiveTab("summary")}
+                    className={`flex items-center gap-1.5 px-4 py-2.5 text-[11px] font-display font-semibold uppercase tracking-wide border-b-2 transition-all ${
+                      activeTab === "summary"
+                        ? "border-primary text-primary"
+                        : "border-transparent text-muted-foreground hover:text-foreground"
+                    }`}
+                  >
+                    <BarChart2 className="w-3.5 h-3.5" />
+                    Sign Type Summary
+                  </button>
+                  <button
                     onClick={() => setActiveTab("floorplans")}
                     className={`flex items-center gap-1.5 px-4 py-2.5 text-[11px] font-display font-semibold uppercase tracking-wide border-b-2 transition-all ${
                       activeTab === "floorplans"
@@ -552,14 +575,12 @@ export default function JobDetails() {
                     onEditSign={(sign) => setReviewSign(sign as SignRow)}
                   />
                 </div>
+              ) : activeTab === "sheets" ? (
+                <SheetsPanel files={files} onOpenSpec={setSpecViewer} />
+              ) : activeTab === "summary" ? (
+                <SignSummaryPanel signs={extractedSigns} />
               ) : (
                 <>
-                  {/* Sheets Analysis Panel */}
-                  <SheetsPanel files={files} onOpenSpec={setSpecViewer} />
-
-                  {/* Sign Type Summary Panel */}
-                  <SignSummaryPanel signs={extractedSigns} />
-
                   {/* Data Table Container */}
                   <div className="flex-1 overflow-auto bg-card border-t border-border">
                 {/* Show Hidden toggle bar — only visible when there are hidden signs */}
