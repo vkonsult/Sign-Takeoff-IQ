@@ -328,7 +328,7 @@ function FilePdfViewer({
 
       if ((isWordMatch || isManual) && m.xPos != null && m.yPos != null) {
         // Trust server-assigned or manually-placed coordinates.
-        // Still verify they fall inside the floor plan bbox (with tolerance).
+        // Verify they fall inside the floor plan bbox (with tolerance).
         const inside =
           m.xPos >= bbox.x0 - TOLERANCE &&
           m.xPos <= bbox.x1 + TOLERANCE &&
@@ -336,6 +336,19 @@ function FilePdfViewer({
           m.yPos <= bbox.y1 + TOLERANCE;
         if (inside) {
           result.push({ ...m, resolvedX: m.xPos, resolvedY: m.yPos });
+        } else if (!isManual) {
+          // Server coords are outside the current bbox (stale from a previous
+          // bbox algorithm or a table-area mismatch). Fall back to client-side
+          // re-match so the marker still lands in the floor plan drawing area.
+          const match = matchLocationToCoords(
+            wordsData.phrases,
+            bbox,
+            m.location,
+            m.signIdentifier
+          );
+          if (match) {
+            result.push({ ...m, resolvedX: match.xPos, resolvedY: match.yPos });
+          }
         }
       } else {
         // No trusted DB coords: run client-side word-match inside the bbox.

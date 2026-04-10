@@ -494,6 +494,10 @@ export function detectFloorPlanBbox(phrases: PdfPhrase[]): FloorPlanBbox | null 
   const tableXRanges: Array<{ lo: number; hi: number }> = [];
 
   // ── Strategy A: fixed narrow bands (50 bands × 0.02 wide) ─────────────────
+  // Uses tight thresholds to avoid flagging floor-plan room label columns:
+  //   - count ≥ 8  → can't fire on 3-5 scattered room labels
+  //   - meanGap ≤ 0.05 → schedule-table rows are 0.02-0.04 apart;
+  //                       floor-plan room labels are 0.05-0.15 apart
   const N_BANDS = 50;
   const bandPhrases: PdfPhrase[][] = Array.from({ length: N_BANDS }, () => []);
   for (const p of phrases) {
@@ -503,13 +507,13 @@ export function detectFloorPlanBbox(phrases: PdfPhrase[]): FloorPlanBbox | null 
   }
   for (let bi = 0; bi < N_BANDS; bi++) {
     const bp = bandPhrases[bi]!;
-    if (bp.length < 3) continue;
+    if (bp.length < 8) continue;           // require dense population
     const cys = bp.map((p) => (p.y0 + p.y1) / 2).sort((a, b) => a - b);
     const gaps: number[] = [];
     for (let g = 1; g < cys.length; g++) gaps.push(cys[g]! - cys[g - 1]!);
     if (!gaps.length) continue;
     const meanGap = gaps.reduce((s, v) => s + v, 0) / gaps.length;
-    if (meanGap <= 0 || meanGap > 0.10) continue;
+    if (meanGap <= 0 || meanGap > 0.05) continue;  // must be densely packed rows
     const variance = gaps.reduce((s, v) => s + (v - meanGap) ** 2, 0) / gaps.length;
     if (Math.sqrt(variance) / meanGap < 0.55) {
       tableXRanges.push({ lo: bi / N_BANDS, hi: (bi + 1) / N_BANDS });
