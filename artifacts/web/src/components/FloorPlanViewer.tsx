@@ -408,18 +408,11 @@ function FilePdfViewer({
         ctx.globalAlpha = 1;
       }
 
-      // Solid opaque fill
+      // Solid opaque dot — no border
       ctx.beginPath();
       ctx.arc(cx, cy, DOT_R, 0, Math.PI * 2);
       ctx.fillStyle = color;
       ctx.fill();
-
-      // Thin white stroke border
-      ctx.beginPath();
-      ctx.arc(cx, cy, DOT_R, 0, Math.PI * 2);
-      ctx.strokeStyle = "white";
-      ctx.lineWidth = isDragging ? 2 : 1.5;
-      ctx.stroke();
     }
   }, [resolvedMarkers]);
 
