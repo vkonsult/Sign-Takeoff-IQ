@@ -11,6 +11,8 @@ import {
   Plus,
   Loader2,
   AlertTriangle,
+  ZoomIn,
+  ZoomOut,
 } from "lucide-react";
 import { AddMarkerForm, type PendingMarker } from "@/components/AddMarkerForm";
 
@@ -266,6 +268,9 @@ function FilePdfViewer({
 
   const [pdfError, setPdfError] = useState<string | null>(null);
   const [scale, setScale] = useState(1.0);
+  // fitScale: the width-fit scale computed in onLoadSuccess — stored so the
+  // Fit button can reapply it at any time without re-reading the DOM.
+  const [fitScale, setFitScale] = useState(1.0);
   const containerRef = useRef<HTMLDivElement>(null);
   const pageWrapRef = useRef<HTMLDivElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);
@@ -547,6 +552,36 @@ function FilePdfViewer({
 
         <div className="flex-1" />
 
+        {/* Zoom controls */}
+        <div className="flex items-center gap-0.5">
+          <button
+            onClick={() => setScale((s) => Math.max(0.25, s - 0.15))}
+            disabled={scale <= 0.25}
+            className="p-1.5 rounded hover:bg-secondary disabled:opacity-30 transition-colors"
+            title="Zoom out"
+          >
+            <ZoomOut className="w-3.5 h-3.5" />
+          </button>
+          <span className="text-[11px] font-mono text-muted-foreground w-10 text-center">
+            {Math.round(scale * 100)}%
+          </span>
+          <button
+            onClick={() => setScale(fitScale)}
+            title="Fit to page width"
+            className="text-[10px] font-display font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded border border-border text-muted-foreground hover:text-foreground hover:border-foreground/40 transition-colors"
+          >
+            Fit
+          </button>
+          <button
+            onClick={() => setScale((s) => Math.min(3.0, s + 0.15))}
+            disabled={scale >= 3.0}
+            className="p-1.5 rounded hover:bg-secondary disabled:opacity-30 transition-colors"
+            title="Zoom in"
+          >
+            <ZoomIn className="w-3.5 h-3.5" />
+          </button>
+        </div>
+
         <span className="text-xs text-muted-foreground font-mono">
           {pageMarkerCount} marker{pageMarkerCount !== 1 ? "s" : ""}
         </span>
@@ -564,11 +599,13 @@ function FilePdfViewer({
         </button>
       </div>
 
-      {/* PDF area */}
+      {/* PDF area — plain overflow-auto block; inner wrapper centres content
+          but uses min-w-max to avoid the flex+overflow left-clip bug */}
       <div
         ref={containerRef}
-        className="flex-1 overflow-auto p-4 flex justify-center items-start"
+        className="flex-1 overflow-auto p-4"
       >
+        <div className="flex justify-center items-start" style={{ minWidth: "max-content" }}>
         {blobError && (
           <div className="flex flex-col items-center justify-center h-40 text-destructive gap-2">
             <AlertTriangle className="w-6 h-6" />
@@ -619,7 +656,9 @@ function FilePdfViewer({
                     const cw = containerRef.current.clientWidth - 32;
                     if (cw > 0 && width > 0) {
                       hasSetScaleRef.current = true;
-                      setScale(Math.min(1.5, Math.max(0.25, cw / width)));
+                      const fit = Math.min(1.5, Math.max(0.25, cw / width));
+                      setFitScale(fit);
+                      setScale(fit);
                     }
                   }
                 }}
@@ -748,6 +787,7 @@ function FilePdfViewer({
             </div>
           </Document>
         )}
+        </div>{/* end centering wrapper */}
       </div>
 
       {/* Sign detail form — opens after clicking to place; saves with full sign info */}

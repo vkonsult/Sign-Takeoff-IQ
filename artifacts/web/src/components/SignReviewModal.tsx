@@ -1194,13 +1194,18 @@ export function SignReviewModal({
   const [textMarkers, setTextMarkers] = useState<TextMarker[]>([]);
   const [nativeSize, setNativeSize] = useState<{ w: number; h: number } | null>(null);
 
+  // fitScale: the "fit to container width" scale — recomputed whenever native size is known.
+  // Stored so the Fit button can reapply it at any time without re-reading the DOM.
+  const [fitScale, setFitScale] = useState(1.0);
+
   // Auto-fit scale to container width when the page dimensions become known
   useEffect(() => {
     if (!nativeSize || !pdfContainerRef.current) return;
     const containerW = pdfContainerRef.current.clientWidth - 32; // subtract padding
     if (containerW > 0) {
-      const fit = containerW / nativeSize.w;
-      setScale(Math.min(1.2, Math.max(0.3, fit)));
+      const fit = Math.min(1.2, Math.max(0.3, containerW / nativeSize.w));
+      setFitScale(fit);
+      setScale(fit);
     }
   // Only run when native width first becomes known or changes (new page/doc)
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1869,6 +1874,7 @@ export function SignReviewModal({
               onClick={() => setScale((s) => Math.max(0.4, s - 0.15))}
               disabled={scale <= 0.4}
               className="p-1.5 rounded hover:bg-secondary disabled:opacity-30 transition-colors"
+              title="Zoom out"
             >
               <ZoomOut className="w-4 h-4" />
             </button>
@@ -1876,9 +1882,17 @@ export function SignReviewModal({
               {Math.round(scale * 100)}%
             </span>
             <button
+              onClick={() => setScale(fitScale)}
+              title="Fit to page width"
+              className="text-[10px] font-display font-semibold uppercase tracking-wide px-2 py-1 rounded border border-border text-muted-foreground hover:text-foreground hover:border-foreground/40 transition-colors"
+            >
+              Fit
+            </button>
+            <button
               onClick={() => setScale((s) => Math.min(2.5, s + 0.15))}
               disabled={scale >= 2.5}
               className="p-1.5 rounded hover:bg-secondary disabled:opacity-30 transition-colors"
+              title="Zoom in"
             >
               <ZoomIn className="w-4 h-4" />
             </button>
@@ -2082,7 +2096,12 @@ export function SignReviewModal({
           </div>
 
           {/* PDF canvas + overlay */}
-          <div ref={pdfContainerRef} className="flex-1 overflow-auto p-4 flex justify-center items-start">
+          {/* overflow-auto without flex justify-center avoids the CSS bug where
+              flex centering clips the left overflow when zoomed in. Instead we
+              use an inner wrapper with min-w-max + flex centering so the content
+              centres when it fits and scrolls freely in all directions when it doesn't. */}
+          <div ref={pdfContainerRef} className="flex-1 overflow-auto p-4">
+            <div className="flex justify-center items-start" style={{ minWidth: "max-content" }}>
             {rawPdfApiUrl && !pdfReady && !pdfLoadError && (
               <div className="flex items-center justify-center h-64">
                 <Loader2 className="w-8 h-8 text-primary animate-spin" />
@@ -2651,6 +2670,7 @@ export function SignReviewModal({
                 <p className="text-sm">No source file linked to this sign entry</p>
               </div>
             )}
+            </div>{/* end centering wrapper */}
           </div>
         </div>
 
