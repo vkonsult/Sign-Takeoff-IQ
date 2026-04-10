@@ -8,7 +8,7 @@ import {
 } from "@/components/ui/dialog";
 import { apiFetch } from "@/lib/apiClient";
 import { MapPin, Loader2 } from "lucide-react";
-import type { ExtractedSign } from "@/components/SignReviewModal";
+import type { ExtractedSign } from "@/types/sign";
 
 const SIGN_TYPES = [
   "Room ID",

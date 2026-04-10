@@ -28,32 +28,8 @@ import {
 
 pdfjs.GlobalWorkerOptions.workerSrc = `${import.meta.env.BASE_URL}pdf.worker.min.mjs`;
 
-export interface ExtractedSign {
-  id: string;
-  jobId?: string;
-  jobFileId?: string | null;
-  sheetNumber?: string | null;
-  detailReference?: string | null;
-  signType?: string | null;
-  signIdentifier?: string | null;
-  quantity?: number | null;
-  location?: string | null;
-  dimensions?: string | null;
-  mountingType?: string | null;
-  finishColor?: string | null;
-  illumination?: string | null;
-  materials?: string | null;
-  messageContent?: string | null;
-  notes?: string | null;
-  pageNumber?: number | null;
-  xPos?: number | null;
-  yPos?: number | null;
-  placementSource?: string | null;
-  manuallyAdded?: boolean;
-  userVerified?: boolean;
-  confidenceScore: number;
-  reviewFlag: boolean;
-}
+import type { ExtractedSign } from "@/types/sign";
+export type { ExtractedSign };
 
 interface PageStats {
   floorPlanPages: number[];
