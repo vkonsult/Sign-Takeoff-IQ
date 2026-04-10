@@ -5,6 +5,7 @@ import {
   jobFilesTable,
   extractedSignsTable,
   type InsertExtractedSign,
+  type ProcessingStep,
 } from "@workspace/db";
 
 import { ai } from "@workspace/integrations-gemini-ai";
@@ -51,6 +52,25 @@ export function deduplicateSignRows(rows: InsertExtractedSign[]): InsertExtracte
 }
 
 export async function processJob(jobId: string): Promise<void> {
+  // ── Per-job timing log ────────────────────────────────────────────────────
+  const pipelineSteps: ProcessingStep[] = [];
+  const jobStart = Date.now();
+
+  function recordStep(
+    step: string,
+    label: string,
+    stepStart: number,
+    details?: Record<string, unknown>,
+  ): void {
+    pipelineSteps.push({
+      step,
+      label,
+      durationMs: Date.now() - stepStart,
+      startedAt: new Date(stepStart).toISOString(),
+      details,
+    });
+  }
+
   // ── Preserve verified + manually-added signs before clearing AI output ───
   const existingSigns = await db
     .select()
@@ -146,10 +166,12 @@ export async function processJob(jobId: string): Promise<void> {
 
   try {
     logger.info({ jobId, file: firstFile.originalName }, "Extracting project info");
+    const t_proj = Date.now();
     const { info, inputTokens: piIn, outputTokens: piOut } = await extractProjectInfo(firstFile.storedPath, ai);
     projectContext = info;
     totalInputTokens += piIn;
     totalOutputTokens += piOut;
+    recordStep("project_info", "Project info extraction", t_proj, { inputTokens: piIn, outputTokens: piOut });
 
     if (info.address || info.city || info.state) {
       await db
@@ -179,6 +201,7 @@ export async function processJob(jobId: string): Promise<void> {
   let specTypeContext: string | undefined;
   if (specFiles.length > 0 && hasDataFiles) {
     logger.info({ jobId, specFiles: specFiles.map((f) => f.originalName) }, "Spec files detected — extracting type catalog for context injection");
+    const t_spec = Date.now();
     const specTexts: string[] = [];
     for (const specFile of specFiles) {
       try {
@@ -199,6 +222,7 @@ export async function processJob(jobId: string): Promise<void> {
       specTypeContext = buildSpecContextString(specTexts.join("\n\n--- SPEC FILE SEPARATOR ---\n\n"));
       logger.info({ chars: specTypeContext.length }, "Spec type context built — will inject into drawing file prompts");
     }
+    recordStep("spec_processing", "Spec file processing", t_spec, { specFileCount: specFiles.length });
   }
 
   // Files to actually run sign extraction on: data files when they exist;
@@ -215,9 +239,12 @@ export async function processJob(jobId: string): Promise<void> {
         file: typeof files[number];
         textResult: Awaited<ReturnType<typeof extractSignsFromPdf>>;
         imageResult: Awaited<ReturnType<typeof extractSignsFromPdfImageVerify>>;
+        textDurationMs: number;
+        imageDurationMs: number;
       }
     | { ok: false; file: typeof files[number]; error: string };
 
+  const t_extraction = Date.now();
   const fileResults: FileResult[] = await Promise.all(
     filesToProcess.map(async (file): Promise<FileResult> => {
       try {
@@ -226,6 +253,7 @@ export async function processJob(jobId: string): Promise<void> {
         const otherVerified = verifiedGlobal.filter((v) => !fileVerified.includes(v));
         const allVerifiedForFile = [...fileVerified, ...otherVerified];
 
+        const t_text = Date.now();
         const textResult = await extractSignsFromPdf(
           file.storedPath,
           ai,
@@ -234,6 +262,7 @@ export async function processJob(jobId: string): Promise<void> {
           crossJobVerified.length > 0 ? crossJobVerified : undefined,
           specTypeContext
         );
+        const textDurationMs = Date.now() - t_text;
 
         // Build page → text-sign context map for the visual verification prompt
         const textSignsByPage = new Map<number, TextContextSign[]>();
@@ -249,10 +278,12 @@ export async function processJob(jobId: string): Promise<void> {
           });
         }
 
+        const t_image = Date.now();
         const imageResult = await extractSignsFromPdfImageVerify(file.storedPath, ai, textSignsByPage).catch((err) => {
           logger.warn({ err, fileId: file.id }, "Visual verification threw unexpectedly — skipping");
           return { verifications: [] as VerificationItem[], discoveries: [], inputTokens: 0, outputTokens: 0, skipped: true as const, skipReason: "Internal error" };
         });
+        const imageDurationMs = Date.now() - t_image;
 
         // Per-file DB update is safe to do inside the parallel map
         await db
@@ -260,13 +291,20 @@ export async function processJob(jobId: string): Promise<void> {
           .set({ pageCount: textResult.pageCount, extractedText: textResult.rawText.slice(0, 10000), pageStats: textResult.pageStats })
           .where(eq(jobFilesTable.id, file.id));
 
-        return { ok: true, file, textResult, imageResult };
+        return { ok: true, file, textResult, imageResult, textDurationMs, imageDurationMs };
       } catch (err) {
         logger.error({ err, fileId: file.id, fileName: file.originalName }, "File extraction failed");
         return { ok: false, file, error: String(err) };
       }
     })
   );
+
+  // Record overall extraction wall-clock time (files ran in parallel)
+  recordStep("extraction", "Sign extraction (all files)", t_extraction, {
+    fileCount: filesToProcess.length,
+    succeeded: fileResults.filter((r) => r.ok).length,
+    failed: fileResults.filter((r) => !r.ok).length,
+  });
 
   // ── Merge parallel results into accumulator arrays ────────────────────────
   for (const result of fileResults) {
@@ -275,7 +313,31 @@ export async function processJob(jobId: string): Promise<void> {
       continue;
     }
 
-    const { file, textResult, imageResult } = result;
+    const { file, textResult, imageResult, textDurationMs, imageDurationMs } = result;
+
+    // Record individual file steps so users can see per-file breakdown
+    pipelineSteps.push({
+      step: `text_extraction_${file.id}`,
+      label: filesToProcess.length > 1
+        ? `Text extraction — ${file.originalName}`
+        : "Text extraction",
+      durationMs: textDurationMs,
+      startedAt: new Date(Date.now() - textDurationMs - imageDurationMs).toISOString(),
+      details: { rows: textResult.rows.length, pages: textResult.pageCount, inputTokens: textResult.inputTokens, outputTokens: textResult.outputTokens },
+    });
+    pipelineSteps.push({
+      step: `visual_verification_${file.id}`,
+      label: filesToProcess.length > 1
+        ? `Visual verification — ${file.originalName}`
+        : "Visual verification",
+      durationMs: imageDurationMs,
+      startedAt: new Date(Date.now() - imageDurationMs).toISOString(),
+      details: {
+        verified: imageResult.verifications?.length ?? 0,
+        discoveries: imageResult.discoveries?.length ?? 0,
+        skipped: imageResult.skipped ?? false,
+      },
+    });
 
     totalInputTokens += textResult.inputTokens;
     totalOutputTokens += textResult.outputTokens;
@@ -448,6 +510,7 @@ export async function processJob(jobId: string): Promise<void> {
   }
 
   // Deduplicate within each pass, then remove cross-pass duplicates from image rows
+  const t_dedup = Date.now();
   const dedupedTextRows = deduplicateSignRows(allTextRows);
   const textSeenKeys = new Set(
     dedupedTextRows
@@ -471,21 +534,37 @@ export async function processJob(jobId: string): Promise<void> {
     },
     "Sign deduplication complete",
   );
+  recordStep("deduplication", "Sign deduplication", t_dedup, {
+    textBefore: allTextRows.length,
+    textAfter: dedupedTextRows.length,
+    imageBefore: allImageRows.length,
+    imageAfter: dedupedImageRows.length,
+  });
 
   // Run word-match coordinate assignment on both sets of rows
+  const t_wordmatch = Date.now();
   const coordedTextRows = await assignCoords(dedupedTextRows);
   const coordedImageRows = await assignCoords(dedupedImageRows);
 
   const matchedText = coordedTextRows.filter((r) => r.placementSource === "word_match").length;
   const matchedImage = coordedImageRows.filter((r) => r.placementSource === "word_match").length;
   logger.info({ jobId, textRows: coordedTextRows.length, matchedText, imageRows: coordedImageRows.length, matchedImage }, "Word-match coordinate assignment complete");
+  recordStep("word_match", "Coordinate matching (word-match)", t_wordmatch, {
+    totalSigns: coordedTextRows.length + coordedImageRows.length,
+    matched: matchedText + matchedImage,
+  });
 
+  const t_insert = Date.now();
   if (coordedTextRows.length > 0) {
     await db.insert(extractedSignsTable).values(coordedTextRows);
   }
   if (coordedImageRows.length > 0) {
     await db.insert(extractedSignsTable).values(coordedImageRows);
   }
+  recordStep("db_insert", "Database insertion", t_insert, {
+    textRows: coordedTextRows.length,
+    imageRows: coordedImageRows.length,
+  });
 
   // Log overall verification stats (actual boosts applied in-memory per-file above)
   if (allVerifications.length > 0) {
@@ -509,6 +588,15 @@ export async function processJob(jobId: string): Promise<void> {
   const failedCount = parsedResults.filter((r) => "error" in r).length;
   const allFailed = failedCount === files.length;
 
+  // Add total wall-clock step at the very end
+  recordStep("total", "Total pipeline", jobStart, {
+    totalInputTokens,
+    totalOutputTokens,
+    totalImageInputTokens,
+    totalImageOutputTokens,
+    signsExtracted: coordedTextRows.length + coordedImageRows.length,
+  });
+
   if (allFailed) {
     const errorSummary = parsedResults
       .filter((r): r is { fileId: string; fileName: string; error: string } => "error" in r)
@@ -516,7 +604,7 @@ export async function processJob(jobId: string): Promise<void> {
       .join("; ");
     await db
       .update(jobsTable)
-      .set({ status: "failed", error: `All files failed extraction: ${errorSummary}`, updatedAt: new Date() })
+      .set({ status: "failed", error: `All files failed extraction: ${errorSummary}`, processingLog: pipelineSteps, updatedAt: new Date() })
       .where(eq(jobsTable.id, jobId));
     logger.warn({ jobId, failedCount }, "All files failed — marking job as failed");
     return;
@@ -530,6 +618,7 @@ export async function processJob(jobId: string): Promise<void> {
       outputTokens: totalOutputTokens,
       imageInputTokens: totalImageInputTokens,
       imageOutputTokens: totalImageOutputTokens,
+      processingLog: pipelineSteps,
       updatedAt: new Date(),
     })
     .where(eq(jobsTable.id, jobId));

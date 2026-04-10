@@ -1,4 +1,4 @@
-import { pgTable, uuid, text, integer, timestamp, pgEnum } from "drizzle-orm/pg-core";
+import { pgTable, uuid, text, integer, timestamp, pgEnum, json } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod/v4";
 import { organizationsTable } from "./organizations";
@@ -27,9 +27,18 @@ export const jobsTable = pgTable("jobs", {
   projectCity: text("project_city"),
   projectState: text("project_state"),
   scanMethod: text("scan_method").default("gemini"),
+  processingLog: json("processing_log").$type<ProcessingStep[]>(),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
+
+export interface ProcessingStep {
+  step: string;
+  label: string;
+  durationMs: number;
+  startedAt: string;
+  details?: Record<string, unknown>;
+}
 
 export const insertJobSchema = createInsertSchema(jobsTable).omit({ id: true, createdAt: true, updatedAt: true });
 export type InsertJob = z.infer<typeof insertJobSchema>;

@@ -8,8 +8,106 @@ import { format, formatDistanceToNow } from "date-fns";
 import {
   FolderOpen, ChevronRight, FileText, CheckCircle2, Cpu,
   AlertTriangle, Trash2, X, Square, CheckSquare, MinusSquare,
+  Clock, ChevronDown,
 } from "lucide-react";
 import { Link } from "wouter";
+
+interface ProcessingStep {
+  step: string;
+  label: string;
+  durationMs: number;
+  startedAt: string;
+  details?: Record<string, unknown>;
+}
+
+function formatDuration(ms: number): string {
+  if (ms < 1000) return `${ms}ms`;
+  if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`;
+  const m = Math.floor(ms / 60000);
+  const s = Math.round((ms % 60000) / 1000);
+  return `${m}m ${s}s`;
+}
+
+function ProcessingLog({ steps }: { steps: ProcessingStep[] }) {
+  const filtered = steps.filter((s) => s.step !== "total");
+  const total = steps.find((s) => s.step === "total");
+  const maxMs = Math.max(...filtered.map((s) => s.durationMs), 1);
+
+  const STEP_COLORS: Record<string, string> = {
+    project_info: "bg-blue-500",
+    spec_processing: "bg-purple-500",
+    extraction: "bg-amber-500",
+    deduplication: "bg-teal-500",
+    word_match: "bg-green-500",
+    db_insert: "bg-gray-400",
+  };
+
+  function getBarColor(step: string): string {
+    if (step.startsWith("text_extraction_")) return "bg-amber-400";
+    if (step.startsWith("visual_verification_")) return "bg-orange-400";
+    return STEP_COLORS[step] ?? "bg-muted-foreground";
+  }
+
+  function formatDetails(details: Record<string, unknown> | undefined): string | null {
+    if (!details) return null;
+    const parts: string[] = [];
+    const { rows, pages, inputTokens, outputTokens, verified, discoveries, matched, totalSigns, textAfter, imageAfter, textRows, imageRows, signsExtracted } = details as Record<string, number | undefined>;
+    if (rows != null) parts.push(`${rows} rows`);
+    if (pages != null) parts.push(`${pages} pages`);
+    if (inputTokens != null) parts.push(`${inputTokens.toLocaleString()} in-tok`);
+    if (outputTokens != null) parts.push(`${outputTokens.toLocaleString()} out-tok`);
+    if (verified != null) parts.push(`${verified} verified`);
+    if (discoveries != null) parts.push(`${discoveries} discoveries`);
+    if (totalSigns != null && matched != null) parts.push(`${matched}/${totalSigns} matched`);
+    if (textAfter != null) parts.push(`${textAfter} text`);
+    if (imageAfter != null) parts.push(`${imageAfter} image`);
+    if (textRows != null) parts.push(`${textRows} text rows`);
+    if (imageRows != null) parts.push(`${imageRows} image rows`);
+    if (signsExtracted != null) parts.push(`${signsExtracted} signs`);
+    return parts.length > 0 ? parts.join(" · ") : null;
+  }
+
+  return (
+    <div className="px-4 pb-4 pt-2 bg-secondary/30 border-t border-border">
+      <div className="text-[11px] font-display font-semibold uppercase tracking-wider text-muted-foreground mb-3">
+        Processing Timeline
+      </div>
+      <div className="space-y-1.5">
+        {filtered.map((step) => {
+          const widthPct = Math.max(2, (step.durationMs / maxMs) * 100);
+          const detailStr = formatDetails(step.details);
+          return (
+            <div key={step.step} className="flex items-center gap-3" title={detailStr ?? undefined}>
+              <div className="w-52 shrink-0 text-xs text-foreground/80 truncate leading-tight">
+                {step.label}
+              </div>
+              <div className="flex-1 h-4 bg-muted/40 rounded-sm overflow-hidden">
+                <div
+                  className={`h-full rounded-sm ${getBarColor(step.step)}`}
+                  style={{ width: `${widthPct}%`, opacity: 0.75 }}
+                />
+              </div>
+              <div className="w-14 shrink-0 text-right text-xs font-mono text-foreground/70">
+                {formatDuration(step.durationMs)}
+              </div>
+              {detailStr && (
+                <div className="w-48 shrink-0 text-[10px] text-muted-foreground truncate">
+                  {detailStr}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+      {total && (
+        <div className="mt-3 pt-2 border-t border-border/60 flex items-center justify-between">
+          <span className="text-xs text-muted-foreground font-display">Total</span>
+          <span className="text-xs font-bold font-mono text-foreground">{formatDuration(total.durationMs)}</span>
+        </div>
+      )}
+    </div>
+  );
+}
 
 interface RecentUser {
   userName: string;
@@ -57,6 +155,7 @@ export default function JobsList() {
   const [deletingSingle, setDeletingSingle] = useState<string | null>(null);
   const [bulkConfirming, setBulkConfirming] = useState(false);
   const [bulkDeleting, setBulkDeleting] = useState(false);
+  const [expandedLog, setExpandedLog] = useState<string | null>(null);
 
   const jobs = data?.jobs ?? [];
   const allIds = jobs.map((j) => j.id);
@@ -202,14 +301,19 @@ export default function JobsList() {
                   recentUsers?: RecentUser[];
                   lastActivityAt?: string | null;
                   lastActivityType?: string | null;
+                  processingLog?: ProcessingStep[] | null;
                 };
                 const recentUsers: RecentUser[] = jobAny.recentUsers ?? [];
+                const processingLog: ProcessingStep[] | null = jobAny.processingLog ?? null;
+                const isLogExpanded = expandedLog === job.id;
+
                 return (
-                  <div
-                    key={job.id}
-                    className={`relative group grid grid-cols-[36px_1fr_100px_120px_40px_180px_48px] gap-3 items-center transition-colors
-                      ${isChecked ? "bg-primary/5 border-l-2 border-l-primary" : "hover:bg-secondary/40"}`}
-                  >
+                  <div key={job.id} className="flex flex-col">
+                    {/* Main row */}
+                    <div
+                      className={`relative group grid grid-cols-[36px_1fr_100px_120px_40px_180px_48px] gap-3 items-center transition-colors
+                        ${isChecked ? "bg-primary/5 border-l-2 border-l-primary" : isLogExpanded ? "bg-secondary/40" : "hover:bg-secondary/40"}`}
+                    >
                     {/* Checkbox */}
                     <button
                       onClick={(e) => toggleSelect(job.id, e)}
@@ -254,6 +358,30 @@ export default function JobsList() {
                       </div>
                     </Link>
 
+                    {/* Log toggle button — shows when job has a processingLog */}
+                    {processingLog && processingLog.length > 0 && (
+                      <button
+                        onClick={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          setExpandedLog(isLogExpanded ? null : job.id);
+                        }}
+                        title={isLogExpanded ? "Hide processing log" : "View processing log"}
+                        className={`absolute left-[calc(36px+8px+1fr+100px+120px+40px+180px+6px)] right-10 top-1/2 -translate-y-1/2 flex items-center justify-end gap-1 z-10 opacity-0 group-hover:opacity-100 transition-opacity ${isLogExpanded ? "opacity-100" : ""}`}
+                        style={{ right: "42px", left: "auto" }}
+                      >
+                        <div className={`flex items-center gap-1 px-2 py-1 rounded text-[11px] font-mono transition-all
+                          ${isLogExpanded
+                            ? "text-primary bg-primary/10 border border-primary/30"
+                            : "text-muted-foreground/60 hover:text-primary hover:bg-primary/10"
+                          }`}
+                        >
+                          <Clock className="w-3 h-3" />
+                          <ChevronDown className={`w-3 h-3 transition-transform ${isLogExpanded ? "rotate-180" : ""}`} />
+                        </div>
+                      </button>
+                    )}
+
                     {/* Single-row delete — overlaps the chevron area on hover */}
                     {!isChecked && (
                       <div className="absolute right-10 top-1/2 -translate-y-1/2 flex items-center gap-1 z-10">
@@ -283,6 +411,11 @@ export default function JobsList() {
                           </button>
                         )}
                       </div>
+                    )}
+                    </div>
+
+                    {isLogExpanded && processingLog && processingLog.length > 0 && (
+                      <ProcessingLog steps={processingLog} />
                     )}
                   </div>
                 );
