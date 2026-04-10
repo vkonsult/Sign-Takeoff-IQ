@@ -261,6 +261,13 @@ function FilePdfViewer({
   const containerRef = useRef<HTMLDivElement>(null);
   const pageWrapRef = useRef<HTMLDivElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);
+  // Guard: react-pdf v10 fires onLoadSuccess inside useEffect([page, scale]),
+  // meaning it re-fires every time scale changes. This ref ensures we only
+  // call setScale ONCE per page/file, preventing the infinite loop.
+  const hasSetScaleRef = useRef(false);
+  useEffect(() => {
+    hasSetScaleRef.current = false;
+  }, [pageNumber, file.id]);
 
   // Words data from the API
   const [wordsData, setWordsData] = useState<WordsResponse | null>(null);
@@ -554,12 +561,6 @@ function FilePdfViewer({
             file={pdfFile}
             onLoadSuccess={({ numPages: n }) => {
               setPdfError(null);
-              if (!scale || scale === 1.0) {
-                if (containerRef.current) {
-                  const cw = containerRef.current.clientWidth - 32;
-                  if (cw > 200) setScale(Math.min(1.5, cw / 850));
-                }
-              }
               void n;
             }}
             onLoadError={(err) => setPdfError(err.message)}
@@ -587,9 +588,13 @@ function FilePdfViewer({
                 renderTextLayer={false}
                 renderAnnotationLayer={false}
                 onLoadSuccess={({ width }) => {
+                  // Guard: react-pdf v10 fires this on EVERY scale change (useEffect([page, scale])).
+                  // Only set scale once per page — ref is reset by useEffect when pageNumber/file.id changes.
+                  if (hasSetScaleRef.current) return;
                   if (containerRef.current) {
                     const cw = containerRef.current.clientWidth - 32;
                     if (cw > 0 && width > 0) {
+                      hasSetScaleRef.current = true;
                       setScale(Math.min(1.5, Math.max(0.25, cw / width)));
                     }
                   }
