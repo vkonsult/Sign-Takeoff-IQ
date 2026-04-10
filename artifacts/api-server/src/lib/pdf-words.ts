@@ -475,9 +475,15 @@ export interface FloorPlanBbox {
 
 /**
  * Detect the floor plan drawing region on a page by identifying "table-like"
- * vertical strips — narrow x-ranges with ≥ 8 items at roughly uniform y-spacing.
+ * vertical strips — x-bands whose phrases have dense, uniformly-spaced rows.
  * These strips correspond to sign-schedule columns or title blocks.  The floor
  * plan bbox is the page region that excludes those strips and any dense text zones.
+ *
+ * Uses two complementary strategies and merges their results:
+ *   A) Fixed narrow-band analysis: divide page into 50 x-bands (0.02 wide each)
+ *      and flag each as "table-like" based on phrase density + y-gap uniformity.
+ *   B) Sliding-window clustering: groups cx values into wider strips (≤ 0.12 wide)
+ *      and flags strips with dense uniform row spacing.
  *
  * Returns null when the heuristic cannot find a clear drawing region
  * (e.g. the page is entirely schedule tables).
@@ -485,18 +491,35 @@ export interface FloorPlanBbox {
 export function detectFloorPlanBbox(phrases: PdfPhrase[]): FloorPlanBbox | null {
   if (phrases.length === 0) return null;
 
-  // ── Step 1: identify schedule/table columns by clustering phrases into
-  // narrow vertical strips (x-bands of width ≤ 0.15) that have ≥ 8 items
-  // spaced at roughly uniform vertical intervals.
-  const STRIP_WIDTH = 0.15;
-  const MIN_ITEMS_IN_STRIP = 8;
-
-  // Collect centre-x of each phrase
-  const cxList = phrases.map((p) => (p.x0 + p.x1) / 2);
-
-  // Identify table-column x-ranges: sort by cx, slide a window
-  const sorted = [...cxList].sort((a, b) => a - b);
   const tableXRanges: Array<{ lo: number; hi: number }> = [];
+
+  // ── Strategy A: fixed narrow bands (50 bands × 0.02 wide) ─────────────────
+  const N_BANDS = 50;
+  const bandPhrases: PdfPhrase[][] = Array.from({ length: N_BANDS }, () => []);
+  for (const p of phrases) {
+    const cx = (p.x0 + p.x1) / 2;
+    const bi = Math.min(N_BANDS - 1, Math.max(0, Math.floor(cx * N_BANDS)));
+    bandPhrases[bi]!.push(p);
+  }
+  for (let bi = 0; bi < N_BANDS; bi++) {
+    const bp = bandPhrases[bi]!;
+    if (bp.length < 3) continue;
+    const cys = bp.map((p) => (p.y0 + p.y1) / 2).sort((a, b) => a - b);
+    const gaps: number[] = [];
+    for (let g = 1; g < cys.length; g++) gaps.push(cys[g]! - cys[g - 1]!);
+    if (!gaps.length) continue;
+    const meanGap = gaps.reduce((s, v) => s + v, 0) / gaps.length;
+    if (meanGap <= 0 || meanGap > 0.10) continue;
+    const variance = gaps.reduce((s, v) => s + (v - meanGap) ** 2, 0) / gaps.length;
+    if (Math.sqrt(variance) / meanGap < 0.55) {
+      tableXRanges.push({ lo: bi / N_BANDS, hi: (bi + 1) / N_BANDS });
+    }
+  }
+
+  // ── Strategy B: sliding-window clustering (width ≤ 0.12) ──────────────────
+  const STRIP_WIDTH = 0.12;
+  const MIN_ITEMS_IN_STRIP = 6;
+  const sorted = [...phrases.map((p) => (p.x0 + p.x1) / 2)].sort((a, b) => a - b);
 
   let winStart = 0;
   for (let i = 1; i <= sorted.length; i++) {
@@ -505,7 +528,6 @@ export function detectFloorPlanBbox(phrases: PdfPhrase[]): FloorPlanBbox | null 
     if (spanEnd - spanStart > STRIP_WIDTH || i === sorted.length) {
       const count = i - winStart;
       if (count >= MIN_ITEMS_IN_STRIP) {
-        // Check uniform y-spacing (std dev of cy gaps is small relative to mean gap)
         const stripPhrases = phrases.filter((p) => {
           const cx = (p.x0 + p.x1) / 2;
           return cx >= spanStart - 0.01 && cx <= spanStart + STRIP_WIDTH + 0.01;
@@ -519,9 +541,7 @@ export function detectFloorPlanBbox(phrases: PdfPhrase[]): FloorPlanBbox | null 
             const stdGap = Math.sqrt(
               gaps.reduce((s, v) => s + (v - meanGap) ** 2, 0) / gaps.length
             );
-            // Uniform spacing: std < 50% of mean gap; only flag as table column
-            // when the mean gap is small (≤ 0.08) indicating dense row spacing
-            if (meanGap <= 0.08 && stdGap < meanGap * 0.5) {
+            if (meanGap <= 0.10 && stdGap < meanGap * 0.55) {
               tableXRanges.push({
                 lo: Math.min(...stripPhrases.map((p) => p.x0)),
                 hi: Math.max(...stripPhrases.map((p) => p.x1)),
@@ -534,14 +554,13 @@ export function detectFloorPlanBbox(phrases: PdfPhrase[]): FloorPlanBbox | null 
     }
   }
 
-  // ── Step 2: merge overlapping/adjacent table x-ranges into contiguous
-  // "excluded" zones.  Then find the largest x-gap that is NOT excluded.
+  // ── Step 2: merge all detected table x-ranges (tolerance 0.03) ────────────
   const merged = tableXRanges
     .sort((a, b) => a.lo - b.lo)
     .reduce<Array<{ lo: number; hi: number }>>((acc, r) => {
       if (acc.length === 0) return [r];
       const last = acc[acc.length - 1]!;
-      if (r.lo <= last.hi + 0.02) {
+      if (r.lo <= last.hi + 0.03) {
         last.hi = Math.max(last.hi, r.hi);
         return acc;
       }
@@ -549,13 +568,11 @@ export function detectFloorPlanBbox(phrases: PdfPhrase[]): FloorPlanBbox | null 
       return acc;
     }, []);
 
-  // The floor plan drawing region is the contiguous x-gap (between excluded zones)
-  // that spans the largest horizontal extent.  Fall back to [0, 1] if no table zones.
+  // ── Step 3: find the largest x-gap between excluded zones ─────────────────
   let drawX0 = 0;
   let drawX1 = 1;
 
   if (merged.length > 0) {
-    // Candidate gaps: before first zone, between zones, after last zone
     const gaps: Array<{ lo: number; hi: number }> = [];
     gaps.push({ lo: 0, hi: merged[0]!.lo });
     for (let i = 1; i < merged.length; i++) {
@@ -571,16 +588,12 @@ export function detectFloorPlanBbox(phrases: PdfPhrase[]): FloorPlanBbox | null 
     if (largest.hi - largest.lo >= 0.2) {
       drawX0 = largest.lo;
       drawX1 = largest.hi;
-    }
-    // If no usable gap, return null so the caller knows there's no floor plan bbox
-    else {
+    } else {
       return null;
     }
   }
 
-  // ── Step 3: determine y-extent.  Ignore phrases that are entirely inside
-  // the excluded x-zones; the floor plan drawing area y-bounds come from the
-  // remaining phrases.
+  // ── Step 4: determine y-extent from phrases in the floor plan x-range ──────
   const drawPhrases = phrases.filter((p) => {
     const cx = (p.x0 + p.x1) / 2;
     return cx >= drawX0 && cx <= drawX1;

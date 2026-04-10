@@ -621,29 +621,45 @@ function FilePdfViewer({
                 onPointerUp={handleSvgPointerUp}
                 onPointerLeave={() => setTooltip(null)}
               >
-                {resolvedMarkers.map((m) => {
-                  const isDragging = drag?.signId === m.id;
-                  const cx = `${(isDragging ? drag!.currentX : m.resolvedX) * 100}%`;
-                  const cy = `${(isDragging ? drag!.currentY : m.resolvedY) * 100}%`;
-                  const color = getSignColor(m.signType);
-                  return (
-                    <g key={m.id}>
-                      {isDragging && (
-                        <circle
-                          cx={cx}
-                          cy={cy}
-                          r={12}
-                          fill="none"
-                          stroke={color}
-                          strokeWidth={1.2}
-                          strokeDasharray="4 3"
-                          opacity={0.6}
-                        />
-                      )}
-                      <circle cx={cx} cy={cy} r={5} fill={color} />
-                    </g>
-                  );
-                })}
+                {/* Clip markers to the detected floor plan bbox so they never
+                    render on schedule tables or title blocks */}
+                {wordsData?.floorPlanBbox && (
+                  <defs>
+                    <clipPath id={`fp-clip-${pageNumber}-${file.id.replace(/[^a-zA-Z0-9]/g, "_")}`}>
+                      <rect
+                        x={`${wordsData.floorPlanBbox.x0 * 100}%`}
+                        y={`${wordsData.floorPlanBbox.y0 * 100}%`}
+                        width={`${(wordsData.floorPlanBbox.x1 - wordsData.floorPlanBbox.x0) * 100}%`}
+                        height={`${(wordsData.floorPlanBbox.y1 - wordsData.floorPlanBbox.y0) * 100}%`}
+                      />
+                    </clipPath>
+                  </defs>
+                )}
+                <g clipPath={wordsData?.floorPlanBbox ? `url(#fp-clip-${pageNumber}-${file.id.replace(/[^a-zA-Z0-9]/g, "_")})` : undefined}>
+                  {resolvedMarkers.map((m) => {
+                    const isDragging = drag?.signId === m.id;
+                    const cx = `${(isDragging ? drag!.currentX : m.resolvedX) * 100}%`;
+                    const cy = `${(isDragging ? drag!.currentY : m.resolvedY) * 100}%`;
+                    const color = getSignColor(m.signType);
+                    return (
+                      <g key={m.id}>
+                        {isDragging && (
+                          <circle
+                            cx={cx}
+                            cy={cy}
+                            r={12}
+                            fill="none"
+                            stroke={color}
+                            strokeWidth={1.2}
+                            strokeDasharray="4 3"
+                            opacity={0.6}
+                          />
+                        )}
+                        <circle cx={cx} cy={cy} r={5} fill={color} />
+                      </g>
+                    );
+                  })}
+                </g>
               </svg>
 
               {/* Floating tooltip */}
