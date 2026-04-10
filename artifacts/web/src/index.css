@@ -86,6 +86,10 @@
     @apply border-border;
   }
 
+  a {
+    outline: none;
+  }
+
   body {
     @apply font-sans antialiased bg-background text-foreground;
     /* Subtle blueprint-like background texture */
