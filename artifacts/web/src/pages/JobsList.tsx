@@ -326,7 +326,7 @@ export default function JobsList() {
                     </button>
 
                     {/* Clickable link area */}
-                    <Link href={`/jobs/${job.id}`} className="contents">
+                    <Link href={`/jobs/${job.id}`} className="contents outline-none">
                       <div className="min-w-0 py-4 flex items-center gap-2">
                         <div className="min-w-0 flex-1">
                           <div className="text-sm font-medium text-foreground truncate">
