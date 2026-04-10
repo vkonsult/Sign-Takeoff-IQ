@@ -387,7 +387,7 @@ function FilePdfViewer({
     const markers = resolvedMarkersRef.current;
     const dragState = dragRef.current;
 
-    const DOT_R = 5.5;
+    const DOT_R = 5;
 
     for (const m of markers) {
       const isDragging = dragState?.signId === m.id;
@@ -408,18 +408,16 @@ function FilePdfViewer({
         ctx.globalAlpha = 1;
       }
 
-      // Fill circle at 70% opacity
+      // Solid opaque fill
       ctx.beginPath();
       ctx.arc(cx, cy, DOT_R, 0, Math.PI * 2);
-      ctx.globalAlpha = 0.7;
       ctx.fillStyle = color;
       ctx.fill();
-      ctx.globalAlpha = 1;
 
-      // Solid stroke at full opacity
+      // Thin white stroke border
       ctx.beginPath();
       ctx.arc(cx, cy, DOT_R, 0, Math.PI * 2);
-      ctx.strokeStyle = color;
+      ctx.strokeStyle = "white";
       ctx.lineWidth = isDragging ? 2 : 1.5;
       ctx.stroke();
     }
