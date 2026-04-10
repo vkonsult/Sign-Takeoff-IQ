@@ -934,7 +934,7 @@ function buildSignSummary(signs: AnySign[]): SignSummaryRow[] {
 }
 
 function SignSummaryPanel({ signs }: { signs: AnySign[] }) {
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(true);
   const rows = buildSignSummary(signs);
   const totalQty = rows.reduce((s, r) => s + r.qty, 0);
 
@@ -996,7 +996,7 @@ function SheetsPanel({
   files: FileWithStats[];
   onOpenSpec: (v: SpecViewerState) => void;
 }) {
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(true);
 
   const hasStats = files.some((f) => f.pageStats != null);
   if (!hasStats) return null;
