@@ -18,24 +18,41 @@ export interface FileEntry {
   originalName: string;
 }
 
+// ── Sign type color palette (matches FloorPlanViewer) ────────────────────────
+const SIGN_TYPE_COLORS: Record<string, [number, number, number]> = {
+  wayfinding:          [0.231, 0.510, 0.965],
+  directional:         [0.063, 0.725, 0.506],
+  informational:       [0.024, 0.714, 0.831],
+  regulatory:          [0.937, 0.267, 0.267],
+  safety:              [0.976, 0.604, 0.094],
+  exit:                [0.863, 0.149, 0.149],
+  ada:                 [0.545, 0.361, 0.965],
+  accessibility:       [0.545, 0.361, 0.965],
+  "room id":           [0.965, 0.620, 0.043],
+  "building id":       [0.388, 0.400, 0.945],
+  monument:            [0.471, 0.443, 0.424],
+  pylon:               [0.471, 0.443, 0.424],
+  parking:             [0.925, 0.318, 0.600],
+  restroom:            [0.925, 0.318, 0.600],
+  "channel letter":    [0.518, 0.800, 0.086],
+  cabinet:             [0.078, 0.722, 0.647],
+  "dimensional letter":[0.655, 0.545, 0.980],
+  "building sign":     [0.388, 0.400, 0.945],
+};
+
+function getSignColor(signType: string | null | undefined): [number, number, number] {
+  if (!signType) return [0.420, 0.447, 0.502];
+  const key = signType.toLowerCase();
+  for (const [k, v] of Object.entries(SIGN_TYPE_COLORS)) {
+    if (key.includes(k)) return v;
+  }
+  return [0.420, 0.447, 0.502];
+}
+
 /**
  * Convert normalised marker coordinates (nx ∈ [0,1] left→right,
  * ny ∈ [0,1] top→bottom in viewport / screen space) to pdf-lib drawing
  * coordinates (x, y in MediaBox space: origin bottom-left, y upward).
- *
- * pdf-lib's page.getSize() returns the raw MediaBox dimensions WITHOUT
- * accounting for the page's /Rotate attribute.  Drawing commands operate in
- * that same unrotated space, so we must un-apply the rotation ourselves.
- *
- * Derivation (for a MediaBox [0,0,W,H]):
- *   /Rotate 0:   x = nx*W,       y = (1−ny)*H
- *   /Rotate 90:  x = ny*W,       y = nx*H        (landscape: display w=H,h=W)
- *   /Rotate 180: x = (1−nx)*W,   y = ny*H
- *   /Rotate 270: x = (1−ny)*W,   y = (1−nx)*H   (landscape: display w=H,h=W)
- *
- * Verified against the Python pdfplumber+ReportLab reference implementation:
- *   /Rotate 90:  canvas_x = plumber_y = ny*(raw_w),  canvas_y = plumber_x = nx*(raw_h)
- *   Display for /Rotate 90 is raw_h wide × raw_w tall; plumber_y=ny*raw_w, plumber_x=nx*raw_h.
  */
 function normalizedToMediaBox(
   nx: number,
@@ -67,8 +84,7 @@ export async function exportMarkedupPdf(
     const pdfBytes = await response.arrayBuffer();
 
     const srcDoc = await PDFDocument.load(pdfBytes);
-    const helveticaBold = await srcDoc.embedFont(StandardFonts.HelveticaBold);
-    const helvetica = await srcDoc.embedFont(StandardFonts.Helvetica);
+    const regularFont = await srcDoc.embedFont(StandardFonts.Helvetica);
 
     const fileSigns = signs.filter(
       (s) => s.xPos != null && s.yPos != null && s.pageNumber != null
@@ -85,7 +101,7 @@ export async function exportMarkedupPdf(
       if (pageMarkers.length === 0) continue;
 
       const rotationDeg = page.getRotation().angle;
-      drawMarkersOnPage(page, pageMarkers, width, height, rotationDeg, helveticaBold, helvetica);
+      drawMarkersOnPage(page, pageMarkers, width, height, rotationDeg, regularFont);
     }
 
     const copiedPages = await mergedPdf.copyPages(srcDoc, srcDoc.getPageIndices());
@@ -104,108 +120,66 @@ function drawMarkersOnPage(
   pageWidth: number,
   pageHeight: number,
   rotationDeg: number,
-  boldFont: ReturnType<PDFDocument["embedFont"]> extends Promise<infer T> ? T : never,
   regularFont: ReturnType<PDFDocument["embedFont"]> extends Promise<infer T> ? T : never
 ) {
+  // Collect unique sign types on this page for the legend
+  const seenTypes = new Set<string>();
+
   for (const sign of markers) {
     if (sign.xPos == null || sign.yPos == null) continue;
 
     const { x, y } = normalizedToMediaBox(sign.xPos, sign.yPos, pageWidth, pageHeight, rotationDeg);
+    const [r, g, b] = getSignColor(sign.signType);
 
-    let r: number, g: number, b: number;
-    if (sign.userVerified) {
-      r = 0.133; g = 0.773; b = 0.369;
-    } else if (sign.manuallyAdded) {
-      r = 0.659; g = 0.333; b = 0.969;
-    } else {
-      r = 0.918; g = 0.702; b = 0.031;
-    }
-    const markerColor = rgb(r, g, b);
-
-    const outerR = 9;
-    const innerR = 2.5;
-
+    // Simple solid filled dot — no border, no label
     page.drawCircle({
       x,
       y,
-      size: outerR,
-      borderColor: markerColor,
-      borderWidth: 1.2,
-      opacity: 0.9,
-      borderOpacity: 1,
-      color: markerColor,
-    });
-
-    page.drawCircle({
-      x,
-      y,
-      size: innerR,
-      color: rgb(1, 1, 1),
+      size: 4,
+      color: rgb(r, g, b),
       opacity: 1,
     });
 
-    const label = sign.signIdentifier || sign.signType?.slice(0, 5) || "SIGN";
-    const fontSize = 5.5;
-    const textW = label.length * fontSize * 0.52;
-    const labelX = x - textW / 2;
-    const labelY = y + outerR + 2;
-
-    page.drawRectangle({
-      x: labelX - 1.5,
-      y: labelY - 1,
-      width: textW + 3,
-      height: fontSize + 2.5,
-      color: markerColor,
-      opacity: 0.92,
-      borderWidth: 0,
-    });
-
-    page.drawText(label, {
-      x: labelX,
-      y: labelY + 0.5,
-      size: fontSize,
-      font: boldFont,
-      color: rgb(0.05, 0.05, 0.05),
-    });
+    if (sign.signType) seenTypes.add(sign.signType);
   }
 
-  const legendItems = [
-    { label: "AI Extracted", r: 0.918, g: 0.702, b: 0.031 },
-    { label: "Manually Added", r: 0.659, g: 0.333, b: 0.969 },
-    { label: "Verified", r: 0.133, g: 0.773, b: 0.369 },
-  ];
+  // ── Compact legend (bottom-left) ────────────────────────────────────────────
+  const legendTypes = [...seenTypes].sort();
+  if (legendTypes.length === 0) return;
 
+  const rowH = 9;
+  const legendW = 100;
+  const legendH = legendTypes.length * rowH + 8;
   const legendX = 8;
   const legendY = 8;
-  const rowH = 10;
-  const legendW = 90;
-  const legendH = legendItems.length * rowH + 8;
 
   page.drawRectangle({
     x: legendX - 2,
     y: legendY - 2,
     width: legendW,
     height: legendH,
-    color: rgb(0.12, 0.12, 0.12),
-    opacity: 0.75,
-    borderColor: rgb(0.3, 0.3, 0.3),
+    color: rgb(0.10, 0.10, 0.10),
+    opacity: 0.72,
+    borderColor: rgb(0.28, 0.28, 0.28),
     borderWidth: 0.5,
   });
 
-  legendItems.forEach((item, i) => {
+  legendTypes.forEach((signType, i) => {
+    const [r, g, b] = getSignColor(signType);
     const iy = legendY + i * rowH + 4;
     page.drawCircle({
       x: legendX + 4,
       y: iy,
-      size: 3.5,
-      color: rgb(item.r, item.g, item.b),
+      size: 3,
+      color: rgb(r, g, b),
+      opacity: 1,
     });
-    page.drawText(item.label, {
+    page.drawText(signType, {
       x: legendX + 10,
       y: iy - 2.5,
       size: 5,
       font: regularFont,
-      color: rgb(0.9, 0.9, 0.9),
+      color: rgb(0.88, 0.88, 0.88),
     });
   });
 }
