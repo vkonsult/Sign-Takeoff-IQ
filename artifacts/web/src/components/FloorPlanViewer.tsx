@@ -101,6 +101,7 @@ interface FloorPlanBbox {
 interface WordsResponse {
   phrases: PdfPhrase[];
   floorPlanBbox: FloorPlanBbox | null;
+  pageType?: "floor_plan" | "sign_schedule" | "both" | "other";
 }
 
 // ── Client-side location matcher (mirrors server logic) ──────────────────────
@@ -246,7 +247,12 @@ function FilePdfViewer({
   onSignUpdated: (signId: string, xPos: number, yPos: number) => void;
   onEditSign: (sign: SignMarker) => void;
 }) {
-  const floorPlanPages = file.pageStats?.floorPlanPages ?? [];
+  // Merge floor_plan and both pages into a single navigable page list (sorted, deduped).
+  const floorPlanPages = useMemo(() => {
+    const fp = file.pageStats?.floorPlanPages ?? [];
+    const bp = file.pageStats?.bothPages ?? [];
+    return [...new Set([...fp, ...bp])].sort((a, b) => a - b);
+  }, [file.pageStats]);
 
   const [pageIdx, setPageIdx] = useState(0);
   const pageNumber = floorPlanPages[pageIdx] ?? 1;
@@ -315,10 +321,16 @@ function FilePdfViewer({
     // Without words data we can't resolve positions reliably — wait for it.
     // Without a floor plan bbox on the page, we have no valid drawing region.
     if (!wordsData) return [];
+
+    // Hard-filter: sign_schedule pages never have floor plan drawings.
+    if (wordsData.pageType === "sign_schedule") return [];
+
     const bbox = wordsData.floorPlanBbox;
     if (!bbox) return []; // schedule/title-block page: no drawing region
 
-    const TOLERANCE = 0.05;
+    // Tight tolerance — stored bbox is authoritative; well-placed coords should
+    // be well inside it. Client-side fallback re-match corrects any outliers.
+    const TOLERANCE = 0.01;
 
     const result: ResolvedMarker[] = [];
     for (const m of pageMarkersRaw) {
@@ -730,7 +742,9 @@ export function FloorPlanViewer({
   onEditSign,
 }: FloorPlanViewerProps) {
   const floorPlanFiles = files.filter(
-    (f) => (f.pageStats?.floorPlanPages?.length ?? 0) > 0
+    (f) =>
+      (f.pageStats?.floorPlanPages?.length ?? 0) > 0 ||
+      (f.pageStats?.bothPages?.length ?? 0) > 0
   );
 
   const [selectedFileId, setSelectedFileId] = useState<string>(

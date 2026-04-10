@@ -825,10 +825,35 @@ router.get("/jobs/:jobId/files/:fileId/pages/:pageNum/words", async (req, res) =
     }
 
     const result = await extractPagePhrases(file.storedPath, fileId, pageNumInt);
-    const floorPlanBbox = detectFloorPlanBbox(result.phrases);
+
+    // Derive pageType from stored pageStats
+    const ps = file.pageStats;
+    let pageType: "floor_plan" | "sign_schedule" | "both" | "other" = "other";
+    if (ps) {
+      const pageNumStr = String(pageNumInt);
+      if (ps.pageTypes?.[pageNumStr]) {
+        pageType = ps.pageTypes[pageNumStr];
+      } else if ((ps.bothPages ?? []).includes(pageNumInt)) {
+        pageType = "both";
+      } else if (ps.floorPlanPages.includes(pageNumInt)) {
+        pageType = "floor_plan";
+      } else if (ps.signSchedulePages.includes(pageNumInt)) {
+        pageType = "sign_schedule";
+      }
+    }
+
+    // Use stored bbox if available (authoritative — computed at extraction time).
+    // Fall back to live recomputation for jobs that pre-date this change.
+    let floorPlanBbox: { x0: number; y0: number; x1: number; y1: number } | null = null;
+    const storedBbox = ps?.floorPlanBboxes?.[String(pageNumInt)];
+    if (storedBbox) {
+      floorPlanBbox = storedBbox;
+    } else if (pageType !== "sign_schedule") {
+      floorPlanBbox = detectFloorPlanBbox(result.phrases);
+    }
 
     res.setHeader("Cache-Control", "private, max-age=300");
-    res.json({ ...result, floorPlanBbox });
+    res.json({ ...result, floorPlanBbox, pageType });
   } catch (err) {
     req.log.error({ err, fileId, pageNum }, "Failed to extract page words");
     res.status(500).json({ error: "Failed to extract page words" });

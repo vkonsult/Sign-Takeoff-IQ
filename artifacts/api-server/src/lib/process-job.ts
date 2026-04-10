@@ -587,6 +587,52 @@ export async function processJob(jobId: string): Promise<void> {
     matched: matchedText + matchedImage,
   });
 
+  // ── Persist floor plan bboxes to DB ─────────────────────────────────────────
+  // For each file, collect all bboxes computed during word-match for pages
+  // classified as floor_plan or both.  Store them in pageStats.floorPlanBboxes
+  // so the viewer can read the authoritative bbox without recomputing.
+  {
+    // Build a map of fileId → pageStats from successful extraction results
+    const filePageStats = new Map<string, { floorPlanPages: number[]; bothPages?: number[] }>();
+    for (const result of fileResults) {
+      if (result.ok) {
+        filePageStats.set(result.file.id, result.textResult.pageStats);
+      }
+    }
+
+    // Group pageCache entries by fileId, collecting only floor_plan / both pages
+    const bboxesByFile = new Map<string, Record<string, { x0: number; y0: number; x1: number; y1: number }>>();
+    for (const [key, entry] of pageCache.entries()) {
+      if (!entry.bbox) continue;
+      const colonIdx = key.indexOf(":");
+      if (colonIdx === -1) continue;
+      const fileId = key.slice(0, colonIdx);
+      const pageNum = parseInt(key.slice(colonIdx + 1), 10);
+      const ps = filePageStats.get(fileId);
+      if (!ps) continue;
+      const isFloorPlan = ps.floorPlanPages.includes(pageNum);
+      const isBoth = (ps.bothPages ?? []).includes(pageNum);
+      if (!isFloorPlan && !isBoth) continue;
+      if (!bboxesByFile.has(fileId)) bboxesByFile.set(fileId, {});
+      bboxesByFile.get(fileId)![String(pageNum)] = entry.bbox;
+    }
+
+    // Write bboxes to the DB for each file that has them, merging into existing pageStats
+    await Promise.all(
+      Array.from(bboxesByFile.entries()).map(async ([fileId, floorPlanBboxes]) => {
+        try {
+          const [existing] = await db.select({ pageStats: jobFilesTable.pageStats }).from(jobFilesTable).where(eq(jobFilesTable.id, fileId));
+          if (!existing) return;
+          const updatedPageStats = { ...existing.pageStats, floorPlanBboxes } as NonNullable<typeof existing.pageStats>;
+          await db.update(jobFilesTable).set({ pageStats: updatedPageStats }).where(eq(jobFilesTable.id, fileId));
+          logger.debug({ fileId, pages: Object.keys(floorPlanBboxes) }, "Persisted floor plan bboxes");
+        } catch (err) {
+          logger.warn({ err, fileId }, "Failed to persist floor plan bboxes — non-fatal");
+        }
+      })
+    );
+  }
+
   const t_insert = Date.now();
   if (coordedTextRows.length > 0) {
     await db.insert(extractedSignsTable).values(coordedTextRows);

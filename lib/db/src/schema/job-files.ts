@@ -13,7 +13,10 @@ export const jobFilesTable = pgTable("job_files", {
   pageStats: json("page_stats").$type<{
     floorPlanPages: number[];
     signSchedulePages: number[];
+    bothPages?: number[];
     otherPages: number[];
+    pageTypes?: Record<string, "floor_plan" | "sign_schedule" | "both" | "other">;
+    floorPlanBboxes?: Record<string, { x0: number; y0: number; x1: number; y1: number }>;
   }>(),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
