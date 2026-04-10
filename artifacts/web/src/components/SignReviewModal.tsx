@@ -1,6 +1,7 @@
 import { useState, useCallback, useEffect, useMemo, useRef } from "react";
 import { Document, Page, pdfjs } from "react-pdf";
 import { apiFetch } from "@/lib/apiClient";
+import { AddMarkerForm } from "./AddMarkerForm";
 import { usePdfBlob } from "@/hooks/use-pdf-blob";
 import "react-pdf/dist/Page/AnnotationLayer.css";
 import "react-pdf/dist/Page/TextLayer.css";
@@ -1208,6 +1209,8 @@ export function SignReviewModal({
   const [showOverlay, setShowOverlay] = useState(true);
   const [debugMode, setDebugMode] = useState(false);
   const [drawMode, setDrawMode] = useState(false);
+  const [addMode, setAddMode] = useState(false);
+  const [pendingNewMarker, setPendingNewMarker] = useState<{ nx: number; ny: number } | null>(null);
   const [hoveredMarkerId, setHoveredMarkerId] = useState<string | null>(null);
   const [addingSign, setAddingSign] = useState(false);
 
@@ -1972,10 +1975,45 @@ export function SignReviewModal({
                   </>
                 );
               })()}
-              {/* Draw mode toggle */}
+              {/* Add Marker button */}
               {pdfReady && (
                 <button
-                  onClick={() => setDrawMode((v) => !v)}
+                  onClick={() => {
+                    setAddMode((v) => {
+                      const next = !v;
+                      if (next) setDrawMode(false);
+                      return next;
+                    });
+                    setPendingNewMarker(null);
+                  }}
+                  className="flex items-center gap-1.5 text-[10px] font-display font-semibold uppercase tracking-wide px-2 py-1 rounded transition-colors border"
+                  style={addMode ? {
+                    background: "#22c55e28",
+                    color: "#22c55e",
+                    borderColor: "#22c55e88",
+                    boxShadow: "0 0 0 1px #22c55e44",
+                  } : {
+                    background: "#22c55e14",
+                    color: "#22c55e",
+                    borderColor: "#22c55e55",
+                  }}
+                  title={addMode ? "Cancel — click again or press Esc" : "Add a new sign marker: click anywhere on the floor plan"}
+                >
+                  <Plus className="w-3 h-3" />
+                  {addMode ? "Click to place…" : "Add Marker"}
+                </button>
+              )}
+              {/* Edit Markers (draw) mode toggle */}
+              {pdfReady && (
+                <button
+                  onClick={() => {
+                    setDrawMode((v) => {
+                      const next = !v;
+                      if (next) setAddMode(false);
+                      return next;
+                    });
+                    setPendingNewMarker(null);
+                  }}
                   className="flex items-center gap-1.5 text-[10px] font-display font-semibold uppercase tracking-wide px-2 py-1 rounded transition-colors border"
                   style={drawMode ? {
                     background: "#a855f720",
@@ -1986,10 +2024,10 @@ export function SignReviewModal({
                     color: "var(--muted-foreground)",
                     borderColor: "var(--border)",
                   }}
-                  title={drawMode ? "Exit draw mode" : "Enter draw mode: click to add markers, X to delete"}
+                  title={drawMode ? "Exit edit mode" : "Edit Markers: hover a marker to delete it"}
                 >
                   {drawMode ? <PenLine className="w-3 h-3" /> : <MousePointer className="w-3 h-3" />}
-                  {drawMode ? "Draw" : "Edit Markers"}
+                  Edit Markers
                 </button>
               )}
             </div>
@@ -2252,6 +2290,58 @@ export function SignReviewModal({
                     </svg>
                   )}
 
+                  {/* Ghost pin SVG for pending new-marker placement — independent of showOverlay */}
+                  {pendingNewMarker && renderedW && renderedH && (
+                    <svg
+                      style={{
+                        position: "absolute",
+                        top: 0,
+                        left: 0,
+                        width: renderedW,
+                        height: renderedH,
+                        overflow: "visible",
+                        pointerEvents: "none",
+                        zIndex: 7,
+                      }}
+                      viewBox={`0 0 ${renderedW} ${renderedH}`}
+                    >
+                      {(() => {
+                        const cx = pendingNewMarker.nx * renderedW;
+                        const cy = pendingNewMarker.ny * renderedH;
+                        return (
+                          <g>
+                            <circle cx={cx} cy={cy} r={14}
+                              fill="none" stroke="#22c55e" strokeWidth={2.5}
+                              strokeDasharray="5 3" opacity={0.95} />
+                            <circle cx={cx} cy={cy} r={5}
+                              fill="#22c55e" opacity={0.9} />
+                          </g>
+                        );
+                      })()}
+                    </svg>
+                  )}
+
+                  {/* addMode hint */}
+                  {addMode && !pendingNewMarker && renderedW && renderedH && (
+                    <div
+                      style={{
+                        position: "absolute",
+                        bottom: 8,
+                        left: "50%",
+                        transform: "translateX(-50%)",
+                        zIndex: 10,
+                        pointerEvents: "none",
+                        background: "#22c55e20",
+                        color: "#22c55e",
+                        border: "1px solid #22c55e55",
+                      }}
+                      className="px-3 py-1.5 rounded-full text-[10px] font-bold uppercase tracking-wider shadow-lg whitespace-nowrap flex items-center gap-1"
+                    >
+                      <Plus className="w-3 h-3" />
+                      Click anywhere on the floor plan to place a new sign
+                    </div>
+                  )}
+
                   {/* Delete X buttons — shown in draw mode when hovering a marker */}
                   {drawMode && showOverlay && renderedW && renderedH && textMarkers.map((m) => {
                     if (m.signId !== hoveredMarkerId) return null;
@@ -2491,9 +2581,11 @@ export function SignReviewModal({
                         width: renderedW,
                         height: renderedH,
                         zIndex: 6,
-                        cursor: drawMode
-                          ? (hoveredMarkerId ? "pointer" : "crosshair")
-                          : (textMarkers.length > 0 ? "pointer" : "default"),
+                        cursor: addMode
+                          ? (pendingNewMarker ? "default" : "crosshair")
+                          : drawMode
+                            ? (hoveredMarkerId ? "pointer" : "crosshair")
+                            : (textMarkers.length > 0 ? "pointer" : "default"),
                       }}
                       onMouseMove={(e) => {
                         if (!renderedW || !renderedH) return;
@@ -2514,14 +2606,24 @@ export function SignReviewModal({
                         const nx = (e.clientX - rect.left) / renderedW!;
                         const ny = (e.clientY - rect.top) / renderedH!;
 
+                        // Add mode: drop a ghost pin then open the detail form
+                        if (addMode) {
+                          if (!pendingNewMarker) {
+                            setPendingNewMarker({ nx, ny });
+                          }
+                          return;
+                        }
+
                         if (drawMode) {
                           if (hoveredMarkerId) {
                             // Select the hovered marker (don't create a new one)
                             const found = allSigns.find((s) => s.id === hoveredMarkerId);
                             if (found) setActiveSign(found);
                           } else {
-                            // Create new sign at click position
-                            handleCreateSign(nx, ny);
+                            // Create new sign at click position via guided form
+                            setPendingNewMarker({ nx, ny });
+                            setAddMode(true);
+                            setDrawMode(false);
                           }
                           return;
                         }
@@ -2729,6 +2831,30 @@ export function SignReviewModal({
           </div>
         </div>
       </div>
+
+      {/* Add-marker detail form — opens after clicking to place a ghost pin */}
+      {pendingNewMarker && file && (
+        <AddMarkerForm
+          pending={{
+            xPos: pendingNewMarker.nx,
+            yPos: pendingNewMarker.ny,
+            pageNumber,
+            jobFileId: file.id,
+            jobId,
+          }}
+          onSave={(sign) => {
+            setLocalSigns((prev) => [...prev, sign]);
+            setActiveSign(sign);
+            onSignAdded?.(sign);
+            setPendingNewMarker(null);
+            setAddMode(false);
+          }}
+          onCancel={() => {
+            setPendingNewMarker(null);
+            // Keep addMode active so user can try a different spot
+          }}
+        />
+      )}
     </div>
   );
 }
