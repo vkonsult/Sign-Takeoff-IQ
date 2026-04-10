@@ -278,12 +278,44 @@ export async function processJob(jobId: string): Promise<void> {
           });
         }
 
-        const t_image = Date.now();
-        const imageResult = await extractSignsFromPdfImageVerify(file.storedPath, ai, textSignsByPage).catch((err) => {
-          logger.warn({ err, fileId: file.id }, "Visual verification threw unexpectedly — skipping");
-          return { verifications: [] as VerificationItem[], discoveries: [], inputTokens: 0, outputTokens: 0, skipped: true as const, skipReason: "Internal error" };
-        });
-        const imageDurationMs = Date.now() - t_image;
+        // Gate: skip visual verification if text extraction is already high-confidence
+        const HIGH_CONF_THRESHOLD = 0.80;   // per-sign minimum
+        const HIGH_CONF_RATIO     = 0.80;   // fraction of signs that must meet it
+        const MIN_SIGNS_TO_GATE   = 3;      // don't gate on tiny extractions
+
+        const highConfCount = textResult.rows.filter(
+          (r) => (r.confidence_score ?? 0) >= HIGH_CONF_THRESHOLD
+        ).length;
+        const highConfRatio = textResult.rows.length > 0
+          ? highConfCount / textResult.rows.length
+          : 0;
+
+        const skipVerification =
+          textResult.rows.length >= MIN_SIGNS_TO_GATE &&
+          highConfRatio >= HIGH_CONF_RATIO;
+
+        if (skipVerification) {
+          logger.info(
+            { jobId, fileId: file.id, signs: textResult.rows.length, highConfRatio: Math.round(highConfRatio * 100) },
+            "Visual verification skipped — text extraction confidence is high"
+          );
+        }
+
+        const t_image = skipVerification ? 0 : Date.now();
+        const imageResult = skipVerification
+          ? {
+              verifications: [] as VerificationItem[],
+              discoveries: [],
+              inputTokens: 0,
+              outputTokens: 0,
+              skipped: true as const,
+              skipReason: `High-confidence skip (${Math.round(highConfRatio * 100)}% of ${textResult.rows.length} signs ≥ ${HIGH_CONF_THRESHOLD} confidence)`,
+            }
+          : await extractSignsFromPdfImageVerify(file.storedPath, ai, textSignsByPage).catch((err) => {
+              logger.warn({ err, fileId: file.id }, "Visual verification threw unexpectedly — skipping");
+              return { verifications: [] as VerificationItem[], discoveries: [], inputTokens: 0, outputTokens: 0, skipped: true as const, skipReason: "Internal error" };
+            });
+        const imageDurationMs = skipVerification ? 0 : Date.now() - t_image;
 
         // Per-file DB update is safe to do inside the parallel map
         await db
@@ -336,6 +368,7 @@ export async function processJob(jobId: string): Promise<void> {
         verified: imageResult.verifications?.length ?? 0,
         discoveries: imageResult.discoveries?.length ?? 0,
         skipped: imageResult.skipped ?? false,
+        ...(imageResult.skipReason ? { skipReason: imageResult.skipReason } : {}),
       },
     });
 
