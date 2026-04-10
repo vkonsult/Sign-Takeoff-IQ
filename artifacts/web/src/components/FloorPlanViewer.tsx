@@ -68,6 +68,7 @@ export interface FileInfo {
   pageStats?: {
     floorPlanPages: number[];
     signSchedulePages: number[];
+    bothPages?: number[];
     otherPages: number[];
   } | null;
 }

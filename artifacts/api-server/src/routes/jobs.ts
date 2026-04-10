@@ -512,7 +512,7 @@ router.post("/jobs/:jobId/compare", async (req, res) => {
             return { file, ...result };
           } catch (err) {
             req.log.error({ err, fileId: file.id }, "Text extraction failed for file in compare pass");
-            return { file, rows: [], inputTokens: 0, outputTokens: 0, pageCount: 0, rawText: "", pageStats: { floorPlanPages: [], signSchedulePages: [], otherPages: [] } };
+            return { file, rows: [], inputTokens: 0, outputTokens: 0, pageCount: 0, rawText: "", pageStats: { floorPlanPages: [], signSchedulePages: [], bothPages: [], otherPages: [] } };
           }
         })
       ),

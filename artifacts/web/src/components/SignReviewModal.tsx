@@ -57,6 +57,7 @@ interface ExtractedSign {
 interface PageStats {
   floorPlanPages: number[];
   signSchedulePages: number[];
+  bothPages?: number[];
   otherPages: number[];
 }
 

@@ -1058,8 +1058,9 @@ function SheetsPanel({
             {files.map((f) => {
               const stats = f.pageStats;
               const total = f.pageCount ?? 0;
-              const fpCount = stats?.floorPlanPages?.length ?? 0;
-              const ssCount = stats?.signSchedulePages?.length ?? 0;
+              const bothCount = stats?.bothPages?.length ?? 0;
+              const fpCount = (stats?.floorPlanPages?.length ?? 0) - bothCount;
+              const ssCount = (stats?.signSchedulePages?.length ?? 0) - bothCount;
               const otherCount = stats?.otherPages?.length ?? 0;
               const pct = (n: number) => (total > 0 ? Math.round((n / total) * 100) : 0);
 
@@ -1093,6 +1094,9 @@ function SheetsPanel({
                         {ssCount > 0 && (
                           <div className="h-full bg-accent/70" style={{ width: `${pct(ssCount)}%` }} title={`Sign specs: ${ssCount} pages`} />
                         )}
+                        {bothCount > 0 && (
+                          <div className="h-full bg-violet-500/60" style={{ width: `${pct(bothCount)}%` }} title={`Floor plan + sign schedule: ${bothCount} pages`} />
+                        )}
                         {fpCount > 0 && (
                           <div className="h-full bg-primary/40" style={{ width: `${pct(fpCount)}%` }} title={`Floor plans: ${fpCount} pages`} />
                         )}
@@ -1104,6 +1108,12 @@ function SheetsPanel({
                           <span className="w-2 h-2 rounded-sm bg-accent/70 inline-block" />
                           Sign Specs/Schedules — {ssCount}
                         </span>
+                        {bothCount > 0 && (
+                          <span className="flex items-center gap-1">
+                            <span className="w-2 h-2 rounded-sm bg-violet-500/60 inline-block" />
+                            Floor Plan + Sign Schedule — {bothCount}
+                          </span>
+                        )}
                         <span className="flex items-center gap-1">
                           <span className="w-2 h-2 rounded-sm bg-primary/40 inline-block" />
                           Floor Plans — {fpCount}
@@ -1114,11 +1124,23 @@ function SheetsPanel({
                         </span>
                       </div>
 
-                      {/* Sign spec page chips */}
+                      {/* Combined floor plan + sign schedule page chips */}
+                      {bothCount > 0 && (
+                        <div className="flex items-center flex-wrap gap-1 mb-1">
+                          <span className="text-[10px] text-muted-foreground/60 mr-0.5">Combined pages:</span>
+                          {(stats.bothPages ?? []).map((pg) => (
+                            <span key={pg} className="px-1.5 py-0.5 bg-violet-500/15 text-violet-400 border border-violet-500/30 text-[10px] font-mono rounded">
+                              pg {pg}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+
+                      {/* Sign spec page chips (pure schedule pages only) */}
                       {ssCount > 0 && (
                         <div className="flex items-center flex-wrap gap-1 mb-1">
                           <span className="text-[10px] text-muted-foreground/60 mr-0.5">Sign spec pages:</span>
-                          {stats.signSchedulePages!.map((pg) => (
+                          {(stats.signSchedulePages ?? []).filter((pg) => !(stats.bothPages ?? []).includes(pg)).map((pg) => (
                             <span key={pg} className="px-1.5 py-0.5 bg-accent/15 text-accent border border-accent/30 text-[10px] font-mono rounded">
                               pg {pg}
                             </span>
@@ -1126,11 +1148,11 @@ function SheetsPanel({
                         </div>
                       )}
 
-                      {/* Floor plan page chips (limited) */}
+                      {/* Floor plan page chips (pure floor plan pages only, limited) */}
                       {fpCount > 0 && (
                         <div className="flex items-center flex-wrap gap-1">
                           <span className="text-[10px] text-muted-foreground/60 mr-0.5">Floor plan pages:</span>
-                          {stats.floorPlanPages!.slice(0, 24).map((pg) => (
+                          {(stats.floorPlanPages ?? []).filter((pg) => !(stats.bothPages ?? []).includes(pg)).slice(0, 24).map((pg) => (
                             <span key={pg} className="px-1.5 py-0.5 bg-primary/10 text-primary/70 border border-primary/20 text-[10px] font-mono rounded">
                               pg {pg}
                             </span>

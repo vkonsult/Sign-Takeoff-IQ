@@ -769,8 +769,8 @@ function scoreForSignSchedule(text: string): number {
   }, 0);
 }
 
-type PageType = "floor_plan" | "sign_schedule" | "other";
-type TitleBlockType = "floor_plan" | "sign_schedule" | "other" | "unknown";
+type PageType = "floor_plan" | "sign_schedule" | "other" | "both";
+type TitleBlockType = "floor_plan" | "sign_schedule" | "other" | "unknown" | "both";
 
 interface ScoredPage {
   pageNum: number;
@@ -918,6 +918,23 @@ const SIGN_SCHEDULE_TITLE_KEYWORDS: string[] = [
 function detectTitleBlock(text: string): TitleBlockType {
   const upper = text.toUpperCase();
 
+  // Gather presence flags up front (reused across all steps).
+  const hasFpNumber = FLOOR_PLAN_DRAWING_NUMBER_PATTERNS.some((p) => p.test(text));
+  const hasFpTitle = FLOOR_PLAN_TITLE_KEYWORDS.some((kw) => upper.includes(kw.toUpperCase()));
+  const hasOtherNumber = OTHER_DRAWING_NUMBER_PATTERNS.some((p) => p.test(text));
+  const hasAnyNumber = hasFpNumber || hasOtherNumber;
+  const hasSignScheduleTitle = SIGN_SCHEDULE_TITLE_KEYWORDS.some((kw) => upper.includes(kw.toUpperCase()));
+  const hasSignScheduleNumber = SIGN_SCHEDULE_DRAWING_NUMBER_PATTERNS.some((p) => p.test(text));
+
+  // ── 0. Detect "both" — page has BOTH a floor-plan signal AND a sign-schedule signal ──
+  // This catches combined architectural sheets where the floor plan drawing occupies
+  // one half of the page and a sign schedule table runs alongside it.
+  // We require an unambiguous floor-plan signal (drawing number + title keyword)
+  // AND at least one sign-schedule signal (title keyword or drawing number).
+  if (hasFpNumber && hasFpTitle && (hasSignScheduleTitle || hasSignScheduleNumber)) {
+    return "both";
+  }
+
   // ── 1. Sign schedule title keywords (standalone, very specific) ─────────────
   for (const kw of SIGN_SCHEDULE_TITLE_KEYWORDS) {
     if (upper.includes(kw.toUpperCase())) {
@@ -931,12 +948,6 @@ function detectTitleBlock(text: string): TitleBlockType {
       return "sign_schedule";
     }
   }
-
-  // Gather drawing-number presence flags (reused in multiple steps below).
-  const hasFpNumber = FLOOR_PLAN_DRAWING_NUMBER_PATTERNS.some((p) => p.test(text));
-  const hasFpTitle = FLOOR_PLAN_TITLE_KEYWORDS.some((kw) => upper.includes(kw.toUpperCase()));
-  const hasOtherNumber = OTHER_DRAWING_NUMBER_PATTERNS.some((p) => p.test(text));
-  const hasAnyNumber = hasFpNumber || hasOtherNumber;
 
   // ── 3. Floor plan: requires BOTH a floor-plan drawing number AND title ───────
   // Requiring both signals greatly reduces false positives from pages that
@@ -1022,6 +1033,17 @@ function classifyPage(pageNum: number, text: string, filenameBoost?: { floorPlan
   if (titleBlockType === "other") {
     return { pageNum, text, floorPlanScore: 0, signScheduleScore: 0, type: "other", titleBlockType };
   }
+  if (titleBlockType === "both") {
+    // Title block confirmed both floor plan AND sign schedule on this page.
+    // Still apply the legend-page guard.
+    const legendScore = scoreForLegendPage(text);
+    const textFloorPlanScore = scoreForFloorPlan(text);
+    const textSignScheduleScore = scoreForSignSchedule(text);
+    if (legendScore >= 3 && textFloorPlanScore < 10) {
+      return { pageNum, text, floorPlanScore: textFloorPlanScore, signScheduleScore: textSignScheduleScore, type: "other", titleBlockType };
+    }
+    return { pageNum, text, floorPlanScore: textFloorPlanScore, signScheduleScore: textSignScheduleScore, type: "both", titleBlockType };
+  }
   if (titleBlockType === "sign_schedule") {
     // Still apply the legend-page guard: a legend page that happens to contain
     // sign-schedule title keywords should not be extracted.
@@ -1058,6 +1080,19 @@ function classifyPage(pageNum: number, text: string, filenameBoost?: { floorPlan
   const legendScore = scoreForLegendPage(text);
   if (legendScore >= 3 && textFloorPlanScore < 10) {
     return { pageNum, text, floorPlanScore: textFloorPlanScore, signScheduleScore: textSignScheduleScore, type: "other", titleBlockType };
+  }
+
+  // ── Heuristic "both" detection ─────────────────────────────────────────────
+  // When both text scores are strong AND neither overwhelmingly dominates,
+  // the page likely contains both a floor plan drawing and a sign schedule table.
+  // Thresholds: each score ≥ 8, ratio between 0.35 and 2.85 (≤ ~3× difference).
+  // This is conservative to avoid misclassifying pure schedule pages that pick up
+  // incidental floor-plan room labels as their "location" column values.
+  if (textFloorPlanScore >= 8 && textSignScheduleScore >= 8) {
+    const ratio = textFloorPlanScore / textSignScheduleScore;
+    if (ratio >= 0.35 && ratio <= 2.85) {
+      return { pageNum, text, floorPlanScore: textFloorPlanScore, signScheduleScore: textSignScheduleScore, type: "both", titleBlockType };
+    }
   }
 
   let type: PageType = "other";
@@ -1146,6 +1181,7 @@ export async function extractTextFromPdf(filePath: string): Promise<{
 
     const fpCount = pages.filter((p) => p.type === "floor_plan").length;
     const ssCount = pages.filter((p) => p.type === "sign_schedule").length;
+    const bothCount = pages.filter((p) => p.type === "both").length;
     const titleBlockCount = pages.filter((p) => p.titleBlockType !== "unknown").length;
 
     logger.info(
@@ -1154,7 +1190,8 @@ export async function extractTextFromPdf(filePath: string): Promise<{
         totalPages: pages.length,
         floorPlanPages: fpCount,
         signSchedulePages: ssCount,
-        otherPages: pages.length - fpCount - ssCount,
+        bothPages: bothCount,
+        otherPages: pages.length - fpCount - ssCount - bothCount,
         titleBlockClassified: titleBlockCount,
         filenameBoost: boost.floorPlan > 0 ? "floor_plan" : boost.signSchedule > 0 ? "sign_schedule" : "none",
       },
@@ -1179,7 +1216,9 @@ function buildPageBlock(
   maxPageChars: number
 ): string {
   const relevant = pages
-    .filter((p) => p.type === targetType)
+    // Pages classified as "both" are included in BOTH the sign-schedule pass
+    // and the floor-plan pass so their content is fully extracted.
+    .filter((p) => p.type === targetType || p.type === "both")
     .sort((a, b) => {
       if (targetType === "floor_plan") return b.floorPlanScore - a.floorPlanScore;
       return b.signScheduleScore - a.signScheduleScore;
@@ -2229,6 +2268,7 @@ export function buildSpecContextString(rawText: string): string {
 export interface PageStats {
   floorPlanPages: number[];
   signSchedulePages: number[];
+  bothPages?: number[];
   otherPages: number[];
   titleBlockClassifiedPages?: number[];
 }
@@ -2287,7 +2327,7 @@ export async function extractSignsFromPdf(
   const MAX_FP_PAGE_CHARS = 5000;
 
   const floorPlanPages = pages
-    .filter((p) => p.type === "floor_plan")
+    .filter((p) => p.type === "floor_plan" || p.type === "both")
     .sort((a, b) => b.floorPlanScore - a.floorPlanScore);
 
   if (floorPlanPages.length === 0) {
@@ -2467,8 +2507,12 @@ export async function extractSignsFromPdf(
   const rawText = pages.map((p) => `--- PAGE ${p.pageNum} ---\n${p.text}`).slice(0, 10).join("\n\n");
 
   const pageStats: PageStats = {
-    floorPlanPages:    pages.filter((p) => p.type === "floor_plan").map((p) => p.pageNum).sort((a, b) => a - b),
-    signSchedulePages: pages.filter((p) => p.type === "sign_schedule").map((p) => p.pageNum).sort((a, b) => a - b),
+    // "both" pages appear in BOTH floorPlanPages AND signSchedulePages so the
+    // floor-plan viewer in the UI renders for them (with sign markers), and the
+    // sign schedule count also reflects their content.
+    floorPlanPages:    pages.filter((p) => p.type === "floor_plan" || p.type === "both").map((p) => p.pageNum).sort((a, b) => a - b),
+    signSchedulePages: pages.filter((p) => p.type === "sign_schedule" || p.type === "both").map((p) => p.pageNum).sort((a, b) => a - b),
+    bothPages:         pages.filter((p) => p.type === "both").map((p) => p.pageNum).sort((a, b) => a - b),
     otherPages:        pages.filter((p) => p.type === "other").map((p) => p.pageNum).sort((a, b) => a - b),
     titleBlockClassifiedPages: pages.filter((p) => p.titleBlockType !== "unknown").map((p) => p.pageNum).sort((a, b) => a - b),
   };
@@ -2517,6 +2561,7 @@ export async function extractSignsFromPdf(
       pageStats: {
         floorPlan: pageStats.floorPlanPages.length,
         signSchedule: pageStats.signSchedulePages.length,
+        both: (pageStats.bothPages ?? []).length,
         other: pageStats.otherPages.length,
       },
     },
