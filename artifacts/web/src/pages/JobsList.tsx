@@ -327,13 +327,33 @@ export default function JobsList() {
 
                     {/* Clickable link area */}
                     <Link href={`/jobs/${job.id}`} className="contents">
-                      <div className="min-w-0 py-4">
-                        <div className="text-sm font-medium text-foreground truncate">
-                          {job.name ?? "Untitled Job"}
+                      <div className="min-w-0 py-4 flex items-center gap-2">
+                        <div className="min-w-0 flex-1">
+                          <div className="text-sm font-medium text-foreground truncate">
+                            {job.name ?? "Untitled Job"}
+                          </div>
+                          <div className="text-xs font-mono text-muted-foreground/60 truncate mt-0.5">
+                            {job.id.split("-")[0]}
+                          </div>
                         </div>
-                        <div className="text-xs font-mono text-muted-foreground/60 truncate mt-0.5">
-                          {job.id.split("-")[0]}
-                        </div>
+                        {processingLog && processingLog.length > 0 && (
+                          <button
+                            onClick={(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              setExpandedLog(isLogExpanded ? null : job.id);
+                            }}
+                            title={isLogExpanded ? "Hide processing log" : "View processing log"}
+                            className={`flex-none flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-mono transition-all border
+                              ${isLogExpanded
+                                ? "text-primary bg-primary/10 border-primary/30"
+                                : "text-muted-foreground/40 border-border/40 hover:text-primary hover:bg-primary/10 hover:border-primary/30"
+                              }`}
+                          >
+                            <Clock className="w-3 h-3" />
+                            <ChevronDown className={`w-3 h-3 transition-transform ${isLogExpanded ? "rotate-180" : ""}`} />
+                          </button>
+                        )}
                       </div>
 
                       <div className="flex items-center justify-center gap-1.5 text-muted-foreground text-sm font-mono py-4">
@@ -357,30 +377,6 @@ export default function JobsList() {
                         <ChevronRight className="w-5 h-5" />
                       </div>
                     </Link>
-
-                    {/* Log toggle button — shows when job has a processingLog */}
-                    {processingLog && processingLog.length > 0 && (
-                      <button
-                        onClick={(e) => {
-                          e.preventDefault();
-                          e.stopPropagation();
-                          setExpandedLog(isLogExpanded ? null : job.id);
-                        }}
-                        title={isLogExpanded ? "Hide processing log" : "View processing log"}
-                        className={`absolute left-[calc(36px+8px+1fr+100px+120px+40px+180px+6px)] right-10 top-1/2 -translate-y-1/2 flex items-center justify-end gap-1 z-10 opacity-0 group-hover:opacity-100 transition-opacity ${isLogExpanded ? "opacity-100" : ""}`}
-                        style={{ right: "42px", left: "auto" }}
-                      >
-                        <div className={`flex items-center gap-1 px-2 py-1 rounded text-[11px] font-mono transition-all
-                          ${isLogExpanded
-                            ? "text-primary bg-primary/10 border border-primary/30"
-                            : "text-muted-foreground/60 hover:text-primary hover:bg-primary/10"
-                          }`}
-                        >
-                          <Clock className="w-3 h-3" />
-                          <ChevronDown className={`w-3 h-3 transition-transform ${isLogExpanded ? "rotate-180" : ""}`} />
-                        </div>
-                      </button>
-                    )}
 
                     {/* Single-row delete — overlaps the chevron area on hover */}
                     {!isChecked && (
