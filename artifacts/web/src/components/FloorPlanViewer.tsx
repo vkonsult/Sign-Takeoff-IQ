@@ -12,6 +12,7 @@ import {
   Loader2,
   AlertTriangle,
 } from "lucide-react";
+import { AddMarkerForm, type PendingMarker } from "@/components/AddMarkerForm";
 
 pdfjs.GlobalWorkerOptions.workerSrc = `${import.meta.env.BASE_URL}pdf.worker.min.mjs`;
 
@@ -298,6 +299,9 @@ function FilePdfViewer({
     addMarkerModeRef.current = addMarkerMode;
   }, [addMarkerMode]);
 
+  // Pending marker: coordinates captured from click, waiting for form submission
+  const [pendingMarker, setPendingMarker] = useState<PendingMarker | null>(null);
+
   // Drag state
   const [drag, setDrag] = useState<DragState | null>(null);
   const dragRef = useRef<DragState | null>(null);
@@ -497,20 +501,14 @@ function FilePdfViewer({
       coords.y < bbox.y0 - TOL || coords.y > bbox.y1 + TOL
     ) return; // outside the floor plan area
 
-    try {
-      const res = await apiFetch("/api/extracted-signs", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ jobId, jobFileId: file.id, pageNumber, xPos: coords.x, yPos: coords.y }),
-      });
-      if (res.ok) {
-        const data = (await res.json()) as { sign: unknown };
-        onSignAdded(data.sign);
-        setAddMarkerMode(false);
-      }
-    } catch (err) {
-      console.error("Failed to add marker", err);
-    }
+    // Show the sign detail form instead of saving immediately with blank fields.
+    setPendingMarker({
+      xPos: coords.x,
+      yPos: coords.y,
+      pageNumber,
+      jobFileId: file.id,
+      jobId,
+    });
   };
 
   const pageMarkerCount = resolvedMarkers.length;
@@ -684,6 +682,29 @@ function FilePdfViewer({
                       </g>
                     );
                   })}
+
+                  {/* Ghost pin: shows the clicked position while the detail form is open */}
+                  {pendingMarker && (
+                    <g>
+                      <circle
+                        cx={`${pendingMarker.xPos * 100}%`}
+                        cy={`${pendingMarker.yPos * 100}%`}
+                        r={8}
+                        fill="none"
+                        stroke="#FFAA00"
+                        strokeWidth={2}
+                        strokeDasharray="5 3"
+                        opacity={0.85}
+                      />
+                      <circle
+                        cx={`${pendingMarker.xPos * 100}%`}
+                        cy={`${pendingMarker.yPos * 100}%`}
+                        r={4}
+                        fill="#FFAA00"
+                        opacity={0.9}
+                      />
+                    </g>
+                  )}
                 </g>
               </svg>
 
@@ -709,7 +730,7 @@ function FilePdfViewer({
               )}
 
               {/* Add-marker hint overlay */}
-              {addMarkerMode && (
+              {addMarkerMode && !pendingMarker && (
                 <div
                   style={{
                     position: "absolute",
@@ -728,6 +749,22 @@ function FilePdfViewer({
           </Document>
         )}
       </div>
+
+      {/* Sign detail form — opens after clicking to place; saves with full sign info */}
+      {pendingMarker && (
+        <AddMarkerForm
+          pending={pendingMarker}
+          onSave={(sign) => {
+            onSignAdded(sign);
+            setPendingMarker(null);
+            setAddMarkerMode(false);
+          }}
+          onCancel={() => {
+            setPendingMarker(null);
+            // Keep addMarkerMode on so the user can try a different location
+          }}
+        />
+      )}
     </div>
   );
 }

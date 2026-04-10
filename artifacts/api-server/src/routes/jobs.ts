@@ -869,7 +869,10 @@ const CreateSignSchema = z.object({
   signType: z.string().nullable().optional(),
   signIdentifier: z.string().nullable().optional(),
   location: z.string().nullable().optional(),
+  quantity: z.number().int().min(1).nullable().optional(),
+  messageContent: z.string().nullable().optional(),
   notes: z.string().nullable().optional(),
+  placementSource: z.string().nullable().optional(),
 });
 
 router.post("/extracted-signs", async (req, res) => {
