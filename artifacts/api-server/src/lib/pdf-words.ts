@@ -440,7 +440,7 @@ export function matchLocationToCoords(
 
   // Score each phrase
   const ROOM_NUM_RE =
-    /\b(?:[A-Za-z]{1,2}\d{2,4}[A-Za-z]?|\d{2,4}[A-Za-z]{1,2})\b/g;
+    /\b(?:[A-Za-z]{1,2}-\d{2,4}|[A-Za-z]{1,2}\d{2,4}[A-Za-z]?|\d{2,4}[A-Za-z]{1,2})\b/g;
   const roomTokens = (query.match(ROOM_NUM_RE) ?? []).map((t) => _normId(t));
 
   let best: { score: number; cx: number; cy: number } | null = null;

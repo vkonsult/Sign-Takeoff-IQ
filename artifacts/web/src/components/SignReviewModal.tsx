@@ -811,12 +811,12 @@ function findSignLocationFromPhrases(
   // Extract room-number tokens from sign.location using /\b[A-Z]?\d{3}[A-Z]?\b/g.
   // An exact match of that token inside any phrase is treated as a confirmed hit.
   if (sign.location && sign.location.trim().length >= 2) {
-    const roomNumRegex = /\b[A-Z]?\d{3}[A-Z]?\b/g;
+    const roomNumRegex = /\b(?:[A-Z]{1,2}-\d{2,4}|[A-Z]?\d{3}[A-Z]?)\b/g;
     const roomNums = (sign.location.trim().toUpperCase().match(roomNumRegex) ?? []);
     for (const roomNum of roomNums) {
       for (const p of sdp) {
         const phraseUp = p.text.trim().toUpperCase();
-        const phraseRooms = phraseUp.match(roomNumRegex) ?? [];
+        const phraseRooms: string[] = phraseUp.match(roomNumRegex) ?? [];
         if (phraseRooms.includes(roomNum)) {
           console.log(
             `[MATCH] ${sign.signIdentifier ?? "?"} Pre-C room-num→"${p.text}" room=${roomNum}`,

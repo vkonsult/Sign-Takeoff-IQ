@@ -37,7 +37,7 @@ import {
   ExternalLink,
 } from "lucide-react";
 import { format, formatDistanceToNow } from "date-fns";
-import { exportMarkedupPdf } from "@/lib/exportMarkedupPdf";
+import { exportMarkedupPdf, type MarkerSign } from "@/lib/exportMarkedupPdf";
 
 export default function JobDetails() {
   const [, params] = useRoute("/jobs/:jobId");
@@ -97,9 +97,9 @@ export default function JobDetails() {
     if (!data || exportingPdf) return;
     setExportingPdf(true);
     try {
-      const sourceSigns = (data as { markerSigns?: typeof data.extractedSigns }).markerSigns ?? data.extractedSigns;
-      const markedSigns = sourceSigns.filter(
-        (s) => s.xPos != null && s.yPos != null && s.pageNumber != null
+      const allSigns = data.extractedSigns as unknown as MarkerSign[];
+      const markedSigns = allSigns.filter(
+        (s) => s.pageNumber != null
       );
       await exportMarkedupPdf(
         jobId,

@@ -192,7 +192,7 @@ function matchLocationToCoords(
 
   if (!drawingPhrases.length) return null;
 
-  const ROOM_NUM_RE = /\b(?:[A-Za-z]{1,2}\d{2,4}[A-Za-z]?|\d{2,4}[A-Za-z]{1,2})\b/g;
+  const ROOM_NUM_RE = /\b(?:[A-Za-z]{1,2}-\d{2,4}|[A-Za-z]{1,2}\d{2,4}[A-Za-z]?|\d{2,4}[A-Za-z]{1,2})\b/g;
   const roomTokens = (query.match(ROOM_NUM_RE) ?? []).map((t) => normId(t));
 
   let best: { score: number; cx: number; cy: number } | null = null;
@@ -386,6 +386,37 @@ function FilePdfViewer({
     }
     return result;
   }, [pageMarkersRaw, wordsData]);
+
+  // ── Write-back: persist client-resolved coords to the server ─────────────────
+  // Track sign IDs already written this session to avoid duplicate PATCHes.
+  const writtenBackRef = useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    for (const m of resolvedMarkers) {
+      // Only write back signs that had null coords in the DB (client resolved them).
+      if (m.xPos != null && m.yPos != null) continue;
+      if (writtenBackRef.current.has(m.id)) continue;
+
+      writtenBackRef.current.add(m.id);
+      apiFetch(`/api/extracted-signs/${m.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          xPos: m.resolvedX,
+          yPos: m.resolvedY,
+          placementSource: "word_match",
+        }),
+      })
+        .then((res) => {
+          if (!res.ok) throw new Error(`PATCH failed: ${res.status}`);
+          onSignUpdated(m.id, m.resolvedX, m.resolvedY);
+        })
+        .catch(() => {
+          // Remove from written set so it can be retried if needed
+          writtenBackRef.current.delete(m.id);
+        });
+    }
+  }, [resolvedMarkers, jobId, onSignUpdated]);
 
   // ── Pointer helpers ──────────────────────────────────────────────────────────
   const getPageCoords = (e: React.PointerEvent | MouseEvent): { x: number; y: number } | null => {
