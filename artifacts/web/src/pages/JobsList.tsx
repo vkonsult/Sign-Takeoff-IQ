@@ -1,14 +1,14 @@
 import { useState } from "react";
 import { AppShell } from "@/components/layout/Shell";
 import { useJobsList } from "@/hooks/use-takeoff";
-import { apiFetch } from "@/lib/apiClient";
+import { apiFetch, openPdfInNewTab } from "@/lib/apiClient";
 import { useQueryClient } from "@tanstack/react-query";
 import { getListJobsQueryKey } from "@workspace/api-client-react";
 import { format, formatDistanceToNow } from "date-fns";
 import {
   FolderOpen, ChevronRight, FileText, CheckCircle2, Cpu,
   AlertTriangle, Trash2, X, Square, CheckSquare, MinusSquare,
-  Clock, ChevronDown,
+  Clock, ChevronDown, ExternalLink,
 } from "lucide-react";
 import { Link } from "wouter";
 
@@ -302,9 +302,11 @@ export default function JobsList() {
                   lastActivityAt?: string | null;
                   lastActivityType?: string | null;
                   processingLog?: ProcessingStep[] | null;
+                  files?: { id: string; originalName: string }[];
                 };
                 const recentUsers: RecentUser[] = jobAny.recentUsers ?? [];
                 const processingLog: ProcessingStep[] | null = jobAny.processingLog ?? null;
+                const jobFiles: { id: string; originalName: string }[] = jobAny.files ?? [];
                 const isLogExpanded = expandedLog === job.id;
 
                 return (
@@ -356,9 +358,27 @@ export default function JobsList() {
                         )}
                       </div>
 
-                      <div className="flex items-center justify-center gap-1.5 text-muted-foreground text-sm font-mono py-4">
-                        <FileText className="w-4 h-4" />
-                        {job.fileCount}
+                      <div className="flex flex-col items-center justify-center gap-1 py-4">
+                        {jobFiles.length > 0 ? jobFiles.map((f) => (
+                          <button
+                            key={f.id}
+                            onClick={(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              openPdfInNewTab(job.id, f.id, f.originalName).catch(() => {});
+                            }}
+                            title={`Open ${f.originalName} in new tab`}
+                            className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium text-muted-foreground border border-border hover:text-primary hover:border-primary/50 transition-colors max-w-[88px]"
+                          >
+                            <ExternalLink className="w-3 h-3 flex-shrink-0" />
+                            <span className="truncate">{f.originalName.replace(/\.pdf$/i, "")}</span>
+                          </button>
+                        )) : (
+                          <span className="flex items-center gap-1.5 text-muted-foreground text-sm font-mono">
+                            <FileText className="w-4 h-4" />
+                            {job.fileCount}
+                          </span>
+                        )}
                       </div>
 
                       <div className="flex justify-center py-4">

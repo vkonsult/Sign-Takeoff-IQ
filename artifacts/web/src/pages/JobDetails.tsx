@@ -2,7 +2,7 @@ import { useState, useRef, useEffect } from "react";
 import { useRoute } from "wouter";
 import { useQueryClient } from "@tanstack/react-query";
 import { AppShell } from "@/components/layout/Shell";
-import { apiFetch } from "@/lib/apiClient";
+import { apiFetch, openPdfInNewTab } from "@/lib/apiClient";
 import { useJobDetails, useStartExtraction, downloadExport, useUpdateJobName } from "@/hooks/use-takeoff";
 import { SignReviewModal } from "@/components/SignReviewModal";
 import { SignSpecModal } from "@/components/SignSpecModal";
@@ -34,6 +34,7 @@ import {
   BarChart2,
   RotateCcw,
   LayoutGrid,
+  ExternalLink,
 } from "lucide-react";
 import { format, formatDistanceToNow } from "date-fns";
 import { exportMarkedupPdf } from "@/lib/exportMarkedupPdf";
@@ -776,6 +777,14 @@ export default function JobDetails() {
                     <div className="flex-1 min-w-0">
                       <p className="text-sm font-medium text-foreground truncate">{f.originalName}</p>
                     </div>
+                    <button
+                      onClick={() => openPdfInNewTab(jobId, f.id, f.originalName).catch(() => {})}
+                      title="Open original PDF in new tab"
+                      className="ml-3 flex items-center gap-1.5 px-2.5 py-1 rounded text-[11px] font-medium text-muted-foreground border border-border hover:text-primary hover:border-primary/50 transition-colors flex-shrink-0"
+                    >
+                      <ExternalLink className="w-3.5 h-3.5" />
+                      View PDF
+                    </button>
                   </div>
                 ))}
               </div>
@@ -1069,6 +1078,14 @@ function SheetsPanel({
                   <div className="flex items-center justify-between mb-2">
                     <span className="text-xs font-mono text-foreground font-medium truncate">{f.originalName}</span>
                     <div className="flex items-center gap-2 flex-shrink-0 ml-2">
+                      <button
+                        onClick={() => openPdfInNewTab(jobId, f.id, f.originalName).catch(() => {})}
+                        title="Open original PDF in new tab"
+                        className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium text-muted-foreground border border-border hover:text-primary hover:border-primary/50 transition-colors"
+                      >
+                        <ExternalLink className="w-3 h-3" />
+                        PDF
+                      </button>
                       {ssCount > 0 && (
                         <button
                           onClick={() =>

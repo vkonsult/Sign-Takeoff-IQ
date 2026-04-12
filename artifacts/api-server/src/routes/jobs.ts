@@ -98,10 +98,26 @@ router.get("/jobs", async (req, res) => {
       }
     }
 
+    // Fetch file IDs + names for all jobs in one query so the UI can build PDF links.
+    const filesByJob = new Map<string, { id: string; originalName: string }[]>();
+    if (jobIds.length > 0) {
+      const fileRows = await db
+        .select({ jobId: jobFilesTable.jobId, id: jobFilesTable.id, originalName: jobFilesTable.originalName })
+        .from(jobFilesTable)
+        .where(inArray(jobFilesTable.jobId, jobIds));
+      for (const f of fileRows) {
+        if (!f.jobId) continue;
+        const list = filesByJob.get(f.jobId) ?? [];
+        list.push({ id: f.id, originalName: f.originalName });
+        filesByJob.set(f.jobId, list);
+      }
+    }
+
     const enriched = jobs.map((j) => {
       const users = recentUsersByJob.get(j.id) ?? [];
       return {
         ...j,
+        files: filesByJob.get(j.id) ?? [],
         recentUsers: users.map((u) => ({ userName: u.userName, userInitials: u.userInitials, at: u.at, eventType: u.eventType })),
       };
     });
