@@ -40,30 +40,46 @@ function ProcessingLog({ steps }: { steps: ProcessingStep[] }) {
     deduplication: "bg-teal-500",
     word_match: "bg-green-500",
     db_insert: "bg-gray-400",
+    bbox_persist: "bg-cyan-500",
   };
 
   function getBarColor(step: string): string {
     if (step.startsWith("text_extraction_")) return "bg-amber-400";
     if (step.startsWith("visual_verification_")) return "bg-orange-400";
+    if (step.startsWith("spatial_prepass_")) return "bg-indigo-400";
     return STEP_COLORS[step] ?? "bg-muted-foreground";
   }
 
   function formatDetails(details: Record<string, unknown> | undefined): string | null {
     if (!details) return null;
     const parts: string[] = [];
-    const { rows, pages, inputTokens, outputTokens, verified, discoveries, matched, totalSigns, textAfter, imageAfter, textRows, imageRows, signsExtracted } = details as Record<string, number | undefined>;
+    const d = details as Record<string, number | string | boolean | undefined>;
+    const { rows, pages, inputTokens, outputTokens, verified, discoveries, matched, totalSigns, textAfter, imageAfter, textRows, imageRows, signsExtracted, specFileCount, succeeded, failed, textBefore, imageBefore, classified, floorPlan, signSchedule, filesWithBboxes, pagesWithBboxes } = d;
+    const { skipReason, skipped } = details as Record<string, string | boolean | undefined>;
+    if (specFileCount != null) parts.push(`${specFileCount} spec file${Number(specFileCount) !== 1 ? "s" : ""}`);
     if (rows != null) parts.push(`${rows} rows`);
     if (pages != null) parts.push(`${pages} pages`);
-    if (inputTokens != null) parts.push(`${inputTokens.toLocaleString()} in-tok`);
-    if (outputTokens != null) parts.push(`${outputTokens.toLocaleString()} out-tok`);
+    if (classified != null) parts.push(`${classified} classified`);
+    if (floorPlan != null) parts.push(`${floorPlan} floor plan`);
+    if (signSchedule != null) parts.push(`${signSchedule} sign sched`);
+    if (filesWithBboxes != null) parts.push(`${filesWithBboxes} file${Number(filesWithBboxes) !== 1 ? "s" : ""}`);
+    if (pagesWithBboxes != null) parts.push(`${pagesWithBboxes} page${Number(pagesWithBboxes) !== 1 ? "s" : ""}`);
+    if (inputTokens != null) parts.push(`${Number(inputTokens).toLocaleString()} in-tok`);
+    if (outputTokens != null) parts.push(`${Number(outputTokens).toLocaleString()} out-tok`);
+    if (succeeded != null) parts.push(`${succeeded} ok`);
+    if (failed != null && Number(failed) > 0) parts.push(`${failed} failed`);
     if (verified != null) parts.push(`${verified} verified`);
     if (discoveries != null) parts.push(`${discoveries} discoveries`);
     if (totalSigns != null && matched != null) parts.push(`${matched}/${totalSigns} matched`);
-    if (textAfter != null) parts.push(`${textAfter} text`);
-    if (imageAfter != null) parts.push(`${imageAfter} image`);
+    if (textBefore != null && textAfter != null) parts.push(`${textAfter}/${textBefore} text`);
+    else if (textAfter != null) parts.push(`${textAfter} text`);
+    if (imageBefore != null && imageAfter != null) parts.push(`${imageAfter}/${imageBefore} image`);
+    else if (imageAfter != null) parts.push(`${imageAfter} image`);
     if (textRows != null) parts.push(`${textRows} text rows`);
     if (imageRows != null) parts.push(`${imageRows} image rows`);
     if (signsExtracted != null) parts.push(`${signsExtracted} signs`);
+    if (skipped && skipReason) parts.push(`skipped: ${skipReason}`);
+    else if (skipped) parts.push("skipped");
     return parts.length > 0 ? parts.join(" · ") : null;
   }
 

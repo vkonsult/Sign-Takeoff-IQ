@@ -258,6 +258,7 @@ export async function processJob(jobId: string): Promise<void> {
         // text-heuristic classification.  extractPagePhrases is cached so
         // subsequent calls (coord assignment) are free.
         let spatialPageTypes: Map<number, SpatialPageType> | undefined;
+        const t_spatial = Date.now();
         try {
           const { getPdfPageCount } = await import("./pdf-words");
           const numPages = await getPdfPageCount(file.storedPath);
@@ -275,16 +276,32 @@ export async function processJob(jobId: string): Promise<void> {
               }
             })
           );
+          const floorPlanCount = [...spatialPageTypes.values()].filter((t) => t === "floor_plan" || t === "both").length;
+          const signScheduleCount = [...spatialPageTypes.values()].filter((t) => t === "sign_schedule" || t === "both").length;
           logger.info(
             {
               jobId,
               file: file.originalName,
               spatialClassified: spatialPageTypes.size,
-              floorPlan: [...spatialPageTypes.values()].filter((t) => t === "floor_plan" || t === "both").length,
-              signSchedule: [...spatialPageTypes.values()].filter((t) => t === "sign_schedule" || t === "both").length,
+              floorPlan: floorPlanCount,
+              signSchedule: signScheduleCount,
             },
             "Spatial page classification complete"
           );
+          pipelineSteps.push({
+            step: `spatial_prepass_${file.id}`,
+            label: filesToProcess.length > 1
+              ? `Spatial pre-pass — ${file.originalName}`
+              : "Spatial pre-pass",
+            durationMs: Date.now() - t_spatial,
+            startedAt: new Date(t_spatial).toISOString(),
+            details: {
+              pages: numPages,
+              classified: spatialPageTypes.size,
+              floorPlan: floorPlanCount,
+              signSchedule: signScheduleCount,
+            },
+          });
         } catch (err) {
           logger.warn({ err, file: file.originalName }, "Spatial pre-pass failed — falling back to text heuristics");
           spatialPageTypes = undefined;
@@ -654,6 +671,8 @@ export async function processJob(jobId: string): Promise<void> {
   // classified as floor_plan or both.  Store them in pageStats.floorPlanBboxes
   // so the viewer can read the authoritative bbox without recomputing.
   {
+    const t_bbox = Date.now();
+
     // Build a map of fileId → pageStats from successful extraction results
     const filePageStats = new Map<string, { floorPlanPages: number[]; bothPages?: number[] }>();
     for (const result of fileResults) {
@@ -693,6 +712,12 @@ export async function processJob(jobId: string): Promise<void> {
         }
       })
     );
+
+    const pagesWithBbox = Array.from(bboxesByFile.values()).reduce((sum, m) => sum + Object.keys(m).length, 0);
+    recordStep("bbox_persist", "Floor plan bbox persistence", t_bbox, {
+      filesWithBboxes: bboxesByFile.size,
+      pagesWithBboxes: pagesWithBbox,
+    });
   }
 
   const t_insert = Date.now();
