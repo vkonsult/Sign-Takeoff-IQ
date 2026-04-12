@@ -12,7 +12,7 @@ import { ai } from "@workspace/integrations-gemini-ai";
 import { extractSignsFromPdf, extractSignsFromPdfImageVerify, extractProjectInfo, extractTextFromPdf, isSpecFile, buildSpecContextString, type ProjectInfo, type VerifiedSignSummary, type TextContextSign, type VerificationItem, type ExtractedSignRow } from "./extraction";
 import { saveParsedResult } from "./storage";
 import { logger } from "./logger";
-import { extractPagePhrases, detectFloorPlanBbox, matchLocationToCoords, type PdfPhrase, type FloorPlanBbox } from "./pdf-words";
+import { extractPagePhrases, detectFloorPlanBbox, matchLocationToCoords, classifyPageFromPhrases, type PdfPhrase, type FloorPlanBbox, type SpatialPageType } from "./pdf-words";
 
 
 /**
@@ -253,6 +253,43 @@ export async function processJob(jobId: string): Promise<void> {
         const otherVerified = verifiedGlobal.filter((v) => !fileVerified.includes(v));
         const allVerifiedForFile = [...fileVerified, ...otherVerified];
 
+        // ── Spatial pre-pass: classify pages from their title-block region ────
+        // This runs before the AI extraction so the result can override the
+        // text-heuristic classification.  extractPagePhrases is cached so
+        // subsequent calls (coord assignment) are free.
+        let spatialPageTypes: Map<number, SpatialPageType> | undefined;
+        try {
+          const { getPdfPageCount } = await import("./pdf-words");
+          const numPages = await getPdfPageCount(file.storedPath);
+          spatialPageTypes = new Map<number, SpatialPageType>();
+          await Promise.all(
+            Array.from({ length: numPages }, (_, i) => i + 1).map(async (pageNum) => {
+              try {
+                const pageWords = await extractPagePhrases(file.storedPath, file.id, pageNum);
+                const spatialType = classifyPageFromPhrases(pageWords.phrases);
+                if (spatialType !== "unknown") {
+                  spatialPageTypes!.set(pageNum, spatialType);
+                }
+              } catch {
+                // individual page failures are non-fatal
+              }
+            })
+          );
+          logger.info(
+            {
+              jobId,
+              file: file.originalName,
+              spatialClassified: spatialPageTypes.size,
+              floorPlan: [...spatialPageTypes.values()].filter((t) => t === "floor_plan" || t === "both").length,
+              signSchedule: [...spatialPageTypes.values()].filter((t) => t === "sign_schedule" || t === "both").length,
+            },
+            "Spatial page classification complete"
+          );
+        } catch (err) {
+          logger.warn({ err, file: file.originalName }, "Spatial pre-pass failed — falling back to text heuristics");
+          spatialPageTypes = undefined;
+        }
+
         const t_text = Date.now();
         const textResult = await extractSignsFromPdf(
           file.storedPath,
@@ -260,7 +297,8 @@ export async function processJob(jobId: string): Promise<void> {
           projectContext,
           allVerifiedForFile.length > 0 ? allVerifiedForFile : undefined,
           crossJobVerified.length > 0 ? crossJobVerified : undefined,
-          specTypeContext
+          specTypeContext,
+          spatialPageTypes
         );
         const textDurationMs = Date.now() - t_text;
 
@@ -520,6 +558,19 @@ export async function processJob(jobId: string): Promise<void> {
     filesToProcess.map((f) => [f.id, f.storedPath])
   );
 
+  // Build a lookup: fileId → Set<pageNum> of pages classified as floor_plan or both.
+  // Used to gate coordinate assignment — sign-schedule-only pages must not get markers.
+  const floorPlanPagesByFileId = new Map<string, Set<number>>();
+  for (const result of fileResults) {
+    if (result.ok) {
+      const fpSet = new Set<number>([
+        ...result.textResult.pageStats.floorPlanPages,
+        ...(result.textResult.pageStats.bothPages ?? []),
+      ]);
+      floorPlanPagesByFileId.set(result.file.id, fpSet);
+    }
+  }
+
   async function assignCoords(rows: InsertExtractedSign[]): Promise<InsertExtractedSign[]> {
     return Promise.all(
       rows.map(async (row) => {
@@ -528,6 +579,17 @@ export async function processJob(jobId: string): Promise<void> {
         if (!row.jobFileId || !row.pageNumber) return row;
         const storedPath = filePathById.get(row.jobFileId);
         if (!storedPath) return row;
+
+        // Do not place markers for signs on sign-schedule-only pages.
+        // These rows appear in the review table but should have no floor plan marker.
+        // We check whether we have floor plan page info for this file: if we do,
+        // any page not in the floor-plan set (including when the set is empty, which
+        // means the file has NO floor plan pages at all) must not receive coordinates.
+        const fpPages = floorPlanPagesByFileId.get(row.jobFileId);
+        if (fpPages !== undefined && !fpPages.has(row.pageNumber)) {
+          return row; // skip coordinate assignment — not a floor plan page
+        }
+
         try {
           const { phrases, bbox } = await getPageData(storedPath, row.jobFileId, row.pageNumber);
           const match = matchLocationToCoords(phrases, bbox, row.location, row.signIdentifier);

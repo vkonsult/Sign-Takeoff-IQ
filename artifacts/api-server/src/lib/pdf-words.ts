@@ -611,6 +611,102 @@ export function detectFloorPlanBbox(phrases: PdfPhrase[]): FloorPlanBbox | null 
   return { x0: drawX0, y0, x1: drawX1, y1 };
 }
 
+// ── Spatial page-type classification ─────────────────────────────────────────
+// Title phrases that unambiguously identify a floor plan when found in the
+// bottom-right title block region (x > 0.60 AND y > 0.60 in normalised coords).
+// Matching uses substring/includes so "FIRST FLOOR PLAN - OVERALL" triggers on
+// "first floor plan".
+const SPATIAL_FLOOR_PLAN_TITLE_PHRASES: string[] = [
+  "floor plan",
+  "level plan",
+  "first floor plan",
+  "second floor plan",
+  "third floor plan",
+  "fourth floor plan",
+  "fifth floor plan",
+  "ground floor plan",
+  "basement plan",
+  "mezzanine plan",
+  "penthouse plan",
+  "parking plan",
+  "sanctuary floor plan",
+  "chapel floor plan",
+  "classroom plan",
+  "level 1 plan",
+  "level 2 plan",
+  "level 3 plan",
+  "level 4 plan",
+  "level 5 plan",
+];
+
+// Title phrases that unambiguously identify a sign schedule in the title block.
+const SPATIAL_SIGN_SCHEDULE_TITLE_PHRASES: string[] = [
+  "sign schedule",
+  "signage schedule",
+  "sign plan",
+  "sign detail",
+  "signage detail",
+  "sign elevation",
+  "sign criteria",
+  "signage criteria",
+  "sign program",
+  "signage program",
+];
+
+export type SpatialPageType = "floor_plan" | "sign_schedule" | "both" | "unknown";
+
+/**
+ * Classify a PDF page using only the spatial content of the bottom-right
+ * title-block quadrant.  Accepts the phrase list already extracted by
+ * `extractPagePhrases`.
+ *
+ * Strategy:
+ *   1. Filter to the bottom-right quadrant (x > 0.60 AND y > 0.60) — this is
+ *      the standard title-block region in architectural drawings.
+ *   2. Also include the bottom strip (y > 0.80) to catch wide title blocks that
+ *      may start further left than 0.60.
+ *   3. Concatenate the filtered phrase text into a single string (lowercased).
+ *   4. Match against floor plan and sign schedule title phrase lists using
+ *      substring matching (so "FIRST FLOOR PLAN - OVERALL" matches "floor plan").
+ *
+ * Because we read only the title block region, finding a floor plan or sign
+ * schedule phrase there is treated as unambiguous — no drawing number required.
+ *
+ * Returns:
+ *   "floor_plan"   — title block contains a floor plan phrase
+ *   "sign_schedule"— title block contains a sign schedule phrase
+ *   "both"         — title block contains both types of phrase
+ *   "unknown"      — no recognisable phrase found in the title block region
+ */
+export function classifyPageFromPhrases(phrases: PdfPhrase[]): SpatialPageType {
+  if (phrases.length === 0) return "unknown";
+
+  // Gather phrases from the bottom-right quadrant AND from the bottom strip.
+  const titleBlockPhrases = phrases.filter((p) => {
+    const cx = (p.x0 + p.x1) / 2;
+    const cy = (p.y0 + p.y1) / 2;
+    const inQuadrant = cx > 0.60 && cy > 0.60;
+    const inBottomStrip = cy > 0.80;
+    return inQuadrant || inBottomStrip;
+  });
+
+  if (titleBlockPhrases.length === 0) return "unknown";
+
+  const combined = titleBlockPhrases.map((p) => p.text).join(" ").toLowerCase();
+
+  const hasFpPhrase = SPATIAL_FLOOR_PLAN_TITLE_PHRASES.some((phrase) =>
+    combined.includes(phrase.toLowerCase())
+  );
+  const hasSsPhrase = SPATIAL_SIGN_SCHEDULE_TITLE_PHRASES.some((phrase) =>
+    combined.includes(phrase.toLowerCase())
+  );
+
+  if (hasFpPhrase && hasSsPhrase) return "both";
+  if (hasFpPhrase) return "floor_plan";
+  if (hasSsPhrase) return "sign_schedule";
+  return "unknown";
+}
+
 /**
  * Return the number of pages in a PDF without extracting any text.
  * Used by the heuristic extractor to know how many pages to iterate.

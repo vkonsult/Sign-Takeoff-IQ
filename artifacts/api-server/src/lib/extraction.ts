@@ -700,6 +700,17 @@ const FLOOR_PLAN_KEYWORDS = [
   "mech", "elec", "vest", "rm ", "r.", "rm.", "b.", "br.",
   "stair 1", "stair 2", "elev.", "elev 1", "up", "dn",
   "f.e.", "fire exit", "fire extinguisher", "pull station",
+  // Church / worship vocabulary
+  "sanctuary", "narthex", "nave", "chancel", "fellowship", "chapel",
+  "vestibule", "sacristy", "baptistry", "choir", "altar",
+  // School vocabulary
+  "classroom", "gymnasium", "cafeteria", "library", "auditorium",
+  "locker room", "lab", "media center", "gymnasium", "gym",
+  // Residential vocabulary
+  "living room", "master bedroom", "patio", "deck", "pantry",
+  // General room terms
+  "multipurpose", "assembly", "atrium", "concourse", "terminal",
+  "gate", "platform", "boardroom", "training room", "server room",
 ];
 
 const SIGN_SCHEDULE_KEYWORDS = [
@@ -800,9 +811,15 @@ const OTHER_DRAWING_NUMBER_PATTERNS: RegExp[] = [
 ];
 
 // Drawing number patterns that indicate a floor plan sheet.
+// This single broader pattern replaces the two narrow A0.x / A1.x patterns.
+// It matches all common real-world variants:
+//   A1.1, A0.2   — dot-notation (classic AIA)
+//   A-111        — dash + no spaces
+//   A - 111      — dash with spaces (church/school plans)
+//   A111, A123   — no separator
+//   A1-1         — dash sub-number
 const FLOOR_PLAN_DRAWING_NUMBER_PATTERNS: RegExp[] = [
-  /\bA0\.\d{1,3}\b/i,   // A0.x — general/site plans but often floor plan drawings
-  /\bA1\.\d{1,3}\b/i,   // A1.x — classic floor plan sheet number
+  /\bA\s*[-.]?\s*\d{1,4}(?:[-./]\d{1,4})?\b/i,
 ];
 
 // Drawing number patterns that indicate a sign schedule / signage sheet.
@@ -2279,9 +2296,29 @@ export async function extractSignsFromPdf(
   projectContext?: ProjectInfo,
   verifiedSigns?: VerifiedSignSummary[],
   trainingContext?: VerifiedSignSummary[],
-  specTypeContext?: string
+  specTypeContext?: string,
+  spatialPageTypes?: Map<number, import("./pdf-words").SpatialPageType>
 ): Promise<{ rows: ExtractedSignRow[]; pageCount: number; rawText: string; inputTokens: number; outputTokens: number; pageStats: PageStats }> {
-  const { pages, numPages } = await extractTextFromPdf(filePath);
+  const { pages: rawPages, numPages } = await extractTextFromPdf(filePath);
+
+  // Apply spatial page type overrides when provided.
+  // The spatial classifier reads the bottom-right title block quadrant of each
+  // page and is the highest-priority signal for floor_plan / sign_schedule /
+  // both classification.  "unknown" from spatial means fall through to the
+  // existing heuristic result.
+  const pages: typeof rawPages = spatialPageTypes && spatialPageTypes.size > 0
+    ? rawPages.map((p) => {
+        const spatial = spatialPageTypes.get(p.pageNum);
+        if (spatial && spatial !== "unknown") {
+          logger.debug(
+            { pageNum: p.pageNum, spatial, heuristic: p.type },
+            "Spatial override applied"
+          );
+          return { ...p, type: spatial as PageType };
+        }
+        return p;
+      })
+    : rawPages;
 
   if (pages.length === 0) {
     logger.warn({ filePath }, "PDF yielded no pages");
