@@ -38,6 +38,8 @@ import {
 } from "lucide-react";
 import { format, formatDistanceToNow } from "date-fns";
 import { exportMarkedupPdf, type MarkerSign } from "@/lib/exportMarkedupPdf";
+import { Button } from "@/components/ui/button";
+import { Tooltip, TooltipContent, TooltipTrigger, TooltipProvider } from "@/components/ui/tooltip";
 
 export default function JobDetails() {
   const [, params] = useRoute("/jobs/:jobId");
@@ -396,10 +398,10 @@ export default function JobDetails() {
 
             <div className="flex items-center gap-3">
               {isPending && (
-                <button
+                <Button
                   onClick={handleStartExtraction}
                   disabled={extractMutation.isPending}
-                  className="flex items-center gap-2 px-5 py-2.5 bg-primary text-primary-foreground font-display font-semibold uppercase tracking-wide text-sm rounded-lg hover:bg-primary/90 transition-all shadow-[0_0_15px_rgba(255,170,0,0.1)] active:scale-95 disabled:opacity-50"
+                  className="font-display font-semibold uppercase tracking-wide shadow-[0_0_15px_rgba(255,170,0,0.1)]"
                 >
                   {extractMutation.isPending ? (
                     <Loader2 className="w-4 h-4 animate-spin" />
@@ -407,44 +409,58 @@ export default function JobDetails() {
                     <Play className="w-4 h-4 fill-current" />
                   )}
                   Start Extraction
-                </button>
+                </Button>
               )}
 
               {isCompleted && (
                 <>
-                  <button
-                    onClick={handleStartExtraction}
-                    disabled={extractMutation.isPending}
-                    title="Re-run both text and visual scans to refresh sign data"
-                    className="flex items-center gap-2 px-4 py-2.5 bg-secondary border border-border text-muted-foreground font-display font-semibold uppercase tracking-wide text-sm rounded-lg hover:bg-primary/10 hover:text-primary hover:border-primary/40 transition-all active:scale-95 disabled:opacity-50"
-                  >
-                    {extractMutation.isPending ? (
-                      <Loader2 className="w-4 h-4 animate-spin" />
-                    ) : (
-                      <RefreshCw className="w-4 h-4" />
-                    )}
-                    Re-Scan
-                  </button>
-                  <button
-                    onClick={handleExportMarkedPdf}
-                    disabled={exportingPdf}
-                    title="Download the original PDF with sign markers drawn on each floor plan page"
-                    className="flex items-center gap-2 px-4 py-2.5 bg-secondary border border-border text-muted-foreground font-display font-semibold uppercase tracking-wide text-sm rounded-lg hover:bg-primary/10 hover:text-primary hover:border-primary/40 transition-all active:scale-95 disabled:opacity-50"
-                  >
-                    {exportingPdf ? (
-                      <Loader2 className="w-4 h-4 animate-spin" />
-                    ) : (
-                      <Stamp className="w-4 h-4" />
-                    )}
-                    {exportingPdf ? "Building PDF…" : "Export Marked PDF"}
-                  </button>
-                  <button
+                  <TooltipProvider>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <Button
+                          onClick={handleStartExtraction}
+                          disabled={extractMutation.isPending}
+                          variant="outline"
+                          className="font-display font-semibold uppercase tracking-wide hover:bg-primary/10 hover:text-primary hover:border-primary/40"
+                        >
+                          {extractMutation.isPending ? (
+                            <Loader2 className="w-4 h-4 animate-spin" />
+                          ) : (
+                            <RefreshCw className="w-4 h-4" />
+                          )}
+                          Re-Scan
+                        </Button>
+                      </TooltipTrigger>
+                      <TooltipContent>Re-run both text and visual scans to refresh sign data</TooltipContent>
+                    </Tooltip>
+                  </TooltipProvider>
+                  <TooltipProvider>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <Button
+                          onClick={handleExportMarkedPdf}
+                          disabled={exportingPdf}
+                          variant="outline"
+                          className="font-display font-semibold uppercase tracking-wide hover:bg-primary/10 hover:text-primary hover:border-primary/40"
+                        >
+                          {exportingPdf ? (
+                            <Loader2 className="w-4 h-4 animate-spin" />
+                          ) : (
+                            <Stamp className="w-4 h-4" />
+                          )}
+                          {exportingPdf ? "Building PDF…" : "Export Marked PDF"}
+                        </Button>
+                      </TooltipTrigger>
+                      <TooltipContent>Download the original PDF with sign markers drawn on each floor plan page</TooltipContent>
+                    </Tooltip>
+                  </TooltipProvider>
+                  <Button
                     onClick={handleExport}
-                    className="flex items-center gap-2 px-5 py-2.5 bg-accent text-accent-foreground font-display font-semibold uppercase tracking-wide text-sm rounded-lg hover:bg-accent/90 transition-all shadow-[0_0_15px_rgba(0,240,255,0.15)] active:scale-95"
+                    className="font-display font-semibold uppercase tracking-wide bg-accent text-accent-foreground hover:bg-accent/90 shadow-[0_0_15px_rgba(0,240,255,0.15)]"
                   >
                     <Download className="w-4 h-4" />
                     Export XLSX
-                  </button>
+                  </Button>
                 </>
               )}
             </div>
@@ -865,7 +881,7 @@ function StatusBadge({ status }: { status: string }) {
   const statusMap: Record<string, StatusConfig> = {
     pending: { color: "bg-muted text-muted-foreground border-border", icon: FileText, label: "PENDING" },
     processing: { color: "bg-primary/20 text-primary border-primary/30", icon: Cpu, label: "PROCESSING" },
-    completed: { color: "bg-accent/20 text-accent border-accent/30", icon: CheckCircle2, label: "COMPLETED" },
+    completed: { color: "bg-green-900/30 text-green-400 border-green-700/40", icon: CheckCircle2, label: "COMPLETED" },
     failed: { color: "bg-destructive/20 text-destructive border-destructive/30", icon: AlertTriangle, label: "FAILED" },
   };
   const config = statusMap[status] ?? statusMap["pending"]!;

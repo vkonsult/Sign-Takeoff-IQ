@@ -3,6 +3,8 @@ import { AdminShell } from "@/components/layout/AdminShell";
 import { apiFetch } from "@/lib/apiClient";
 import { format } from "date-fns";
 import { AlertCircle, RefreshCw, ChevronLeft, ChevronRight } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Tooltip, TooltipContent, TooltipTrigger, TooltipProvider } from "@/components/ui/tooltip";
 import { useState } from "react";
 
 type UserRow = {
@@ -63,13 +65,20 @@ export default function AdminUsers() {
               <h1 className="text-xl font-display font-bold text-foreground">All Users</h1>
               <p className="text-sm text-muted-foreground">{allUsers.length} total across all organizations</p>
             </div>
-            <button
-              onClick={() => queryClient.invalidateQueries({ queryKey: ["admin-all-users"] })}
-              className="p-2 rounded-lg text-muted-foreground hover:bg-secondary transition-colors"
-              title="Refresh"
-            >
-              <RefreshCw className="w-3.5 h-3.5" />
-            </button>
+            <TooltipProvider>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    onClick={() => queryClient.invalidateQueries({ queryKey: ["admin-all-users"] })}
+                    variant="ghost"
+                    size="icon"
+                  >
+                    <RefreshCw className="w-3.5 h-3.5" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>Refresh list</TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
           </div>
         </header>
 
@@ -135,14 +144,12 @@ export default function AdminUsers() {
                     Page {page} of {totalPages} &middot; {allUsers.length} users
                   </p>
                   <div className="flex items-center gap-1">
-                    <button onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={page === 1}
-                      className="p-1.5 rounded text-muted-foreground hover:bg-secondary disabled:opacity-30 transition-colors">
+                    <Button onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={page === 1} variant="ghost" size="icon-sm">
                       <ChevronLeft className="w-3.5 h-3.5" />
-                    </button>
-                    <button onClick={() => setPage((p) => Math.min(totalPages, p + 1))} disabled={page === totalPages}
-                      className="p-1.5 rounded text-muted-foreground hover:bg-secondary disabled:opacity-30 transition-colors">
+                    </Button>
+                    <Button onClick={() => setPage((p) => Math.min(totalPages, p + 1))} disabled={page === totalPages} variant="ghost" size="icon-sm">
                       <ChevronRight className="w-3.5 h-3.5" />
-                    </button>
+                    </Button>
                   </div>
                 </div>
               )}

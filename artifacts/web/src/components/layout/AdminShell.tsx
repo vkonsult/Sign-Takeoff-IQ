@@ -97,10 +97,10 @@ export function AdminShell({ children, section }: AdminShellProps) {
                 key={item.href}
                 href={item.href}
                 className={cn(
-                  "flex items-center gap-2.5 px-3 py-2 rounded-md text-sm font-medium transition-all",
+                  "flex items-center gap-2.5 py-2 rounded-md text-sm font-medium transition-all",
                   isActive(item.href)
-                    ? "bg-secondary text-foreground border border-border"
-                    : "text-muted-foreground hover:bg-secondary/50 hover:text-foreground"
+                    ? "pl-[calc(0.75rem-2px)] pr-3 border-l-2 border-l-primary bg-primary/10 text-primary"
+                    : "px-3 text-muted-foreground hover:bg-secondary/50 hover:text-foreground"
                 )}
               >
                 <item.icon className={cn("w-3.5 h-3.5 flex-shrink-0", isActive(item.href) ? "text-primary" : "opacity-60")} />

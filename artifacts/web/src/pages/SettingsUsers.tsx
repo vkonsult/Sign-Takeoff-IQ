@@ -10,8 +10,11 @@ import {
   AlertCircle,
   X,
   CheckCircle2,
+  UserPlus,
 } from "lucide-react";
 import { useUserRole } from "@/hooks/use-user-role";
+import { Button } from "@/components/ui/button";
+import { Tooltip, TooltipContent, TooltipTrigger, TooltipProvider } from "@/components/ui/tooltip";
 
 type Member = {
   id: string;
@@ -272,13 +275,10 @@ export default function SettingsUsers() {
                 {members.length} {members.length === 1 ? "member" : "members"}
               </p>
             </div>
-            <button
-              onClick={() => setShowNewUser(true)}
-              className="flex items-center gap-1.5 px-3 py-2 bg-primary text-primary-foreground rounded-lg text-sm font-medium hover:bg-primary/90 transition-colors"
-            >
-              <Plus className="w-3.5 h-3.5" />
+            <Button onClick={() => setShowNewUser(true)} size="sm">
+              <UserPlus className="w-3.5 h-3.5" />
               Add Member
-            </button>
+            </Button>
           </div>
         </header>
 
@@ -384,12 +384,19 @@ export default function SettingsUsers() {
                               <button onClick={() => setConfirmDelete(null)} className="text-xs text-muted-foreground">No</button>
                             </div>
                           ) : (
-                            <button
-                              onClick={() => setConfirmDelete(m.id)}
-                              className="p-1.5 rounded text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors"
-                            >
-                              <Trash2 className="w-3.5 h-3.5" />
-                            </button>
+                            <TooltipProvider>
+                              <Tooltip>
+                                <TooltipTrigger asChild>
+                                  <button
+                                    onClick={() => setConfirmDelete(m.id)}
+                                    className="p-1.5 rounded text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors"
+                                  >
+                                    <Trash2 className="w-3.5 h-3.5" />
+                                  </button>
+                                </TooltipTrigger>
+                                <TooltipContent side="left">Remove member</TooltipContent>
+                              </Tooltip>
+                            </TooltipProvider>
                           )
                         )}
                       </td>

@@ -107,7 +107,7 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
             className={cn(
               "flex items-center justify-center w-9 h-9 rounded-md transition-all duration-200 outline-none",
               isActive
-                ? "bg-secondary text-primary border border-border"
+                ? "bg-primary/15 text-primary border-l-2 border-l-primary"
                 : "text-muted-foreground hover:bg-secondary/50 hover:text-foreground"
             )}
           >
@@ -120,10 +120,10 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
       <Link
         href={href}
         className={cn(
-          "flex items-center gap-3 px-3 py-2 rounded-md text-sm font-medium transition-all duration-200 outline-none",
+          "flex items-center gap-3 py-2 rounded-md text-sm font-medium transition-all duration-200 outline-none",
           isActive
-            ? "bg-secondary text-primary border border-border"
-            : "text-muted-foreground hover:bg-secondary/50 hover:text-foreground"
+            ? "pl-[calc(0.75rem-2px)] pr-3 border-l-2 border-l-primary bg-primary/10 text-primary"
+            : "px-3 text-muted-foreground hover:bg-secondary/50 hover:text-foreground"
         )}
       >
         <Icon className={cn("w-4 h-4", isActive ? "text-primary" : "opacity-70")} />

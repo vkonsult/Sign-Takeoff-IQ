@@ -5,6 +5,7 @@ import { apiFetch, openPdfInNewTab } from "@/lib/apiClient";
 import { useQueryClient } from "@tanstack/react-query";
 import { getListJobsQueryKey } from "@workspace/api-client-react";
 import { format, formatDistanceToNow } from "date-fns";
+import { Button } from "@/components/ui/button";
 import {
   FolderOpen, ChevronRight, FileText, CheckCircle2, Cpu,
   AlertTriangle, Trash2, X, Square, CheckSquare, MinusSquare,
@@ -487,36 +488,43 @@ export default function JobsList() {
             <div className="flex items-center gap-2 shrink-0">
               {bulkConfirming ? (
                 <>
-                  <button
+                  <Button
                     onClick={() => setBulkConfirming(false)}
-                    className="px-3 py-1.5 rounded-lg text-sm font-medium bg-secondary border border-border text-foreground hover:bg-secondary/80 transition-colors"
+                    variant="outline"
+                    size="sm"
                   >
                     Cancel
-                  </button>
-                  <button
+                  </Button>
+                  <Button
                     onClick={handleBulkDelete}
                     disabled={bulkDeleting}
-                    className="flex items-center gap-2 px-4 py-1.5 rounded-lg text-sm font-bold bg-destructive text-white hover:bg-destructive/90 transition-colors disabled:opacity-60"
+                    variant="destructive"
+                    size="sm"
+                    className="font-bold"
                   >
                     <Trash2 className="w-4 h-4" />
                     {bulkDeleting ? "Deleting…" : `Delete ${selected.size} plan${selected.size > 1 ? "s" : ""}`}
-                  </button>
+                  </Button>
                 </>
               ) : (
                 <>
-                  <button
+                  <Button
                     onClick={clearSelection}
-                    className="px-3 py-1.5 rounded-lg text-sm font-medium bg-secondary border border-border text-muted-foreground hover:text-foreground transition-colors"
+                    variant="outline"
+                    size="sm"
                   >
+                    <X className="w-3.5 h-3.5" />
                     Clear
-                  </button>
-                  <button
+                  </Button>
+                  <Button
                     onClick={handleBulkDelete}
-                    className="flex items-center gap-2 px-4 py-1.5 rounded-lg text-sm font-bold bg-secondary border border-destructive/40 text-destructive hover:bg-destructive/10 transition-colors"
+                    variant="outline"
+                    size="sm"
+                    className="border-destructive/40 text-destructive hover:bg-destructive/10 font-bold"
                   >
                     <Trash2 className="w-4 h-4" />
                     Delete Selected
-                  </button>
+                  </Button>
                 </>
               )}
             </div>
@@ -528,8 +536,24 @@ export default function JobsList() {
 }
 
 function StatusIcon({ status }: { status: string }) {
-  if (status === "completed") return <div className="flex items-center gap-1.5 text-accent text-xs font-bold uppercase tracking-wider"><CheckCircle2 className="w-4 h-4" /> Done</div>;
-  if (status === "processing") return <div className="flex items-center gap-1.5 text-primary text-xs font-bold uppercase tracking-wider"><Cpu className="w-4 h-4 animate-pulse" /> Proc</div>;
-  if (status === "failed") return <div className="flex items-center gap-1.5 text-destructive text-xs font-bold uppercase tracking-wider"><AlertTriangle className="w-4 h-4" /> Fail</div>;
-  return <div className="flex items-center gap-1.5 text-muted-foreground text-xs font-bold uppercase tracking-wider"><div className="w-2 h-2 rounded-full bg-current" /> Pend</div>;
+  if (status === "completed") return (
+    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-display font-bold uppercase tracking-wider bg-green-900/30 text-green-400 border border-green-700/40">
+      <CheckCircle2 className="w-3 h-3" /> Done
+    </span>
+  );
+  if (status === "processing") return (
+    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-display font-bold uppercase tracking-wider bg-primary/20 text-primary border border-primary/30">
+      <Cpu className="w-3 h-3 animate-pulse" /> Processing
+    </span>
+  );
+  if (status === "failed") return (
+    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-display font-bold uppercase tracking-wider bg-destructive/20 text-destructive border border-destructive/30">
+      <AlertTriangle className="w-3 h-3" /> Failed
+    </span>
+  );
+  return (
+    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-display font-bold uppercase tracking-wider bg-muted text-muted-foreground border border-border">
+      <div className="w-1.5 h-1.5 rounded-full bg-current" /> Pending
+    </span>
+  );
 }

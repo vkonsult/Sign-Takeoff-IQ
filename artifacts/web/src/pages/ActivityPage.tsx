@@ -15,7 +15,9 @@ import {
   ChevronRight,
   Filter,
   X,
+  SlidersHorizontal,
 } from "lucide-react";
+import { Button } from "@/components/ui/button";
 
 type EventKey = "job_opened" | "scan_run" | "sign_updated" | "xlsx_exported" | "pdf_exported";
 
@@ -169,19 +171,18 @@ export default function ActivityPage() {
                   : "Your recent activity."}
             </p>
           </div>
-          <button
+          <Button
             onClick={() => setShowFilters((v) => !v)}
-            className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium border transition-colors
-              ${showFilters || hasActiveFilters
-                ? "bg-primary/10 border-primary/40 text-primary"
-                : "bg-secondary border-border text-muted-foreground hover:text-foreground"}`}
+            variant={showFilters || hasActiveFilters ? "outline" : "secondary"}
+            size="sm"
+            className={showFilters || hasActiveFilters ? "border-primary/40 text-primary bg-primary/10 hover:bg-primary/15" : ""}
           >
             <Filter className="w-4 h-4" />
             Filters
             {hasActiveFilters && (
-              <span className="ml-1 w-2 h-2 rounded-full bg-primary inline-block" />
+              <span className="w-2 h-2 rounded-full bg-primary inline-block" />
             )}
-          </button>
+          </Button>
         </header>
 
         {showFilters && (
@@ -281,20 +282,15 @@ export default function ActivityPage() {
               )}
 
               <div className="flex gap-2 pb-0.5">
-                <button
-                  onClick={applyFilters}
-                  className="h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors"
-                >
+                <Button onClick={applyFilters} size="sm">
+                  <SlidersHorizontal className="w-3.5 h-3.5" />
                   Apply
-                </button>
+                </Button>
                 {(hasActiveFilters || selectedEvents.size > 0 || filterUser || filterPlan || filterFrom || filterTo || filterOrgId) && (
-                  <button
-                    onClick={clearFilters}
-                    className="h-9 px-3 rounded-md bg-secondary border border-border text-sm text-muted-foreground hover:text-foreground flex items-center gap-1.5"
-                  >
+                  <Button onClick={clearFilters} variant="outline" size="sm">
                     <X className="w-3.5 h-3.5" />
                     Clear
-                  </button>
+                  </Button>
                 )}
               </div>
             </div>
@@ -396,25 +392,27 @@ export default function ActivityPage() {
 
         {(hasPrev || hasNext) && (
           <div className="flex items-center justify-between mt-4">
-            <button
+            <Button
               onClick={() => setOffset((o) => Math.max(0, o - PAGE_SIZE))}
               disabled={!hasPrev}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm border border-border bg-card text-muted-foreground hover:text-foreground disabled:opacity-40 transition-colors"
+              variant="outline"
+              size="sm"
             >
               <ChevronLeft className="w-4 h-4" />
               Previous
-            </button>
+            </Button>
             <span className="text-xs text-muted-foreground">
               Showing {offset + 1}–{offset + activities.length}
             </span>
-            <button
+            <Button
               onClick={() => setOffset((o) => o + PAGE_SIZE)}
               disabled={!hasNext}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm border border-border bg-card text-muted-foreground hover:text-foreground disabled:opacity-40 transition-colors"
+              variant="outline"
+              size="sm"
             >
               Next
               <ChevronRight className="w-4 h-4" />
-            </button>
+            </Button>
           </div>
         )}
       </div>

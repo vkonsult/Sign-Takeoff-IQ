@@ -1,11 +1,12 @@
 import { useState, useCallback } from "react";
 import { useLocation } from "wouter";
 import { useDropzone } from "react-dropzone";
-import { UploadCloud, FileText, X, ChevronRight, AlertCircle } from "lucide-react";
+import { UploadCloud, FileText, X, ChevronRight, AlertCircle, Loader2 } from "lucide-react";
 import { AppShell } from "@/components/layout/Shell";
 import { useUploadJobFiles } from "@/hooks/use-takeoff";
 import { formatBytes } from "@/lib/utils";
 import { motion, AnimatePresence } from "framer-motion";
+import { Button } from "@/components/ui/button";
 
 export default function Home() {
   const [, setLocation] = useLocation();
@@ -139,28 +140,24 @@ export default function Home() {
             </div>
 
             <div className="pt-4 mt-4 border-t border-border">
-              <button
+              <Button
                 onClick={handleUpload}
                 disabled={files.length === 0 || uploadMutation.isPending}
-                className={`
-                  w-full py-3 px-4 rounded-lg font-display font-semibold uppercase tracking-wider text-sm flex items-center justify-center gap-2 transition-all duration-300
-                  ${files.length > 0 && !uploadMutation.isPending
-                    ? "bg-primary text-primary-foreground" 
-                    : "bg-secondary text-muted-foreground cursor-not-allowed"}
-                `}
+                size="lg"
+                className="w-full font-display font-semibold uppercase tracking-wider shadow-[0_0_20px_rgba(255,170,0,0.12)] hover:shadow-[0_0_25px_rgba(255,170,0,0.22)]"
               >
                 {uploadMutation.isPending ? (
                   <>
-                    <div className="w-4 h-4 border-2 border-current border-t-transparent rounded-full animate-spin" />
+                    <Loader2 className="w-4 h-4 animate-spin" />
                     Uploading...
                   </>
                 ) : (
                   <>
+                    <UploadCloud className="w-4 h-4" />
                     Upload & Scan
-                    <ChevronRight className="w-4 h-4" />
                   </>
                 )}
-              </button>
+              </Button>
             </div>
           </div>
         </div>

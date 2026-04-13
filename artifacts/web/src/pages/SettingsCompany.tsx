@@ -3,6 +3,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { AdminShell } from "@/components/layout/AdminShell";
 import { apiFetch } from "@/lib/apiClient";
 import { Save, AlertCircle, CheckCircle2, Upload, X } from "lucide-react";
+import { Button } from "@/components/ui/button";
 
 type Organization = {
   id: string;
@@ -273,11 +274,10 @@ export default function SettingsCompany() {
                 </div>
               )}
               <div className="flex justify-end">
-                <button type="submit" disabled={saveMutation.isPending}
-                  className="flex items-center gap-2 px-5 py-2.5 bg-primary text-primary-foreground rounded-lg text-sm font-medium hover:bg-primary/90 transition-colors disabled:opacity-50">
+                <Button type="submit" disabled={saveMutation.isPending} size="sm">
                   <Save className="w-3.5 h-3.5" />
                   {saveMutation.isPending ? "Saving…" : "Save Changes"}
-                </button>
+                </Button>
               </div>
             </form>
 

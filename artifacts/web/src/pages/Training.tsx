@@ -19,6 +19,7 @@ import {
   Search,
   CircleAlert,
 } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import { exportVerificationPdf, type VerificationMarker } from "@/lib/exportVerificationPdf";
 
 interface MissedSign {
@@ -389,10 +390,11 @@ export default function Training() {
 
                   {/* Download button */}
                   <div className="px-5 py-4 flex items-center gap-3">
-                    <button
+                    <Button
                       onClick={handleDownloadVerificationPdf}
                       disabled={exportingPdf}
-                      className="inline-flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-display font-semibold bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
+                      size="sm"
+                      className="font-display font-semibold"
                     >
                       {exportingPdf ? (
                         <Loader2 className="w-3.5 h-3.5 animate-spin" />
@@ -400,7 +402,7 @@ export default function Training() {
                         <Download className="w-3.5 h-3.5" />
                       )}
                       Download Verification PDF
-                    </button>
+                    </Button>
                     <p className="text-[11px] text-muted-foreground">
                       Green markers = AI found schedule sign here · Yellow = extra sign not in schedule
                     </p>

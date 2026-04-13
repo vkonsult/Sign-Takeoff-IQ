@@ -7,7 +7,8 @@ import {
   DialogFooter,
 } from "@/components/ui/dialog";
 import { apiFetch } from "@/lib/apiClient";
-import { MapPin, Loader2 } from "lucide-react";
+import { MapPin, Loader2, X, Save } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import type { ExtractedSign } from "@/types/sign";
 
 const SIGN_TYPES = [
@@ -217,22 +218,26 @@ export function AddMarkerForm({ pending, onSave, onCancel }: Props) {
           )}
 
           <DialogFooter className="gap-2 pt-1">
-            <button
+            <Button
               type="button"
+              variant="outline"
+              size="sm"
               onClick={onCancel}
               disabled={saving}
-              className="flex-1 px-3 py-1.5 rounded-md border border-border text-sm text-muted-foreground hover:text-foreground hover:bg-secondary/70 transition-colors disabled:opacity-50"
+              className="flex-1"
             >
+              <X className="w-3.5 h-3.5" />
               Cancel
-            </button>
-            <button
+            </Button>
+            <Button
               type="submit"
+              size="sm"
               disabled={!canSubmit || saving}
-              className="flex-1 px-3 py-1.5 rounded-md bg-primary text-primary-foreground text-sm font-display font-semibold uppercase tracking-wide hover:bg-primary/90 transition-all disabled:opacity-40 flex items-center justify-center gap-1.5"
+              className="flex-1 font-display font-semibold uppercase tracking-wide"
             >
-              {saving && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+              {saving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
               Save Sign
-            </button>
+            </Button>
           </DialogFooter>
         </form>
       </DialogContent>
