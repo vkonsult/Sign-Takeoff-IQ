@@ -54,7 +54,7 @@ For each unique sign or sign entry identified, extract the following fields. Use
 - sign_type: The type or category of sign (e.g. "Building ID", "Wayfinding", "Regulatory", "Exit", "Room ID", "Parking", "Monument", "Pylon", "Cabinet", "Channel Letter", "Dimensional Letter", "ADA", "Informational", "Directional")
 - sign_identifier: The sign code, number, or label that uniquely identifies it in the schedule (e.g. "S-01", "EX-1", "P1", "Sign Type A")
 - quantity: Number of signs of this type (integer). Default to 1 if a specific sign is referenced but no quantity given.
-- location: For the location field, use only the room identifier exactly as it appears printed on the plan — for example UNIT 2A 406B or ELEC A404. Do not add descriptive phrases, door positions, or narrative text. The location value must match the printed label verbatim so it can be found in the plan's text layer.
+- location: For the location field, use only the room identifier exactly as it appears printed on the plan — for example UNIT 2A 406B or ELEC A404. Do not add descriptive phrases, door positions, or narrative text. The location value must match the printed label verbatim so it can be found in the plan's text layer. In educational and school facilities, single-word room names without a number are valid location identifiers — for example MUSIC, ART ROOM, PRE-K, CLASSROOM 101, LIBRARY, CAFETERIA, SCIENCE LAB, GYMNASIUM, ADMINISTRATION. Treat any such label as a complete, valid location.
 - dimensions: Physical size of the sign (e.g. '24" x 36"', "4'0\" x 8'0\"", "18 x 24 inches")
 - mounting_type: How the sign is attached (e.g. "Wall Mounted", "Post Mounted", "Suspended", "Floor Standing", "Flush Mount", "Projecting", "Cabinet Mount", "Direct Applied")
 - finish_color: Surface finish, paint color, or material finish (e.g. "Brushed Aluminum", "Matte Black", "PMS 485 Red", "White with Blue Copy", "Clear Anodized")
@@ -1595,6 +1595,9 @@ You are viewing the actual PDF pages as images. Scan every square inch of each p
 - Sign schedule tables listing sign types, quantities, and locations
 - Keynote callouts referencing sign types in the keynote legend
 
+EDUCATIONAL FACILITY ROOM NAMES — DO NOT MISS:
+In school and educational facility floor plans, any space name near a door represents a Room ID sign location and must be extracted — even uncommon single-word labels that have no room number. Examples include: MUSIC, ART, ART ROOM, PRE-K, STORAGE, LIBRARY, CAFETERIA, GYM, GYMNASIUM, CLASSROOM, SCIENCE LAB, ADMINISTRATION, OFFICE, NURSE, COUNSELOR, MEDIA CENTER, COMPUTER LAB, TECHNOLOGY, AUDITORIUM, and similar. These single-word labels are complete, valid room identifiers and must not be skipped because they lack a numeric suffix.
+
 IMPORTANT — DO NOT MISS SMALL CALLOUTS:
 ADA floor plans often have very small (6–8pt font) circular or triangular callout symbols scattered throughout the floor plan. These are easy to overlook. Zoom in mentally on every doorway and room entry. Every room with a door almost certainly has a Room ID sign callout.
 
@@ -1605,7 +1608,7 @@ For each sign callout you visually identify, extract these fields (use null if n
 - sign_type: Type of sign (e.g. "Room ID", "Exit", "ADA Restroom", "Wayfinding", "Fire Extinguisher", "Stairwell")
 - sign_identifier: The unique sign code if visible (e.g. "S-01", "EX-1", "TYPE A"). Use detail_reference if no separate identifier.
 - quantity: Integer count of this sign at this location. Default 1.
-- location: Room name, space name, or positional description visible near the callout (e.g. "Room 101 - Storage", "Main Lobby", "North Exit")
+- location: Room name, space name, or positional description visible near the callout (e.g. "Room 101 - Storage", "Main Lobby", "North Exit", "MUSIC", "CAFETERIA", "PRE-K")
 - dimensions: Physical size if shown in legend or schedule (e.g. '6" x 8"')
 - mounting_type: How it is mounted if visible (e.g. "Wall Mounted", "Post Mounted", "Overhead")
 - finish_color: Finish or color if visible
@@ -1669,6 +1672,9 @@ You are viewing the actual PDF pages as images. Scan every square inch of each p
 - Sign schedule tables listing sign types, quantities, and locations
 - Keynote callouts referencing sign types in the keynote legend
 
+EDUCATIONAL FACILITY ROOM NAMES — DO NOT MISS:
+In school and educational facility floor plans, any space name near a door represents a Room ID sign location and must be extracted — even uncommon single-word labels that have no room number. Examples include: MUSIC, ART, ART ROOM, PRE-K, STORAGE, LIBRARY, CAFETERIA, GYM, GYMNASIUM, CLASSROOM, SCIENCE LAB, ADMINISTRATION, OFFICE, NURSE, COUNSELOR, MEDIA CENTER, COMPUTER LAB, TECHNOLOGY, AUDITORIUM, and similar. These single-word labels are complete, valid room identifiers and must not be skipped because they lack a numeric suffix.
+
 IMPORTANT — DO NOT MISS SMALL CALLOUTS:
 ADA floor plans often have very small (6–8pt font) circular or triangular callout symbols scattered throughout the floor plan. These are easy to overlook. Zoom in mentally on every doorway and room entry. Every room with a door almost certainly has a Room ID sign callout.
 
@@ -1679,7 +1685,7 @@ For each sign callout you visually identify, extract these fields (use null if n
 - sign_type: Type of sign (e.g. "Room ID", "Exit", "ADA Restroom", "Wayfinding", "Fire Extinguisher", "Stairwell")
 - sign_identifier: The unique sign code if visible (e.g. "S-01", "EX-1", "TYPE A"). Use detail_reference if no separate identifier.
 - quantity: Integer count of this sign at this location. Default 1.
-- location: Room name, space name, or positional description visible near the callout (e.g. "Room 101 - Storage", "Main Lobby", "North Exit")
+- location: Room name, space name, or positional description visible near the callout (e.g. "Room 101 - Storage", "Main Lobby", "North Exit", "MUSIC", "CAFETERIA", "PRE-K")
 - dimensions: Physical size if shown in legend or schedule (e.g. '6" x 8"')
 - mounting_type: How it is mounted if visible (e.g. "Wall Mounted", "Post Mounted", "Overhead")
 - finish_color: Finish or color if visible
