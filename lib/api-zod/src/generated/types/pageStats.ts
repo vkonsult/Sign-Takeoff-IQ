@@ -24,10 +24,19 @@ export interface PageStats {
   signSchedulePages: number[];
   /** PDF page numbers not matching floor plan or sign schedule patterns */
   otherPages: number[];
+  /** PDF page numbers classified as both floor plan and sign schedule */
+  bothPages?: number[];
   /** Logical page labels extracted from the PDF page dictionary (e.g. "A1.1") */
-  pageLabels?: string[] | null;
+  pageLabels?: (string | null)[] | null;
   /** Outline (bookmark) sections extracted from the PDF, used to boost page classification */
   outlineSections?: PdfOutlineSection[] | null;
   /** Map of page number (as string key) to absolute file path of pre-rendered PNG image */
   pageImagePaths?: Record<string, string> | null;
+  /** Heuristic-detected floor plan bounding boxes per page (string page number key) */
+  floorPlanBboxes?: Record<string, { x0: number; y0: number; x1: number; y1: number }> | null;
+  /** Gemini AI-detected region bboxes per page (floor plan drawing area + sign schedule table) */
+  aiRegionBboxes?: Record<string, {
+    floorPlan: { x0: number; y0: number; x1: number; y1: number } | null;
+    signSchedule: { x0: number; y0: number; x1: number; y1: number } | null;
+  }> | null;
 }

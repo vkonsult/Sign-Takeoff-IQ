@@ -1000,6 +1000,127 @@ type SpecViewerState = { fileId: string; fileName: string; specPages: number[] }
 
 type OutlineSection = NonNullable<NonNullable<FileWithStats["pageStats"]>["outlineSections"]>[number];
 
+type BboxCoords = { x0: number; y0: number; x1: number; y1: number } | null;
+
+type DetectionRow = {
+  pageNo: number;
+  label: string;
+  source: "AI region" | "Heuristic" | "Full page";
+  bbox: BboxCoords;
+};
+
+type RawPageStats = NonNullable<FileWithStats["pageStats"]>;
+
+function buildDetectionRows(
+  stats: RawPageStats
+): { floorPlanRows: DetectionRow[]; signSpecRows: DetectionRow[] } {
+  const floorPlanPages = stats.floorPlanPages ?? [];
+  const signSchedulePages = stats.signSchedulePages ?? [];
+  const pageLabels = stats.pageLabels ?? [];
+  const aiRegionBboxes = stats.aiRegionBboxes;
+  const floorPlanBboxes = stats.floorPlanBboxes;
+
+  const getLabel = (pgNo: number): string => {
+    const label = pageLabels[pgNo - 1];
+    return label ? String(label) : `pg ${pgNo}`;
+  };
+
+  const floorPlanRows: DetectionRow[] = [];
+  const signSpecRows: DetectionRow[] = [];
+
+  for (const pgNo of floorPlanPages) {
+    const key = String(pgNo);
+    const aiEntry = aiRegionBboxes?.[key];
+    const aiBbox = aiEntry?.floorPlan ?? null;
+    const heuristicBbox = floorPlanBboxes?.[key] ?? null;
+    const bbox: BboxCoords = aiBbox ?? heuristicBbox;
+    const source: DetectionRow["source"] = aiBbox
+      ? "AI region"
+      : heuristicBbox
+      ? "Heuristic"
+      : "Full page";
+    floorPlanRows.push({ pageNo: pgNo, label: getLabel(pgNo), source, bbox });
+  }
+
+  for (const pgNo of signSchedulePages) {
+    const key = String(pgNo);
+    const aiEntry = aiRegionBboxes?.[key];
+    const bbox: BboxCoords = aiEntry?.signSchedule ?? null;
+    const source: DetectionRow["source"] = bbox ? "AI region" : "Full page";
+    signSpecRows.push({ pageNo: pgNo, label: getLabel(pgNo), source, bbox });
+  }
+
+  return { floorPlanRows, signSpecRows };
+}
+
+function fmtBbox(bbox: BboxCoords): string {
+  if (!bbox) return "Full page";
+  const r = (n: number) => n.toFixed(2);
+  return `${r(bbox.x0)}, ${r(bbox.y0)}, ${r(bbox.x1)}, ${r(bbox.y1)}`;
+}
+
+function DetectionTable({
+  title,
+  regionColHeader,
+  rows,
+  colorScheme,
+}: {
+  title: string;
+  regionColHeader: string;
+  rows: DetectionRow[];
+  colorScheme: "primary" | "accent";
+}) {
+  if (rows.length === 0) return null;
+  const headCls =
+    colorScheme === "primary"
+      ? "text-primary/70 bg-primary/5 border-primary/10"
+      : "text-accent/70 bg-accent/5 border-accent/10";
+  const badgeCls = (source: DetectionRow["source"]) => {
+    if (source === "AI region")
+      return colorScheme === "primary"
+        ? "bg-primary/10 text-primary/80 border-primary/20"
+        : "bg-accent/10 text-accent border-accent/20";
+    if (source === "Heuristic") return "bg-secondary text-muted-foreground border-border";
+    return "bg-muted text-muted-foreground/60 border-border/40";
+  };
+  return (
+    <div className="mt-3">
+      <p className={`text-[10px] font-display font-semibold uppercase tracking-wider mb-1 ${colorScheme === "primary" ? "text-primary/70" : "text-accent/70"}`}>
+        {title}
+      </p>
+      <div className="overflow-x-auto rounded border border-border/60">
+        <table className="w-full text-left border-collapse text-[10px] font-mono">
+          <thead>
+            <tr className={`border-b border-border/60 ${headCls}`}>
+              <th className="px-2 py-1 font-semibold whitespace-nowrap">Page No</th>
+              <th className="px-2 py-1 font-semibold whitespace-nowrap">Label</th>
+              <th className="px-2 py-1 font-semibold whitespace-nowrap">{regionColHeader}</th>
+              <th className="px-2 py-1 font-semibold whitespace-nowrap">Bounding Box (x0, y0, x1, y1)</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((row, i) => (
+              <tr
+                key={`${row.pageNo}-${i}`}
+                className={`border-b border-border/30 last:border-0 ${i % 2 === 0 ? "bg-background" : "bg-card/40"}`}
+              >
+                <td className="px-2 py-1 text-muted-foreground">{row.pageNo}</td>
+                <td className="px-2 py-1 text-foreground/80">{row.label}</td>
+                <td className="px-2 py-1">
+                  <span className={`px-1.5 py-px rounded text-[9px] font-bold uppercase tracking-wider border ${badgeCls(row.source)}`}>
+                    {row.source}
+                  </span>
+                </td>
+                <td className="px-2 py-1 text-muted-foreground/70">{fmtBbox(row.bbox)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 function OutlineSectionsTree({ sections }: { sections: OutlineSection[] }) {
   const [expanded, setExpanded] = useState(false);
   const preview = sections.slice(0, 3);
@@ -1244,6 +1365,27 @@ function SheetsPanel({
                       {stats.outlineSections && stats.outlineSections.length > 0 && (
                         <OutlineSectionsTree sections={stats.outlineSections} />
                       )}
+
+                      {/* Detection tables */}
+                      {(() => {
+                        const { floorPlanRows, signSpecRows } = buildDetectionRows(stats);
+                        return (
+                          <>
+                            <DetectionTable
+                              title="Floor Plans Detected"
+                              regionColHeader="Floor Plan Region Detected"
+                              rows={floorPlanRows}
+                              colorScheme="primary"
+                            />
+                            <DetectionTable
+                              title="Sign Specs / Schedules Detected"
+                              regionColHeader="Sign Spec Region Detected"
+                              rows={signSpecRows}
+                              colorScheme="accent"
+                            />
+                          </>
+                        );
+                      })()}
                     </>
                   ) : (
                     <p className="text-[10px] text-muted-foreground/40 font-mono">
