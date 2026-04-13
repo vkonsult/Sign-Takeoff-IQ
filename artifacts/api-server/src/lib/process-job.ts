@@ -12,7 +12,7 @@ import {
 import { ai } from "@workspace/integrations-gemini-ai";
 import { extractSignsFromPdf, extractSignsFromPdfImageVerify, extractProjectInfo, extractTextFromPdf, isSpecFile, buildSpecContextString, type ProjectInfo, type VerifiedSignSummary, type TextContextSign, type VerificationItem, type ExtractedSignRow } from "./extraction";
 import { saveParsedResult, getFilePageImagesDir, PAGES_DIR } from "./storage";
-import { renderFloorPlanPages } from "./pdf-render";
+import { renderFloorPlanPages, detectPageRegions, type PageRegions } from "./pdf-render";
 import { logger } from "./logger";
 import { extractPagePhrases, detectFloorPlanBbox, matchLocationToCoords, classifyPageFromPhrases, type PdfPhrase, type FloorPlanBbox, type SpatialPageType } from "./pdf-words";
 
@@ -246,6 +246,11 @@ export async function processJob(jobId: string): Promise<void> {
       }
     | { ok: false; file: typeof files[number]; error: string };
 
+  // Collects Gemini AI-detected page regions (floor plan bbox + sign schedule bbox)
+  // for pages classified as "both".  Keyed by "fileId:pageNum".
+  // Written during the per-file loop; read by word-match and bbox persistence.
+  const allAiRegions = new Map<string, PageRegions>();
+
   const t_extraction = Date.now();
   const fileResults: FileResult[] = await Promise.all(
     filesToProcess.map(async (file): Promise<FileResult> => {
@@ -398,6 +403,36 @@ export async function processJob(jobId: string): Promise<void> {
             );
           } catch (err) {
             logger.warn({ err, fileId: file.id }, "PNG pre-render failed — non-fatal, viewer will use PDF fallback");
+          }
+        }
+
+        // ── Gemini visual region detection for "both" pages ─────────────────
+        // For pages that contain both a floor plan drawing and a sign schedule
+        // table, ask Gemini to locate each region with a normalized bbox.
+        // Results are stored in allAiRegions and later:
+        //   1. Used in word-match to restrict coord placement to the floor plan area
+        //   2. Persisted to pageStats.aiRegionBboxes for the viewer overlay
+        const bothPageNums = textResult.pageStats.bothPages ?? [];
+        if (bothPageNums.length > 0 && pageImagePathsAbsolute) {
+          const t_region = Date.now();
+          try {
+            await Promise.all(
+              bothPageNums.map(async (pageNum) => {
+                const pngPath = pageImagePathsAbsolute![String(pageNum)];
+                if (!pngPath) return;
+                const regions = await detectPageRegions(pngPath, ai, pageNum);
+                if (regions.floorPlan || regions.signSchedule) {
+                  allAiRegions.set(`${file.id}:${pageNum}`, regions);
+                }
+              })
+            );
+            const detected = bothPageNums.filter((p) => allAiRegions.has(`${file.id}:${p}`)).length;
+            logger.info(
+              { fileId: file.id, bothPages: bothPageNums.length, detected, durationMs: Date.now() - t_region },
+              "AI region detection complete"
+            );
+          } catch (err) {
+            logger.warn({ err, fileId: file.id }, "AI region detection failed — non-fatal, word-match will use heuristic bbox");
           }
         }
 
@@ -615,7 +650,12 @@ export async function processJob(jobId: string): Promise<void> {
     if (cached) return cached;
     try {
       const pageWords = await extractPagePhrases(fileStoredPath, fileId, page);
-      const bbox = detectFloorPlanBbox(pageWords.phrases);
+      const heuristicBbox = detectFloorPlanBbox(pageWords.phrases);
+      // For "both" pages: prefer the AI-detected floor plan region because the
+      // heuristic often includes the sign schedule table area, causing markers
+      // to appear on the table.
+      const aiRegions = allAiRegions.get(key);
+      const bbox = aiRegions?.floorPlan ?? heuristicBbox;
       const entry: PageCache = { phrases: pageWords.phrases, bbox };
       pageCache.set(key, entry);
       return entry;
@@ -722,10 +762,11 @@ export async function processJob(jobId: string): Promise<void> {
     matched: matchedText + matchedImage,
   });
 
-  // ── Persist floor plan bboxes to DB ─────────────────────────────────────────
+  // ── Persist floor plan bboxes + AI region bboxes to DB ──────────────────────
   // For each file, collect all bboxes computed during word-match for pages
   // classified as floor_plan or both.  Store them in pageStats.floorPlanBboxes
   // so the viewer can read the authoritative bbox without recomputing.
+  // Also persist AI-detected region bboxes (aiRegionBboxes) for the viewer overlay.
   {
     const t_bbox = Date.now();
 
@@ -754,15 +795,46 @@ export async function processJob(jobId: string): Promise<void> {
       bboxesByFile.get(fileId)![String(pageNum)] = entry.bbox;
     }
 
+    // Group AI region bboxes by fileId
+    type AiRegionBbox = {
+      floorPlan: { x0: number; y0: number; x1: number; y1: number } | null;
+      signSchedule: { x0: number; y0: number; x1: number; y1: number } | null;
+    };
+    const aiRegionBboxesByFile = new Map<string, Record<string, AiRegionBbox>>();
+    for (const [key, regions] of allAiRegions.entries()) {
+      const colonIdx = key.indexOf(":");
+      if (colonIdx === -1) continue;
+      const fileId = key.slice(0, colonIdx);
+      const pageNum = key.slice(colonIdx + 1);
+      if (!aiRegionBboxesByFile.has(fileId)) aiRegionBboxesByFile.set(fileId, {});
+      aiRegionBboxesByFile.get(fileId)![pageNum] = {
+        floorPlan: regions.floorPlan,
+        signSchedule: regions.signSchedule,
+      };
+    }
+
+    // Collect all fileIds that have either set of bboxes
+    const allFileIds = new Set([...bboxesByFile.keys(), ...aiRegionBboxesByFile.keys()]);
+
     // Write bboxes to the DB for each file that has them, merging into existing pageStats
     await Promise.all(
-      Array.from(bboxesByFile.entries()).map(async ([fileId, floorPlanBboxes]) => {
+      Array.from(allFileIds).map(async (fileId) => {
+        const floorPlanBboxes = bboxesByFile.get(fileId);
+        const aiRegionBboxes = aiRegionBboxesByFile.get(fileId);
+        if (!floorPlanBboxes && !aiRegionBboxes) return;
         try {
           const [existing] = await db.select({ pageStats: jobFilesTable.pageStats }).from(jobFilesTable).where(eq(jobFilesTable.id, fileId));
           if (!existing) return;
-          const updatedPageStats = { ...existing.pageStats, floorPlanBboxes } as NonNullable<typeof existing.pageStats>;
+          const updatedPageStats = {
+            ...existing.pageStats,
+            ...(floorPlanBboxes ? { floorPlanBboxes } : {}),
+            ...(aiRegionBboxes ? { aiRegionBboxes } : {}),
+          } as NonNullable<typeof existing.pageStats>;
           await db.update(jobFilesTable).set({ pageStats: updatedPageStats }).where(eq(jobFilesTable.id, fileId));
-          logger.debug({ fileId, pages: Object.keys(floorPlanBboxes) }, "Persisted floor plan bboxes");
+          logger.debug(
+            { fileId, fpPages: Object.keys(floorPlanBboxes ?? {}).length, aiPages: Object.keys(aiRegionBboxes ?? {}).length },
+            "Persisted floor plan bboxes + AI region bboxes"
+          );
         } catch (err) {
           logger.warn({ err, fileId }, "Failed to persist floor plan bboxes — non-fatal");
         }

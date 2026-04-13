@@ -17,6 +17,10 @@ export const jobFilesTable = pgTable("job_files", {
     otherPages: number[];
     pageTypes?: Record<string, "floor_plan" | "sign_schedule" | "both" | "other">;
     floorPlanBboxes?: Record<string, { x0: number; y0: number; x1: number; y1: number }>;
+    aiRegionBboxes?: Record<string, {
+      floorPlan: { x0: number; y0: number; x1: number; y1: number } | null;
+      signSchedule: { x0: number; y0: number; x1: number; y1: number } | null;
+    }>;
     pageImagePaths?: Record<string, string> | null;
     pageLabels?: (string | null)[];
     outlineSections?: Array<{

@@ -81,6 +81,10 @@ export interface FileInfo {
     otherPages: number[];
     pageLabels?: (string | null)[];
     pageImagePaths?: Record<string, string> | null;
+    aiRegionBboxes?: Record<string, {
+      floorPlan: { x0: number; y0: number; x1: number; y1: number } | null;
+      signSchedule: { x0: number; y0: number; x1: number; y1: number } | null;
+    }> | null;
     outlineSections?: Array<{
       title: string;
       pageStart: number;
@@ -319,6 +323,14 @@ function FilePdfViewer({
       .catch(() => setWordsData(null));
   }, [jobId, file.id, pageNumber]);
 
+  // AI-detected regions for the current page (populated for "both" pages during pipeline)
+  const aiPageRegion = file.pageStats?.aiRegionBboxes?.[String(pageNumber)] ?? null;
+  // Stable ref so event handlers (which close over refs, not state) can read the latest value.
+  const aiPageRegionRef = useRef(aiPageRegion);
+  useEffect(() => {
+    aiPageRegionRef.current = aiPageRegion;
+  }, [aiPageRegion]);
+
   // Add marker mode
   const [addMarkerMode, setAddMarkerMode] = useState(false);
   const addMarkerModeRef = useRef(false);
@@ -356,7 +368,8 @@ function FilePdfViewer({
     // Hard-filter: sign_schedule pages never have floor plan drawings.
     if (wordsData.pageType === "sign_schedule") return [];
 
-    const bbox = wordsData.floorPlanBbox;
+    // AI-detected bbox takes precedence over heuristic for "both" pages
+    const bbox = aiPageRegion?.floorPlan ?? wordsData.floorPlanBbox;
     if (!bbox) return []; // schedule/title-block page: no drawing region
 
     // Tight tolerance — stored bbox is authoritative; well-placed coords should
@@ -411,7 +424,7 @@ function FilePdfViewer({
       }
     }
     return result;
-  }, [pageMarkersRaw, wordsData]);
+  }, [pageMarkersRaw, wordsData, aiPageRegion]);
 
   // ── Write-back: persist client-resolved coords to the server ─────────────────
   // Track sign IDs already written this session to avoid duplicate PATCHes.
@@ -554,7 +567,8 @@ function FilePdfViewer({
     if (findHitMarker(coords.x, coords.y)) return;
 
     // Require a valid floor plan bbox — block placement on schedule/title-block pages.
-    const bbox = wordsDataRef.current?.floorPlanBbox ?? null;
+    // AI-detected bbox takes precedence over heuristic for "both" pages.
+    const bbox = aiPageRegionRef.current?.floorPlan ?? wordsDataRef.current?.floorPlanBbox ?? null;
     if (!bbox) return; // no detected drawing region on this page
 
     const TOL = 0.05;
@@ -574,6 +588,9 @@ function FilePdfViewer({
   };
 
   const pageMarkerCount = resolvedMarkers.length;
+
+  // Effective floor plan bbox: AI-detected takes precedence over the heuristic
+  const effectiveFloorPlanBbox = aiPageRegion?.floorPlan ?? wordsData?.floorPlanBbox ?? null;
 
   return (
     <div className="flex flex-col h-full min-h-0">
@@ -751,20 +768,51 @@ function FilePdfViewer({
                 onPointerLeave={() => setTooltip(null)}
               >
                 {/* Clip markers to the detected floor plan bbox so they never
-                    render on schedule tables or title blocks */}
-                {wordsData?.floorPlanBbox && (
+                    render on schedule tables or title blocks.
+                    effectiveFloorPlanBbox prefers AI-detected bbox over heuristic. */}
+                {effectiveFloorPlanBbox && (
                   <defs>
                     <clipPath id={`fp-clip-${pageNumber}-${file.id.replace(/[^a-zA-Z0-9]/g, "_")}`}>
                       <rect
-                        x={`${wordsData.floorPlanBbox.x0 * 100}%`}
-                        y={`${wordsData.floorPlanBbox.y0 * 100}%`}
-                        width={`${(wordsData.floorPlanBbox.x1 - wordsData.floorPlanBbox.x0) * 100}%`}
-                        height={`${(wordsData.floorPlanBbox.y1 - wordsData.floorPlanBbox.y0) * 100}%`}
+                        x={`${effectiveFloorPlanBbox.x0 * 100}%`}
+                        y={`${effectiveFloorPlanBbox.y0 * 100}%`}
+                        width={`${(effectiveFloorPlanBbox.x1 - effectiveFloorPlanBbox.x0) * 100}%`}
+                        height={`${(effectiveFloorPlanBbox.y1 - effectiveFloorPlanBbox.y0) * 100}%`}
                       />
                     </clipPath>
                   </defs>
                 )}
-                <g clipPath={wordsData?.floorPlanBbox ? `url(#fp-clip-${pageNumber}-${file.id.replace(/[^a-zA-Z0-9]/g, "_")})` : undefined}>
+                {/* AI region overlays: dashed outlines showing detected floor plan and
+                    sign schedule areas (only on pages where Gemini detected both) */}
+                {aiPageRegion?.floorPlan && (
+                  <rect
+                    x={`${aiPageRegion.floorPlan.x0 * 100}%`}
+                    y={`${aiPageRegion.floorPlan.y0 * 100}%`}
+                    width={`${(aiPageRegion.floorPlan.x1 - aiPageRegion.floorPlan.x0) * 100}%`}
+                    height={`${(aiPageRegion.floorPlan.y1 - aiPageRegion.floorPlan.y0) * 100}%`}
+                    fill="none"
+                    stroke="#3B82F6"
+                    strokeWidth={1.5}
+                    strokeDasharray="6 4"
+                    opacity={0.5}
+                    pointerEvents="none"
+                  />
+                )}
+                {aiPageRegion?.signSchedule && (
+                  <rect
+                    x={`${aiPageRegion.signSchedule.x0 * 100}%`}
+                    y={`${aiPageRegion.signSchedule.y0 * 100}%`}
+                    width={`${(aiPageRegion.signSchedule.x1 - aiPageRegion.signSchedule.x0) * 100}%`}
+                    height={`${(aiPageRegion.signSchedule.y1 - aiPageRegion.signSchedule.y0) * 100}%`}
+                    fill="none"
+                    stroke="#F59E0B"
+                    strokeWidth={1.5}
+                    strokeDasharray="6 4"
+                    opacity={0.5}
+                    pointerEvents="none"
+                  />
+                )}
+                <g clipPath={effectiveFloorPlanBbox ? `url(#fp-clip-${pageNumber}-${file.id.replace(/[^a-zA-Z0-9]/g, "_")})` : undefined}>
                   {resolvedMarkers.map((m) => {
                     const isDragging = drag?.signId === m.id;
                     const cx = `${(isDragging ? drag!.currentX : m.resolvedX) * 100}%`;
@@ -934,19 +982,47 @@ function FilePdfViewer({
                     onPointerUp={handleSvgPointerUp}
                     onPointerLeave={() => setTooltip(null)}
                   >
-                    {wordsData?.floorPlanBbox && (
+                    {effectiveFloorPlanBbox && (
                       <defs>
                         <clipPath id={`fp-clip-${pageNumber}-${file.id.replace(/[^a-zA-Z0-9]/g, "_")}`}>
                           <rect
-                            x={`${wordsData.floorPlanBbox.x0 * 100}%`}
-                            y={`${wordsData.floorPlanBbox.y0 * 100}%`}
-                            width={`${(wordsData.floorPlanBbox.x1 - wordsData.floorPlanBbox.x0) * 100}%`}
-                            height={`${(wordsData.floorPlanBbox.y1 - wordsData.floorPlanBbox.y0) * 100}%`}
+                            x={`${effectiveFloorPlanBbox.x0 * 100}%`}
+                            y={`${effectiveFloorPlanBbox.y0 * 100}%`}
+                            width={`${(effectiveFloorPlanBbox.x1 - effectiveFloorPlanBbox.x0) * 100}%`}
+                            height={`${(effectiveFloorPlanBbox.y1 - effectiveFloorPlanBbox.y0) * 100}%`}
                           />
                         </clipPath>
                       </defs>
                     )}
-                    <g clipPath={wordsData?.floorPlanBbox ? `url(#fp-clip-${pageNumber}-${file.id.replace(/[^a-zA-Z0-9]/g, "_")})` : undefined}>
+                    {aiPageRegion?.floorPlan && (
+                      <rect
+                        x={`${aiPageRegion.floorPlan.x0 * 100}%`}
+                        y={`${aiPageRegion.floorPlan.y0 * 100}%`}
+                        width={`${(aiPageRegion.floorPlan.x1 - aiPageRegion.floorPlan.x0) * 100}%`}
+                        height={`${(aiPageRegion.floorPlan.y1 - aiPageRegion.floorPlan.y0) * 100}%`}
+                        fill="none"
+                        stroke="#3B82F6"
+                        strokeWidth={1.5}
+                        strokeDasharray="6 4"
+                        opacity={0.5}
+                        pointerEvents="none"
+                      />
+                    )}
+                    {aiPageRegion?.signSchedule && (
+                      <rect
+                        x={`${aiPageRegion.signSchedule.x0 * 100}%`}
+                        y={`${aiPageRegion.signSchedule.y0 * 100}%`}
+                        width={`${(aiPageRegion.signSchedule.x1 - aiPageRegion.signSchedule.x0) * 100}%`}
+                        height={`${(aiPageRegion.signSchedule.y1 - aiPageRegion.signSchedule.y0) * 100}%`}
+                        fill="none"
+                        stroke="#F59E0B"
+                        strokeWidth={1.5}
+                        strokeDasharray="6 4"
+                        opacity={0.5}
+                        pointerEvents="none"
+                      />
+                    )}
+                    <g clipPath={effectiveFloorPlanBbox ? `url(#fp-clip-${pageNumber}-${file.id.replace(/[^a-zA-Z0-9]/g, "_")})` : undefined}>
                       {resolvedMarkers.map((m) => {
                         const isDragging = drag?.signId === m.id;
                         const cx = `${(isDragging ? drag!.currentX : m.resolvedX) * 100}%`;

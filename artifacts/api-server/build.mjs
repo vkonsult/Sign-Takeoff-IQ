@@ -30,6 +30,12 @@ async function buildAll() {
     external: [
       "*.node",
       "pdfjs-dist",
+      "@napi-rs/canvas",
+      "@napi-rs/canvas-linux-x64-gnu",
+      "@napi-rs/canvas-linux-x64-musl",
+      "@napi-rs/canvas-darwin-x64",
+      "@napi-rs/canvas-darwin-arm64",
+      "@napi-rs/canvas-win32-x64-msvc",
       "sharp",
       "better-sqlite3",
       "sqlite3",
