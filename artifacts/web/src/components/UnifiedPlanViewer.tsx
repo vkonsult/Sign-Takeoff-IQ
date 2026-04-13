@@ -598,8 +598,8 @@ function PageViewer({
   }, []);
   useEffect(() => { setMeasuredPageSize(null); }, [pageNumber, file.id]);
 
-  const renderedW = measuredPageSize?.w ?? (nativeSize ? nativeSize.w * scale : null);
-  const renderedH = measuredPageSize?.h ?? (nativeSize ? nativeSize.h * scale : null);
+  const renderedW = nativeSize ? nativeSize.w * scale : (measuredPageSize?.w ?? null);
+  const renderedH = nativeSize ? nativeSize.h * scale : (measuredPageSize?.h ?? null);
 
   // ── Phrases ────────────────────────────────────────────────────────────────
   type ServerPhraseData = {
@@ -992,7 +992,7 @@ function PageViewer({
   return (
     <div className="flex flex-col flex-1 min-h-0 bg-secondary/30">
       {/* Toolbar */}
-      <div className="flex-none flex items-center gap-2 px-4 py-2 bg-card border-b border-border flex-wrap">
+      <div className="flex-none flex items-center gap-2 px-4 py-2 bg-card border-b border-border overflow-x-auto min-w-0">
         {/* Page nav */}
         <button aria-label="Previous page" disabled={!canPrevPage} onClick={goPrevPage} className="p-1.5 rounded hover:bg-secondary disabled:opacity-30 transition-colors">
           <ChevronLeft className="w-4 h-4" />
@@ -1104,37 +1104,38 @@ function PageViewer({
           )}
         </div>
 
-        {/* Signs-on-page chips */}
-        {signsOnCurrentPage.length > 0 && (
-          <div className="flex items-center gap-1.5 ml-2 overflow-x-auto max-w-[320px]">
-            {signsOnCurrentPage.map((s) => {
-              const isActive = s.id === activeSignId;
-              const isLocated = textMarkers.some((m) => m.signId === s.id && !m.isGhost);
-              return (
-                <button
-                  key={s.id}
-                  title={`${s.signType ?? "Sign"} — ${s.location ?? ""}\nClick to edit`}
-                  onClick={() => handleSelectSign(s)}
-                  className="flex-shrink-0 flex items-center gap-1 text-[10px] font-mono px-1.5 py-0.5 rounded whitespace-nowrap transition-all"
-                  style={{
-                    backgroundColor: isActive ? "#22c55e" : "#22c55e18", color: isActive ? "#fff" : "#22c55e",
-                    border: `1px solid ${isActive ? "#22c55e" : "#22c55e55"}`, fontWeight: isActive ? 700 : 500,
-                    boxShadow: isActive ? "0 0 8px #22c55e55" : "none", cursor: "pointer",
-                  }}
-                >
-                  {isActive && <span className="inline-block w-1.5 h-1.5 rounded-full bg-white flex-shrink-0" />}
-                  {s.signIdentifier ?? s.signType?.slice(0, 8) ?? "SIGN"}
-                  {!isLocated && (
-                    <span style={{ fontSize: 8, fontWeight: 700, letterSpacing: "0.05em", background: "#ef444420", color: "#ef4444", border: "1px solid #ef444455", borderRadius: 3, padding: "0 3px" }}>
-                      UNLOCATED
-                    </span>
-                  )}
-                </button>
-              );
-            })}
-          </div>
-        )}
       </div>
+
+      {/* Signs-on-page chips strip */}
+      {signsOnCurrentPage.length > 0 && (
+        <div className="flex-none flex items-center gap-1.5 px-4 py-1.5 bg-card border-b border-border overflow-x-auto">
+          {signsOnCurrentPage.map((s) => {
+            const isActive = s.id === activeSignId;
+            const isLocated = textMarkers.some((m) => m.signId === s.id && !m.isGhost);
+            return (
+              <button
+                key={s.id}
+                title={`${s.signType ?? "Sign"} — ${s.location ?? ""}\nClick to edit`}
+                onClick={() => handleSelectSign(s)}
+                className="flex-shrink-0 flex items-center gap-1 text-[10px] font-mono px-1.5 py-0.5 rounded whitespace-nowrap transition-all"
+                style={{
+                  backgroundColor: isActive ? "#22c55e" : "#22c55e18", color: isActive ? "#fff" : "#22c55e",
+                  border: `1px solid ${isActive ? "#22c55e" : "#22c55e55"}`, fontWeight: isActive ? 700 : 500,
+                  boxShadow: isActive ? "0 0 8px #22c55e55" : "none", cursor: "pointer",
+                }}
+              >
+                {isActive && <span className="inline-block w-1.5 h-1.5 rounded-full bg-white flex-shrink-0" />}
+                {s.signIdentifier ?? s.signType?.slice(0, 8) ?? "SIGN"}
+                {!isLocated && (
+                  <span style={{ fontSize: 8, fontWeight: 700, letterSpacing: "0.05em", background: "#ef444420", color: "#ef4444", border: "1px solid #ef444455", borderRadius: 3, padding: "0 3px" }}>
+                    UNLOCATED
+                  </span>
+                )}
+              </button>
+            );
+          })}
+        </div>
+      )}
 
       {/* Canvas */}
       <div ref={pdfContainerRef} className="flex-1 overflow-auto p-4">
