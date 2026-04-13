@@ -1157,7 +1157,7 @@ function PageViewer({
 
       {/* Canvas */}
       <div ref={pdfContainerRef} className="flex-1 overflow-auto p-4">
-        <div className="flex justify-center items-start" style={{ minWidth: "max-content" }}>
+        <div style={{ width: "fit-content", minWidth: "100%", display: "flex", justifyContent: "center" }}>
           {(imageLoading || pdfLoading) && !imageUrl && !pdfBlobUrl && (
             <div className="flex items-center justify-center h-64">
               <Loader2 className="w-8 h-8 text-primary animate-spin" />
