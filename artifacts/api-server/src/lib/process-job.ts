@@ -356,6 +356,11 @@ export async function processJob(jobId: string): Promise<void> {
           );
         }
 
+        const relevantPageNums = new Set([
+          ...textResult.pageStats.floorPlanPages,
+          ...textResult.pageStats.signSchedulePages,
+        ]);
+
         const t_image = skipVerification ? 0 : Date.now();
         const imageResult = skipVerification
           ? {
@@ -366,7 +371,7 @@ export async function processJob(jobId: string): Promise<void> {
               skipped: true as const,
               skipReason: `High-confidence skip (${Math.round(highConfRatio * 100)}% of ${textResult.rows.length} signs ≥ ${HIGH_CONF_THRESHOLD} confidence)`,
             }
-          : await extractSignsFromPdfImageVerify(file.storedPath, ai, textSignsByPage).catch((err) => {
+          : await extractSignsFromPdfImageVerify(file.storedPath, ai, textSignsByPage, relevantPageNums).catch((err) => {
               logger.warn({ err, fileId: file.id }, "Visual verification threw unexpectedly — skipping");
               return { verifications: [] as VerificationItem[], discoveries: [], inputTokens: 0, outputTokens: 0, skipped: true as const, skipReason: "Internal error" };
             });

@@ -1985,10 +1985,18 @@ function parseVerificationResponse(raw: string, label: string): { verifications:
 export async function extractSignsFromPdfImageVerify(
   filePath: string,
   ai: GeminiAI,
-  textSignsByPage: Map<number, TextContextSign[]>
+  textSignsByPage: Map<number, TextContextSign[]>,
+  relevantPages?: Set<number>
 ): Promise<VerifyResult> {
   if (textSignsByPage.size === 0) {
     return { verifications: [], discoveries: [], inputTokens: 0, outputTokens: 0, skipped: true, skipReason: "No text signs to verify" };
+  }
+
+  // If relevantPages is explicitly provided but empty, skip entirely — sending other/unknown
+  // pages to Gemini is disallowed when the caller has page classification data.
+  if (relevantPages !== undefined && relevantPages.size === 0) {
+    logger.info({ filePath: filePath.split("/").pop() }, "Visual verification skipped — no relevant pages (floor_plan/sign_schedule/both) found");
+    return { verifications: [], discoveries: [], inputTokens: 0, outputTokens: 0, skipped: true, skipReason: "No relevant pages for verification" };
   }
 
   let fileBuffer: Buffer;
@@ -2003,6 +2011,69 @@ export async function extractSignsFromPdfImageVerify(
   const prompt = buildVerificationPrompt(textSignsByPage);
 
   if (fileBuffer.length <= MAX_INLINE_PDF_BYTES) {
+    // Single-pass path: filter to relevant pages if provided
+    if (relevantPages && relevantPages.size > 0) {
+      let { PDFDocument } = await import("pdf-lib");
+      let srcDoc: import("pdf-lib").PDFDocument;
+      try {
+        srcDoc = await PDFDocument.load(fileBuffer, { ignoreEncryption: true });
+      } catch (err) {
+        logger.error({ err, fileName }, "Verification: pdf-lib failed to load PDF for page filtering");
+        return { verifications: [], discoveries: [], inputTokens: 0, outputTokens: 0, skipped: true, skipReason: "PDF could not be parsed" };
+      }
+      const totalPages = srcDoc.getPageCount();
+      // Build sorted list of 0-based indices for relevant pages (1-indexed relevantPages)
+      const relevantIndices = Array.from(relevantPages)
+        .map((p) => p - 1)
+        .filter((i) => i >= 0 && i < totalPages)
+        .sort((a, b) => a - b);
+      logger.info({ relevant: relevantIndices.length, total: totalPages }, "Visual verification: filtering to relevant pages only");
+      if (relevantIndices.length === 0) {
+        logger.info({ fileName }, "Visual verification skipped — no relevant pages within PDF bounds");
+        return { verifications: [], discoveries: [], inputTokens: 0, outputTokens: 0, skipped: true, skipReason: "No relevant pages within PDF bounds" };
+      }
+      // Map from filtered page index (0-based in filtered doc) → original page number (1-indexed)
+      const pageIndexToOriginal = new Map<number, number>(relevantIndices.map((origIdx, filtIdx) => [filtIdx, origIdx + 1]));
+      let filteredBytes: Uint8Array;
+      try {
+        const filteredDoc = await PDFDocument.create();
+        const copiedPages = await filteredDoc.copyPages(srcDoc, relevantIndices);
+        for (const page of copiedPages) filteredDoc.addPage(page);
+        filteredBytes = await filteredDoc.save();
+      } catch (err) {
+        logger.error({ err, fileName }, "Verification: failed to create filtered PDF — skipping (will not send unfiltered pages)");
+        return { verifications: [], discoveries: [], inputTokens: 0, outputTokens: 0, skipped: true, skipReason: "Filtered PDF construction failed" };
+      }
+      const pdfBase64 = Buffer.from(filteredBytes).toString("base64");
+      const label = `verify-${fileName}`;
+      logger.info({ fileName, sizeBytes: filteredBytes.length, totalSigns: Array.from(textSignsByPage.values()).reduce((n, v) => n + v.length, 0) }, "Visual verification: single-pass (filtered)");
+      try {
+        const { text, inputTokens, outputTokens } = await callGeminiMultimodal(prompt, pdfBase64, ai, label);
+        const { verifications, discoveries } = parseVerificationResponse(text, label);
+        // Remap page numbers (verifications + discoveries) from filtered-doc space back to original
+        if (pageIndexToOriginal.size > 0) {
+          for (const v of verifications) {
+            if (v.page_number != null) {
+              const orig = pageIndexToOriginal.get(v.page_number - 1);
+              if (orig != null) v.page_number = orig;
+            }
+          }
+          for (const d of discoveries) {
+            if (d.page_number != null) {
+              const orig = pageIndexToOriginal.get(d.page_number - 1);
+              if (orig != null) d.page_number = orig;
+            }
+          }
+        }
+        logger.info({ verifications: verifications.length, discoveries: discoveries.length, inputTokens, outputTokens }, "Visual verification complete (single-pass filtered)");
+        return { verifications, discoveries, inputTokens, outputTokens, skipped: false };
+      } catch (err) {
+        logger.error({ err, fileName }, "Visual verification call failed");
+        return { verifications: [], discoveries: [], inputTokens: 0, outputTokens: 0, skipped: true, skipReason: "Gemini call failed" };
+      }
+    }
+
+    // No relevantPages filter — send full PDF
     const pdfBase64 = fileBuffer.toString("base64");
     const label = `verify-${fileName}`;
     logger.info({ fileName, sizeBytes: fileBuffer.length, totalSigns: Array.from(textSignsByPage.values()).reduce((n, v) => n + v.length, 0) }, "Visual verification: single-pass");
@@ -2034,6 +2105,83 @@ export async function extractSignsFromPdfImageVerify(
   let totalIn = 0;
   let totalOut = 0;
 
+  // Batched path: if relevantPages provided, iterate only those pages grouped into batches
+  if (relevantPages && relevantPages.size > 0) {
+    const relevantIndices = Array.from(relevantPages)
+      .map((p) => p - 1)
+      .filter((i) => i >= 0 && i < totalPages)
+      .sort((a, b) => a - b);
+    logger.info({ relevant: relevantIndices.length, total: totalPages }, "Visual verification: filtering to relevant pages only");
+    if (relevantIndices.length === 0) {
+      logger.info({ fileName }, "Visual verification skipped — no relevant pages within PDF bounds");
+      return { verifications: [], discoveries: [], inputTokens: 0, outputTokens: 0, skipped: true, skipReason: "No relevant pages within PDF bounds" };
+    }
+
+    for (let batchStart = 0; batchStart < relevantIndices.length; batchStart += IMAGE_BATCH_PAGES) {
+      const batchIndices = relevantIndices.slice(batchStart, batchStart + IMAGE_BATCH_PAGES);
+      // Map filtered-doc index → original 1-indexed page number
+      const pageIndexToOriginal = new Map<number, number>(batchIndices.map((origIdx, filtIdx) => [filtIdx, origIdx + 1]));
+
+      // Build sub-map for signs on these original pages (1-indexed)
+      const batchMap = new Map<number, TextContextSign[]>();
+      for (const origIdx of batchIndices) {
+        const origPage = origIdx + 1;
+        const signs = textSignsByPage.get(origPage);
+        if (signs && signs.length > 0) batchMap.set(origPage, signs);
+      }
+      if (batchMap.size === 0) continue;
+
+      let batchPdfBytes: Uint8Array;
+      try {
+        const batchDoc = await PDFDocument.create();
+        const copiedPages = await batchDoc.copyPages(srcDoc, batchIndices);
+        for (const page of copiedPages) batchDoc.addPage(page);
+        batchPdfBytes = await batchDoc.save();
+      } catch (err) {
+        logger.warn({ err, batchIndices }, "Verification: failed to create batch PDF — skipping batch");
+        continue;
+      }
+
+      if (batchPdfBytes.length > MAX_INLINE_PDF_BYTES) {
+        logger.warn({ batchIndices }, "Verification: batch too large — skipping");
+        continue;
+      }
+
+      const batchPrompt = buildVerificationPrompt(batchMap);
+      const pdfBase64 = Buffer.from(batchPdfBytes).toString("base64");
+      const firstOrig = batchIndices[0] + 1;
+      const lastOrig = batchIndices[batchIndices.length - 1] + 1;
+      const label = `verify-${fileName}-p${firstOrig}-${lastOrig}`;
+
+      try {
+        const { text, inputTokens, outputTokens } = await callGeminiMultimodal(batchPrompt, pdfBase64, ai, label);
+        const { verifications, discoveries } = parseVerificationResponse(text, label);
+        // Remap page numbers (verifications + discoveries) from batch-doc space back to original
+        for (const v of verifications) {
+          if (v.page_number != null) {
+            const orig = pageIndexToOriginal.get(v.page_number - 1);
+            if (orig != null) v.page_number = orig;
+          }
+        }
+        for (const d of discoveries) {
+          if (d.page_number != null) {
+            const orig = pageIndexToOriginal.get(d.page_number - 1);
+            if (orig != null) d.page_number = orig;
+          }
+        }
+        allVerifications.push(...verifications);
+        allDiscoveries.push(...discoveries);
+        totalIn += inputTokens;
+        totalOut += outputTokens;
+      } catch (err) {
+        logger.warn({ err, label }, "Verification batch call failed — skipping batch");
+      }
+    }
+
+    return { verifications: allVerifications, discoveries: allDiscoveries, inputTokens: totalIn, outputTokens: totalOut, skipped: false };
+  }
+
+  // No relevantPages filter — original batched logic over all pages
   for (let startPage = 0; startPage < totalPages; startPage += IMAGE_BATCH_PAGES) {
     const endPage = Math.min(startPage + IMAGE_BATCH_PAGES, totalPages);
     const pageIndices = Array.from({ length: endPage - startPage }, (_, i) => startPage + i);
@@ -2430,7 +2578,9 @@ export async function extractSignsFromPdf(
     logger.info({ filePath: filePath.split("/").pop() }, "No results from targeted passes — running general extraction fallback");
 
     const generalBlock = buildPageBlock(
-      pages.map((p) => ({ ...p, type: "sign_schedule" as PageType })),
+      pages
+        .filter((p) => p.type === "floor_plan" || p.type === "sign_schedule" || p.type === "both")
+        .map((p) => ({ ...p, type: "sign_schedule" as PageType })),
       "sign_schedule",
       300000,
       6000
