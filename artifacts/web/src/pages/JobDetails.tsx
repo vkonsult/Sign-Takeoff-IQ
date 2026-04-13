@@ -998,6 +998,66 @@ function SignSummaryPanel({ signs }: { signs: AnySign[] }) {
 type FileWithStats = NonNullable<ReturnType<typeof useJobDetails>["data"]>["files"][number];
 type SpecViewerState = { fileId: string; fileName: string; specPages: number[] };
 
+type OutlineSection = NonNullable<NonNullable<FileWithStats["pageStats"]>["outlineSections"]>[number];
+
+function OutlineSectionsTree({ sections }: { sections: OutlineSection[] }) {
+  const [expanded, setExpanded] = useState(false);
+  const preview = sections.slice(0, 3);
+  const hasMore = sections.length > 3;
+
+  return (
+    <div className="mt-2 pt-2 border-t border-border/40">
+      <button
+        onClick={() => setExpanded((v) => !v)}
+        className="flex items-center gap-1.5 w-full text-left group mb-1"
+      >
+        <span className="text-[10px] text-muted-foreground/60">
+          PDF sections ({sections.length})
+        </span>
+        <ChevronDown
+          className={`w-3 h-3 text-muted-foreground/40 group-hover:text-muted-foreground transition-transform ml-auto ${expanded ? "rotate-180" : ""}`}
+        />
+      </button>
+      {(expanded ? sections : preview).map((section, si) => {
+        const sType = section.type;
+        const badgeClass =
+          sType === "sign_schedule"
+            ? "bg-accent/15 text-accent border-accent/30"
+            : sType === "floor_plan"
+            ? "bg-primary/10 text-primary/80 border-primary/20"
+            : "bg-secondary text-muted-foreground/60 border-border/60";
+        const badge =
+          sType === "sign_schedule" ? "Sign Sched"
+          : sType === "floor_plan" ? "Floor Plan"
+          : null;
+        return (
+          <div key={si} className="flex items-center gap-1.5 py-0.5">
+            <span className="text-[10px] font-mono text-foreground/80 truncate max-w-[180px]" title={section.title}>
+              {section.title}
+            </span>
+            <span className="text-[10px] font-mono text-muted-foreground/50 flex-shrink-0">
+              pg {section.pageStart}{section.pageEnd !== section.pageStart ? `–${section.pageEnd}` : ""}
+            </span>
+            {badge && (
+              <span className={`px-1.5 py-px rounded text-[9px] font-bold uppercase tracking-wider border flex-shrink-0 ${badgeClass}`}>
+                {badge}
+              </span>
+            )}
+          </div>
+        );
+      })}
+      {!expanded && hasMore && (
+        <button
+          onClick={() => setExpanded(true)}
+          className="text-[10px] text-muted-foreground/50 hover:text-muted-foreground mt-0.5 transition-colors"
+        >
+          +{sections.length - 3} more sections…
+        </button>
+      )}
+    </div>
+  );
+}
+
 function SheetsPanel({
   files,
   onOpenSpec,
@@ -1180,42 +1240,9 @@ function SheetsPanel({
                         </div>
                       )}
 
-                      {/* Outline sections tree */}
+                      {/* Outline sections tree — collapsible */}
                       {stats.outlineSections && stats.outlineSections.length > 0 && (
-                        <div className="mt-2 pt-2 border-t border-border/40">
-                          <span className="text-[10px] text-muted-foreground/60 block mb-1">PDF sections (from bookmarks):</span>
-                          <div className="flex flex-col gap-0.5">
-                            {stats.outlineSections.map((section, si) => {
-                              const sType = section.type;
-                              const badgeClass =
-                                sType === "sign_schedule"
-                                  ? "bg-accent/15 text-accent border-accent/30"
-                                  : sType === "floor_plan"
-                                  ? "bg-primary/10 text-primary/80 border-primary/20"
-                                  : "bg-secondary text-muted-foreground/60 border-border/60";
-                              const badge =
-                                sType === "sign_schedule" ? "Sign Sched"
-                                : sType === "floor_plan" ? "Floor Plan"
-                                : null;
-                              return (
-                                <div key={si} className="flex items-center gap-1.5 py-0.5">
-                                  <span className="text-[10px] font-mono text-foreground/80 truncate max-w-[180px]" title={section.title}>
-                                    {section.title}
-                                  </span>
-                                  <span className="text-[10px] font-mono text-muted-foreground/50 flex-shrink-0">
-                                    pg {section.pageStart}
-                                    {section.pageEnd !== section.pageStart ? `–${section.pageEnd}` : ""}
-                                  </span>
-                                  {badge && (
-                                    <span className={`px-1.5 py-px rounded text-[9px] font-bold uppercase tracking-wider border flex-shrink-0 ${badgeClass}`}>
-                                      {badge}
-                                    </span>
-                                  )}
-                                </div>
-                              );
-                            })}
-                          </div>
-                        </div>
+                        <OutlineSectionsTree sections={stats.outlineSections} />
                       )}
                     </>
                   ) : (

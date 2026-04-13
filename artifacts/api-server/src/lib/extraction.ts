@@ -2518,23 +2518,27 @@ export async function extractSignsFromPdf(
       }
     }
 
-    // 2. Outline-section boost (lower priority — only upgrades "other" pages)
-    if (type === "other" && pdfMeta.outlineSections.length > 0) {
+    // 2. Outline-section override (lower priority than spatial, higher than heuristic)
+    // When a page falls within a classified outline section (floor_plan or sign_schedule)
+    // the section title is high-confidence metadata — override the heuristic type
+    // regardless of what the heuristic said (not just "other" pages).
+    // Exception: preserve "both" pages since they are the most specific classification.
+    if (pdfMeta.outlineSections.length > 0 && type !== "both") {
       const section = pdfMeta.outlineSections.find(
         (s) => p.pageNum >= s.pageStart && p.pageNum <= s.pageEnd
       );
-      if (section?.type === "floor_plan") {
+      if (section?.type === "floor_plan" && type !== "floor_plan") {
+        logger.debug(
+          { pageNum: p.pageNum, section: section.title, wasType: type },
+          "Outline override: floor_plan"
+        );
         type = "floor_plan";
+      } else if (section?.type === "sign_schedule" && type !== "sign_schedule") {
         logger.debug(
-          { pageNum: p.pageNum, section: section.title },
-          "Outline boost: floor_plan"
+          { pageNum: p.pageNum, section: section.title, wasType: type },
+          "Outline override: sign_schedule"
         );
-      } else if (section?.type === "sign_schedule") {
         type = "sign_schedule";
-        logger.debug(
-          { pageNum: p.pageNum, section: section.title },
-          "Outline boost: sign_schedule"
-        );
       }
     }
 

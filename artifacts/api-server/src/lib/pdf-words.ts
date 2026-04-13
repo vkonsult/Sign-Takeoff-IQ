@@ -820,17 +820,42 @@ export async function extractPdfMetadata(pdfPath: string): Promise<PdfDocumentMe
   try {
     const outline = await doc.getOutline();
     if (outline && outline.length > 0) {
+      // Collect destination-bearing outline nodes from top-level items AND their
+      // immediate children (depth 1–2).  Many PDFs nest all real sections under a
+      // single top-level container (e.g. "Document" with no destination) while the
+      // child items carry the actual page destinations.
       const itemsWithPages: Array<{ title: string; pageNum: number }> = [];
-      for (const item of outline) {
-        const pageNum = await resolveDestToPage(item.dest, doc);
-        if (pageNum !== null) {
-          itemsWithPages.push({ title: item.title ?? "(untitled)", pageNum });
+
+      async function collectItems(items: PdfjsOutlineItem[], depth: number): Promise<void> {
+        if (depth > 2) return;
+        for (const item of items) {
+          const pageNum = await resolveDestToPage(item.dest, doc);
+          if (pageNum !== null) {
+            itemsWithPages.push({ title: item.title ?? "(untitled)", pageNum });
+          }
+          // Only recurse one level deeper — depth-3+ bookmarks are typically
+          // individual drawings within a section, not section headers.
+          if (item.items && item.items.length > 0 && depth < 2) {
+            await collectItems(item.items, depth + 1);
+          }
         }
       }
-      itemsWithPages.sort((a, b) => a.pageNum - b.pageNum);
-      for (let i = 0; i < itemsWithPages.length; i++) {
-        const item = itemsWithPages[i]!;
-        const nextItem = itemsWithPages[i + 1];
+
+      await collectItems(outline, 1);
+
+      // Deduplicate by page number (keep first occurrence per page)
+      const seenPages = new Set<number>();
+      const uniqueItems = itemsWithPages.filter((it) => {
+        if (seenPages.has(it.pageNum)) return false;
+        seenPages.add(it.pageNum);
+        return true;
+      });
+
+      uniqueItems.sort((a, b) => a.pageNum - b.pageNum);
+
+      for (let i = 0; i < uniqueItems.length; i++) {
+        const item = uniqueItems[i]!;
+        const nextItem = uniqueItems[i + 1];
         outlineSections.push({
           title: item.title,
           pageStart: item.pageNum,
