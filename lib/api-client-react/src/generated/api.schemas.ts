@@ -61,6 +61,13 @@ export interface JobSummary {
   updatedAt: string;
 }
 
+export interface PdfOutlineSection {
+  title: string;
+  pageStart: number;
+  pageEnd: number;
+  type: "floor_plan" | "sign_schedule" | "other" | null;
+}
+
 export interface PageStats {
   /** PDF page numbers classified as floor plans */
   floorPlanPages: number[];
@@ -68,6 +75,12 @@ export interface PageStats {
   signSchedulePages: number[];
   /** PDF page numbers not matching floor plan or sign schedule patterns */
   otherPages: number[];
+  /** PDF page numbers classified as both floor plan and sign schedule */
+  bothPages?: number[];
+  /** PDF logical page labels (e.g. "A1.1") indexed by page number (0-based) */
+  pageLabels?: (string | null)[] | null;
+  /** Top-level PDF outline (bookmark) sections with classified page ranges */
+  outlineSections?: PdfOutlineSection[] | null;
 }
 
 export interface JobFile {

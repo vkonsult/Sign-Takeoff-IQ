@@ -52,6 +52,31 @@ interface PdfjsDocument {
   destroy(): void;
 }
 
+interface PdfjsOutlineItem {
+  title: string;
+  dest: string | unknown[] | null;
+  items: PdfjsOutlineItem[];
+}
+
+interface ExtendedPdfjsDocument extends PdfjsDocument {
+  getOutline(): Promise<PdfjsOutlineItem[] | null>;
+  getPageLabels(): Promise<(string | null)[] | null>;
+  getDestination(name: string): Promise<unknown[] | null>;
+  getPageIndex(ref: unknown): Promise<number>;
+}
+
+export interface PdfOutlineSection {
+  title: string;
+  pageStart: number;
+  pageEnd: number;
+  type: "floor_plan" | "sign_schedule" | "other" | null;
+}
+
+export interface PdfDocumentMetadata {
+  pageLabels: (string | null)[];
+  outlineSections: PdfOutlineSection[];
+}
+
 interface PdfjsGetDocumentTask {
   promise: Promise<PdfjsDocument>;
 }
@@ -719,4 +744,108 @@ export async function getPdfPageCount(pdfPath: string): Promise<number> {
   const count = doc.numPages;
   doc.destroy();
   return count;
+}
+
+// ── PDF metadata extraction (outline sections + page labels) ─────────────
+
+const metadataCache = new Map<string, PdfDocumentMetadata>();
+
+async function resolveDestToPage(
+  dest: string | unknown[] | null,
+  doc: ExtendedPdfjsDocument,
+): Promise<number | null> {
+  if (!dest) return null;
+  try {
+    let destArray: unknown[] | null = null;
+    if (typeof dest === "string") {
+      destArray = await doc.getDestination(dest);
+    } else if (Array.isArray(dest)) {
+      destArray = dest as unknown[];
+    }
+    if (!destArray || destArray.length === 0) return null;
+    const pageIndex = await doc.getPageIndex(destArray[0]);
+    return pageIndex + 1;
+  } catch {
+    return null;
+  }
+}
+
+function classifyOutlineSection(title: string): PdfOutlineSection["type"] {
+  const t = title.toLowerCase();
+  const SS_PATTERNS = [
+    "sign schedule", "signage", "sign spec", "sign legend",
+    "sign program", "sign list", "sign detail", "signage plan",
+  ];
+  const FP_PATTERNS = [
+    "floor plan", "floor plans", "level", "first floor", "second floor",
+    "third floor", "ground floor", "basement", "site plan", "overall plan",
+    "roof plan", "mezzanine",
+  ];
+  if (SS_PATTERNS.some((p) => t.includes(p))) return "sign_schedule";
+  if (FP_PATTERNS.some((p) => t.includes(p))) return "floor_plan";
+  return "other";
+}
+
+/**
+ * Extract PDF document metadata: PDF page labels (logical names like "A1.1")
+ * and outline/bookmark sections with classified page ranges.
+ *
+ * Results are cached in memory per file path (PDFs are immutable once uploaded).
+ * Failures are swallowed — metadata is supplementary and must never break extraction.
+ */
+export async function extractPdfMetadata(pdfPath: string): Promise<PdfDocumentMetadata> {
+  const cached = metadataCache.get(pdfPath);
+  if (cached) return cached;
+
+  const lib = await getPdfjs();
+  const rawBuffer = await fs.readFile(pdfPath);
+  const data = new Uint8Array(rawBuffer);
+  const doc = (await lib
+    .getDocument({ data, disableAutoFetch: true, disableStream: true })
+    .promise) as unknown as ExtendedPdfjsDocument;
+
+  const numPages = doc.numPages;
+  let pageLabels: (string | null)[] = [];
+  let outlineSections: PdfOutlineSection[] = [];
+
+  try {
+    const labels = await doc.getPageLabels();
+    if (labels && labels.length === numPages) {
+      pageLabels = labels;
+    }
+  } catch {
+    // ignore — not all PDFs have page labels
+  }
+
+  try {
+    const outline = await doc.getOutline();
+    if (outline && outline.length > 0) {
+      const itemsWithPages: Array<{ title: string; pageNum: number }> = [];
+      for (const item of outline) {
+        const pageNum = await resolveDestToPage(item.dest, doc);
+        if (pageNum !== null) {
+          itemsWithPages.push({ title: item.title ?? "(untitled)", pageNum });
+        }
+      }
+      itemsWithPages.sort((a, b) => a.pageNum - b.pageNum);
+      for (let i = 0; i < itemsWithPages.length; i++) {
+        const item = itemsWithPages[i]!;
+        const nextItem = itemsWithPages[i + 1];
+        outlineSections.push({
+          title: item.title,
+          pageStart: item.pageNum,
+          pageEnd: nextItem ? nextItem.pageNum - 1 : numPages,
+          type: classifyOutlineSection(item.title),
+        });
+      }
+    }
+  } catch {
+    // ignore — outline is optional
+  }
+
+  doc.destroy();
+
+  const result: PdfDocumentMetadata = { pageLabels, outlineSections };
+  metadataCache.set(pdfPath, result);
+  return result;
 }

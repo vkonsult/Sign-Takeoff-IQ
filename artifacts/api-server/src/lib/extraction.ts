@@ -2,6 +2,8 @@ import fs from "fs/promises";
 import pdfParse from "pdf-parse/lib/pdf-parse.js";
 import { z } from "zod";
 import { logger } from "./logger";
+import { extractPdfMetadata } from "./pdf-words";
+import type { PdfOutlineSection } from "./pdf-words";
 
 // ── Module-level cache for PDF text extraction ────────────────────────────────
 // PDF files are immutable once uploaded, so caching by path is safe.
@@ -2458,6 +2460,8 @@ export interface PageStats {
   bothPages?: number[];
   otherPages: number[];
   titleBlockClassifiedPages?: number[];
+  pageLabels?: (string | null)[];
+  outlineSections?: PdfOutlineSection[];
 }
 
 export async function extractSignsFromPdf(
@@ -2471,24 +2475,71 @@ export async function extractSignsFromPdf(
 ): Promise<{ rows: ExtractedSignRow[]; pageCount: number; rawText: string; inputTokens: number; outputTokens: number; pageStats: PageStats }> {
   const { pages: rawPages, numPages } = await extractTextFromPdf(filePath);
 
+  // Fetch PDF metadata (outline sections + page labels).
+  // This is supplementary — failures must never abort extraction.
+  let pdfMeta: Awaited<ReturnType<typeof extractPdfMetadata>> = { pageLabels: [], outlineSections: [] };
+  try {
+    pdfMeta = await extractPdfMetadata(filePath);
+    if (pdfMeta.outlineSections.length > 0 || pdfMeta.pageLabels.length > 0) {
+      logger.info(
+        {
+          filePath: filePath.split("/").pop(),
+          sections: pdfMeta.outlineSections.length,
+          hasPageLabels: pdfMeta.pageLabels.length > 0,
+        },
+        "PDF metadata extracted"
+      );
+    }
+  } catch (err) {
+    logger.warn({ err, filePath }, "PDF metadata extraction failed (non-fatal)");
+  }
+
   // Apply spatial page type overrides when provided.
   // The spatial classifier reads the bottom-right title block quadrant of each
   // page and is the highest-priority signal for floor_plan / sign_schedule /
   // both classification.  "unknown" from spatial means fall through to the
   // existing heuristic result.
-  const pages: typeof rawPages = spatialPageTypes && spatialPageTypes.size > 0
-    ? rawPages.map((p) => {
-        const spatial = spatialPageTypes.get(p.pageNum);
-        if (spatial && spatial !== "unknown") {
-          logger.debug(
-            { pageNum: p.pageNum, spatial, heuristic: p.type },
-            "Spatial override applied"
-          );
-          return { ...p, type: spatial as PageType };
-        }
-        return p;
-      })
-    : rawPages;
+  //
+  // After spatial overrides, outline-section boosts are applied as a lower-priority
+  // signal: if a page is still classified as "other" but falls within an outline
+  // section identified as a floor plan or sign schedule, its type is promoted.
+  const pages: typeof rawPages = rawPages.map((p) => {
+    let type = p.type;
+
+    // 1. Spatial override (highest priority)
+    if (spatialPageTypes && spatialPageTypes.size > 0) {
+      const spatial = spatialPageTypes.get(p.pageNum);
+      if (spatial && spatial !== "unknown") {
+        logger.debug(
+          { pageNum: p.pageNum, spatial, heuristic: p.type },
+          "Spatial override applied"
+        );
+        type = spatial as PageType;
+      }
+    }
+
+    // 2. Outline-section boost (lower priority — only upgrades "other" pages)
+    if (type === "other" && pdfMeta.outlineSections.length > 0) {
+      const section = pdfMeta.outlineSections.find(
+        (s) => p.pageNum >= s.pageStart && p.pageNum <= s.pageEnd
+      );
+      if (section?.type === "floor_plan") {
+        type = "floor_plan";
+        logger.debug(
+          { pageNum: p.pageNum, section: section.title },
+          "Outline boost: floor_plan"
+        );
+      } else if (section?.type === "sign_schedule") {
+        type = "sign_schedule";
+        logger.debug(
+          { pageNum: p.pageNum, section: section.title },
+          "Outline boost: sign_schedule"
+        );
+      }
+    }
+
+    return type === p.type ? p : { ...p, type };
+  });
 
   if (pages.length === 0) {
     logger.warn({ filePath }, "PDF yielded no pages");
@@ -2724,6 +2775,8 @@ export async function extractSignsFromPdf(
     bothPages:         pages.filter((p) => p.type === "both").map((p) => p.pageNum).sort((a, b) => a - b),
     otherPages:        pages.filter((p) => p.type === "other").map((p) => p.pageNum).sort((a, b) => a - b),
     titleBlockClassifiedPages: pages.filter((p) => p.titleBlockType !== "unknown").map((p) => p.pageNum).sort((a, b) => a - b),
+    ...(pdfMeta.pageLabels.length > 0 ? { pageLabels: pdfMeta.pageLabels } : {}),
+    ...(pdfMeta.outlineSections.length > 0 ? { outlineSections: pdfMeta.outlineSections } : {}),
   };
 
   // ── Source-level dedup ────────────────────────────────────────────────────

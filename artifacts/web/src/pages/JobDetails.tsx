@@ -1179,6 +1179,44 @@ function SheetsPanel({
                           )}
                         </div>
                       )}
+
+                      {/* Outline sections tree */}
+                      {stats.outlineSections && stats.outlineSections.length > 0 && (
+                        <div className="mt-2 pt-2 border-t border-border/40">
+                          <span className="text-[10px] text-muted-foreground/60 block mb-1">PDF sections (from bookmarks):</span>
+                          <div className="flex flex-col gap-0.5">
+                            {stats.outlineSections.map((section, si) => {
+                              const sType = section.type;
+                              const badgeClass =
+                                sType === "sign_schedule"
+                                  ? "bg-accent/15 text-accent border-accent/30"
+                                  : sType === "floor_plan"
+                                  ? "bg-primary/10 text-primary/80 border-primary/20"
+                                  : "bg-secondary text-muted-foreground/60 border-border/60";
+                              const badge =
+                                sType === "sign_schedule" ? "Sign Sched"
+                                : sType === "floor_plan" ? "Floor Plan"
+                                : null;
+                              return (
+                                <div key={si} className="flex items-center gap-1.5 py-0.5">
+                                  <span className="text-[10px] font-mono text-foreground/80 truncate max-w-[180px]" title={section.title}>
+                                    {section.title}
+                                  </span>
+                                  <span className="text-[10px] font-mono text-muted-foreground/50 flex-shrink-0">
+                                    pg {section.pageStart}
+                                    {section.pageEnd !== section.pageStart ? `–${section.pageEnd}` : ""}
+                                  </span>
+                                  {badge && (
+                                    <span className={`px-1.5 py-px rounded text-[9px] font-bold uppercase tracking-wider border flex-shrink-0 ${badgeClass}`}>
+                                      {badge}
+                                    </span>
+                                  )}
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      )}
                     </>
                   ) : (
                     <p className="text-[10px] text-muted-foreground/40 font-mono">

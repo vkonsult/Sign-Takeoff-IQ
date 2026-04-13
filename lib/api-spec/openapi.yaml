@@ -318,6 +318,29 @@ components:
         - createdAt
         - updatedAt
 
+    PdfOutlineSection:
+      type: object
+      properties:
+        title:
+          type: string
+          description: Bookmark / outline item title
+        pageStart:
+          type: integer
+          description: First page of this section (1-indexed)
+        pageEnd:
+          type: integer
+          description: Last page of this section (1-indexed, inclusive)
+        type:
+          type: string
+          nullable: true
+          enum: [floor_plan, sign_schedule, other]
+          description: Classified type of this outline section
+      required:
+        - title
+        - pageStart
+        - pageEnd
+        - type
+
     PageStats:
       type: object
       properties:
@@ -336,6 +359,24 @@ components:
           items:
             type: integer
           description: PDF page numbers not matching floor plan or sign schedule patterns
+        bothPages:
+          type: array
+          items:
+            type: integer
+          description: PDF page numbers classified as both floor plan and sign schedule
+        pageLabels:
+          type: array
+          nullable: true
+          items:
+            type: string
+            nullable: true
+          description: PDF logical page labels (e.g. "A1.1") indexed by page number (0-based)
+        outlineSections:
+          type: array
+          nullable: true
+          items:
+            $ref: '#/components/schemas/PdfOutlineSection'
+          description: Top-level PDF outline (bookmark) sections with classified page ranges
       required:
         - floorPlanPages
         - signSchedulePages

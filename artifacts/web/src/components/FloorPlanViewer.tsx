@@ -79,6 +79,13 @@ export interface FileInfo {
     signSchedulePages: number[];
     bothPages?: number[];
     otherPages: number[];
+    pageLabels?: (string | null)[];
+    outlineSections?: Array<{
+      title: string;
+      pageStart: number;
+      pageEnd: number;
+      type: "floor_plan" | "sign_schedule" | "other" | null;
+    }>;
   } | null;
 }
 
@@ -527,8 +534,24 @@ function FilePdfViewer({
               <ChevronLeft className="w-4 h-4" />
             </button>
             <span className="text-xs font-mono text-muted-foreground min-w-[110px] text-center">
-              Floor plan {pageIdx + 1} / {floorPlanPages.length}{" "}
-              <span className="text-muted-foreground/50">(pg {pageNumber})</span>
+              {(() => {
+                const label = file.pageStats?.pageLabels?.[pageNumber - 1];
+                if (label) {
+                  return (
+                    <>
+                      <span className="text-foreground/80 font-medium">{label}</span>
+                      {" "}
+                      <span className="text-muted-foreground/50">({pageIdx + 1}/{floorPlanPages.length})</span>
+                    </>
+                  );
+                }
+                return (
+                  <>
+                    Floor plan {pageIdx + 1} / {floorPlanPages.length}{" "}
+                    <span className="text-muted-foreground/50">(pg {pageNumber})</span>
+                  </>
+                );
+              })()}
             </span>
             <button
               onClick={() => setPageIdx((i) => Math.min(floorPlanPages.length - 1, i + 1))}
@@ -541,7 +564,14 @@ function FilePdfViewer({
         )}
         {floorPlanPages.length === 1 && (
           <span className="text-xs font-mono text-muted-foreground">
-            Page {pageNumber}
+            {(() => {
+              const label = file.pageStats?.pageLabels?.[pageNumber - 1];
+              return label ? (
+                <span className="text-foreground/80 font-medium">{label}</span>
+              ) : (
+                <>Page {pageNumber}</>
+              );
+            })()}
           </span>
         )}
 
