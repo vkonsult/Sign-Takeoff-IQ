@@ -691,28 +691,20 @@ function scoreForLegendPage(text: string): number {
   }, 0);
 }
 
+// Only terms that genuinely discriminate a floor plan drawing page from
+// elevations, sections, details, specs, etc.  Generic room-name words
+// (stair, elevator, lobby, sanctuary, classroom …) deliberately omitted
+// because they appear throughout any multi-page architectural document.
+// scoreForFloorPlan counts 1 per unique match (not per occurrence) to
+// prevent score inflation from repeated room labels.
 const FLOOR_PLAN_KEYWORDS = [
-  "floor plan", "level", "plan view", "partition", "floor level",
-  "unit", "suite", "office", "conference", "corridor", "hallway",
-  "stair", "elevator", "lobby", "restroom", "bathroom", "lavatory",
-  "mechanical", "electrical", "utility", "storage", "kitchen",
-  "break room", "janitor", "closet", "entry", "reception", "bedroom",
-  "living", "dining", "laundry", "lounge", "mail room", "amenity",
-  "parking", "garage", "common area", "accessible", "ada",
-  "mech", "elec", "vest", "rm ", "r.", "rm.", "b.", "br.",
-  "stair 1", "stair 2", "elev.", "elev 1", "up", "dn",
+  // Explicit floor-plan terminology
+  "floor plan", "plan view", "partition", "floor level",
+  // Drawing-sheet room-code abbreviations (appear as labels on plan drawings)
+  "rm.", " rm ", "stair 1", "stair 2", "stair 3",
+  "elev.", "elev 1", "elev 2",
+  // Code-compliance markers drawn on floor plans (fire exit / pull station symbols)
   "f.e.", "fire exit", "fire extinguisher", "pull station",
-  // Church / worship vocabulary
-  "sanctuary", "narthex", "nave", "chancel", "fellowship", "chapel",
-  "vestibule", "sacristy", "baptistry", "choir", "altar",
-  // School vocabulary
-  "classroom", "gymnasium", "cafeteria", "library", "auditorium",
-  "locker room", "lab", "media center", "gymnasium", "gym",
-  // Residential vocabulary
-  "living room", "master bedroom", "patio", "deck", "pantry",
-  // General room terms
-  "multipurpose", "assembly", "atrium", "concourse", "terminal",
-  "gate", "platform", "boardroom", "training room", "server room",
 ];
 
 const SIGN_SCHEDULE_KEYWORDS = [
@@ -768,9 +760,11 @@ const SIGN_SCHEDULE_KEYWORDS = [
 
 function scoreForFloorPlan(text: string): number {
   const lower = text.toLowerCase();
+  // Count 1 per unique keyword matched (cap at 1 per keyword) to prevent
+  // score inflation from repeated words like "sanctuary ×20" on a church plan.
   return FLOOR_PLAN_KEYWORDS.reduce((score, kw) => {
-    const count = (lower.match(new RegExp(kw.replace(/\./g, "\\."), "g")) || []).length;
-    return score + count;
+    const matched = new RegExp(kw.replace(/\./g, "\\."), "i").test(lower) ? 1 : 0;
+    return score + matched;
   }, 0);
 }
 
@@ -1013,13 +1007,14 @@ function detectTitleBlock(text: string): TitleBlockType {
 }
 
 // Keywords in a filename that strongly suggest this is a floor plan PDF.
+// IMPORTANT: keep these specific — generic terms like " plan " or "level "
+// match far too broadly (e.g. "Church Plan All Pages.pdf", "Project Plan.pdf").
 const FLOOR_PLAN_FILENAME_SIGNALS = [
   "floor plan", "floor-plan", "floorplan",
   "construction plan", "construction-plan",
   "reflected ceiling", "rcp",
   "floor level", "ground floor", "first floor", "second floor", "third floor",
-  "mezzanine", "basement", "level ", "level-",
-  " plan ", "-plan-", "_plan_",
+  "mezzanine", "basement",
   "architectural plan", "arch plan",
   "site plan", "roof plan",
 ];
