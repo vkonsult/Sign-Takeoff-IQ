@@ -121,6 +121,9 @@ interface WordsResponse {
 
 const BBOX_TOLERANCE = 0.02;
 
+// Markers within this normalised distance of each other are considered "stacked"
+const STACK_DIST = 0.018;
+
 /**
  * Fallback matcher: applies the bbox guard to all phrases and runs the simpler
  * phraseMatchScore. Used only when the primary shared matcher returns a result
@@ -456,6 +459,35 @@ function FilePdfViewer({
         });
     }
   }, [resolvedMarkers, jobId, onSignUpdated]);
+
+  // ── Stack detection: group markers that are within STACK_DIST of each other ──
+  const markerStackMap = useMemo(() => {
+    // Returns Map<markerId, { count, leaderId, labels[] }>
+    const result = new Map<string, { count: number; leaderId: string; labels: string[] }>();
+    const assigned = new Set<string>();
+    for (const leader of resolvedMarkers) {
+      if (assigned.has(leader.id)) continue;
+      const group: ResolvedMarker[] = [leader];
+      assigned.add(leader.id);
+      for (const other of resolvedMarkers) {
+        if (assigned.has(other.id)) continue;
+        if (
+          Math.abs(leader.resolvedX - other.resolvedX) < STACK_DIST &&
+          Math.abs(leader.resolvedY - other.resolvedY) < STACK_DIST
+        ) {
+          group.push(other);
+          assigned.add(other.id);
+        }
+      }
+      const labels = group.map((m) =>
+        [m.signIdentifier, m.location].filter(Boolean).join(" · ")
+      );
+      for (const member of group) {
+        result.set(member.id, { count: group.length, leaderId: leader.id, labels });
+      }
+    }
+    return result;
+  }, [resolvedMarkers]);
 
   // ── Pointer helpers ──────────────────────────────────────────────────────────
   const getPageCoords = (e: React.PointerEvent | MouseEvent): { x: number; y: number } | null => {
@@ -818,21 +850,39 @@ function FilePdfViewer({
                     const cx = `${(isDragging ? drag!.currentX : m.resolvedX) * 100}%`;
                     const cy = `${(isDragging ? drag!.currentY : m.resolvedY) * 100}%`;
                     const color = getSignColor(m.signType);
+                    const stack = markerStackMap.get(m.id);
+                    const isLeader = !stack || stack.leaderId === m.id;
+                    const isStacked = !!stack && stack.count > 1;
+                    if (!isLeader) return null;
                     return (
                       <g key={m.id}>
                         {isDragging && (
                           <circle
                             cx={cx}
                             cy={cy}
-                            r={12}
+                            r={isStacked ? 16 : 12}
                             fill="none"
-                            stroke={color}
+                            stroke={isStacked ? "#FF6B35" : color}
                             strokeWidth={1.2}
                             strokeDasharray="4 3"
                             opacity={0.6}
                           />
                         )}
-                        <circle cx={cx} cy={cy} r={5} fill={color} />
+                        {isStacked ? (
+                          <>
+                            <circle cx={cx} cy={cy} r={10} fill="white" stroke="#FF6B35" strokeWidth={2.5} />
+                            <text
+                              x={cx} y={cy}
+                              textAnchor="middle" dominantBaseline="central"
+                              fontSize={9} fontWeight="bold" fill="#FF6B35"
+                              style={{ userSelect: "none", pointerEvents: "none" }}
+                            >
+                              {stack.count}
+                            </text>
+                          </>
+                        ) : (
+                          <circle cx={cx} cy={cy} r={5} fill={color} />
+                        )}
                       </g>
                     );
                   })}
@@ -863,25 +913,40 @@ function FilePdfViewer({
               </svg>
 
               {/* Floating tooltip */}
-              {tooltip && (
-                <div
-                  style={{
-                    position: "absolute",
-                    left: tooltip.x + 10,
-                    top: Math.max(tooltip.y - 36, 4),
-                    zIndex: 20,
-                    pointerEvents: "none",
-                  }}
-                  className="px-2 py-1 rounded-md bg-background/95 border border-border shadow-lg text-[11px] font-mono whitespace-nowrap max-w-[200px] truncate"
-                >
-                  <span
-                    className="inline-block w-2 h-2 rounded-full mr-1.5 align-middle"
-                    style={{ background: getSignColor(tooltip.sign.signType) }}
-                  />
-                  {tooltip.sign.signType ?? "unknown"}
-                  {tooltip.sign.signIdentifier ? ` · ${tooltip.sign.signIdentifier}` : ""}
-                </div>
-              )}
+              {tooltip && (() => {
+                const stack = markerStackMap.get(tooltip.sign.id);
+                const isStacked = !!stack && stack.count > 1;
+                return (
+                  <div
+                    style={{
+                      position: "absolute",
+                      left: tooltip.x + 10,
+                      top: Math.max(tooltip.y - 36, 4),
+                      zIndex: 20,
+                      pointerEvents: "none",
+                    }}
+                    className="px-2 py-1 rounded-md bg-background/95 border border-border shadow-lg text-[11px] font-mono whitespace-nowrap max-w-[260px]"
+                  >
+                    {isStacked ? (
+                      <div>
+                        <span className="font-bold text-[#FF6B35]">{stack.count} signs here</span>
+                        {stack.labels.map((lbl, i) => (
+                          <div key={i} className="truncate text-muted-foreground">{lbl}</div>
+                        ))}
+                      </div>
+                    ) : (
+                      <span>
+                        <span
+                          className="inline-block w-2 h-2 rounded-full mr-1.5 align-middle"
+                          style={{ background: getSignColor(tooltip.sign.signType) }}
+                        />
+                        {tooltip.sign.signType ?? "unknown"}
+                        {tooltip.sign.signIdentifier ? ` · ${tooltip.sign.signIdentifier}` : ""}
+                      </span>
+                    )}
+                  </div>
+                );
+              })()}
 
               {/* Add-marker hint overlay */}
               {addMarkerMode && !pendingMarker && (
@@ -1028,12 +1093,30 @@ function FilePdfViewer({
                         const cx = `${(isDragging ? drag!.currentX : m.resolvedX) * 100}%`;
                         const cy = `${(isDragging ? drag!.currentY : m.resolvedY) * 100}%`;
                         const color = getSignColor(m.signType);
+                        const stack = markerStackMap.get(m.id);
+                        const isLeader = !stack || stack.leaderId === m.id;
+                        const isStacked = !!stack && stack.count > 1;
+                        if (!isLeader) return null;
                         return (
                           <g key={m.id}>
                             {isDragging && (
-                              <circle cx={cx} cy={cy} r={12} fill="none" stroke={color} strokeWidth={1.2} strokeDasharray="4 3" opacity={0.6} />
+                              <circle cx={cx} cy={cy} r={isStacked ? 16 : 12} fill="none" stroke={isStacked ? "#FF6B35" : color} strokeWidth={1.2} strokeDasharray="4 3" opacity={0.6} />
                             )}
-                            <circle cx={cx} cy={cy} r={5} fill={color} />
+                            {isStacked ? (
+                              <>
+                                <circle cx={cx} cy={cy} r={10} fill="white" stroke="#FF6B35" strokeWidth={2.5} />
+                                <text
+                                  x={cx} y={cy}
+                                  textAnchor="middle" dominantBaseline="central"
+                                  fontSize={9} fontWeight="bold" fill="#FF6B35"
+                                  style={{ userSelect: "none", pointerEvents: "none" }}
+                                >
+                                  {stack.count}
+                                </text>
+                              </>
+                            ) : (
+                              <circle cx={cx} cy={cy} r={5} fill={color} />
+                            )}
                           </g>
                         );
                       })}
@@ -1046,16 +1129,31 @@ function FilePdfViewer({
                     </g>
                   </svg>
 
-                  {tooltip && (
-                    <div
-                      style={{ position: "absolute", left: tooltip.x + 10, top: Math.max(tooltip.y - 36, 4), zIndex: 20, pointerEvents: "none" }}
-                      className="px-2 py-1 rounded-md bg-background/95 border border-border shadow-lg text-[11px] font-mono whitespace-nowrap max-w-[200px] truncate"
-                    >
-                      <span className="inline-block w-2 h-2 rounded-full mr-1.5 align-middle" style={{ background: getSignColor(tooltip.sign.signType) }} />
-                      {tooltip.sign.signType ?? "unknown"}
-                      {tooltip.sign.signIdentifier ? ` · ${tooltip.sign.signIdentifier}` : ""}
-                    </div>
-                  )}
+                  {tooltip && (() => {
+                    const stack = markerStackMap.get(tooltip.sign.id);
+                    const isStacked = !!stack && stack.count > 1;
+                    return (
+                      <div
+                        style={{ position: "absolute", left: tooltip.x + 10, top: Math.max(tooltip.y - 36, 4), zIndex: 20, pointerEvents: "none" }}
+                        className="px-2 py-1 rounded-md bg-background/95 border border-border shadow-lg text-[11px] font-mono whitespace-nowrap max-w-[260px]"
+                      >
+                        {isStacked ? (
+                          <div>
+                            <span className="font-bold text-[#FF6B35]">{stack.count} signs here</span>
+                            {stack.labels.map((lbl, i) => (
+                              <div key={i} className="truncate text-muted-foreground">{lbl}</div>
+                            ))}
+                          </div>
+                        ) : (
+                          <span>
+                            <span className="inline-block w-2 h-2 rounded-full mr-1.5 align-middle" style={{ background: getSignColor(tooltip.sign.signType) }} />
+                            {tooltip.sign.signType ?? "unknown"}
+                            {tooltip.sign.signIdentifier ? ` · ${tooltip.sign.signIdentifier}` : ""}
+                          </span>
+                        )}
+                      </div>
+                    );
+                  })()}
 
                   {addMarkerMode && !pendingMarker && (
                     <div
