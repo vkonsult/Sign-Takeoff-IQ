@@ -568,6 +568,18 @@ function PageViewer({
   const hasSetScaleRef = useRef(false);
 
   useEffect(() => {
+    const el = pdfContainerRef.current;
+    if (!el) return;
+    const handleWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      const step = 0.1;
+      setScale((s) => Math.min(2.5, Math.max(0.3, s + (e.deltaY < 0 ? step : -step))));
+    };
+    el.addEventListener("wheel", handleWheel, { passive: false });
+    return () => el.removeEventListener("wheel", handleWheel);
+  }, []);
+
+  useEffect(() => {
     hasSetScaleRef.current = false;
     setNativeSize(null);
   }, [pageNumber, file.id]);
