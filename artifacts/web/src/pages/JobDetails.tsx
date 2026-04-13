@@ -4,10 +4,9 @@ import { useQueryClient } from "@tanstack/react-query";
 import { AppShell } from "@/components/layout/Shell";
 import { apiFetch, openPdfInNewTab } from "@/lib/apiClient";
 import { useJobDetails, useStartExtraction, downloadExport, useUpdateJobName } from "@/hooks/use-takeoff";
-import { SignReviewModal } from "@/components/SignReviewModal";
+import { UnifiedPlanViewer } from "@/components/UnifiedPlanViewer";
+import type { ExtractedSign as SignMarker } from "@/components/UnifiedPlanViewer";
 import { SignSpecModal } from "@/components/SignSpecModal";
-import { FloorPlanViewer } from "@/components/FloorPlanViewer";
-import type { SignMarker } from "@/components/FloorPlanViewer";
 import { getGetJobQueryKey } from "@workspace/api-client-react";
 import { 
   FileText, 
@@ -184,7 +183,7 @@ export default function JobDetails() {
     }
   };
 
-  const handleSignSaved = (updatedSign: Record<string, unknown>) => {
+  const handleSignSaved = (updatedSign: SignMarker) => {
     queryClient.setQueryData(getGetJobQueryKey(jobId), (old: typeof data) => {
       if (!old) return old;
       return {
@@ -583,13 +582,13 @@ export default function JobDetails() {
 
               {activeTab === "floorplans" ? (
                 <div className="flex-1 min-h-0">
-                  <FloorPlanViewer
+                  <UnifiedPlanViewer
+                    mode="tab"
                     jobId={jobId}
                     files={files}
                     signs={extractedSigns}
                     onSignAdded={handleSignAdded}
                     onSignUpdated={handleSignUpdated}
-                    onEditSign={(sign) => setReviewSign(sign as SignRow)}
                   />
                 </div>
               ) : activeTab === "sheets" ? (
@@ -820,11 +819,12 @@ export default function JobDetails() {
       </div>
 
       {reviewSign && (
-        <SignReviewModal
-          sign={reviewSign}
+        <UnifiedPlanViewer
+          mode="modal"
           jobId={jobId}
           files={files}
           allSigns={extractedSigns}
+          initialSignId={reviewSign.id}
           onClose={() => setReviewSign(null)}
           onSaved={handleSignSaved}
           onSignAdded={handleSignAdded}

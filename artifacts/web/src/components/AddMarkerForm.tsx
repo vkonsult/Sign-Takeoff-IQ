@@ -43,9 +43,10 @@ interface Props {
   pending: PendingMarker;
   onSave: (sign: ExtractedSign) => void;
   onCancel: () => void;
+  onSaving?: (isSaving: boolean) => void;
 }
 
-export function AddMarkerForm({ pending, onSave, onCancel }: Props) {
+export function AddMarkerForm({ pending, onSave, onCancel, onSaving }: Props) {
   const [location, setLocation] = useState("");
   const [signType, setSignType] = useState("");
   const [signIdentifier, setSignIdentifier] = useState("");
@@ -62,6 +63,7 @@ export function AddMarkerForm({ pending, onSave, onCancel }: Props) {
     e.preventDefault();
     if (!canSubmit || saving) return;
     setSaving(true);
+    onSaving?.(true);
     setError(null);
     try {
       const res = await apiFetch("/api/extracted-signs", {
@@ -92,6 +94,7 @@ export function AddMarkerForm({ pending, onSave, onCancel }: Props) {
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to save sign");
       setSaving(false);
+      onSaving?.(false);
     }
   };
 
