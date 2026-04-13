@@ -56,18 +56,16 @@ export default function Home() {
             <div 
               {...getRootProps()} 
               className={`
-                relative group overflow-hidden
+                relative overflow-hidden
                 border-2 border-dashed rounded-xl p-12
                 flex flex-col items-center justify-center text-center
                 transition-all duration-300 cursor-pointer min-h-[300px]
-                ${isDragActive ? 'border-primary bg-primary/5' : 'border-border hover:border-muted-foreground/50 bg-card'}
+                ${isDragActive ? 'border-primary bg-primary/5' : 'border-border bg-card'}
               `}
             >
               <input {...getInputProps()} />
-              
-              <div className="absolute inset-0 bg-gradient-to-b from-primary/5 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-500" />
 
-              <div className={`p-4 rounded-full mb-4 transition-colors duration-300 ${isDragActive ? 'bg-primary/20 text-primary' : 'bg-secondary text-muted-foreground group-hover:text-primary group-hover:bg-primary/10'}`}>
+              <div className={`p-4 rounded-full mb-4 transition-colors duration-300 ${isDragActive ? 'bg-primary/20 text-primary' : 'bg-secondary text-muted-foreground'}`}>
                 <UploadCloud className="w-8 h-8" />
               </div>
               
@@ -115,7 +113,7 @@ export default function Home() {
                     initial={{ opacity: 0, y: 10 }}
                     animate={{ opacity: 1, y: 0 }}
                     exit={{ opacity: 0, scale: 0.95 }}
-                    className="flex items-center gap-3 p-3 rounded-lg bg-secondary border border-border/50 group"
+                    className="flex items-center gap-3 p-3 rounded-lg bg-secondary border border-border/50"
                   >
                     <FileText className="w-5 h-5 text-primary shrink-0" />
                     <div className="flex-1 min-w-0">
@@ -131,7 +129,7 @@ export default function Home() {
                         e.stopPropagation();
                         removeFile(i);
                       }}
-                      className="p-1.5 rounded-md text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors opacity-0 group-hover:opacity-100"
+                      className="p-1.5 rounded-md text-muted-foreground transition-colors"
                     >
                       <X className="w-4 h-4" />
                     </button>
@@ -147,7 +145,7 @@ export default function Home() {
                 className={`
                   w-full py-3 px-4 rounded-lg font-display font-semibold uppercase tracking-wider text-sm flex items-center justify-center gap-2 transition-all duration-300
                   ${files.length > 0 && !uploadMutation.isPending
-                    ? "bg-primary text-primary-foreground hover:bg-primary/90 shadow-[0_0_20px_rgba(255,170,0,0.15)] hover:shadow-[0_0_25px_rgba(255,170,0,0.25)]" 
+                    ? "bg-primary text-primary-foreground" 
                     : "bg-secondary text-muted-foreground cursor-not-allowed"}
                 `}
               >
