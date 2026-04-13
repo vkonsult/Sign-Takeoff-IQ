@@ -172,6 +172,9 @@ importers:
       '@google/genai':
         specifier: ^1.46.0
         version: 1.46.0
+      '@napi-rs/canvas':
+        specifier: ^0.1.97
+        version: 0.1.97
       '@workspace/api-zod':
         specifier: workspace:*
         version: link:../../lib/api-zod
@@ -4256,7 +4259,6 @@ snapshots:
       '@napi-rs/canvas-linux-x64-musl': 0.1.97
       '@napi-rs/canvas-win32-arm64-msvc': 0.1.97
       '@napi-rs/canvas-win32-x64-msvc': 0.1.97
-    optional: true
 
   '@nodelib/fs.scandir@2.1.5':
     dependencies:

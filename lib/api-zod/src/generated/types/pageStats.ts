@@ -28,4 +28,6 @@ export interface PageStats {
   pageLabels?: string[] | null;
   /** Outline (bookmark) sections extracted from the PDF, used to boost page classification */
   outlineSections?: PdfOutlineSection[] | null;
+  /** Map of page number (as string key) to absolute file path of pre-rendered PNG image */
+  pageImagePaths?: Record<string, string> | null;
 }

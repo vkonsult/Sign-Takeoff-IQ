@@ -9,12 +9,22 @@ export const UPLOADS_DIR = path.join(DATA_DIR, "uploads");
 export const PARSED_DIR = path.join(DATA_DIR, "parsed");
 export const EXPORTS_DIR = path.join(DATA_DIR, "exports");
 export const LOGOS_DIR = path.join(DATA_DIR, "logos");
+export const PAGES_DIR = path.join(DATA_DIR, "pages");
 
 export async function ensureDirectories(): Promise<void> {
   await fs.mkdir(UPLOADS_DIR, { recursive: true });
   await fs.mkdir(PARSED_DIR, { recursive: true });
   await fs.mkdir(EXPORTS_DIR, { recursive: true });
   await fs.mkdir(LOGOS_DIR, { recursive: true });
+  await fs.mkdir(PAGES_DIR, { recursive: true });
+}
+
+/**
+ * Returns the directory where pre-rendered page PNGs are stored for a given file.
+ * Convention: data/pages/<fileId>/
+ */
+export function getFilePageImagesDir(fileId: string): string {
+  return path.join(PAGES_DIR, fileId);
 }
 
 export function getJobUploadDir(jobId: string): string {

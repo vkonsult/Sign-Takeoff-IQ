@@ -80,6 +80,7 @@ export interface FileInfo {
     bothPages?: number[];
     otherPages: number[];
     pageLabels?: (string | null)[];
+    pageImagePaths?: Record<string, string> | null;
     outlineSections?: Array<{
       title: string;
       pageStart: number;
@@ -227,7 +228,61 @@ function FilePdfViewer({
   const [pageIdx, setPageIdx] = useState(0);
   const pageNumber = floorPlanPages[pageIdx] ?? 1;
 
-  const { pdfBuffer, blobError } = usePdfBlob(`/api/jobs/${jobId}/files/${file.id}/pdf`);
+  // Determine if the current page has a pre-rendered PNG
+  const hasPrerenderedImage = !!(file.pageStats?.pageImagePaths?.[String(pageNumber)]);
+
+  // Pre-rendered image URL (blob URL) — only fetched when a PNG is available
+  const [imageUrl, setImageUrl] = useState<string | null>(null);
+  // imageLoadFailed: true when the image fetch returned an error (404/500/network).
+  // When true the viewer falls back to the react-pdf path for this page.
+  const [imageLoadFailed, setImageLoadFailed] = useState(false);
+  const [imageNaturalSize, setImageNaturalSize] = useState<{ w: number; h: number } | null>(null);
+  const prevImageUrlRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    // Revoke previous blob URL
+    if (prevImageUrlRef.current) {
+      URL.revokeObjectURL(prevImageUrlRef.current);
+      prevImageUrlRef.current = null;
+    }
+    setImageUrl(null);
+    setImageLoadFailed(false);
+    setImageNaturalSize(null);
+
+    if (!hasPrerenderedImage) return;
+
+    let cancelled = false;
+    apiFetch(`/api/jobs/${jobId}/files/${file.id}/pages/${pageNumber}/image`)
+      .then((res) => {
+        if (!res.ok) throw new Error(`Server returned ${res.status}`);
+        return res.blob();
+      })
+      .then((blob) => {
+        if (cancelled) return;
+        const url = URL.createObjectURL(blob);
+        prevImageUrlRef.current = url;
+        setImageUrl(url);
+      })
+      .catch(() => {
+        if (!cancelled) setImageLoadFailed(true);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [jobId, file.id, pageNumber, hasPrerenderedImage]);
+
+  // Cleanup blob URL on unmount
+  useEffect(() => {
+    return () => {
+      if (prevImageUrlRef.current) URL.revokeObjectURL(prevImageUrlRef.current);
+    };
+  }, []);
+
+  // Use PNG path unless image fetch failed — fall back to PDF in that case
+  const useImagePath = hasPrerenderedImage && !imageLoadFailed;
+
+  const { pdfBuffer, blobError } = usePdfBlob(useImagePath ? null : `/api/jobs/${jobId}/files/${file.id}/pdf`);
   const pdfFile = useMemo(
     () => (pdfBuffer ? { data: new Uint8Array(pdfBuffer.slice(0)) } : null),
     [pdfBuffer]
@@ -624,70 +679,57 @@ function FilePdfViewer({
         </button>
       </div>
 
-      {/* PDF area — plain overflow-auto block; inner wrapper centres content
+      {/* Page area — plain overflow-auto block; inner wrapper centres content
           but uses min-w-max to avoid the flex+overflow left-clip bug */}
       <div
         ref={containerRef}
         className="flex-1 overflow-auto p-4"
       >
         <div className="flex justify-center items-start" style={{ minWidth: "max-content" }}>
-        {blobError && (
-          <div className="flex flex-col items-center justify-center h-40 text-destructive gap-2">
-            <AlertTriangle className="w-6 h-6" />
-            <p className="text-sm">Failed to load PDF</p>
-          </div>
-        )}
-        {!pdfFile && !blobError && (
-          <div className="flex items-center justify-center h-40">
-            <Loader2 className="w-6 h-6 text-primary animate-spin" />
-          </div>
-        )}
-        {pdfFile && (
-          <Document
-            file={pdfFile}
-            onLoadSuccess={({ numPages: n }) => {
-              setPdfError(null);
-              void n;
-            }}
-            onLoadError={(err) => setPdfError(err.message)}
-            loading={
+
+        {/* ── Image-backed path: pre-rendered PNG available and successfully fetched ── */}
+        {useImagePath && (
+          <>
+            {!imageUrl && (
               <div className="flex items-center justify-center h-40">
                 <Loader2 className="w-6 h-6 text-primary animate-spin" />
               </div>
-            }
-            error={
-              <div className="flex flex-col items-center justify-center h-40 text-destructive gap-2">
-                <AlertTriangle className="w-6 h-6" />
-                <p className="text-sm">{pdfError ?? "Failed to load PDF"}</p>
-              </div>
-            }
-          >
-            <div
-              ref={pageWrapRef}
-              className="relative shadow-2xl inline-block"
-              style={{ cursor: addMarkerMode ? "crosshair" : "default" }}
-            >
-              <Page
-                key={`${file.id}-${pageNumber}`}
-                pageNumber={pageNumber}
-                scale={scale}
-                renderTextLayer={false}
-                renderAnnotationLayer={false}
-                onLoadSuccess={({ width }) => {
-                  // Guard: react-pdf v10 fires this on EVERY scale change (useEffect([page, scale])).
-                  // Only set scale once per page — ref is reset by useEffect when pageNumber/file.id changes.
-                  if (hasSetScaleRef.current) return;
-                  if (containerRef.current) {
-                    const cw = containerRef.current.clientWidth - 32;
-                    if (cw > 0 && width > 0) {
-                      hasSetScaleRef.current = true;
-                      const fit = Math.min(1.2, Math.max(0.3, cw / width));
-                      setFitScale(fit);
-                      setScale(fit);
-                    }
-                  }
+            )}
+            {imageUrl && (
+              <div
+                ref={pageWrapRef}
+                className="relative shadow-2xl inline-block"
+                style={{
+                  cursor: addMarkerMode ? "crosshair" : "default",
+                  width: imageNaturalSize ? `${imageNaturalSize.w * scale}px` : undefined,
                 }}
-              />
+              >
+                <img
+                  key={`${file.id}-${pageNumber}-img`}
+                  src={imageUrl}
+                  alt={`Floor plan page ${pageNumber}`}
+                  style={{
+                    display: "block",
+                    width: imageNaturalSize ? `${imageNaturalSize.w * scale}px` : "100%",
+                    height: imageNaturalSize ? `${imageNaturalSize.h * scale}px` : "auto",
+                  }}
+                  onLoad={(e) => {
+                    const img = e.currentTarget;
+                    const nw = img.naturalWidth;
+                    const nh = img.naturalHeight;
+                    setImageNaturalSize({ w: nw, h: nh });
+                    if (hasSetScaleRef.current) return;
+                    if (containerRef.current && nw > 0) {
+                      const cw = containerRef.current.clientWidth - 32;
+                      if (cw > 0) {
+                        hasSetScaleRef.current = true;
+                        const fit = Math.min(1.2, Math.max(0.3, cw / nw));
+                        setFitScale(fit);
+                        setScale(fit);
+                      }
+                    }
+                  }}
+                />
 
               {/* SVG overlay — fills the page div, renders markers at percentage coords */}
               <svg
@@ -810,8 +852,149 @@ function FilePdfViewer({
                 </div>
               )}
             </div>
-          </Document>
+            )}
+          </>
         )}
+
+        {/* ── PDF fallback path: no pre-rendered PNG, or image fetch failed ── */}
+        {!useImagePath && (
+          <>
+            {blobError && (
+              <div className="flex flex-col items-center justify-center h-40 text-destructive gap-2">
+                <AlertTriangle className="w-6 h-6" />
+                <p className="text-sm">Failed to load PDF</p>
+              </div>
+            )}
+            {!pdfFile && !blobError && (
+              <div className="flex items-center justify-center h-40">
+                <Loader2 className="w-6 h-6 text-primary animate-spin" />
+              </div>
+            )}
+            {pdfFile && (
+              <Document
+                file={pdfFile}
+                onLoadSuccess={({ numPages: n }) => {
+                  setPdfError(null);
+                  void n;
+                }}
+                onLoadError={(err) => setPdfError(err.message)}
+                loading={
+                  <div className="flex items-center justify-center h-40">
+                    <Loader2 className="w-6 h-6 text-primary animate-spin" />
+                  </div>
+                }
+                error={
+                  <div className="flex flex-col items-center justify-center h-40 text-destructive gap-2">
+                    <AlertTriangle className="w-6 h-6" />
+                    <p className="text-sm">{pdfError ?? "Failed to load PDF"}</p>
+                  </div>
+                }
+              >
+                <div
+                  ref={pageWrapRef}
+                  className="relative shadow-2xl inline-block"
+                  style={{ cursor: addMarkerMode ? "crosshair" : "default" }}
+                >
+                  <Page
+                    key={`${file.id}-${pageNumber}`}
+                    pageNumber={pageNumber}
+                    scale={scale}
+                    renderTextLayer={false}
+                    renderAnnotationLayer={false}
+                    onLoadSuccess={({ width }) => {
+                      if (hasSetScaleRef.current) return;
+                      if (containerRef.current) {
+                        const cw = containerRef.current.clientWidth - 32;
+                        if (cw > 0 && width > 0) {
+                          hasSetScaleRef.current = true;
+                          const fit = Math.min(1.2, Math.max(0.3, cw / width));
+                          setFitScale(fit);
+                          setScale(fit);
+                        }
+                      }
+                    }}
+                  />
+
+                  {/* SVG overlay (PDF path) */}
+                  <svg
+                    ref={svgRef}
+                    style={{
+                      position: "absolute",
+                      top: 0,
+                      left: 0,
+                      width: "100%",
+                      height: "100%",
+                      overflow: "visible",
+                      pointerEvents: addMarkerMode || resolvedMarkers.length > 0 ? "all" : "none",
+                      cursor: addMarkerMode ? "crosshair" : drag ? "grabbing" : "default",
+                      zIndex: 5,
+                    }}
+                    onPointerDown={handleSvgPointerDown}
+                    onPointerMove={handleSvgPointerMove}
+                    onPointerUp={handleSvgPointerUp}
+                    onPointerLeave={() => setTooltip(null)}
+                  >
+                    {wordsData?.floorPlanBbox && (
+                      <defs>
+                        <clipPath id={`fp-clip-${pageNumber}-${file.id.replace(/[^a-zA-Z0-9]/g, "_")}`}>
+                          <rect
+                            x={`${wordsData.floorPlanBbox.x0 * 100}%`}
+                            y={`${wordsData.floorPlanBbox.y0 * 100}%`}
+                            width={`${(wordsData.floorPlanBbox.x1 - wordsData.floorPlanBbox.x0) * 100}%`}
+                            height={`${(wordsData.floorPlanBbox.y1 - wordsData.floorPlanBbox.y0) * 100}%`}
+                          />
+                        </clipPath>
+                      </defs>
+                    )}
+                    <g clipPath={wordsData?.floorPlanBbox ? `url(#fp-clip-${pageNumber}-${file.id.replace(/[^a-zA-Z0-9]/g, "_")})` : undefined}>
+                      {resolvedMarkers.map((m) => {
+                        const isDragging = drag?.signId === m.id;
+                        const cx = `${(isDragging ? drag!.currentX : m.resolvedX) * 100}%`;
+                        const cy = `${(isDragging ? drag!.currentY : m.resolvedY) * 100}%`;
+                        const color = getSignColor(m.signType);
+                        return (
+                          <g key={m.id}>
+                            {isDragging && (
+                              <circle cx={cx} cy={cy} r={12} fill="none" stroke={color} strokeWidth={1.2} strokeDasharray="4 3" opacity={0.6} />
+                            )}
+                            <circle cx={cx} cy={cy} r={5} fill={color} />
+                          </g>
+                        );
+                      })}
+                      {pendingMarker && (
+                        <g>
+                          <circle cx={`${pendingMarker.xPos * 100}%`} cy={`${pendingMarker.yPos * 100}%`} r={8} fill="none" stroke="#FFAA00" strokeWidth={2} strokeDasharray="5 3" opacity={0.85} />
+                          <circle cx={`${pendingMarker.xPos * 100}%`} cy={`${pendingMarker.yPos * 100}%`} r={4} fill="#FFAA00" opacity={0.9} />
+                        </g>
+                      )}
+                    </g>
+                  </svg>
+
+                  {tooltip && (
+                    <div
+                      style={{ position: "absolute", left: tooltip.x + 10, top: Math.max(tooltip.y - 36, 4), zIndex: 20, pointerEvents: "none" }}
+                      className="px-2 py-1 rounded-md bg-background/95 border border-border shadow-lg text-[11px] font-mono whitespace-nowrap max-w-[200px] truncate"
+                    >
+                      <span className="inline-block w-2 h-2 rounded-full mr-1.5 align-middle" style={{ background: getSignColor(tooltip.sign.signType) }} />
+                      {tooltip.sign.signType ?? "unknown"}
+                      {tooltip.sign.signIdentifier ? ` · ${tooltip.sign.signIdentifier}` : ""}
+                    </div>
+                  )}
+
+                  {addMarkerMode && !pendingMarker && (
+                    <div
+                      style={{ position: "absolute", top: 8, left: "50%", transform: "translateX(-50%)", zIndex: 10, pointerEvents: "none" }}
+                      className="px-3 py-1.5 rounded-full bg-primary/90 text-primary-foreground text-[10px] font-bold uppercase tracking-wider shadow-lg whitespace-nowrap"
+                    >
+                      Click on floor plan to place a marker · Press again to cancel
+                    </div>
+                  )}
+                </div>
+              </Document>
+            )}
+          </>
+        )}
+
         </div>{/* end centering wrapper */}
       </div>
 

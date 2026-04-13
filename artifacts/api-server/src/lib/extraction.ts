@@ -1509,13 +1509,25 @@ async function callGemini(
 
 // ─── MULTIMODAL GEMINI CALL (IMAGE / PDF) ─────────────────────────────────────
 
+type GeminiInlinePart = { inlineData: { mimeType: string; data: string } };
+
+/**
+ * Call Gemini with multimodal content.
+ *
+ * Overload 1: single PDF base64 string (original behaviour)
+ * Overload 2: array of pre-built inline parts (PNG images)
+ */
 async function callGeminiMultimodal(
   prompt: string,
-  pdfBase64: string,
+  pdfOrParts: string | GeminiInlinePart[],
   ai: GeminiAI,
   label: string
 ): Promise<GeminiCallResult> {
   const MAX_RETRIES = 4;
+
+  const dataParts: GeminiInlinePart[] = typeof pdfOrParts === "string"
+    ? [{ inlineData: { mimeType: "application/pdf", data: pdfOrParts } }]
+    : pdfOrParts;
 
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
     try {
@@ -1525,7 +1537,7 @@ async function callGeminiMultimodal(
           {
             role: "user",
             parts: [
-              { inlineData: { mimeType: "application/pdf", data: pdfBase64 } },
+              ...dataParts,
               { text: prompt },
             ],
           },
@@ -1988,7 +2000,8 @@ export async function extractSignsFromPdfImageVerify(
   filePath: string,
   ai: GeminiAI,
   textSignsByPage: Map<number, TextContextSign[]>,
-  relevantPages?: Set<number>
+  relevantPages?: Set<number>,
+  pageImagePaths?: Record<string, string>
 ): Promise<VerifyResult> {
   if (textSignsByPage.size === 0) {
     return { verifications: [], discoveries: [], inputTokens: 0, outputTokens: 0, skipped: true, skipReason: "No text signs to verify" };
@@ -2001,6 +2014,68 @@ export async function extractSignsFromPdfImageVerify(
     return { verifications: [], discoveries: [], inputTokens: 0, outputTokens: 0, skipped: true, skipReason: "No relevant pages for verification" };
   }
 
+  const fileName = filePath.split("/").pop() ?? "file.pdf";
+
+  // ── PNG fast-path: when pre-rendered images are available for all relevant pages,
+  // send them directly to Gemini as image/png inline data (skips pdf-lib entirely).
+  if (pageImagePaths && relevantPages && relevantPages.size > 0) {
+    const relevantSorted = Array.from(relevantPages).sort((a, b) => a - b);
+    const allCovered = relevantSorted.every((p) => pageImagePaths[String(p)]);
+    if (allCovered) {
+      logger.info({ fileName, pages: relevantSorted.length }, "Visual verification: PNG fast-path");
+
+      const allVerifications: VerificationItem[] = [];
+      const allDiscoveries: ExtractedSignRow[] = [];
+      let totalIn = 0;
+      let totalOut = 0;
+
+      // Batch PNGs: send IMAGE_BATCH_PAGES images per Gemini call
+      for (let batchStart = 0; batchStart < relevantSorted.length; batchStart += IMAGE_BATCH_PAGES) {
+        const batchPages = relevantSorted.slice(batchStart, batchStart + IMAGE_BATCH_PAGES);
+
+        // Build per-batch sign map (page numbers stay original since each image = one page)
+        const batchMap = new Map<number, TextContextSign[]>();
+        for (const pageNum of batchPages) {
+          const signs = textSignsByPage.get(pageNum);
+          if (signs && signs.length > 0) batchMap.set(pageNum, signs);
+        }
+        if (batchMap.size === 0) continue;
+
+        const inlineParts: GeminiInlinePart[] = [];
+        for (const pageNum of batchPages) {
+          try {
+            const buf = await fs.readFile(pageImagePaths[String(pageNum)]!);
+            inlineParts.push({ inlineData: { mimeType: "image/png", data: buf.toString("base64") } });
+          } catch (err) {
+            logger.warn({ err, pageNum }, "PNG fast-path: could not read page image — skipping page");
+          }
+        }
+        if (inlineParts.length === 0) continue;
+
+        const batchPrompt = buildVerificationPrompt(batchMap);
+        const firstPage = batchPages[0]!;
+        const lastPage = batchPages[batchPages.length - 1]!;
+        const label = `verify-${fileName}-p${firstPage}-${lastPage}-png`;
+
+        try {
+          const { text, inputTokens, outputTokens } = await callGeminiMultimodal(batchPrompt, inlineParts, ai, label);
+          const { verifications, discoveries } = parseVerificationResponse(text, label);
+          allVerifications.push(...verifications);
+          allDiscoveries.push(...discoveries);
+          totalIn += inputTokens;
+          totalOut += outputTokens;
+        } catch (err) {
+          logger.warn({ err, label }, "PNG fast-path batch call failed — skipping batch");
+        }
+      }
+
+      logger.info({ verifications: allVerifications.length, discoveries: allDiscoveries.length, inputTokens: totalIn, outputTokens: totalOut }, "Visual verification complete (PNG fast-path)");
+      return { verifications: allVerifications, discoveries: allDiscoveries, inputTokens: totalIn, outputTokens: totalOut, skipped: false };
+    }
+    // Not all pages are covered by PNGs — fall through to PDF path
+    logger.info({ fileName }, "Visual verification: PNG coverage incomplete — using PDF fallback");
+  }
+
   let fileBuffer: Buffer;
   try {
     fileBuffer = await fs.readFile(filePath);
@@ -2008,8 +2083,6 @@ export async function extractSignsFromPdfImageVerify(
     logger.error({ err, filePath }, "Verification: could not read PDF file");
     return { verifications: [], discoveries: [], inputTokens: 0, outputTokens: 0, skipped: true, skipReason: "Could not read PDF file" };
   }
-
-  const fileName = filePath.split("/").pop() ?? "file.pdf";
 
   if (fileBuffer.length <= MAX_INLINE_PDF_BYTES) {
     // Single-pass path: filter to relevant pages if provided

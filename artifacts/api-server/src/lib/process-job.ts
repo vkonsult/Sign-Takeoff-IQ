@@ -1,3 +1,4 @@
+import path from "path";
 import { eq, and, ne, desc } from "drizzle-orm";
 import { db } from "@workspace/db";
 import {
@@ -10,7 +11,8 @@ import {
 
 import { ai } from "@workspace/integrations-gemini-ai";
 import { extractSignsFromPdf, extractSignsFromPdfImageVerify, extractProjectInfo, extractTextFromPdf, isSpecFile, buildSpecContextString, type ProjectInfo, type VerifiedSignSummary, type TextContextSign, type VerificationItem, type ExtractedSignRow } from "./extraction";
-import { saveParsedResult } from "./storage";
+import { saveParsedResult, getFilePageImagesDir, PAGES_DIR } from "./storage";
+import { renderFloorPlanPages } from "./pdf-render";
 import { logger } from "./logger";
 import { extractPagePhrases, detectFloorPlanBbox, matchLocationToCoords, classifyPageFromPhrases, type PdfPhrase, type FloorPlanBbox, type SpatialPageType } from "./pdf-words";
 
@@ -361,6 +363,44 @@ export async function processJob(jobId: string): Promise<void> {
           ...textResult.pageStats.signSchedulePages,
         ]);
 
+        // ── PNG pre-render: rasterize ALL relevant pages ──────────────────────
+        // Includes floor_plan, both, AND sign_schedule pages so the Gemini
+        // PNG fast-path can always use images for every relevant page.
+        // Run BEFORE verification.  Failures are non-fatal.
+        const pngPageNumsSet = new Set([
+          ...textResult.pageStats.floorPlanPages,
+          ...(textResult.pageStats.bothPages ?? []),
+          ...textResult.pageStats.signSchedulePages,
+        ]);
+        const pngPageNums = Array.from(pngPageNumsSet).sort((a, b) => a - b);
+        // pageImagePathsRelative: stored in DB (relative paths, no filesystem disclosure)
+        // pageImagePathsAbsolute: passed to extraction / Gemini (must be absolute for fs.readFile)
+        let pageImagePathsRelative: Record<string, string> | null = null;
+        let pageImagePathsAbsolute: Record<string, string> | null = null;
+        if (pngPageNums.length > 0) {
+          try {
+            const t_render = Date.now();
+            const outputDir = getFilePageImagesDir(file.id);
+            const rendered = await renderFloorPlanPages(file.storedPath, pngPageNums, outputDir);
+            if (rendered.size > 0) {
+              pageImagePathsRelative = {};
+              pageImagePathsAbsolute = {};
+              const pagesParent = path.dirname(PAGES_DIR);
+              for (const [pageNum, absPath] of rendered) {
+                // Relative path stored in DB; absolute path used for Gemini
+                pageImagePathsRelative[String(pageNum)] = path.relative(pagesParent, absPath);
+                pageImagePathsAbsolute[String(pageNum)] = absPath;
+              }
+            }
+            logger.info(
+              { fileId: file.id, pagesRendered: rendered.size, durationMs: Date.now() - t_render },
+              "PNG pre-render complete",
+            );
+          } catch (err) {
+            logger.warn({ err, fileId: file.id }, "PNG pre-render failed — non-fatal, viewer will use PDF fallback");
+          }
+        }
+
         const t_image = skipVerification ? 0 : Date.now();
         const imageResult = skipVerification
           ? {
@@ -371,16 +411,27 @@ export async function processJob(jobId: string): Promise<void> {
               skipped: true as const,
               skipReason: `High-confidence skip (${Math.round(highConfRatio * 100)}% of ${textResult.rows.length} signs ≥ ${HIGH_CONF_THRESHOLD} confidence)`,
             }
-          : await extractSignsFromPdfImageVerify(file.storedPath, ai, textSignsByPage, relevantPageNums).catch((err) => {
+          : await extractSignsFromPdfImageVerify(
+              file.storedPath,
+              ai,
+              textSignsByPage,
+              relevantPageNums,
+              pageImagePathsAbsolute ?? undefined,
+            ).catch((err) => {
               logger.warn({ err, fileId: file.id }, "Visual verification threw unexpectedly — skipping");
               return { verifications: [] as VerificationItem[], discoveries: [], inputTokens: 0, outputTokens: 0, skipped: true as const, skipReason: "Internal error" };
             });
         const imageDurationMs = skipVerification ? 0 : Date.now() - t_image;
 
+        // Merge relative pageImagePaths into pageStats before persisting
+        const finalPageStats = pageImagePathsRelative
+          ? { ...textResult.pageStats, pageImagePaths: pageImagePathsRelative }
+          : textResult.pageStats;
+
         // Per-file DB update is safe to do inside the parallel map
         await db
           .update(jobFilesTable)
-          .set({ pageCount: textResult.pageCount, extractedText: textResult.rawText.slice(0, 10000), pageStats: textResult.pageStats })
+          .set({ pageCount: textResult.pageCount, extractedText: textResult.rawText.slice(0, 10000), pageStats: finalPageStats })
           .where(eq(jobFilesTable.id, file.id));
 
         return { ok: true, file, textResult, imageResult, textDurationMs, imageDurationMs };

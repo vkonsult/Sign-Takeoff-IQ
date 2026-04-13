@@ -81,6 +81,8 @@ export interface PageStats {
   pageLabels?: (string | null)[] | null;
   /** Top-level PDF outline (bookmark) sections with classified page ranges */
   outlineSections?: PdfOutlineSection[] | null;
+  /** Map of page number (as string key) to absolute file path of pre-rendered PNG image */
+  pageImagePaths?: Record<string, string> | null;
 }
 
 export interface JobFile {

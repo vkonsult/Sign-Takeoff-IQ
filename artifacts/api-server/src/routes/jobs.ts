@@ -1,3 +1,4 @@
+import path from "path";
 import { Router, type IRouter, type Request, type Response } from "express";
 import { eq, desc, inArray, and, or, ne, isNull, isNotNull, not, SQL, sql, getTableColumns } from "drizzle-orm";
 import { db } from "@workspace/db";
@@ -8,7 +9,7 @@ import {
   activityLogsTable,
 } from "@workspace/db";
 import { buildExcelExport } from "../lib/export";
-import { getJobExportPath } from "../lib/storage";
+import { getJobExportPath, PAGES_DIR } from "../lib/storage";
 import { extractPagePhrases, detectFloorPlanBbox } from "../lib/pdf-words";
 import { processJob, deduplicateSignRows } from "../lib/process-job";
 import { extractSignsFromPdfImage, extractSignsFromPdf, visualLocateDoors } from "../lib/extraction";
@@ -804,6 +805,72 @@ router.get("/jobs/:jobId/files/:fileId/pdf", async (req, res) => {
   } catch (err) {
     req.log.error({ err, fileId }, "Failed to serve PDF");
     res.status(500).json({ error: "Failed to serve PDF" });
+  }
+});
+
+// ── Pre-rendered page image (PNG) serving ─────────────────────────────────
+// Returns the pre-rendered PNG for a floor plan page.  Returns 404 when no
+// pre-rendered image exists (viewer falls back to react-pdf for those pages).
+router.get("/jobs/:jobId/files/:fileId/pages/:pageNum/image", async (req, res) => {
+  const { jobId, fileId, pageNum } = req.params;
+  const pageNumInt = parseInt(pageNum ?? "", 10);
+
+  if (!jobId || !fileId || isNaN(pageNumInt) || pageNumInt < 1) {
+    res.status(400).json({ error: "Invalid parameters" });
+    return;
+  }
+
+  try {
+    const _job = await getJobWithOrgCheck(req, res, jobId);
+    if (!_job) return;
+
+    const [file] = await db
+      .select()
+      .from(jobFilesTable)
+      .where(eq(jobFilesTable.id, fileId));
+
+    if (!file || file.jobId !== jobId) {
+      res.status(404).json({ error: "File not found" });
+      return;
+    }
+
+    const storedPath = file.pageStats?.pageImagePaths?.[String(pageNumInt)];
+    if (!storedPath) {
+      res.status(404).json({ error: "No pre-rendered image for this page" });
+      return;
+    }
+
+    // Resolve relative path (stored as pages/<fileId>/page-N.png) to absolute.
+    // Older records may still have absolute paths — path.isAbsolute handles both.
+    const pagesParent = path.dirname(PAGES_DIR);
+    const imagePath = path.isAbsolute(storedPath)
+      ? storedPath
+      : path.join(pagesParent, storedPath);
+
+    // Prevent directory traversal — constrain to PAGES_DIR (not just its parent).
+    const resolvedPath = path.resolve(imagePath);
+    if (!resolvedPath.startsWith(path.resolve(PAGES_DIR) + path.sep)) {
+      res.status(403).json({ error: "Access denied" });
+      return;
+    }
+
+    try {
+      await fs.access(resolvedPath);
+    } catch {
+      res.status(404).json({ error: "Image file not found on disk" });
+      return;
+    }
+
+    const stat = await fs.stat(resolvedPath);
+    res.setHeader("Content-Type", "image/png");
+    res.setHeader("Content-Length", stat.size);
+    res.setHeader("Cache-Control", "private, max-age=86400");
+
+    const stream = fsSync.createReadStream(resolvedPath);
+    stream.pipe(res);
+  } catch (err) {
+    req.log.error({ err, fileId, pageNum }, "Failed to serve page image");
+    res.status(500).json({ error: "Failed to serve page image" });
   }
 });
 

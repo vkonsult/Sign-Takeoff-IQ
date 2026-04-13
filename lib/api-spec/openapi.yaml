@@ -377,6 +377,12 @@ components:
           items:
             $ref: '#/components/schemas/PdfOutlineSection'
           description: Top-level PDF outline (bookmark) sections with classified page ranges
+        pageImagePaths:
+          type: object
+          nullable: true
+          additionalProperties:
+            type: string
+          description: Map of page number (as string key) to server-relative path of pre-rendered PNG image (resolved server-side; not exposed to clients)
       required:
         - floorPlanPages
         - signSchedulePages
