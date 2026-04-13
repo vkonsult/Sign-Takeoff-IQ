@@ -1579,7 +1579,7 @@ function PageViewer({
                     if (textMarkers.length === 0) return;
                     let best: TextMarker | null = null; let bestDist = Infinity;
                     for (const m of textMarkers) { const d = Math.hypot(m.x - nx, m.y - ny); if (d < bestDist) { bestDist = d; best = m; } }
-                    if (best && bestDist < 0.20) {
+                    if (best && bestDist < 0.05) {
                       const found = localSigns.find((s) => s.id === best!.signId);
                       if (found) handleSelectSign(found);
                     }
