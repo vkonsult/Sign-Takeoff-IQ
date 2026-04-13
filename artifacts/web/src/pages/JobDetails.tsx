@@ -589,6 +589,7 @@ export default function JobDetails() {
                     signs={extractedSigns}
                     onSignAdded={handleSignAdded}
                     onSignUpdated={handleSignUpdated}
+                    onEditSign={(s) => setReviewSign(s as SignRow)}
                   />
                 </div>
               ) : activeTab === "sheets" ? (

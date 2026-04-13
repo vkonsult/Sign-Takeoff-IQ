@@ -78,6 +78,7 @@ export interface UnifiedPlanViewerProps {
   onSignAdded?: (sign: ExtractedSign) => void;
   onSignUpdated?: (signId: string, xPos: number, yPos: number) => void;
   onSignDeleted?: (signId: string) => void;
+  onEditSign?: (sign: ExtractedSign) => void;
 }
 
 // ── Internal Types ────────────────────────────────────────────────────────────
@@ -441,6 +442,7 @@ interface PageViewerProps {
   onSignAdded?: (sign: ExtractedSign) => void;
   onSignUpdated?: (signId: string, xPos: number, yPos: number) => void;
   onSignDeleted?: (signId: string) => void;
+  onEditSign?: (sign: ExtractedSign) => void;
   navigablePages: number[];
   pageNumber: number;
   setPageNumber: (p: number) => void;
@@ -459,6 +461,7 @@ function PageViewer({
   onSignAdded,
   onSignUpdated,
   onSignDeleted,
+  onEditSign,
   navigablePages,
   pageNumber,
   setPageNumber,
@@ -646,6 +649,7 @@ function PageViewer({
 
   // ── Modes ──────────────────────────────────────────────────────────────────
   const [showOverlay, setShowOverlay] = useState(true);
+  const [showBoundaries, setShowBoundaries] = useState(mode === "modal");
   const [debugMode, setDebugMode] = useState(false);
   const [drawMode, setDrawMode] = useState(false);
   const [addMode, setAddMode] = useState(false);
@@ -1027,21 +1031,21 @@ function PageViewer({
         </button>
         <div className="w-px h-4 bg-border mx-0.5" />
 
-        {/* Go to page */}
-        {activeSign?.pageNumber && (
+        {/* Go to page — modal only */}
+        {mode === "modal" && activeSign?.pageNumber && (
           <button onClick={() => setPageNumber(activeSign.pageNumber!)} className="text-xs font-mono px-2 py-0.5 rounded transition-colors" style={{ backgroundColor: "#22c55e22", color: "#22c55e", border: "1px solid #22c55e55" }} title="Jump to sign page">
             ● Go to pg {activeSign.pageNumber}
           </button>
         )}
 
-        {/* Visual-locate status */}
-        {visualLocating && (
+        {/* Visual-locate status — modal only */}
+        {mode === "modal" && visualLocating && (
           <span className="flex items-center gap-1 text-[10px] font-display font-semibold uppercase tracking-wide px-2 py-1 rounded" style={{ color: "#06b6d4", background: "#06b6d410", border: "1px solid #06b6d455" }}>
             <Loader2 className="w-3 h-3 animate-spin" />
             AI locating…
           </span>
         )}
-        {!visualLocating && visualCandidates.size > 0 && (
+        {mode === "modal" && !visualLocating && visualCandidates.size > 0 && (
           <span className="flex items-center gap-1 text-[10px] font-display font-semibold uppercase tracking-wide px-2 py-1 rounded" style={{ color: "#06b6d4", background: "#06b6d410", border: "1px solid #06b6d455" }}>
             <Sparkles className="w-3 h-3" />
             AI found {visualCandidates.size > 1 ? `${visualCandidates.size} signs` : "a sign"} — pick a numbered dot to confirm
@@ -1049,7 +1053,8 @@ function PageViewer({
         )}
 
         <div className="ml-auto flex items-center gap-2">
-          {serverPhrases && (
+          {/* Debug — modal only */}
+          {mode === "modal" && serverPhrases && (
             <button
               onClick={() => setDebugMode((v) => !v)}
               className="flex items-center gap-1 text-[10px] font-display font-semibold uppercase tracking-wide px-2 py-1 rounded transition-colors border"
@@ -1060,6 +1065,7 @@ function PageViewer({
             </button>
           )}
 
+          {/* Show/hide markers — both modes */}
           {textMarkers.length > 0 && (
             <>
               <button
@@ -1079,7 +1085,18 @@ function PageViewer({
             </>
           )}
 
-          {pageReady && (
+          {/* Boundaries toggle — both modes */}
+          <button
+            onClick={() => setShowBoundaries((v) => !v)}
+            className="flex items-center gap-1 text-[10px] font-display font-semibold uppercase tracking-wide px-2 py-1 rounded transition-colors border"
+            style={showBoundaries ? { background: "#3b82f620", color: "#3b82f6", borderColor: "#3b82f655" } : { background: "transparent", color: "var(--muted-foreground)", borderColor: "var(--border)" }}
+            title={showBoundaries ? "Hide AI region boundaries" : "Show AI region boundaries"}
+          >
+            ⬡ Bounds
+          </button>
+
+          {/* Add Marker — modal only */}
+          {mode === "modal" && pageReady && (
             <button
               onClick={() => { setAddMode((v) => { const next = !v; if (next) setDrawMode(false); return next; }); setPendingNewMarker(null); }}
               className="flex items-center gap-1.5 text-[10px] font-display font-semibold uppercase tracking-wide px-2 py-1 rounded transition-colors border"
@@ -1091,7 +1108,8 @@ function PageViewer({
             </button>
           )}
 
-          {pageReady && (
+          {/* Edit Markers — modal only */}
+          {mode === "modal" && pageReady && (
             <button
               onClick={() => { setDrawMode((v) => { const next = !v; if (next) setAddMode(false); return next; }); setPendingNewMarker(null); }}
               className="flex items-center gap-1.5 text-[10px] font-display font-semibold uppercase tracking-wide px-2 py-1 rounded transition-colors border"
@@ -1106,8 +1124,8 @@ function PageViewer({
 
       </div>
 
-      {/* Signs-on-page chips strip */}
-      {signsOnCurrentPage.length > 0 && (
+      {/* Signs-on-page chips strip — modal only */}
+      {mode === "modal" && signsOnCurrentPage.length > 0 && (
         <div className="flex-none flex items-center gap-1.5 px-4 py-1.5 bg-card border-b border-border overflow-x-auto">
           {signsOnCurrentPage.map((s) => {
             const isActive = s.id === activeSignId;
@@ -1218,8 +1236,8 @@ function PageViewer({
 
               {/* ── Shared overlays (identical for both PNG and PDF paths) ── */}
 
-              {/* Sign schedule notice */}
-              {isSignSchedulePage && textMarkers.filter((m) => !m.isGhost).length === 0 && (
+              {/* Sign schedule notice — modal only */}
+              {mode === "modal" && isSignSchedulePage && textMarkers.filter((m) => !m.isGhost).length === 0 && (
                 <div style={{ position: "absolute", top: 8, left: "50%", transform: "translateX(-50%)", zIndex: 10, pointerEvents: "none" }}
                   className="px-3 py-1.5 rounded-full bg-accent/90 text-background text-[10px] font-bold uppercase tracking-wider shadow-lg whitespace-nowrap">
                   Sign Schedule Page — use Edit Markers to place manually
@@ -1244,10 +1262,10 @@ function PageViewer({
                     })()}
                   </defs>
 
-                  {aiPageRegion?.floorPlan && (
+                  {showBoundaries && aiPageRegion?.floorPlan && (
                     <rect x={aiPageRegion.floorPlan.x0 * renderedW} y={aiPageRegion.floorPlan.y0 * renderedH} width={(aiPageRegion.floorPlan.x1 - aiPageRegion.floorPlan.x0) * renderedW} height={(aiPageRegion.floorPlan.y1 - aiPageRegion.floorPlan.y0) * renderedH} fill="none" stroke="#3B82F6" strokeWidth={1.5} strokeDasharray="6 4" opacity={0.5} />
                   )}
-                  {aiPageRegion?.signSchedule && (
+                  {showBoundaries && aiPageRegion?.signSchedule && (
                     <rect x={aiPageRegion.signSchedule.x0 * renderedW} y={aiPageRegion.signSchedule.y0 * renderedH} width={(aiPageRegion.signSchedule.x1 - aiPageRegion.signSchedule.x0) * renderedW} height={(aiPageRegion.signSchedule.y1 - aiPageRegion.signSchedule.y0) * renderedH} fill="none" stroke="#F59E0B" strokeWidth={1.5} strokeDasharray="6 4" opacity={0.5} />
                   )}
 
@@ -1313,8 +1331,8 @@ function PageViewer({
                 </svg>
               )}
 
-              {/* Ghost pin */}
-              {pendingNewMarker && renderedW && renderedH && (
+              {/* Ghost pin — modal only */}
+              {mode === "modal" && pendingNewMarker && renderedW && renderedH && (
                 <svg style={{ position: "absolute", top: 0, left: 0, width: renderedW, height: renderedH, overflow: "visible", pointerEvents: "none", zIndex: 7 }} viewBox={`0 0 ${renderedW} ${renderedH}`}>
                   <g>
                     <circle cx={pendingNewMarker.nx * renderedW} cy={pendingNewMarker.ny * renderedH} r={14} fill="none" stroke="#22c55e" strokeWidth={2.5} strokeDasharray="5 3" opacity={0.95} />
@@ -1343,6 +1361,9 @@ function PageViewer({
                       <div className="text-muted-foreground truncate">{s.signType}</div>
                     )}
                     {s.location && <div className="text-muted-foreground/70 truncate">{s.location}</div>}
+                    {mode === "tab" && onEditSign && (
+                      <div className="text-muted-foreground/50 truncate mt-0.5" style={{ fontSize: 9 }}>Double-click to edit</div>
+                    )}
                   </div>
                 );
               })()}
@@ -1377,8 +1398,8 @@ function PageViewer({
                 );
               })}
 
-              {/* Per-marker spinner */}
-              {showOverlay && visualLocating && renderedW && renderedH && textMarkers.map((m) => {
+              {/* Per-marker spinner — modal only */}
+              {mode === "modal" && showOverlay && visualLocating && renderedW && renderedH && textMarkers.map((m) => {
                 if (!visualLocateSubmittedRef.current.has(m.signId)) return null;
                 const cx = m.x * renderedW!; const cy = m.y * renderedH!; const r = m.isCurrent ? 18 : 12;
                 return (
@@ -1388,8 +1409,8 @@ function PageViewer({
                 );
               })}
 
-              {/* AI-placed badges */}
-              {showOverlay && !drawMode && renderedW && renderedH && textMarkers.map((m) => {
+              {/* AI-placed badges — modal only */}
+              {mode === "modal" && showOverlay && !drawMode && renderedW && renderedH && textMarkers.map((m) => {
                 const markerSign = signsOnCurrentPage.find((s) => s.id === m.signId);
                 if (markerSign?.placementSource !== "gemini_vision" && markerSign?.placementSource !== "user_confirmed") return null;
                 const cx = m.x * renderedW!; const cy = m.y * renderedH!; const r = m.isCurrent ? 18 : 12;
@@ -1406,8 +1427,8 @@ function PageViewer({
                 );
               })}
 
-              {/* Visual candidate dots */}
-              {showOverlay && !drawMode && renderedW && renderedH && (
+              {/* Visual candidate dots — modal only */}
+              {mode === "modal" && showOverlay && !drawMode && renderedW && renderedH && (
                 Array.from(visualCandidates.entries()).flatMap(([signId, allCandidates]) =>
                   allCandidates.map((c, idx) => {
                     const cx = c.x * renderedW; const cy = c.y * renderedH;
@@ -1451,7 +1472,7 @@ function PageViewer({
                       const d = Math.hypot(m.x - nx, m.y - ny);
                       if (d < bestDist) { bestDist = d; best = m; }
                     }
-                    if (best && bestDist < 0.06) {
+                    if (mode === "modal" && best && bestDist < 0.06) {
                       e.currentTarget.setPointerCapture(e.pointerId);
                       const ds: DragState = { signId: best.signId, startX: nx, startY: ny, currentX: nx, currentY: ny, isDragging: false };
                       dragRef.current = ds;
@@ -1555,6 +1576,22 @@ function PageViewer({
                       if (found) handleSelectSign(found);
                     }
                   }}
+                  onDoubleClick={(e) => {
+                    if (mode !== "tab" || !onEditSign) return;
+                    const rect = e.currentTarget.getBoundingClientRect();
+                    const nx = (e.clientX - rect.left) / renderedW!;
+                    const ny = (e.clientY - rect.top) / renderedH!;
+                    let best: TextMarker | null = null; let bestDist = Infinity;
+                    for (const m of textMarkers) {
+                      if (m.isGhost) continue;
+                      const d = Math.hypot(m.x - nx, m.y - ny);
+                      if (d < bestDist) { bestDist = d; best = m; }
+                    }
+                    if (best && bestDist < 0.12) {
+                      const found = localSigns.find((s) => s.id === best!.signId);
+                      if (found) onEditSign(found);
+                    }
+                  }}
                 />
               )}
             </div>
@@ -1596,6 +1633,7 @@ export function UnifiedPlanViewer({
   onSignAdded,
   onSignUpdated,
   onSignDeleted,
+  onEditSign,
 }: UnifiedPlanViewerProps) {
   const sourceSigns = (allSignsProp ?? signs ?? []) as ExtractedSign[];
   const [localSigns, setLocalSigns] = useState<ExtractedSign[]>(sourceSigns);
@@ -1622,8 +1660,7 @@ export function UnifiedPlanViewer({
     if (s?.pageNumber) setPageNumber(s.pageNumber);
   }, []);
 
-  // ── Tab mode: show/hide right edit panel ───────────────────────────────────
-  const [showEditPanel, setShowEditPanel] = useState(false);
+  // ── Text search status (used by modal edit panel) ─────────────────────────
   const [textSearchStatus, setTextSearchStatus] = useState<"idle" | "found" | "not-found">("idle");
 
   // ── resetAiPlacement bridge: PageViewer registers its function here so the
@@ -1715,7 +1752,6 @@ export function UnifiedPlanViewer({
 
   const handleActiveSignChange = (s: ExtractedSign | null) => {
     setActiveSign(s);
-    if (s && mode === "tab") setShowEditPanel(true);
   };
 
   const pageViewer = (
@@ -1731,6 +1767,7 @@ export function UnifiedPlanViewer({
       onSignAdded={onSignAdded}
       onSignUpdated={onSignUpdated}
       onSignDeleted={onSignDeleted}
+      onEditSign={onEditSign}
       navigablePages={navigablePages}
       pageNumber={pageNumber}
       setPageNumber={setPageNumber}
@@ -1759,19 +1796,6 @@ export function UnifiedPlanViewer({
 
         <div className="flex flex-1 min-h-0 overflow-hidden">
           {pageViewer}
-          {showEditPanel && activeSign && (
-            <EditPanel
-              activeSign={activeSign}
-              textSearchStatus={textSearchStatus}
-              onClose={() => setShowEditPanel(false)}
-              onSaved={onSaved}
-              onSignDeleted={onSignDeleted}
-              setLocalSigns={setLocalSigns}
-              setActiveSign={setActiveSign}
-              localSigns={localSigns}
-              showCloseButton={true}
-            />
-          )}
         </div>
       </div>
     );
