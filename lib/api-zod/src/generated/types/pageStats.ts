@@ -6,6 +6,17 @@
  * OpenAPI spec version: 0.1.0
  */
 
+export interface PdfOutlineSection {
+  /** Outline bookmark title */
+  title: string;
+  /** First PDF page index (1-based) covered by this section */
+  pageStart: number;
+  /** Last PDF page index (1-based) covered by this section */
+  pageEnd: number;
+  /** Classified section type */
+  type: "floor_plan" | "sign_schedule" | "other" | null;
+}
+
 export interface PageStats {
   /** PDF page numbers classified as floor plans */
   floorPlanPages: number[];
@@ -13,4 +24,8 @@ export interface PageStats {
   signSchedulePages: number[];
   /** PDF page numbers not matching floor plan or sign schedule patterns */
   otherPages: number[];
+  /** Logical page labels extracted from the PDF page dictionary (e.g. "A1.1") */
+  pageLabels?: string[] | null;
+  /** Outline (bookmark) sections extracted from the PDF, used to boost page classification */
+  outlineSections?: PdfOutlineSection[] | null;
 }
