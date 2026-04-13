@@ -15,6 +15,12 @@ import {
   ZoomOut,
 } from "lucide-react";
 import { AddMarkerForm, type PendingMarker } from "@/components/AddMarkerForm";
+import {
+  findSignLocationFromPhrases,
+  phraseMatchScore,
+  type PdfPhrase as SharedPdfPhrase,
+} from "@/lib/signMatcher";
+import type { ExtractedSign } from "@/types/sign";
 
 pdfjs.GlobalWorkerOptions.workerSrc = `${import.meta.env.BASE_URL}pdf.worker.min.mjs`;
 
@@ -86,13 +92,7 @@ interface FloorPlanViewerProps {
 }
 
 // ── Words API types ──────────────────────────────────────────────────────────
-interface PdfPhrase {
-  text: string;
-  x0: number;
-  y0: number;
-  x1: number;
-  y1: number;
-}
+type PdfPhrase = SharedPdfPhrase;
 
 interface FloorPlanBbox {
   x0: number;
@@ -107,68 +107,13 @@ interface WordsResponse {
   pageType?: "floor_plan" | "sign_schedule" | "both" | "other";
 }
 
-// ── Client-side location matcher (mirrors server logic) ──────────────────────
-function normId(s: string): string {
-  return s.toLowerCase().replace(/[\s\-_]/g, "");
-}
+const BBOX_TOLERANCE = 0.02;
 
-function exactBoundaryMatch(haystack: string, needle: string): boolean {
-  let idx = haystack.indexOf(needle);
-  while (idx !== -1) {
-    const before = idx > 0 ? haystack[idx - 1] : null;
-    const after = idx + needle.length < haystack.length ? haystack[idx + needle.length] : null;
-    if ((before == null || !/[a-z0-9]/.test(before)) && (after == null || !/[a-z0-9]/.test(after)))
-      return true;
-    idx = haystack.indexOf(needle, idx + 1);
-  }
-  return false;
-}
-
-function tokenize(text: string): string[] {
-  return [...new Set(text.toLowerCase().replace(/[^a-z0-9\s]/g, " ").split(/\s+/).filter((t) => t.length >= 2))];
-}
-
-function levenshtein(s: string, t: string): number {
-  const m = s.length, n = t.length;
-  let prev = Array.from({ length: n + 1 }, (_, j) => j);
-  let curr = new Array<number>(n + 1);
-  for (let i = 1; i <= m; i++) {
-    curr[0] = i;
-    for (let j = 1; j <= n; j++) {
-      curr[j] = s[i - 1] === t[j - 1] ? prev[j - 1]! : 1 + Math.min(prev[j]!, curr[j - 1]!, prev[j - 1]!);
-    }
-    [prev, curr] = [curr, prev];
-  }
-  return prev[n]!;
-}
-
-function levenshteinSim(a: string, b: string): number {
-  if (a === b) return 1;
-  if (!a.length || !b.length) return 0;
-  return 1 - levenshtein(a, b) / Math.max(a.length, b.length);
-}
-
-function phraseMatchScore(phraseText: string, query: string): number {
-  const pn = phraseText.toLowerCase().replace(/[^a-z0-9]/g, " ").replace(/\s+/g, " ").trim();
-  const qn = query.toLowerCase().replace(/[^a-z0-9]/g, " ").replace(/\s+/g, " ").trim();
-  if (!pn || !qn) return 0;
-  const pt = tokenize(pn);
-  const qt = tokenize(qn);
-  if (!pt.length || !qt.length) return 0;
-  let total = 0;
-  for (const qtok of qt) {
-    let best = 0;
-    for (const ptok of pt) {
-      if (qtok === ptok) { best = 1; break; }
-      const [shorter, longer] = qtok.length <= ptok.length ? [qtok, ptok] : [ptok, qtok];
-      if (longer.startsWith(shorter)) best = Math.max(best, shorter.length / longer.length);
-      best = Math.max(best, levenshteinSim(qtok, ptok));
-    }
-    total += best;
-  }
-  return total / qt.length;
-}
-
+/**
+ * Fallback matcher: applies the bbox guard to all phrases and runs the simpler
+ * phraseMatchScore. Used only when the primary shared matcher returns a result
+ * outside the floor plan drawing area.
+ */
 function matchLocationToCoords(
   phrases: PdfPhrase[],
   floorPlanBbox: FloorPlanBbox,
@@ -178,7 +123,6 @@ function matchLocationToCoords(
   const query = [location, signIdentifier].filter(Boolean).join(" ").trim();
   if (!query) return null;
 
-  const BBOX_TOLERANCE = 0.02;
   const drawingPhrases = phrases.filter((p) => {
     const cx = (p.x0 + p.x1) / 2;
     const cy = (p.y0 + p.y1) / 2;
@@ -192,23 +136,39 @@ function matchLocationToCoords(
 
   if (!drawingPhrases.length) return null;
 
-  const ROOM_NUM_RE = /\b(?:[A-Za-z]{1,2}-\d{2,4}|[A-Za-z]{1,2}\d{2,4}[A-Za-z]?|\d{2,4}[A-Za-z]{1,2})\b/g;
-  const roomTokens = (query.match(ROOM_NUM_RE) ?? []).map((t) => normId(t));
-
   let best: { score: number; cx: number; cy: number } | null = null;
   for (const p of drawingPhrases) {
     const cx = (p.x0 + p.x1) / 2;
     const cy = (p.y0 + p.y1) / 2;
-    const pn = normId(p.text);
-    let score = phraseMatchScore(p.text, query);
-    if (roomTokens.length > 0 && roomTokens.some((rt) => exactBoundaryMatch(pn, rt))) {
-      score = Math.max(score, 0.85);
-    }
+    const score = phraseMatchScore(p.text, query);
     if (!best || score > best.score) best = { score, cx, cy };
   }
 
   if (!best || best.score < 0.5) return null;
   return { xPos: best.cx, yPos: best.cy };
+}
+
+/**
+ * Run the shared multi-pass findSignLocationFromPhrases algorithm and then
+ * validate the result is within the floor plan bbox. If outside, fall back to
+ * the simpler bbox-constrained matchLocationToCoords.
+ */
+function resolveSignPosition(
+  sign: ExtractedSign,
+  phrases: PdfPhrase[],
+  floorPlanBbox: FloorPlanBbox,
+): { xPos: number; yPos: number } | null {
+  const primary = findSignLocationFromPhrases(phrases, sign);
+  if (primary) {
+    const inside =
+      primary.x >= floorPlanBbox.x0 - BBOX_TOLERANCE &&
+      primary.x <= floorPlanBbox.x1 + BBOX_TOLERANCE &&
+      primary.y >= floorPlanBbox.y0 - BBOX_TOLERANCE &&
+      primary.y <= floorPlanBbox.y1 + BBOX_TOLERANCE;
+    if (inside) return { xPos: primary.x, yPos: primary.y };
+  }
+  // Primary result was null or outside bbox: fall back to bbox-constrained simpler matcher
+  return matchLocationToCoords(phrases, floorPlanBbox, sign.location, sign.signIdentifier);
 }
 
 // ── Drag state ──────────────────────────────────────────────────────────────
@@ -359,26 +319,30 @@ function FilePdfViewer({
           result.push({ ...m, resolvedX: m.xPos, resolvedY: m.yPos });
         } else if (!isManual) {
           // Server coords are outside the current bbox (stale from a previous
-          // bbox algorithm or a table-area mismatch). Fall back to client-side
-          // re-match so the marker still lands in the floor plan drawing area.
-          const match = matchLocationToCoords(
-            wordsData.phrases,
-            bbox,
-            m.location,
-            m.signIdentifier
-          );
+          // bbox algorithm or a table-area mismatch). Re-match using the shared
+          // algorithm so the marker lands in the floor plan drawing area.
+          const signLike: ExtractedSign = {
+            id: m.id,
+            location: m.location,
+            signIdentifier: m.signIdentifier,
+            confidenceScore: 0,
+            reviewFlag: false,
+          };
+          const match = resolveSignPosition(signLike, wordsData.phrases, bbox);
           if (match) {
             result.push({ ...m, resolvedX: match.xPos, resolvedY: match.yPos });
           }
         }
       } else {
-        // No trusted DB coords: run client-side word-match inside the bbox.
-        const match = matchLocationToCoords(
-          wordsData.phrases,
-          bbox,
-          m.location,
-          m.signIdentifier
-        );
+        // No trusted DB coords: run client-side word-match using shared algorithm.
+        const signLike: ExtractedSign = {
+          id: m.id,
+          location: m.location,
+          signIdentifier: m.signIdentifier,
+          confidenceScore: 0,
+          reviewFlag: false,
+        };
+        const match = resolveSignPosition(signLike, wordsData.phrases, bbox);
         if (match) {
           result.push({ ...m, resolvedX: match.xPos, resolvedY: match.yPos });
         }
