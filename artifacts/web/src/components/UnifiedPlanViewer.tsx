@@ -664,6 +664,18 @@ function PageViewer({
   const [dragState, setDragState] = useState<DragState | null>(null);
   const dragRef = useRef<DragState | null>(null);
 
+  // ── Pan-by-drag state ──────────────────────────────────────────────────────
+  type PanState = {
+    startScrollLeft: number;
+    startScrollTop: number;
+    startClientX: number;
+    startClientY: number;
+    moved: boolean;
+  };
+  const panRef = useRef<PanState | null>(null);
+  const [isPanning, setIsPanning] = useState(false);
+  const suppressNextClickRef = useRef(false);
+
   // ── Visual-locate state ────────────────────────────────────────────────────
   const [visualCandidates, setVisualCandidates] = useState<Map<string, VisualCandidate[]>>(new Map());
   const [visualLocateFailed, setVisualLocateFailed] = useState<Set<string>>(new Set());
@@ -1421,9 +1433,11 @@ function PageViewer({
                   style={{
                     position: "absolute", top: 0, left: 0, width: renderedW, height: renderedH, zIndex: 6,
                     cursor: dragState?.isDragging ? "grabbing"
+                      : isPanning ? "grabbing"
                       : addMode ? (pendingNewMarker ? "default" : "crosshair")
                       : drawMode ? (hoveredMarkerId ? "pointer" : "crosshair")
-                      : (textMarkers.length > 0 ? "pointer" : "default"),
+                      : hoveredMarkerId ? "pointer"
+                      : "grab",
                   }}
                   onPointerDown={(e) => {
                     if (addMode || drawMode) return;
@@ -1441,9 +1455,31 @@ function PageViewer({
                       const ds: DragState = { signId: best.signId, startX: nx, startY: ny, currentX: nx, currentY: ny, isDragging: false };
                       dragRef.current = ds;
                       setDragState(ds);
+                    } else {
+                      e.currentTarget.setPointerCapture(e.pointerId);
+                      panRef.current = {
+                        startScrollLeft: pdfContainerRef.current?.scrollLeft ?? 0,
+                        startScrollTop: pdfContainerRef.current?.scrollTop ?? 0,
+                        startClientX: e.clientX,
+                        startClientY: e.clientY,
+                        moved: false,
+                      };
+                      setIsPanning(true);
                     }
                   }}
                   onPointerMove={(e) => {
+                    if (panRef.current) {
+                      const dx = e.clientX - panRef.current.startClientX;
+                      const dy = e.clientY - panRef.current.startClientY;
+                      if (pdfContainerRef.current) {
+                        pdfContainerRef.current.scrollLeft = panRef.current.startScrollLeft - dx;
+                        pdfContainerRef.current.scrollTop = panRef.current.startScrollTop - dy;
+                      }
+                      if (!panRef.current.moved && (Math.abs(dx) > 4 || Math.abs(dy) > 4)) {
+                        panRef.current.moved = true;
+                      }
+                      return;
+                    }
                     const rect = e.currentTarget.getBoundingClientRect();
                     const nx = (e.clientX - rect.left) / renderedW;
                     const ny = (e.clientY - rect.top) / renderedH;
@@ -1461,6 +1497,13 @@ function PageViewer({
                     }
                   }}
                   onPointerUp={(e) => {
+                    if (panRef.current) {
+                      if (panRef.current.moved) suppressNextClickRef.current = true;
+                      panRef.current = null;
+                      setIsPanning(false);
+                      e.currentTarget.releasePointerCapture(e.pointerId);
+                      return;
+                    }
                     const ds = dragRef.current;
                     dragRef.current = null;
                     if (!ds) return;
@@ -1486,9 +1529,10 @@ function PageViewer({
                     setDragState(null);
                     e.currentTarget.releasePointerCapture(e.pointerId);
                   }}
-                  onPointerCancel={() => { dragRef.current = null; setDragState(null); }}
-                  onMouseLeave={() => { if (!dragRef.current) setHoveredMarkerId(null); }}
+                  onPointerCancel={() => { dragRef.current = null; setDragState(null); panRef.current = null; setIsPanning(false); }}
+                  onMouseLeave={() => { if (!dragRef.current && !panRef.current) setHoveredMarkerId(null); }}
                   onClick={(e) => {
+                    if (suppressNextClickRef.current) { suppressNextClickRef.current = false; return; }
                     if (dragState?.isDragging) return;
                     const rect = e.currentTarget.getBoundingClientRect();
                     const nx = (e.clientX - rect.left) / renderedW!;
