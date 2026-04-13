@@ -1532,6 +1532,14 @@ function PageViewer({
                     if (ds.isDragging) {
                       const nx = Math.min(0.98, Math.max(0.02, ds.currentX));
                       const ny = Math.min(0.98, Math.max(0.02, ds.currentY));
+                      // Optimistic update — move the marker instantly so it doesn't snap back
+                      setLocalSigns((prev) => prev.map((s) =>
+                        s.id === ds.signId ? { ...s, xPos: nx, yPos: ny, placementSource: "user_drag" } : s
+                      ));
+                      const optimisticSign = localSigns.find((s) => s.id === ds.signId);
+                      if (optimisticSign && ds.signId === activeSignId) {
+                        onActiveSignChange({ ...optimisticSign, xPos: nx, yPos: ny, placementSource: "user_drag" });
+                      }
                       apiFetch(`/api/extracted-signs/${ds.signId}`, {
                         method: "PATCH",
                         headers: { "Content-Type": "application/json" },
