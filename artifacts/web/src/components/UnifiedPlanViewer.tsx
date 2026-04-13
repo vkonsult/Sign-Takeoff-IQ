@@ -1368,8 +1368,8 @@ function PageViewer({
                 );
               })()}
 
-              {/* Add mode hint */}
-              {addMode && !pendingNewMarker && renderedW && renderedH && (
+              {/* Add mode hint — modal only */}
+              {mode === "modal" && addMode && !pendingNewMarker && renderedW && renderedH && (
                 <div style={{ position: "absolute", bottom: 8, left: "50%", transform: "translateX(-50%)", zIndex: 10, pointerEvents: "none", background: "#22c55e20", color: "#22c55e", border: "1px solid #22c55e55" }}
                   className="px-3 py-1.5 rounded-full text-[10px] font-bold uppercase tracking-wider shadow-lg whitespace-nowrap flex items-center gap-1">
                   <Plus className="w-3 h-3" />
@@ -1377,8 +1377,8 @@ function PageViewer({
                 </div>
               )}
 
-              {/* Draw mode hint */}
-              {drawMode && !hoveredMarkerId && renderedW && renderedH && (
+              {/* Draw mode hint — modal only */}
+              {mode === "modal" && drawMode && !hoveredMarkerId && renderedW && renderedH && (
                 <div style={{ position: "absolute", bottom: 8, left: "50%", transform: "translateX(-50%)", zIndex: 10, pointerEvents: "none", background: "#a855f720", color: "#a855f7", border: "1px solid #a855f755" }}
                   className="px-3 py-1.5 rounded-full text-[10px] font-bold uppercase tracking-wider shadow-lg whitespace-nowrap flex items-center gap-1">
                   <Plus className="w-3 h-3" />
@@ -1386,8 +1386,8 @@ function PageViewer({
                 </div>
               )}
 
-              {/* Delete X in draw mode */}
-              {drawMode && showOverlay && renderedW && renderedH && textMarkers.map((m) => {
+              {/* Delete X in draw mode — modal only */}
+              {mode === "modal" && drawMode && showOverlay && renderedW && renderedH && textMarkers.map((m) => {
                 if (m.signId !== hoveredMarkerId) return null;
                 const cx = m.x * renderedW!; const cy = m.y * renderedH!; const r = m.isCurrent ? 18 : 12;
                 return (
