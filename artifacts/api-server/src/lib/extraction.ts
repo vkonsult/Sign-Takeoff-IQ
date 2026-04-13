@@ -2008,7 +2008,6 @@ export async function extractSignsFromPdfImageVerify(
   }
 
   const fileName = filePath.split("/").pop() ?? "file.pdf";
-  const prompt = buildVerificationPrompt(textSignsByPage);
 
   if (fileBuffer.length <= MAX_INLINE_PDF_BYTES) {
     // Single-pass path: filter to relevant pages if provided
@@ -2034,6 +2033,14 @@ export async function extractSignsFromPdfImageVerify(
       }
       // Map from filtered page index (0-based in filtered doc) → original page number (1-indexed)
       const pageIndexToOriginal = new Map<number, number>(relevantIndices.map((origIdx, filtIdx) => [filtIdx, origIdx + 1]));
+      // Build a signs-by-page map using filtered page numbers (1, 2, 3…) so the
+      // prompt matches what Gemini sees in the filtered PDF.
+      const filteredSignsByPage = new Map<number, TextContextSign[]>();
+      relevantIndices.forEach((origIdx, filtIdx) => {
+        const signs = textSignsByPage.get(origIdx + 1);
+        if (signs && signs.length > 0) filteredSignsByPage.set(filtIdx + 1, signs);
+      });
+      const prompt = buildVerificationPrompt(filteredSignsByPage);
       let filteredBytes: Uint8Array;
       try {
         const filteredDoc = await PDFDocument.create();
@@ -2073,7 +2080,8 @@ export async function extractSignsFromPdfImageVerify(
       }
     }
 
-    // No relevantPages filter — send full PDF
+    // No relevantPages filter — send full PDF with original page numbering
+    const prompt = buildVerificationPrompt(textSignsByPage);
     const pdfBase64 = fileBuffer.toString("base64");
     const label = `verify-${fileName}`;
     logger.info({ fileName, sizeBytes: fileBuffer.length, totalSigns: Array.from(textSignsByPage.values()).reduce((n, v) => n + v.length, 0) }, "Visual verification: single-pass");
@@ -2119,16 +2127,16 @@ export async function extractSignsFromPdfImageVerify(
 
     for (let batchStart = 0; batchStart < relevantIndices.length; batchStart += IMAGE_BATCH_PAGES) {
       const batchIndices = relevantIndices.slice(batchStart, batchStart + IMAGE_BATCH_PAGES);
-      // Map filtered-doc index → original 1-indexed page number
+      // Map filtered-doc index (0-based) → original 1-indexed page number
       const pageIndexToOriginal = new Map<number, number>(batchIndices.map((origIdx, filtIdx) => [filtIdx, origIdx + 1]));
 
-      // Build sub-map for signs on these original pages (1-indexed)
+      // Build sub-map keyed by FILTERED page numbers (1, 2, 3…) so the prompt
+      // matches what Gemini sees in the batch PDF's page numbering.
       const batchMap = new Map<number, TextContextSign[]>();
-      for (const origIdx of batchIndices) {
-        const origPage = origIdx + 1;
-        const signs = textSignsByPage.get(origPage);
-        if (signs && signs.length > 0) batchMap.set(origPage, signs);
-      }
+      batchIndices.forEach((origIdx, filtIdx) => {
+        const signs = textSignsByPage.get(origIdx + 1);
+        if (signs && signs.length > 0) batchMap.set(filtIdx + 1, signs);
+      });
       if (batchMap.size === 0) continue;
 
       let batchPdfBytes: Uint8Array;
@@ -2186,12 +2194,17 @@ export async function extractSignsFromPdfImageVerify(
     const endPage = Math.min(startPage + IMAGE_BATCH_PAGES, totalPages);
     const pageIndices = Array.from({ length: endPage - startPage }, (_, i) => startPage + i);
 
-    // Build a sub-map containing only signs for these pages (1-indexed)
+    // Build sub-map keyed by BATCH-local page numbers (1, 2, 3…) to match the
+    // batch PDF's page numbering, and maintain a remap back to original.
+    const batchPageToOriginal = new Map<number, number>(); // batch-local 1-indexed → original 1-indexed
     const batchMap = new Map<number, TextContextSign[]>();
-    for (let p = startPage + 1; p <= endPage; p++) {
-      const signs = textSignsByPage.get(p);
-      if (signs && signs.length > 0) batchMap.set(p, signs);
-    }
+    pageIndices.forEach((origIdx, batchIdx) => {
+      const origPage = origIdx + 1;
+      const batchPage = batchIdx + 1;
+      batchPageToOriginal.set(batchPage, origPage);
+      const signs = textSignsByPage.get(origPage);
+      if (signs && signs.length > 0) batchMap.set(batchPage, signs);
+    });
     if (batchMap.size === 0) continue; // no signs on these pages — skip visual call
 
     let batchPdfBytes: Uint8Array;
@@ -2217,9 +2230,18 @@ export async function extractSignsFromPdfImageVerify(
     try {
       const { text, inputTokens, outputTokens } = await callGeminiMultimodal(batchPrompt, pdfBase64, ai, label);
       const { verifications, discoveries } = parseVerificationResponse(text, label);
-      // Offset page numbers for discoveries back to full-doc coordinates
+      // Remap batch-local page numbers back to original full-doc page numbers
+      for (const v of verifications) {
+        if (v.page_number != null) {
+          const orig = batchPageToOriginal.get(v.page_number);
+          if (orig != null) v.page_number = orig;
+        }
+      }
       for (const d of discoveries) {
-        if (d.page_number != null) d.page_number = d.page_number + startPage;
+        if (d.page_number != null) {
+          const orig = batchPageToOriginal.get(d.page_number);
+          if (orig != null) d.page_number = orig;
+        }
       }
       allVerifications.push(...verifications);
       allDiscoveries.push(...discoveries);
