@@ -1,8 +1,4 @@
 import { useState, useRef, useEffect, useMemo } from "react";
-import { Document, Page, pdfjs } from "react-pdf";
-import "react-pdf/dist/Page/AnnotationLayer.css";
-import "react-pdf/dist/Page/TextLayer.css";
-import { usePdfBlob } from "@/hooks/use-pdf-blob";
 import { apiFetch } from "@/lib/apiClient";
 import {
   ChevronLeft,
@@ -21,8 +17,6 @@ import {
   type PdfPhrase as SharedPdfPhrase,
 } from "@/lib/signMatcher";
 import type { ExtractedSign } from "@/types/sign";
-
-pdfjs.GlobalWorkerOptions.workerSrc = `${import.meta.env.BASE_URL}pdf.worker.min.mjs`;
 
 // ── Sign type color palette ──────────────────────────────────────────────────
 const SIGN_TYPE_COLORS: Record<string, string> = {
@@ -209,6 +203,236 @@ interface ResolvedMarker extends SignMarker {
   resolvedY: number;
 }
 
+// ── MarkerSvgOverlay sub-component ───────────────────────────────────────────
+interface MarkerSvgOverlayProps {
+  svgRef: React.RefObject<SVGSVGElement | null>;
+  resolvedMarkers: ResolvedMarker[];
+  markerStackMap: Map<string, { count: number; leaderId: string; labels: string[] }>;
+  drag: DragState | null;
+  pendingMarker: PendingMarker | null;
+  tooltip: TooltipState | null;
+  addMarkerMode: boolean;
+  effectiveFloorPlanBbox: FloorPlanBbox | null;
+  aiPageRegion: {
+    floorPlan: { x0: number; y0: number; x1: number; y1: number } | null;
+    signSchedule: { x0: number; y0: number; x1: number; y1: number } | null;
+  } | null;
+  pageNumber: number;
+  fileId: string;
+  onPointerDown: (e: React.PointerEvent<SVGSVGElement>) => void;
+  onPointerMove: (e: React.PointerEvent<SVGSVGElement>) => void;
+  onPointerUp: (e: React.PointerEvent<SVGSVGElement>) => void;
+  onPointerLeave: () => void;
+}
+
+function MarkerSvgOverlay({
+  svgRef,
+  resolvedMarkers,
+  markerStackMap,
+  drag,
+  pendingMarker,
+  tooltip,
+  addMarkerMode,
+  effectiveFloorPlanBbox,
+  aiPageRegion,
+  pageNumber,
+  fileId,
+  onPointerDown,
+  onPointerMove,
+  onPointerUp,
+  onPointerLeave,
+}: MarkerSvgOverlayProps) {
+  const clipId = `fp-clip-${pageNumber}-${fileId.replace(/[^a-zA-Z0-9]/g, "_")}`;
+  return (
+    <>
+      {/* SVG overlay — fills the page div, renders markers at percentage coords */}
+      <svg
+        ref={svgRef}
+        style={{
+          position: "absolute",
+          top: 0,
+          left: 0,
+          width: "100%",
+          height: "100%",
+          overflow: "visible",
+          pointerEvents: addMarkerMode || resolvedMarkers.length > 0 ? "all" : "none",
+          cursor: addMarkerMode ? "crosshair" : drag ? "grabbing" : "default",
+          zIndex: 5,
+        }}
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={onPointerUp}
+        onPointerLeave={onPointerLeave}
+      >
+        {/* Clip markers to the detected floor plan bbox so they never
+            render on schedule tables or title blocks.
+            effectiveFloorPlanBbox prefers AI-detected bbox over heuristic. */}
+        {effectiveFloorPlanBbox && (
+          <defs>
+            <clipPath id={clipId}>
+              <rect
+                x={`${effectiveFloorPlanBbox.x0 * 100}%`}
+                y={`${effectiveFloorPlanBbox.y0 * 100}%`}
+                width={`${(effectiveFloorPlanBbox.x1 - effectiveFloorPlanBbox.x0) * 100}%`}
+                height={`${(effectiveFloorPlanBbox.y1 - effectiveFloorPlanBbox.y0) * 100}%`}
+              />
+            </clipPath>
+          </defs>
+        )}
+        {/* AI region overlays: dashed outlines showing detected floor plan and
+            sign schedule areas (only on pages where Gemini detected both) */}
+        {aiPageRegion?.floorPlan && (
+          <rect
+            x={`${aiPageRegion.floorPlan.x0 * 100}%`}
+            y={`${aiPageRegion.floorPlan.y0 * 100}%`}
+            width={`${(aiPageRegion.floorPlan.x1 - aiPageRegion.floorPlan.x0) * 100}%`}
+            height={`${(aiPageRegion.floorPlan.y1 - aiPageRegion.floorPlan.y0) * 100}%`}
+            fill="none"
+            stroke="#3B82F6"
+            strokeWidth={1.5}
+            strokeDasharray="6 4"
+            opacity={0.5}
+            pointerEvents="none"
+          />
+        )}
+        {aiPageRegion?.signSchedule && (
+          <rect
+            x={`${aiPageRegion.signSchedule.x0 * 100}%`}
+            y={`${aiPageRegion.signSchedule.y0 * 100}%`}
+            width={`${(aiPageRegion.signSchedule.x1 - aiPageRegion.signSchedule.x0) * 100}%`}
+            height={`${(aiPageRegion.signSchedule.y1 - aiPageRegion.signSchedule.y0) * 100}%`}
+            fill="none"
+            stroke="#F59E0B"
+            strokeWidth={1.5}
+            strokeDasharray="6 4"
+            opacity={0.5}
+            pointerEvents="none"
+          />
+        )}
+        <g clipPath={effectiveFloorPlanBbox ? `url(#${clipId})` : undefined}>
+          {resolvedMarkers.map((m) => {
+            const isDragging = drag?.signId === m.id;
+            const cx = `${(isDragging ? drag!.currentX : m.resolvedX) * 100}%`;
+            const cy = `${(isDragging ? drag!.currentY : m.resolvedY) * 100}%`;
+            const color = getSignColor(m.signType);
+            const stack = markerStackMap.get(m.id);
+            const isLeader = !stack || stack.leaderId === m.id;
+            const isStacked = !!stack && stack.count > 1;
+            if (!isLeader) return null;
+            return (
+              <g key={m.id}>
+                {isDragging && (
+                  <circle
+                    cx={cx}
+                    cy={cy}
+                    r={isStacked ? 16 : 12}
+                    fill="none"
+                    stroke={isStacked ? "#FF6B35" : color}
+                    strokeWidth={1.2}
+                    strokeDasharray="4 3"
+                    opacity={0.6}
+                  />
+                )}
+                {isStacked ? (
+                  <>
+                    <circle cx={cx} cy={cy} r={10} fill="white" stroke="#FF6B35" strokeWidth={2.5} />
+                    <text
+                      x={cx} y={cy}
+                      textAnchor="middle" dominantBaseline="central"
+                      fontSize={9} fontWeight="bold" fill="#FF6B35"
+                      style={{ userSelect: "none", pointerEvents: "none" }}
+                    >
+                      {stack.count}
+                    </text>
+                  </>
+                ) : (
+                  <circle cx={cx} cy={cy} r={5} fill={color} />
+                )}
+              </g>
+            );
+          })}
+
+          {/* Ghost pin: shows the clicked position while the detail form is open */}
+          {pendingMarker && (
+            <g>
+              <circle
+                cx={`${pendingMarker.xPos * 100}%`}
+                cy={`${pendingMarker.yPos * 100}%`}
+                r={8}
+                fill="none"
+                stroke="#FFAA00"
+                strokeWidth={2}
+                strokeDasharray="5 3"
+                opacity={0.85}
+              />
+              <circle
+                cx={`${pendingMarker.xPos * 100}%`}
+                cy={`${pendingMarker.yPos * 100}%`}
+                r={4}
+                fill="#FFAA00"
+                opacity={0.9}
+              />
+            </g>
+          )}
+        </g>
+      </svg>
+
+      {/* Floating tooltip */}
+      {tooltip && (() => {
+        const stack = markerStackMap.get(tooltip.sign.id);
+        const isStacked = !!stack && stack.count > 1;
+        return (
+          <div
+            style={{
+              position: "absolute",
+              left: tooltip.x + 10,
+              top: Math.max(tooltip.y - 36, 4),
+              zIndex: 20,
+              pointerEvents: "none",
+            }}
+            className="px-2 py-1 rounded-md bg-background/95 border border-border shadow-lg text-[11px] font-mono whitespace-nowrap max-w-[260px]"
+          >
+            {isStacked ? (
+              <div>
+                <span className="font-bold text-[#FF6B35]">{stack.count} signs here</span>
+                {stack.labels.map((lbl, i) => (
+                  <div key={i} className="truncate text-muted-foreground">{lbl}</div>
+                ))}
+              </div>
+            ) : (
+              <span>
+                <span
+                  className="inline-block w-2 h-2 rounded-full mr-1.5 align-middle"
+                  style={{ background: getSignColor(tooltip.sign.signType) }}
+                />
+                {tooltip.sign.signType ?? "unknown"}
+                {tooltip.sign.signIdentifier ? ` · ${tooltip.sign.signIdentifier}` : ""}
+              </span>
+            )}
+          </div>
+        );
+      })()}
+
+      {/* Add-marker hint overlay */}
+      {addMarkerMode && !pendingMarker && (
+        <div
+          style={{
+            position: "absolute",
+            top: 8,
+            left: "50%",
+            transform: "translateX(-50%)",
+            zIndex: 10,
+            pointerEvents: "none",
+          }}
+          className="px-3 py-1.5 rounded-full bg-primary/90 text-primary-foreground text-[10px] font-bold uppercase tracking-wider shadow-lg whitespace-nowrap"
+        >
+          Click on floor plan to place a marker · Press again to cancel
+        </div>
+      )}
+    </>
+  );
+}
+
 // ── FilePdfViewer ────────────────────────────────────────────────────────────
 function FilePdfViewer({
   jobId,
@@ -241,7 +465,6 @@ function FilePdfViewer({
   // Pre-rendered image URL (blob URL) — only fetched when a PNG is available
   const [imageUrl, setImageUrl] = useState<string | null>(null);
   // imageLoadFailed: true when the image fetch returned an error (404/500/network).
-  // When true the viewer falls back to the react-pdf path for this page.
   const [imageLoadFailed, setImageLoadFailed] = useState(false);
   const [imageNaturalSize, setImageNaturalSize] = useState<{ w: number; h: number } | null>(null);
   const prevImageUrlRef = useRef<string | null>(null);
@@ -256,7 +479,10 @@ function FilePdfViewer({
     setImageLoadFailed(false);
     setImageNaturalSize(null);
 
-    if (!hasPrerenderedImage) return;
+    if (!hasPrerenderedImage) {
+      setImageLoadFailed(true);
+      return;
+    }
 
     let cancelled = false;
     apiFetch(`/api/jobs/${jobId}/files/${file.id}/pages/${pageNumber}/image`)
@@ -286,26 +512,14 @@ function FilePdfViewer({
     };
   }, []);
 
-  // Use PNG path unless image fetch failed — fall back to PDF in that case
-  const useImagePath = hasPrerenderedImage && !imageLoadFailed;
-
-  const { pdfBuffer, blobError } = usePdfBlob(useImagePath ? null : `/api/jobs/${jobId}/files/${file.id}/pdf`);
-  const pdfFile = useMemo(
-    () => (pdfBuffer ? { data: new Uint8Array(pdfBuffer.slice(0)) } : null),
-    [pdfBuffer]
-  );
-
-  const [pdfError, setPdfError] = useState<string | null>(null);
   const [scale, setScale] = useState(1.0);
-  // fitScale: the width-fit scale computed in onLoadSuccess — stored so the
+  // fitScale: the width-fit scale computed on image load — stored so the
   // Fit button can reapply it at any time without re-reading the DOM.
   const [fitScale, setFitScale] = useState(1.0);
   const containerRef = useRef<HTMLDivElement>(null);
   const pageWrapRef = useRef<HTMLDivElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);
-  // Guard: react-pdf v10 fires onLoadSuccess inside useEffect([page, scale]),
-  // meaning it re-fires every time scale changes. This ref ensures we only
-  // call setScale ONCE per page/file, preventing the infinite loop.
+  // Guard: only compute fit scale once per page/file change.
   const hasSetScaleRef = useRef(false);
   useEffect(() => {
     hasSetScaleRef.current = false;
@@ -736,437 +950,76 @@ function FilePdfViewer({
       >
         <div className="flex justify-center items-start" style={{ minWidth: "max-content" }}>
 
-        {/* ── Image-backed path: pre-rendered PNG available and successfully fetched ── */}
-        {useImagePath && (
-          <>
-            {!imageUrl && (
-              <div className="flex items-center justify-center h-40">
-                <Loader2 className="w-6 h-6 text-primary animate-spin" />
-              </div>
-            )}
-            {imageUrl && (
-              <div
-                ref={pageWrapRef}
-                className="relative shadow-2xl inline-block"
-                style={{
-                  cursor: addMarkerMode ? "crosshair" : "default",
-                  width: imageNaturalSize ? `${imageNaturalSize.w * scale}px` : undefined,
-                }}
-              >
-                <img
-                  key={`${file.id}-${pageNumber}-img`}
-                  src={imageUrl}
-                  alt={`Floor plan page ${pageNumber}`}
-                  style={{
-                    display: "block",
-                    width: imageNaturalSize ? `${imageNaturalSize.w * scale}px` : "100%",
-                    height: imageNaturalSize ? `${imageNaturalSize.h * scale}px` : "auto",
-                  }}
-                  onLoad={(e) => {
-                    const img = e.currentTarget;
-                    const nw = img.naturalWidth;
-                    const nh = img.naturalHeight;
-                    setImageNaturalSize({ w: nw, h: nh });
-                    if (hasSetScaleRef.current) return;
-                    if (containerRef.current && nw > 0) {
-                      const cw = containerRef.current.clientWidth - 32;
-                      if (cw > 0) {
-                        hasSetScaleRef.current = true;
-                        const fit = Math.min(1.2, Math.max(0.3, cw / nw));
-                        setFitScale(fit);
-                        setScale(fit);
-                      }
-                    }
-                  }}
-                />
-
-              {/* SVG overlay — fills the page div, renders markers at percentage coords */}
-              <svg
-                ref={svgRef}
-                style={{
-                  position: "absolute",
-                  top: 0,
-                  left: 0,
-                  width: "100%",
-                  height: "100%",
-                  overflow: "visible",
-                  pointerEvents: addMarkerMode || resolvedMarkers.length > 0 ? "all" : "none",
-                  cursor: addMarkerMode ? "crosshair" : drag ? "grabbing" : "default",
-                  zIndex: 5,
-                }}
-                onPointerDown={handleSvgPointerDown}
-                onPointerMove={handleSvgPointerMove}
-                onPointerUp={handleSvgPointerUp}
-                onPointerLeave={() => setTooltip(null)}
-              >
-                {/* Clip markers to the detected floor plan bbox so they never
-                    render on schedule tables or title blocks.
-                    effectiveFloorPlanBbox prefers AI-detected bbox over heuristic. */}
-                {effectiveFloorPlanBbox && (
-                  <defs>
-                    <clipPath id={`fp-clip-${pageNumber}-${file.id.replace(/[^a-zA-Z0-9]/g, "_")}`}>
-                      <rect
-                        x={`${effectiveFloorPlanBbox.x0 * 100}%`}
-                        y={`${effectiveFloorPlanBbox.y0 * 100}%`}
-                        width={`${(effectiveFloorPlanBbox.x1 - effectiveFloorPlanBbox.x0) * 100}%`}
-                        height={`${(effectiveFloorPlanBbox.y1 - effectiveFloorPlanBbox.y0) * 100}%`}
-                      />
-                    </clipPath>
-                  </defs>
-                )}
-                {/* AI region overlays: dashed outlines showing detected floor plan and
-                    sign schedule areas (only on pages where Gemini detected both) */}
-                {aiPageRegion?.floorPlan && (
-                  <rect
-                    x={`${aiPageRegion.floorPlan.x0 * 100}%`}
-                    y={`${aiPageRegion.floorPlan.y0 * 100}%`}
-                    width={`${(aiPageRegion.floorPlan.x1 - aiPageRegion.floorPlan.x0) * 100}%`}
-                    height={`${(aiPageRegion.floorPlan.y1 - aiPageRegion.floorPlan.y0) * 100}%`}
-                    fill="none"
-                    stroke="#3B82F6"
-                    strokeWidth={1.5}
-                    strokeDasharray="6 4"
-                    opacity={0.5}
-                    pointerEvents="none"
-                  />
-                )}
-                {aiPageRegion?.signSchedule && (
-                  <rect
-                    x={`${aiPageRegion.signSchedule.x0 * 100}%`}
-                    y={`${aiPageRegion.signSchedule.y0 * 100}%`}
-                    width={`${(aiPageRegion.signSchedule.x1 - aiPageRegion.signSchedule.x0) * 100}%`}
-                    height={`${(aiPageRegion.signSchedule.y1 - aiPageRegion.signSchedule.y0) * 100}%`}
-                    fill="none"
-                    stroke="#F59E0B"
-                    strokeWidth={1.5}
-                    strokeDasharray="6 4"
-                    opacity={0.5}
-                    pointerEvents="none"
-                  />
-                )}
-                <g clipPath={effectiveFloorPlanBbox ? `url(#fp-clip-${pageNumber}-${file.id.replace(/[^a-zA-Z0-9]/g, "_")})` : undefined}>
-                  {resolvedMarkers.map((m) => {
-                    const isDragging = drag?.signId === m.id;
-                    const cx = `${(isDragging ? drag!.currentX : m.resolvedX) * 100}%`;
-                    const cy = `${(isDragging ? drag!.currentY : m.resolvedY) * 100}%`;
-                    const color = getSignColor(m.signType);
-                    const stack = markerStackMap.get(m.id);
-                    const isLeader = !stack || stack.leaderId === m.id;
-                    const isStacked = !!stack && stack.count > 1;
-                    if (!isLeader) return null;
-                    return (
-                      <g key={m.id}>
-                        {isDragging && (
-                          <circle
-                            cx={cx}
-                            cy={cy}
-                            r={isStacked ? 16 : 12}
-                            fill="none"
-                            stroke={isStacked ? "#FF6B35" : color}
-                            strokeWidth={1.2}
-                            strokeDasharray="4 3"
-                            opacity={0.6}
-                          />
-                        )}
-                        {isStacked ? (
-                          <>
-                            <circle cx={cx} cy={cy} r={10} fill="white" stroke="#FF6B35" strokeWidth={2.5} />
-                            <text
-                              x={cx} y={cy}
-                              textAnchor="middle" dominantBaseline="central"
-                              fontSize={9} fontWeight="bold" fill="#FF6B35"
-                              style={{ userSelect: "none", pointerEvents: "none" }}
-                            >
-                              {stack.count}
-                            </text>
-                          </>
-                        ) : (
-                          <circle cx={cx} cy={cy} r={5} fill={color} />
-                        )}
-                      </g>
-                    );
-                  })}
-
-                  {/* Ghost pin: shows the clicked position while the detail form is open */}
-                  {pendingMarker && (
-                    <g>
-                      <circle
-                        cx={`${pendingMarker.xPos * 100}%`}
-                        cy={`${pendingMarker.yPos * 100}%`}
-                        r={8}
-                        fill="none"
-                        stroke="#FFAA00"
-                        strokeWidth={2}
-                        strokeDasharray="5 3"
-                        opacity={0.85}
-                      />
-                      <circle
-                        cx={`${pendingMarker.xPos * 100}%`}
-                        cy={`${pendingMarker.yPos * 100}%`}
-                        r={4}
-                        fill="#FFAA00"
-                        opacity={0.9}
-                      />
-                    </g>
-                  )}
-                </g>
-              </svg>
-
-              {/* Floating tooltip */}
-              {tooltip && (() => {
-                const stack = markerStackMap.get(tooltip.sign.id);
-                const isStacked = !!stack && stack.count > 1;
-                return (
-                  <div
-                    style={{
-                      position: "absolute",
-                      left: tooltip.x + 10,
-                      top: Math.max(tooltip.y - 36, 4),
-                      zIndex: 20,
-                      pointerEvents: "none",
-                    }}
-                    className="px-2 py-1 rounded-md bg-background/95 border border-border shadow-lg text-[11px] font-mono whitespace-nowrap max-w-[260px]"
-                  >
-                    {isStacked ? (
-                      <div>
-                        <span className="font-bold text-[#FF6B35]">{stack.count} signs here</span>
-                        {stack.labels.map((lbl, i) => (
-                          <div key={i} className="truncate text-muted-foreground">{lbl}</div>
-                        ))}
-                      </div>
-                    ) : (
-                      <span>
-                        <span
-                          className="inline-block w-2 h-2 rounded-full mr-1.5 align-middle"
-                          style={{ background: getSignColor(tooltip.sign.signType) }}
-                        />
-                        {tooltip.sign.signType ?? "unknown"}
-                        {tooltip.sign.signIdentifier ? ` · ${tooltip.sign.signIdentifier}` : ""}
-                      </span>
-                    )}
-                  </div>
-                );
-              })()}
-
-              {/* Add-marker hint overlay */}
-              {addMarkerMode && !pendingMarker && (
-                <div
-                  style={{
-                    position: "absolute",
-                    top: 8,
-                    left: "50%",
-                    transform: "translateX(-50%)",
-                    zIndex: 10,
-                    pointerEvents: "none",
-                  }}
-                  className="px-3 py-1.5 rounded-full bg-primary/90 text-primary-foreground text-[10px] font-bold uppercase tracking-wider shadow-lg whitespace-nowrap"
-                >
-                  Click on floor plan to place a marker · Press again to cancel
-                </div>
-              )}
-            </div>
-            )}
-          </>
+        {/* Loading state */}
+        {!imageUrl && !imageLoadFailed && (
+          <div className="flex items-center justify-center h-40">
+            <Loader2 className="w-6 h-6 text-primary animate-spin" />
+          </div>
         )}
 
-        {/* ── PDF fallback path: no pre-rendered PNG, or image fetch failed ── */}
-        {!useImagePath && (
-          <>
-            {blobError && (
-              <div className="flex flex-col items-center justify-center h-40 text-destructive gap-2">
-                <AlertTriangle className="w-6 h-6" />
-                <p className="text-sm">Failed to load PDF</p>
-              </div>
-            )}
-            {!pdfFile && !blobError && (
-              <div className="flex items-center justify-center h-40">
-                <Loader2 className="w-6 h-6 text-primary animate-spin" />
-              </div>
-            )}
-            {pdfFile && (
-              <Document
-                file={pdfFile}
-                onLoadSuccess={({ numPages: n }) => {
-                  setPdfError(null);
-                  void n;
-                }}
-                onLoadError={(err) => setPdfError(err.message)}
-                loading={
-                  <div className="flex items-center justify-center h-40">
-                    <Loader2 className="w-6 h-6 text-primary animate-spin" />
-                  </div>
+        {/* Error state — no PNG available or fetch failed */}
+        {imageLoadFailed && (
+          <div className="flex flex-col items-center justify-center h-40 text-destructive gap-2">
+            <AlertTriangle className="w-6 h-6" />
+            <p className="text-sm">Failed to load floor plan image</p>
+          </div>
+        )}
+
+        {/* PNG-backed rendering */}
+        {imageUrl && !imageLoadFailed && (
+          <div
+            ref={pageWrapRef}
+            className="relative shadow-2xl inline-block"
+            style={{
+              cursor: addMarkerMode ? "crosshair" : "default",
+              width: imageNaturalSize ? `${imageNaturalSize.w * scale}px` : undefined,
+            }}
+          >
+            <img
+              key={`${file.id}-${pageNumber}-img`}
+              src={imageUrl}
+              alt={`Floor plan page ${pageNumber}`}
+              style={{
+                display: "block",
+                width: imageNaturalSize ? `${imageNaturalSize.w * scale}px` : "100%",
+                height: imageNaturalSize ? `${imageNaturalSize.h * scale}px` : "auto",
+              }}
+              onLoad={(e) => {
+                const img = e.currentTarget;
+                const nw = img.naturalWidth;
+                const nh = img.naturalHeight;
+                setImageNaturalSize({ w: nw, h: nh });
+                if (hasSetScaleRef.current) return;
+                if (containerRef.current && nw > 0) {
+                  const cw = containerRef.current.clientWidth - 32;
+                  if (cw > 0) {
+                    hasSetScaleRef.current = true;
+                    const fit = Math.min(1.2, Math.max(0.3, cw / nw));
+                    setFitScale(fit);
+                    setScale(fit);
+                  }
                 }
-                error={
-                  <div className="flex flex-col items-center justify-center h-40 text-destructive gap-2">
-                    <AlertTriangle className="w-6 h-6" />
-                    <p className="text-sm">{pdfError ?? "Failed to load PDF"}</p>
-                  </div>
-                }
-              >
-                <div
-                  ref={pageWrapRef}
-                  className="relative shadow-2xl inline-block"
-                  style={{ cursor: addMarkerMode ? "crosshair" : "default" }}
-                >
-                  <Page
-                    key={`${file.id}-${pageNumber}`}
-                    pageNumber={pageNumber}
-                    scale={scale}
-                    renderTextLayer={false}
-                    renderAnnotationLayer={false}
-                    onLoadSuccess={({ width }) => {
-                      if (hasSetScaleRef.current) return;
-                      if (containerRef.current) {
-                        const cw = containerRef.current.clientWidth - 32;
-                        if (cw > 0 && width > 0) {
-                          hasSetScaleRef.current = true;
-                          const fit = Math.min(1.2, Math.max(0.3, cw / width));
-                          setFitScale(fit);
-                          setScale(fit);
-                        }
-                      }
-                    }}
-                  />
+              }}
+            />
 
-                  {/* SVG overlay (PDF path) */}
-                  <svg
-                    ref={svgRef}
-                    style={{
-                      position: "absolute",
-                      top: 0,
-                      left: 0,
-                      width: "100%",
-                      height: "100%",
-                      overflow: "visible",
-                      pointerEvents: addMarkerMode || resolvedMarkers.length > 0 ? "all" : "none",
-                      cursor: addMarkerMode ? "crosshair" : drag ? "grabbing" : "default",
-                      zIndex: 5,
-                    }}
-                    onPointerDown={handleSvgPointerDown}
-                    onPointerMove={handleSvgPointerMove}
-                    onPointerUp={handleSvgPointerUp}
-                    onPointerLeave={() => setTooltip(null)}
-                  >
-                    {effectiveFloorPlanBbox && (
-                      <defs>
-                        <clipPath id={`fp-clip-${pageNumber}-${file.id.replace(/[^a-zA-Z0-9]/g, "_")}`}>
-                          <rect
-                            x={`${effectiveFloorPlanBbox.x0 * 100}%`}
-                            y={`${effectiveFloorPlanBbox.y0 * 100}%`}
-                            width={`${(effectiveFloorPlanBbox.x1 - effectiveFloorPlanBbox.x0) * 100}%`}
-                            height={`${(effectiveFloorPlanBbox.y1 - effectiveFloorPlanBbox.y0) * 100}%`}
-                          />
-                        </clipPath>
-                      </defs>
-                    )}
-                    {aiPageRegion?.floorPlan && (
-                      <rect
-                        x={`${aiPageRegion.floorPlan.x0 * 100}%`}
-                        y={`${aiPageRegion.floorPlan.y0 * 100}%`}
-                        width={`${(aiPageRegion.floorPlan.x1 - aiPageRegion.floorPlan.x0) * 100}%`}
-                        height={`${(aiPageRegion.floorPlan.y1 - aiPageRegion.floorPlan.y0) * 100}%`}
-                        fill="none"
-                        stroke="#3B82F6"
-                        strokeWidth={1.5}
-                        strokeDasharray="6 4"
-                        opacity={0.5}
-                        pointerEvents="none"
-                      />
-                    )}
-                    {aiPageRegion?.signSchedule && (
-                      <rect
-                        x={`${aiPageRegion.signSchedule.x0 * 100}%`}
-                        y={`${aiPageRegion.signSchedule.y0 * 100}%`}
-                        width={`${(aiPageRegion.signSchedule.x1 - aiPageRegion.signSchedule.x0) * 100}%`}
-                        height={`${(aiPageRegion.signSchedule.y1 - aiPageRegion.signSchedule.y0) * 100}%`}
-                        fill="none"
-                        stroke="#F59E0B"
-                        strokeWidth={1.5}
-                        strokeDasharray="6 4"
-                        opacity={0.5}
-                        pointerEvents="none"
-                      />
-                    )}
-                    <g clipPath={effectiveFloorPlanBbox ? `url(#fp-clip-${pageNumber}-${file.id.replace(/[^a-zA-Z0-9]/g, "_")})` : undefined}>
-                      {resolvedMarkers.map((m) => {
-                        const isDragging = drag?.signId === m.id;
-                        const cx = `${(isDragging ? drag!.currentX : m.resolvedX) * 100}%`;
-                        const cy = `${(isDragging ? drag!.currentY : m.resolvedY) * 100}%`;
-                        const color = getSignColor(m.signType);
-                        const stack = markerStackMap.get(m.id);
-                        const isLeader = !stack || stack.leaderId === m.id;
-                        const isStacked = !!stack && stack.count > 1;
-                        if (!isLeader) return null;
-                        return (
-                          <g key={m.id}>
-                            {isDragging && (
-                              <circle cx={cx} cy={cy} r={isStacked ? 16 : 12} fill="none" stroke={isStacked ? "#FF6B35" : color} strokeWidth={1.2} strokeDasharray="4 3" opacity={0.6} />
-                            )}
-                            {isStacked ? (
-                              <>
-                                <circle cx={cx} cy={cy} r={10} fill="white" stroke="#FF6B35" strokeWidth={2.5} />
-                                <text
-                                  x={cx} y={cy}
-                                  textAnchor="middle" dominantBaseline="central"
-                                  fontSize={9} fontWeight="bold" fill="#FF6B35"
-                                  style={{ userSelect: "none", pointerEvents: "none" }}
-                                >
-                                  {stack.count}
-                                </text>
-                              </>
-                            ) : (
-                              <circle cx={cx} cy={cy} r={5} fill={color} />
-                            )}
-                          </g>
-                        );
-                      })}
-                      {pendingMarker && (
-                        <g>
-                          <circle cx={`${pendingMarker.xPos * 100}%`} cy={`${pendingMarker.yPos * 100}%`} r={8} fill="none" stroke="#FFAA00" strokeWidth={2} strokeDasharray="5 3" opacity={0.85} />
-                          <circle cx={`${pendingMarker.xPos * 100}%`} cy={`${pendingMarker.yPos * 100}%`} r={4} fill="#FFAA00" opacity={0.9} />
-                        </g>
-                      )}
-                    </g>
-                  </svg>
-
-                  {tooltip && (() => {
-                    const stack = markerStackMap.get(tooltip.sign.id);
-                    const isStacked = !!stack && stack.count > 1;
-                    return (
-                      <div
-                        style={{ position: "absolute", left: tooltip.x + 10, top: Math.max(tooltip.y - 36, 4), zIndex: 20, pointerEvents: "none" }}
-                        className="px-2 py-1 rounded-md bg-background/95 border border-border shadow-lg text-[11px] font-mono whitespace-nowrap max-w-[260px]"
-                      >
-                        {isStacked ? (
-                          <div>
-                            <span className="font-bold text-[#FF6B35]">{stack.count} signs here</span>
-                            {stack.labels.map((lbl, i) => (
-                              <div key={i} className="truncate text-muted-foreground">{lbl}</div>
-                            ))}
-                          </div>
-                        ) : (
-                          <span>
-                            <span className="inline-block w-2 h-2 rounded-full mr-1.5 align-middle" style={{ background: getSignColor(tooltip.sign.signType) }} />
-                            {tooltip.sign.signType ?? "unknown"}
-                            {tooltip.sign.signIdentifier ? ` · ${tooltip.sign.signIdentifier}` : ""}
-                          </span>
-                        )}
-                      </div>
-                    );
-                  })()}
-
-                  {addMarkerMode && !pendingMarker && (
-                    <div
-                      style={{ position: "absolute", top: 8, left: "50%", transform: "translateX(-50%)", zIndex: 10, pointerEvents: "none" }}
-                      className="px-3 py-1.5 rounded-full bg-primary/90 text-primary-foreground text-[10px] font-bold uppercase tracking-wider shadow-lg whitespace-nowrap"
-                    >
-                      Click on floor plan to place a marker · Press again to cancel
-                    </div>
-                  )}
-                </div>
-              </Document>
-            )}
-          </>
+            <MarkerSvgOverlay
+              svgRef={svgRef}
+              resolvedMarkers={resolvedMarkers}
+              markerStackMap={markerStackMap}
+              drag={drag}
+              pendingMarker={pendingMarker}
+              tooltip={tooltip}
+              addMarkerMode={addMarkerMode}
+              effectiveFloorPlanBbox={effectiveFloorPlanBbox}
+              aiPageRegion={aiPageRegion}
+              pageNumber={pageNumber}
+              fileId={file.id}
+              onPointerDown={handleSvgPointerDown}
+              onPointerMove={handleSvgPointerMove}
+              onPointerUp={handleSvgPointerUp}
+              onPointerLeave={() => setTooltip(null)}
+            />
+          </div>
         )}
 
         </div>{/* end centering wrapper */}

@@ -1,10 +1,6 @@
 import { useState, useCallback, useEffect, useMemo, useRef } from "react";
-import { Document, Page, pdfjs } from "react-pdf";
 import { apiFetch } from "@/lib/apiClient";
 import { AddMarkerForm } from "./AddMarkerForm";
-import { usePdfBlob } from "@/hooks/use-pdf-blob";
-import "react-pdf/dist/Page/AnnotationLayer.css";
-import "react-pdf/dist/Page/TextLayer.css";
 import {
   X,
   ChevronLeft,
@@ -26,8 +22,6 @@ import {
   Sparkles,
 } from "lucide-react";
 
-pdfjs.GlobalWorkerOptions.workerSrc = `${import.meta.env.BASE_URL}pdf.worker.min.mjs`;
-
 import type { ExtractedSign } from "@/types/sign";
 export type { ExtractedSign };
 
@@ -45,6 +39,7 @@ interface PageStats {
   signSchedulePages: number[];
   bothPages?: number[];
   otherPages: number[];
+  pageImagePaths?: Record<string, string> | null;
 }
 
 interface FileInfo {
@@ -236,22 +231,70 @@ export function SignReviewModal({
   useEffect(() => { setLocalSigns(allSignsProp); }, [allSignsProp]);
   const allSigns = localSigns;
   const file = files.find((f) => f.id === sign.jobFileId) ?? null;
-  const rawPdfApiUrl = file ? `/api/jobs/${jobId}/files/${file.id}/pdf` : null;
-  const { pdfBuffer, blobError: pdfLoadError } = usePdfBlob(rawPdfApiUrl);
-  // Stable flag: true once data is ready, false while loading or if no file.
-  const pdfReady = !!pdfBuffer;
-  // Memoized react-pdf file object — creates a fresh copy from the stored ArrayBuffer
-  // so react-pdf's internal postMessage transfer never detaches our state reference.
-  const pdfFile = useMemo(
-    () => (pdfBuffer ? { data: new Uint8Array(pdfBuffer.slice(0)) } : null),
-    [pdfBuffer]
-  );
 
-  const [numPages, setNumPages] = useState<number | null>(null);
+  // ── Page image (PNG) state ──────────────────────────────────────────────
   const [pageNumber, setPageNumber] = useState(sign.pageNumber ?? 1);
   const [scale, setScale] = useState(1.0);
-  const [pdfError, setPdfError] = useState<string | null>(null);
   const pdfContainerRef = useRef<HTMLDivElement>(null);
+
+  // Image paths for the current file
+  const pageImagePaths = file?.pageStats?.pageImagePaths ?? null;
+  // Total navigable pages: determined from the keys of pageImagePaths (or pageCount fallback)
+  const totalPages = pageImagePaths
+    ? Object.keys(pageImagePaths).length
+    : (file?.pageCount ?? null);
+
+  // Per-page PNG blob URL
+  const [imageUrl, setImageUrl] = useState<string | null>(null);
+  const [imageLoading, setImageLoading] = useState(false);
+  const [imageError, setImageError] = useState(false);
+  const prevImageUrlRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (prevImageUrlRef.current) {
+      URL.revokeObjectURL(prevImageUrlRef.current);
+      prevImageUrlRef.current = null;
+    }
+    setImageUrl(null);
+    setImageError(false);
+
+    if (!file || !pageImagePaths?.[String(pageNumber)]) {
+      setImageError(true);
+      return;
+    }
+
+    setImageLoading(true);
+    let cancelled = false;
+    apiFetch(`/api/jobs/${jobId}/files/${file.id}/pages/${pageNumber}/image`)
+      .then((res) => {
+        if (!res.ok) throw new Error(`Server returned ${res.status}`);
+        return res.blob();
+      })
+      .then((blob) => {
+        if (cancelled) return;
+        const url = URL.createObjectURL(blob);
+        prevImageUrlRef.current = url;
+        setImageUrl(url);
+      })
+      .catch(() => {
+        if (!cancelled) setImageError(true);
+      })
+      .finally(() => {
+        if (!cancelled) setImageLoading(false);
+      });
+
+    return () => { cancelled = true; };
+  }, [jobId, file?.id, pageNumber, pageImagePaths]);
+
+  // Cleanup blob URL on unmount
+  useEffect(() => {
+    return () => {
+      if (prevImageUrlRef.current) URL.revokeObjectURL(prevImageUrlRef.current);
+    };
+  }, []);
+
+  // Whether the image viewer is ready (image URL is available)
+  const imageReady = !!imageUrl;
 
   // activeSign tracks which sign is currently being edited — starts as the
   // prop but can change when the user clicks a marker on the PDF.
@@ -308,23 +351,28 @@ export function SignReviewModal({
   // Used for per-sign marker suppression — only suppress signs actually sent to Gemini.
   const visualLocateSubmittedRef = useRef<Set<string>>(new Set());
 
-  // Measure actual rendered page size by observing the Page element's DOM dimensions.
-  // This is more reliable than computing nativeSize.w * scale because react-pdf may
-  // apply rounding or additional transforms internally.
+  // Measure actual rendered image size by observing the img element's DOM dimensions.
+  // This is more reliable than computing nativeSize.w * scale because it reads actual
+  // CSS pixels from the DOM and is immune to any rounding or transform differences.
   const pageWrapRef = useRef<HTMLDivElement>(null);
   const [measuredPageSize, setMeasuredPageSize] = useState<{ w: number; h: number } | null>(null);
   useEffect(() => {
     const el = pageWrapRef.current;
     if (!el) return;
     const ro = new ResizeObserver(() => {
-      const canvas = el.querySelector("canvas");
-      if (canvas) {
-        setMeasuredPageSize({ w: canvas.offsetWidth, h: canvas.offsetHeight });
+      const img = el.querySelector("img");
+      if (img) {
+        setMeasuredPageSize({ w: img.offsetWidth, h: img.offsetHeight });
       }
     });
     ro.observe(el);
     return () => ro.disconnect();
   }, []);
+
+  // Reset measuredPageSize when the page changes so stale dimensions don't persist
+  useEffect(() => {
+    setMeasuredPageSize(null);
+  }, [pageNumber, file?.id]);
 
   // Suppress marker dots when viewing a sign schedule / spec page — those pages
   // are tabular data, not spatial floor plans, so dots on them are meaningless.
@@ -574,8 +622,8 @@ export function SignReviewModal({
         fileId: file.id,
         pageNumber,
         signs: targetSigns.map((s) => {
-          const { typeToken, numberToken } = parseLocationParts(s.location!);
           const marker = markerMap.get(s.id);
+          const { typeToken, numberToken } = parseLocationParts(s.location ?? "");
           return {
             signId: s.id,
             signType: s.signType,
@@ -783,10 +831,9 @@ export function SignReviewModal({
       ? "text-primary"
       : "text-destructive";
 
-  // Prefer the ResizeObserver-measured canvas size — it reads actual CSS pixels
-  // from the DOM and is immune to any react-pdf internal rounding or scaling.
-  // Fall back to the computed value when the canvas hasn't painted yet.
-  // Both axes use exactly the same measured canvas element — X and Y are always in
+  // Prefer the ResizeObserver-measured image size — it reads actual CSS pixels
+  // from the DOM and is immune to any rounding or additional transforms.
+  // Both axes use exactly the same measured img element — X and Y are always in
   // the same coordinate space and use the same zoom level.
   //
   // Coordinate transform note:
@@ -923,9 +970,9 @@ export function SignReviewModal({
 
       {/* Two-panel body */}
       <div className="flex-1 flex overflow-hidden">
-        {/* Left: PDF Viewer */}
+        {/* Left: Image Viewer */}
         <div className="flex-1 flex flex-col bg-secondary/30 border-r border-border min-w-0">
-          {/* PDF toolbar */}
+          {/* Toolbar */}
           <div className="flex-none flex items-center gap-3 px-4 py-2 bg-card border-b border-border">
             <button
               aria-label="Previous page"
@@ -936,12 +983,12 @@ export function SignReviewModal({
               <ChevronLeft className="w-4 h-4" />
             </button>
             <span className="text-xs font-mono text-muted-foreground min-w-[80px] text-center">
-              {numPages ? `${pageNumber} / ${numPages}` : "—"}
+              {totalPages ? `${pageNumber} / ${totalPages}` : "—"}
             </span>
             <button
               aria-label="Next page"
-              disabled={numPages === null || pageNumber >= numPages}
-              onClick={() => setPageNumber((p) => (numPages ? Math.min(numPages, p + 1) : p))}
+              disabled={totalPages === null || pageNumber >= totalPages}
+              onClick={() => setPageNumber((p) => (totalPages ? Math.min(totalPages, p + 1) : p))}
               className="p-1.5 rounded hover:bg-secondary disabled:opacity-30 transition-colors"
             >
               <ChevronRight className="w-4 h-4" />
@@ -997,7 +1044,7 @@ export function SignReviewModal({
             {visualLocating && (
               <span className="flex items-center gap-1 text-[10px] font-display font-semibold uppercase tracking-wide px-2 py-1 rounded" style={{ color: "#06b6d4", background: "#06b6d410", border: "1px solid #06b6d455" }}>
                 <Loader2 className="w-3 h-3 animate-spin" />
-                AI locating...
+                AI locating…
               </span>
             )}
             {!visualLocating && visualCandidates.size > 0 && (
@@ -1067,7 +1114,7 @@ export function SignReviewModal({
                 );
               })()}
               {/* Add Marker button */}
-              {pdfReady && (
+              {imageReady && (
                 <button
                   onClick={() => {
                     setAddMode((v) => {
@@ -1095,7 +1142,7 @@ export function SignReviewModal({
                 </button>
               )}
               {/* Edit Markers (draw) mode toggle */}
-              {pdfReady && (
+              {imageReady && (
                 <button
                   onClick={() => {
                     setDrawMode((v) => {
@@ -1172,54 +1219,56 @@ export function SignReviewModal({
             )}
           </div>
 
-          {/* PDF canvas + overlay */}
+          {/* Image canvas + overlay */}
           {/* overflow-auto without flex justify-center avoids the CSS bug where
               flex centering clips the left overflow when zoomed in. Instead we
               use an inner wrapper with min-w-max + flex centering so the content
               centres when it fits and scrolls freely in all directions when it doesn't. */}
           <div ref={pdfContainerRef} className="flex-1 overflow-auto p-4">
             <div className="flex justify-center items-start" style={{ minWidth: "max-content" }}>
-            {rawPdfApiUrl && !pdfReady && !pdfLoadError && (
+            {/* Loading state */}
+            {imageLoading && !imageUrl && (
               <div className="flex items-center justify-center h-64">
                 <Loader2 className="w-8 h-8 text-primary animate-spin" />
               </div>
             )}
-            {pdfLoadError && !pdfReady && (
+            {/* Error state */}
+            {imageError && !imageUrl && (
               <div className="flex flex-col items-center justify-center h-64 text-destructive gap-2">
                 <AlertTriangle className="w-8 h-8" />
-                <p className="text-sm">Failed to load PDF</p>
-                <p className="text-xs opacity-70">{pdfLoadError}</p>
+                <p className="text-sm">Failed to load page image</p>
               </div>
             )}
-            {pdfReady ? (
-              <Document
-                file={pdfFile}
-                onLoadSuccess={({ numPages }) => {
-                  setNumPages(numPages);
-                  setPdfError(null);
-                }}
-                onLoadError={(err) => setPdfError(err.message)}
-                loading={
-                  <div className="flex items-center justify-center h-64">
-                    <Loader2 className="w-8 h-8 text-primary animate-spin" />
-                  </div>
-                }
-                error={
-                  <div className="flex flex-col items-center justify-center h-64 text-destructive gap-2">
-                    <AlertTriangle className="w-8 h-8" />
-                    <p className="text-sm">Failed to load PDF</p>
-                    {pdfError && <p className="text-xs opacity-70">{pdfError}</p>}
-                  </div>
-                }
-              >
-                {/* Wrap page + overlay in a relative container */}
-                <div ref={pageWrapRef} className="relative shadow-2xl inline-block">
-                  <Page
-                    pageNumber={pageNumber}
-                    scale={scale}
-                    renderTextLayer={true}
-                    renderAnnotationLayer={true}
-                  />
+            {/* No file linked */}
+            {!file && (
+              <div className="flex flex-col items-center justify-center h-64 text-muted-foreground gap-3">
+                <FileText className="w-12 h-12 opacity-30" />
+                <p className="text-sm">No source file linked to this sign entry</p>
+              </div>
+            )}
+            {imageUrl && (
+              /* Wrap page + overlay in a relative container */
+              <div ref={pageWrapRef} className="relative shadow-2xl inline-block">
+                <img
+                  key={`${file?.id ?? ""}-${pageNumber}-img`}
+                  src={imageUrl}
+                  alt={`Page ${pageNumber}`}
+                  style={{
+                    display: "block",
+                    width: nativeSize ? `${nativeSize.w * scale}px` : undefined,
+                    height: nativeSize ? `${nativeSize.h * scale}px` : "auto",
+                    maxWidth: "none",
+                  }}
+                  onLoad={(e) => {
+                    const img = e.currentTarget;
+                    const nw = img.naturalWidth;
+                    const nh = img.naturalHeight;
+                    if (nw > 0 && nh > 0) {
+                      setNativeSize({ w: nw, h: nh });
+                      setMeasuredPageSize({ w: img.offsetWidth, h: img.offsetHeight });
+                    }
+                  }}
+                />
 
                   {/* Sign schedule page notice — only show when no real (non-ghost) markers found AND page is classified as schedule */}
                   {isSignSchedulePage && textMarkers.filter((m) => !m.isGhost).length === 0 && (
@@ -1238,7 +1287,7 @@ export function SignReviewModal({
                     </div>
                   )}
 
-                  {/* SVG marker overlay — visual only, above react-pdf text layer */}
+                  {/* SVG marker overlay — visual only, above image */}
                   {showOverlay && renderedW && renderedH && (textMarkers.length > 0 || (debugMode && serverPhrases)) && (
                     <svg
                       style={{
@@ -1739,12 +1788,6 @@ export function SignReviewModal({
                       }}
                     />
                   )}
-                </div>
-              </Document>
-            ) : (
-              <div className="flex flex-col items-center justify-center h-64 text-muted-foreground gap-3">
-                <FileText className="w-12 h-12 opacity-30" />
-                <p className="text-sm">No source file linked to this sign entry</p>
               </div>
             )}
             </div>{/* end centering wrapper */}
