@@ -22,6 +22,8 @@ import {
   CheckCircle,
   Sparkles,
   RotateCcw,
+  Undo2,
+  Redo2,
 } from "lucide-react";
 
 import type { ExtractedSign } from "@/types/sign";
@@ -249,6 +251,7 @@ interface EditPanelProps {
   onClose?: () => void;
   onSaved?: (updated: ExtractedSign) => void;
   onSignDeleted?: (signId: string) => void;
+  onDeleteCommit?: (signId: string) => void;
   setLocalSigns: React.Dispatch<React.SetStateAction<ExtractedSign[]>>;
   setActiveSign: (s: ExtractedSign | null) => void;
   localSigns: ExtractedSign[];
@@ -261,6 +264,7 @@ function EditPanel({
   onClose,
   onSaved,
   onSignDeleted,
+  onDeleteCommit,
   setLocalSigns,
   setActiveSign,
   localSigns,
@@ -325,6 +329,10 @@ function EditPanel({
   };
 
   const handleDeleteSign = async (signId: string) => {
+    if (onDeleteCommit) {
+      onDeleteCommit(signId);
+      return;
+    }
     try {
       const res = await apiFetch(`/api/extracted-signs/${signId}`, { method: "DELETE" });
       if (!res.ok) throw new Error("Failed to delete sign");
@@ -442,6 +450,7 @@ interface PageViewerProps {
   onSignAdded?: (sign: ExtractedSign) => void;
   onSignUpdated?: (signId: string, xPos: number, yPos: number) => void;
   onSignDeleted?: (signId: string) => void;
+  onDragCommit?: (signId: string, nx: number, ny: number) => void;
   onEditSign?: (sign: ExtractedSign) => void;
   navigablePages: number[];
   pageNumber: number;
@@ -461,6 +470,7 @@ function PageViewer({
   onSignAdded,
   onSignUpdated,
   onSignDeleted,
+  onDragCommit,
   onEditSign,
   navigablePages,
   pageNumber,
@@ -1532,26 +1542,30 @@ function PageViewer({
                     if (ds.isDragging) {
                       const nx = Math.min(0.98, Math.max(0.02, ds.currentX));
                       const ny = Math.min(0.98, Math.max(0.02, ds.currentY));
-                      // Optimistic update — move the marker instantly so it doesn't snap back
-                      setLocalSigns((prev) => prev.map((s) =>
-                        s.id === ds.signId ? { ...s, xPos: nx, yPos: ny, placementSource: "user_drag" } : s
-                      ));
-                      const optimisticSign = localSigns.find((s) => s.id === ds.signId);
-                      if (optimisticSign && ds.signId === activeSignId) {
-                        onActiveSignChange({ ...optimisticSign, xPos: nx, yPos: ny, placementSource: "user_drag" });
-                      }
-                      apiFetch(`/api/extracted-signs/${ds.signId}`, {
-                        method: "PATCH",
-                        headers: { "Content-Type": "application/json" },
-                        body: JSON.stringify({ xPos: nx, yPos: ny, placementSource: "user_drag" }),
-                      })
-                        .then((r) => r.ok ? r.json() : Promise.reject(new Error("non-ok")))
-                        .then((d: { sign: ExtractedSign }) => {
-                          setLocalSigns((prev) => prev.map((s) => s.id === ds.signId ? d.sign : s));
-                          if (ds.signId === activeSignId) onActiveSignChange(d.sign);
-                          onSignUpdated?.(ds.signId, nx, ny);
+                      if (onDragCommit) {
+                        onDragCommit(ds.signId, nx, ny);
+                      } else {
+                        // Optimistic update — move the marker instantly so it doesn't snap back
+                        setLocalSigns((prev) => prev.map((s) =>
+                          s.id === ds.signId ? { ...s, xPos: nx, yPos: ny, placementSource: "user_drag" } : s
+                        ));
+                        const optimisticSign = localSigns.find((s) => s.id === ds.signId);
+                        if (optimisticSign && ds.signId === activeSignId) {
+                          onActiveSignChange({ ...optimisticSign, xPos: nx, yPos: ny, placementSource: "user_drag" });
+                        }
+                        apiFetch(`/api/extracted-signs/${ds.signId}`, {
+                          method: "PATCH",
+                          headers: { "Content-Type": "application/json" },
+                          body: JSON.stringify({ xPos: nx, yPos: ny, placementSource: "user_drag" }),
                         })
-                        .catch((err) => console.error("[drag] PATCH failed:", err));
+                          .then((r) => r.ok ? r.json() : Promise.reject(new Error("non-ok")))
+                          .then((d: { sign: ExtractedSign }) => {
+                            setLocalSigns((prev) => prev.map((s) => s.id === ds.signId ? d.sign : s));
+                            if (ds.signId === activeSignId) onActiveSignChange(d.sign);
+                            onSignUpdated?.(ds.signId, nx, ny);
+                          })
+                          .catch((err) => console.error("[drag] PATCH failed:", err));
+                      }
                     } else {
                       const found = localSigns.find((s) => s.id === ds.signId);
                       if (found) handleSelectSign(found);
@@ -1645,7 +1659,211 @@ export function UnifiedPlanViewer({
 }: UnifiedPlanViewerProps) {
   const sourceSigns = (allSignsProp ?? signs ?? []) as ExtractedSign[];
   const [localSigns, setLocalSigns] = useState<ExtractedSign[]>(sourceSigns);
-  useEffect(() => { setLocalSigns(sourceSigns); }, [sourceSigns]);
+  useEffect(() => {
+    // In modal mode, protect staged draft from being overwritten by external prop updates
+    if (mode === "modal" && hasPendingChangesRef.current) return;
+    setLocalSigns(sourceSigns);
+  // sourceSigns identity changes when parent updates; mode is stable
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sourceSigns]);
+
+  // ── Draft state (modal deferred save) ─────────────────────────────────────
+  const [savedSigns, setSavedSigns] = useState<ExtractedSign[]>(sourceSigns);
+  useEffect(() => {
+    if (mode === "modal" && hasPendingChangesRef.current) return;
+    setSavedSigns(sourceSigns);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sourceSigns]);
+  const [historyStack, setHistoryStack] = useState<ExtractedSign[][]>([]);
+  const [redoStack, setRedoStack] = useState<ExtractedSign[][]>([]);
+  const [batchSaving, setBatchSaving] = useState(false);
+  const [batchSaveError, setBatchSaveError] = useState<string | null>(null);
+  const [confirmDiscard, setConfirmDiscard] = useState(false);
+
+  const localSignsRef = useRef(localSigns);
+  useEffect(() => { localSignsRef.current = localSigns; }, [localSigns]);
+
+  // Track pending changes in a ref so the sourceSigns sync guards can read it
+  // without capturing stale closures.
+  const hasPendingChangesRef = useRef(false);
+
+  const modalContainerRef = useRef<HTMLDivElement>(null);
+
+  const hasPendingChanges = useMemo(() => {
+    if (mode !== "modal") return false;
+    const savedMap = new Map(savedSigns.map((s) => [s.id, s]));
+    for (const s of localSigns) {
+      const orig = savedMap.get(s.id);
+      if (!orig) return true;
+      if (orig.xPos !== s.xPos || orig.yPos !== s.yPos) return true;
+    }
+    for (const s of savedSigns) {
+      if (!localSigns.find((ls) => ls.id === s.id)) return true;
+    }
+    return false;
+  }, [mode, localSigns, savedSigns]);
+
+  const pendingCount = useMemo(() => {
+    if (mode !== "modal") return 0;
+    let count = 0;
+    const savedMap = new Map(savedSigns.map((s) => [s.id, s]));
+    for (const s of localSigns) {
+      const orig = savedMap.get(s.id);
+      if (!orig || orig.xPos !== s.xPos || orig.yPos !== s.yPos) count++;
+    }
+    for (const s of savedSigns) {
+      if (!localSigns.find((ls) => ls.id === s.id)) count++;
+    }
+    return count;
+  }, [mode, localSigns, savedSigns]);
+
+  // Keep ref in sync for use inside non-reactive guards (source sync effects)
+  useEffect(() => { hasPendingChangesRef.current = hasPendingChanges; }, [hasPendingChanges]);
+
+  const pushHistory = useCallback(() => {
+    setHistoryStack((prev) => [...prev, localSignsRef.current]);
+    setRedoStack([]);
+  }, []);
+
+  const handleDragCommit = useCallback((signId: string, nx: number, ny: number) => {
+    pushHistory();
+    setLocalSigns((prev) => prev.map((s) =>
+      s.id === signId ? { ...s, xPos: nx, yPos: ny, placementSource: "user_drag" } : s
+    ));
+    setActiveSignState((prev) => {
+      if (prev && prev.id === signId) return { ...prev, xPos: nx, yPos: ny, placementSource: "user_drag" };
+      return prev;
+    });
+  }, [pushHistory]);
+
+  const handleDeleteCommit = useCallback((signId: string) => {
+    pushHistory();
+    setLocalSigns((prev) => {
+      const next = prev.filter((s) => s.id !== signId);
+      setActiveSignState(next[0] ?? null);
+      return next;
+    });
+  }, [pushHistory]);
+
+  const handleBatchSave = useCallback(async () => {
+    setBatchSaving(true);
+    setBatchSaveError(null);
+    const currentSigns = localSignsRef.current;
+    const savedMap = new Map(savedSigns.map((s) => [s.id, s]));
+    const currentMap = new Map(currentSigns.map((s) => [s.id, s]));
+    const calls: Promise<void>[] = [];
+
+    for (const s of currentSigns) {
+      const orig = savedMap.get(s.id);
+      // Only PATCH signs that were in the saved snapshot and have a changed position.
+      // Skips any locally-introduced signs to avoid spurious requests.
+      if (orig && (orig.xPos !== s.xPos || orig.yPos !== s.yPos)) {
+        calls.push(
+          apiFetch(`/api/extracted-signs/${s.id}`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ xPos: s.xPos, yPos: s.yPos, placementSource: s.placementSource }),
+          }).then((r) => {
+            if (!r.ok) throw new Error(`PATCH ${s.id} failed`);
+          })
+        );
+      }
+    }
+
+    for (const s of savedSigns) {
+      if (!currentMap.has(s.id)) {
+        calls.push(
+          apiFetch(`/api/extracted-signs/${s.id}`, { method: "DELETE" }).then((r) => {
+            if (!r.ok) throw new Error(`DELETE ${s.id} failed`);
+          })
+        );
+      }
+    }
+
+    try {
+      await Promise.all(calls);
+      setSavedSigns(currentSigns);
+      setHistoryStack([]);
+      setRedoStack([]);
+      onSignUpdated && currentSigns.forEach((s) => {
+        const orig = savedMap.get(s.id);
+        if (orig && (orig.xPos !== s.xPos || orig.yPos !== s.yPos)) {
+          onSignUpdated(s.id, s.xPos ?? 0, s.yPos ?? 0);
+        }
+      });
+      savedSigns.forEach((s) => {
+        if (!currentMap.has(s.id)) onSignDeleted?.(s.id);
+      });
+    } catch (err) {
+      setBatchSaveError(String(err instanceof Error ? err.message : err));
+    } finally {
+      setBatchSaving(false);
+    }
+  }, [savedSigns, onSignUpdated, onSignDeleted]);
+
+  // Restore a drag/delete snapshot while preserving current form-field data.
+  // For signs that still exist in current localSigns, only xPos/yPos/placementSource
+  // are restored from the snapshot; all other fields (signType, location, etc.) keep
+  // their latest values so that form-field edits are NOT rolled back by undo/redo.
+  // For signs that were deleted (not in current state), the full snapshot entry is
+  // used because there is no current version to fall back on.
+  const restoreSnapshot = useCallback((snapshot: ExtractedSign[]) => {
+    const currentMap = new Map(localSignsRef.current.map((s) => [s.id, s]));
+    const merged = snapshot.map((snapSign) => {
+      const current = currentMap.get(snapSign.id);
+      if (current) {
+        return { ...current, xPos: snapSign.xPos, yPos: snapSign.yPos, placementSource: snapSign.placementSource };
+      }
+      return snapSign;
+    });
+    setLocalSigns(merged);
+    setActiveSignState((prev) => {
+      if (!prev) return merged[0] ?? null;
+      const inMerged = merged.find((s) => s.id === prev.id);
+      return inMerged ?? merged[0] ?? null;
+    });
+  }, []);
+
+  const handleUndo = useCallback(() => {
+    setHistoryStack((prevStack) => {
+      if (prevStack.length === 0) return prevStack;
+      const snapshot = prevStack[prevStack.length - 1]!;
+      const rest = prevStack.slice(0, -1);
+      setRedoStack((prevRedo) => [...prevRedo, localSignsRef.current]);
+      restoreSnapshot(snapshot);
+      return rest;
+    });
+  }, [restoreSnapshot]);
+
+  const handleRedo = useCallback(() => {
+    setRedoStack((prevRedo) => {
+      if (prevRedo.length === 0) return prevRedo;
+      const snapshot = prevRedo[prevRedo.length - 1]!;
+      const rest = prevRedo.slice(0, -1);
+      setHistoryStack((prevStack) => [...prevStack, localSignsRef.current]);
+      restoreSnapshot(snapshot);
+      return rest;
+    });
+  }, [restoreSnapshot]);
+
+  // ── Keyboard undo/redo (modal only) ───────────────────────────────────────
+  // Attached as onKeyDown on the modal container div so it only receives
+  // events that originate inside the modal (event bubbling).
+  const handleModalKeyDown = useCallback((e: React.KeyboardEvent) => {
+    const tag = (document.activeElement?.tagName ?? "").toUpperCase();
+    if (tag === "INPUT" || tag === "TEXTAREA") return;
+    const key = e.key.toLowerCase();
+    if (key === "z" && (e.ctrlKey || e.metaKey) && !e.shiftKey) {
+      e.preventDefault();
+      handleUndo();
+    } else if (
+      (key === "y" && (e.ctrlKey || e.metaKey)) ||
+      (key === "z" && (e.ctrlKey || e.metaKey) && e.shiftKey)
+    ) {
+      e.preventDefault();
+      handleRedo();
+    }
+  }, [handleUndo, handleRedo]);
 
   // ── Active sign ────────────────────────────────────────────────────────────
   const findInitialSign = () => {
@@ -1775,6 +1993,7 @@ export function UnifiedPlanViewer({
       onSignAdded={onSignAdded}
       onSignUpdated={onSignUpdated}
       onSignDeleted={onSignDeleted}
+      onDragCommit={mode === "modal" ? handleDragCommit : undefined}
       onEditSign={onEditSign}
       navigablePages={navigablePages}
       pageNumber={pageNumber}
@@ -1809,86 +2028,174 @@ export function UnifiedPlanViewer({
     );
   }
 
-  // ── Modal mode ─────────────────────────────────────────────────────────────
-  return (
-    <div className="fixed inset-0 z-50 flex flex-col bg-background/95 backdrop-blur-sm">
-      {/* Top bar */}
-      <div className="flex-none flex items-center justify-between px-4 py-3 bg-card border-b border-border shadow-lg">
-        <div className="flex items-center gap-1 flex-shrink-0">
-          <button disabled={!hasPrev} onClick={() => { if (hasPrev) setActiveSign(localSigns[currentIdx - 1]!); }} title="Previous sign" className="p-1.5 rounded hover:bg-secondary disabled:opacity-25 transition-colors">
-            <ChevronLeft className="w-4 h-4" />
-          </button>
-          <span className="text-xs font-mono text-muted-foreground select-none min-w-[52px] text-center">
-            {currentIdx >= 0 ? `${currentIdx + 1} / ${localSigns.length}` : "—"}
-          </span>
-          <button disabled={!hasNext} onClick={() => { if (hasNext) setActiveSign(localSigns[currentIdx + 1]!); }} title="Next sign" className="p-1.5 rounded hover:bg-secondary disabled:opacity-25 transition-colors">
-            <ChevronRight className="w-4 h-4" />
-          </button>
-          <div className="w-px h-4 bg-border mx-1" />
-        </div>
+  // Focus the modal container when it mounts so Ctrl+Z works without a click
+  useEffect(() => {
+    if (mode !== "modal") return;
+    modalContainerRef.current?.focus();
+  }, [mode]);
 
-        <div className="flex items-center gap-3 min-w-0 flex-1">
-          <FileText className="w-5 h-5 text-muted-foreground flex-shrink-0" />
-          <div className="min-w-0">
-            <p className="text-sm font-display font-semibold text-foreground leading-none truncate">{selectedFile.originalName}</p>
-            {activeSign?.sheetNumber && (
-              <p className="text-xs text-muted-foreground font-mono mt-0.5">Sheet {activeSign.sheetNumber}{activeSign.signIdentifier ? ` • ${activeSign.signIdentifier}` : ""}</p>
+  // ── Modal mode ─────────────────────────────────────────────────────────────
+  const handleCloseWithGuard = () => {
+    if (hasPendingChanges) {
+      setConfirmDiscard(true);
+    } else {
+      onClose?.();
+    }
+  };
+
+  return (
+    <div
+      ref={modalContainerRef}
+      tabIndex={-1}
+      onKeyDown={handleModalKeyDown}
+      className="fixed inset-0 z-50 flex flex-col bg-background/95 backdrop-blur-sm outline-none"
+    >
+      {/* Top bar */}
+      <div className="flex-none bg-card border-b border-border shadow-lg">
+        <div className="flex items-center justify-between px-4 py-3">
+          <div className="flex items-center gap-1 flex-shrink-0">
+            <button disabled={!hasPrev} onClick={() => { if (hasPrev) setActiveSign(localSigns[currentIdx - 1]!); }} title="Previous sign" className="p-1.5 rounded hover:bg-secondary disabled:opacity-25 transition-colors">
+              <ChevronLeft className="w-4 h-4" />
+            </button>
+            <span className="text-xs font-mono text-muted-foreground select-none min-w-[52px] text-center">
+              {currentIdx >= 0 ? `${currentIdx + 1} / ${localSigns.length}` : "—"}
+            </span>
+            <button disabled={!hasNext} onClick={() => { if (hasNext) setActiveSign(localSigns[currentIdx + 1]!); }} title="Next sign" className="p-1.5 rounded hover:bg-secondary disabled:opacity-25 transition-colors">
+              <ChevronRight className="w-4 h-4" />
+            </button>
+            <div className="w-px h-4 bg-border mx-1" />
+          </div>
+
+          <div className="flex items-center gap-3 min-w-0 flex-1">
+            <FileText className="w-5 h-5 text-muted-foreground flex-shrink-0" />
+            <div className="min-w-0">
+              <p className="text-sm font-display font-semibold text-foreground leading-none truncate">{selectedFile.originalName}</p>
+              {activeSign?.sheetNumber && (
+                <p className="text-xs text-muted-foreground font-mono mt-0.5">Sheet {activeSign.sheetNumber}{activeSign.signIdentifier ? ` • ${activeSign.signIdentifier}` : ""}</p>
+              )}
+            </div>
+            {activeSign && (
+              <div className={`text-xs font-mono font-semibold px-2 py-0.5 rounded border ${confColor} bg-current/10 border-current/20`}>
+                {confidence}% confidence
+              </div>
+            )}
+            {activeSign?.manuallyAdded && (
+              <span className="flex items-center gap-1 text-[10px] font-display font-bold uppercase tracking-wider border px-2 py-0.5 rounded" style={{ color: "#a855f7", borderColor: "#a855f755", background: "#a855f710" }}>
+                <Plus className="w-3 h-3" />Manually Added
+              </span>
+            )}
+            {activeSign?.userVerified && (
+              <span className="flex items-center gap-1 text-[10px] font-display font-bold uppercase tracking-wider border px-2 py-0.5 rounded" style={{ color: "#22c55e", borderColor: "#22c55e55", background: "#22c55e10" }}>
+                <CheckCircle className="w-3 h-3" />Verified
+              </span>
+            )}
+            {activeSign && (activeSign.placementSource === "user_confirmed" || activeSign.placementSource === "gemini_vision") && (
+              <button
+                title="AI-placed marker — click to reset position"
+                onClick={() => {
+                  if (!activeSign) return;
+                  const resetFn = resetAiPlacementBridgeRef.current;
+                  if (resetFn) {
+                    resetFn(activeSign.id);
+                  }
+                }}
+                className="flex items-center gap-1 text-[10px] font-display font-bold uppercase tracking-wider border px-2 py-0.5 rounded transition-colors hover:bg-cyan-400/20"
+                style={{ color: "#06b6d4", borderColor: "#06b6d455", background: "#06b6d410" }}
+              >
+                <Sparkles className="w-3 h-3" />AI Placed
+                <RotateCcw className="w-2.5 h-2.5 ml-0.5 opacity-70" />
+                <span className="opacity-70">Reset</span>
+              </button>
+            )}
+            {activeSign?.reviewFlag && (
+              <span className="flex items-center gap-1 text-[10px] font-display font-bold uppercase tracking-wider text-primary border border-primary/30 bg-primary/10 px-2 py-0.5 rounded">
+                <AlertTriangle className="w-3 h-3" />Flagged
+              </span>
+            )}
+            {textSearchStatus === "found" && (
+              <span className="flex items-center gap-1 text-[10px] font-display font-bold uppercase tracking-wider text-accent border border-accent/30 bg-accent/10 px-2 py-0.5 rounded">
+                <MapPin className="w-3 h-3" />Located on page
+              </span>
+            )}
+            {textSearchStatus === "not-found" && (
+              <span className="flex items-center gap-1 text-[10px] font-display font-bold uppercase tracking-wider text-destructive border border-destructive/30 bg-destructive/10 px-2 py-0.5 rounded">
+                <AlertTriangle className="w-3 h-3" />Not found on this page
+              </span>
             )}
           </div>
-          {activeSign && (
-            <div className={`text-xs font-mono font-semibold px-2 py-0.5 rounded border ${confColor} bg-current/10 border-current/20`}>
-              {confidence}% confidence
-            </div>
-          )}
-          {activeSign?.manuallyAdded && (
-            <span className="flex items-center gap-1 text-[10px] font-display font-bold uppercase tracking-wider border px-2 py-0.5 rounded" style={{ color: "#a855f7", borderColor: "#a855f755", background: "#a855f710" }}>
-              <Plus className="w-3 h-3" />Manually Added
-            </span>
-          )}
-          {activeSign?.userVerified && (
-            <span className="flex items-center gap-1 text-[10px] font-display font-bold uppercase tracking-wider border px-2 py-0.5 rounded" style={{ color: "#22c55e", borderColor: "#22c55e55", background: "#22c55e10" }}>
-              <CheckCircle className="w-3 h-3" />Verified
-            </span>
-          )}
-          {activeSign && (activeSign.placementSource === "user_confirmed" || activeSign.placementSource === "gemini_vision") && (
+
+          {/* Undo / Redo / Save / Close */}
+          <div className="flex items-center gap-1 flex-shrink-0 ml-3">
             <button
-              title="AI-placed marker — click to reset position"
-              onClick={() => {
-                if (!activeSign) return;
-                // Use PageViewer's resetAiPlacement which handles all dedupe-ref cleanup
-                const resetFn = resetAiPlacementBridgeRef.current;
-                if (resetFn) {
-                  resetFn(activeSign.id);
-                }
-              }}
-              className="flex items-center gap-1 text-[10px] font-display font-bold uppercase tracking-wider border px-2 py-0.5 rounded transition-colors hover:bg-cyan-400/20"
-              style={{ color: "#06b6d4", borderColor: "#06b6d455", background: "#06b6d410" }}
+              disabled={historyStack.length === 0}
+              onClick={handleUndo}
+              title="Undo (Ctrl+Z)"
+              className="p-1.5 rounded hover:bg-secondary disabled:opacity-25 transition-colors text-muted-foreground hover:text-foreground"
             >
-              <Sparkles className="w-3 h-3" />AI Placed
-              <RotateCcw className="w-2.5 h-2.5 ml-0.5 opacity-70" />
-              <span className="opacity-70">Reset</span>
+              <Undo2 className="w-4 h-4" />
             </button>
-          )}
-          {activeSign?.reviewFlag && (
-            <span className="flex items-center gap-1 text-[10px] font-display font-bold uppercase tracking-wider text-primary border border-primary/30 bg-primary/10 px-2 py-0.5 rounded">
-              <AlertTriangle className="w-3 h-3" />Flagged
-            </span>
-          )}
-          {textSearchStatus === "found" && (
-            <span className="flex items-center gap-1 text-[10px] font-display font-bold uppercase tracking-wider text-accent border border-accent/30 bg-accent/10 px-2 py-0.5 rounded">
-              <MapPin className="w-3 h-3" />Located on page
-            </span>
-          )}
-          {textSearchStatus === "not-found" && (
-            <span className="flex items-center gap-1 text-[10px] font-display font-bold uppercase tracking-wider text-destructive border border-destructive/30 bg-destructive/10 px-2 py-0.5 rounded">
-              <AlertTriangle className="w-3 h-3" />Not found on this page
-            </span>
-          )}
+            <button
+              disabled={redoStack.length === 0}
+              onClick={handleRedo}
+              title="Redo (Ctrl+Y)"
+              className="p-1.5 rounded hover:bg-secondary disabled:opacity-25 transition-colors text-muted-foreground hover:text-foreground"
+            >
+              <Redo2 className="w-4 h-4" />
+            </button>
+            <div className="w-px h-4 bg-border mx-1" />
+            <button
+              onClick={handleBatchSave}
+              disabled={!hasPendingChanges || batchSaving}
+              title={hasPendingChanges ? `Save ${pendingCount} pending change${pendingCount !== 1 ? "s" : ""}` : "No unsaved changes"}
+              className={`relative flex items-center gap-1.5 px-3 py-1.5 text-xs font-display font-bold uppercase tracking-wide rounded-lg transition-all ${
+                hasPendingChanges
+                  ? "bg-primary text-primary-foreground hover:bg-primary/90 shadow-[0_0_12px_rgba(255,170,0,0.2)]"
+                  : "bg-secondary text-muted-foreground opacity-40 cursor-not-allowed"
+              }`}
+            >
+              {batchSaving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
+              Save
+              {hasPendingChanges && pendingCount > 0 && (
+                <span className="absolute -top-1.5 -right-1.5 flex items-center justify-center w-4 h-4 rounded-full bg-destructive text-[9px] font-bold text-destructive-foreground leading-none">
+                  {pendingCount > 9 ? "9+" : pendingCount}
+                </span>
+              )}
+            </button>
+            <div className="w-px h-4 bg-border mx-1" />
+            <button onClick={handleCloseWithGuard} className="p-2 rounded-lg hover:bg-secondary text-muted-foreground hover:text-foreground transition-colors">
+              <X className="w-5 h-5" />
+            </button>
+          </div>
         </div>
 
-        <button onClick={onClose} className="p-2 rounded-lg hover:bg-secondary text-muted-foreground hover:text-foreground transition-colors">
-          <X className="w-5 h-5" />
-        </button>
+        {/* Batch save error */}
+        {batchSaveError && (
+          <div className="px-4 py-2 text-xs text-destructive bg-destructive/10 border-t border-destructive/20 flex items-center gap-2">
+            <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0" />
+            {batchSaveError}
+            <button onClick={() => setBatchSaveError(null)} className="ml-auto text-destructive/60 hover:text-destructive"><X className="w-3 h-3" /></button>
+          </div>
+        )}
+
+        {/* Confirm discard row */}
+        {confirmDiscard && (
+          <div className="px-4 py-2 bg-amber-500/10 border-t border-amber-500/20 flex items-center gap-3 text-xs">
+            <AlertTriangle className="w-3.5 h-3.5 text-primary flex-shrink-0" />
+            <span className="text-foreground font-medium">You have unsaved changes. Discard and close?</span>
+            <button
+              onClick={() => { setConfirmDiscard(false); onClose?.(); }}
+              className="ml-auto px-3 py-1 rounded bg-destructive/80 text-destructive-foreground font-semibold hover:bg-destructive transition-colors"
+            >
+              Discard &amp; Close
+            </button>
+            <button
+              onClick={() => setConfirmDiscard(false)}
+              className="px-3 py-1 rounded bg-secondary text-muted-foreground font-semibold hover:text-foreground transition-colors"
+            >
+              Cancel
+            </button>
+          </div>
+        )}
       </div>
 
       {/* Two-panel body */}
@@ -1900,9 +2207,10 @@ export function UnifiedPlanViewer({
           <EditPanel
             activeSign={activeSign}
             textSearchStatus={textSearchStatus}
-            onClose={onClose}
+            onClose={handleCloseWithGuard}
             onSaved={onSaved}
             onSignDeleted={onSignDeleted}
+            onDeleteCommit={handleDeleteCommit}
             setLocalSigns={setLocalSigns}
             setActiveSign={setActiveSign}
             localSigns={localSigns}
