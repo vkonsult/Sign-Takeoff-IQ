@@ -1038,7 +1038,7 @@ function filenameClassificationBoost(filename: string): { floorPlan: number; sig
   };
 }
 
-function classifyPage(pageNum: number, text: string, filenameBoost?: { floorPlan: number; signSchedule: number }): ScoredPage {
+function classifyPage(pageNum: number, text: string): ScoredPage {
   // ── Title block pre-check ────────────────────────────────────────────────────
   // Read the drawing number and title from the title block (bottom-right corner
   // of every architectural sheet). If the title block clearly identifies the
@@ -1078,19 +1078,18 @@ function classifyPage(pageNum: number, text: string, filenameBoost?: { floorPlan
     return { pageNum, text, floorPlanScore: 0, signScheduleScore: 0, type: "floor_plan", titleBlockType };
   }
 
-  // titleBlockType === "unknown" — fall through to existing heuristic scoring.
+  // titleBlockType === "unknown" — fall through to text-only heuristic scoring.
+  // Filename is intentionally NOT used here: a document-level label (e.g.
+  // "Church Plan All Pages.pdf") says nothing about which individual pages are
+  // floor plans vs. elevations vs. specs, so applying it per-page causes
+  // widespread false positives.
   const textFloorPlanScore = scoreForFloorPlan(text);
   const textSignScheduleScore = scoreForSignSchedule(text);
-
-  const boost = filenameBoost ?? { floorPlan: 0, signSchedule: 0 };
-  const floorPlanScore = textFloorPlanScore + boost.floorPlan;
-  const signScheduleScore = textSignScheduleScore + boost.signSchedule;
 
   // Legend/symbol-key pages are classified as "other" and excluded from
   // sign extraction. A single strong legend keyword (score ≥ 3) overrides
   // floor-plan classification unless the floor-plan text score is very high
-  // (≥ 10), which would indicate that the page contains substantial real
-  // room content alongside a small legend box.
+  // (≥ 10), indicating substantial real room content alongside a small legend box.
   const legendScore = scoreForLegendPage(text);
   if (legendScore >= 3 && textFloorPlanScore < 10) {
     return { pageNum, text, floorPlanScore: textFloorPlanScore, signScheduleScore: textSignScheduleScore, type: "other", titleBlockType };
@@ -1099,9 +1098,6 @@ function classifyPage(pageNum: number, text: string, filenameBoost?: { floorPlan
   // ── Heuristic "both" detection ─────────────────────────────────────────────
   // When both text scores are strong AND neither overwhelmingly dominates,
   // the page likely contains both a floor plan drawing and a sign schedule table.
-  // Thresholds: each score ≥ 8, ratio between 0.35 and 2.85 (≤ ~3× difference).
-  // This is conservative to avoid misclassifying pure schedule pages that pick up
-  // incidental floor-plan room labels as their "location" column values.
   if (textFloorPlanScore >= 8 && textSignScheduleScore >= 8) {
     const ratio = textFloorPlanScore / textSignScheduleScore;
     if (ratio >= 0.35 && ratio <= 2.85) {
@@ -1110,48 +1106,14 @@ function classifyPage(pageNum: number, text: string, filenameBoost?: { floorPlan
   }
 
   let type: PageType = "other";
-
-  // When a filename strongly implies a type (boost ≥ 8), that classification
-  // locks in unless the opposing TEXT score OVERWHELMINGLY dominates.  This is
-  // especially important for signage-schedule files, which are wide architectural
-  // drawing sheets that naturally contain many room-label words (elevator, stair,
-  // lobby, level) that would otherwise trigger a floor-plan mis-classification.
-  const STRONG_BOOST = 8;
-  if (boost.signSchedule >= STRONG_BOOST) {
-    // Filename explicitly says "sign schedule". Only allow floor_plan to override
-    // if the floor plan TEXT score is at least 3× the sign schedule TEXT score
-    // AND exceeds the full boosted sign schedule total by the boost amount.
-    // A plain signage-schedule drawing sheet with incidental room words should
-    // NEVER be reclassified as a floor plan.
-    const ssOverrideThreshold = Math.max(
-      textSignScheduleScore * 3 + boost.signSchedule,
-      textSignScheduleScore + boost.signSchedule * 2,
-    );
-    if (textFloorPlanScore >= 4 && textFloorPlanScore > ssOverrideThreshold) {
-      type = "floor_plan";
-    } else {
-      type = "sign_schedule";
-    }
-  } else if (boost.floorPlan >= STRONG_BOOST) {
-    // Filename says "floor plan" — sign schedule must be much higher to override
-    if (signScheduleScore >= 4 && signScheduleScore > floorPlanScore + boost.floorPlan * 0.5) {
-      type = "sign_schedule";
-    } else {
-      type = "floor_plan";
-    }
-  } else {
-    // No strong filename signal — use text scores with standard thresholds.
-    // Sign schedule needs a higher absolute threshold (4) to avoid false
-    // positives from floor plans that contain incidental sign words.
-    if (floorPlanScore >= 4 && floorPlanScore >= signScheduleScore) {
-      type = "floor_plan";
-    } else if (signScheduleScore >= 4 && signScheduleScore > floorPlanScore) {
-      type = "sign_schedule";
-    } else if (floorPlanScore >= 4) {
-      type = "floor_plan";
-    } else if (signScheduleScore >= 4) {
-      type = "sign_schedule";
-    }
+  if (textFloorPlanScore >= 4 && textFloorPlanScore >= textSignScheduleScore) {
+    type = "floor_plan";
+  } else if (textSignScheduleScore >= 4 && textSignScheduleScore > textFloorPlanScore) {
+    type = "sign_schedule";
+  } else if (textFloorPlanScore >= 4) {
+    type = "floor_plan";
+  } else if (textSignScheduleScore >= 4) {
+    type = "sign_schedule";
   }
 
   return { pageNum, text, floorPlanScore: textFloorPlanScore, signScheduleScore: textSignScheduleScore, type, titleBlockType };
@@ -1187,11 +1149,8 @@ export async function extractTextFromPdf(filePath: string): Promise<{
     const result = await pdfParse(dataBuffer, options as Parameters<typeof pdfParse>[1]);
     const rawPages = pageTexts.length > 0 ? pageTexts : [result.text];
 
-    // Derive a classification boost from the filename (e.g. "FIRST-FLOOR-CONSTRUCTION-PLAN" → +10 floor plan)
     const basename = filePath.split("/").pop() ?? "";
-    const boost = filenameClassificationBoost(basename);
-
-    const pages = rawPages.map((text, i) => classifyPage(i + 1, text, boost));
+    const pages = rawPages.map((text, i) => classifyPage(i + 1, text));
 
     const fpCount = pages.filter((p) => p.type === "floor_plan").length;
     const ssCount = pages.filter((p) => p.type === "sign_schedule").length;
@@ -1207,7 +1166,6 @@ export async function extractTextFromPdf(filePath: string): Promise<{
         bothPages: bothCount,
         otherPages: pages.length - fpCount - ssCount - bothCount,
         titleBlockClassified: titleBlockCount,
-        filenameBoost: boost.floorPlan > 0 ? "floor_plan" : boost.signSchedule > 0 ? "sign_schedule" : "none",
       },
       "PDF pages classified"
     );
