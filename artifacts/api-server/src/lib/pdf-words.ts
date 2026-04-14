@@ -343,9 +343,16 @@ export async function extractPagePhrases(
     // viewport pts == PDF pts for 0°/180° pages and the rotation swap is handled by
     // the coordinate conversion for 90°/270°.
     const sameLine = Math.abs(vp.vyC - prev.vyC) <= 3;
-    // Adjacent: gap less than 120 % of the previous item's visual width
+    // Adjacent: gap less than the merge threshold.
+    // The 1.2× item-width ratio works well for small character glyphs
+    // (fragmented CAD text like "C","O","R" → "COR") but incorrectly merges
+    // separate room labels on the same baseline when the full label is wide.
+    // Cap at 4 estimated character-widths so that two "COLLABORATION ROOM"
+    // labels 100 pts apart stay as separate phrases while adjacent glyphs
+    // (gap 0–15 pts) continue to merge normally.
     const prevVpW = prev.vx1 - prev.vx0 || 8;
-    const adjacent = gap < prevVpW * 1.2;
+    const prevCharW = prevVpW / Math.max(1, prev.item.str.trim().length);
+    const adjacent = gap < Math.min(prevVpW * 1.2, prevCharW * 4);
 
     if (sameLine && adjacent) {
       group.push({ vp, gapPts: Math.max(0, gap) });
