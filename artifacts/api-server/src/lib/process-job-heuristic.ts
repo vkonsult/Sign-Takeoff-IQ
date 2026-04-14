@@ -95,7 +95,7 @@ export async function processJobHeuristic(jobId: string): Promise<void> {
 
   await db
     .update(jobsTable)
-    .set({ status: "completed", updatedAt: new Date() })
+    .set({ status: "completed", completedAt: new Date(), updatedAt: new Date() })
     .where(eq(jobsTable.id, jobId));
 
   logger.info(

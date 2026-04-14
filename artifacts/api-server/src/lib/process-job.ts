@@ -923,6 +923,7 @@ export async function processJob(jobId: string): Promise<void> {
       imageInputTokens: totalImageInputTokens,
       imageOutputTokens: totalImageOutputTokens,
       processingLog: pipelineSteps,
+      completedAt: new Date(),
       updatedAt: new Date(),
     })
     .where(eq(jobsTable.id, jobId));

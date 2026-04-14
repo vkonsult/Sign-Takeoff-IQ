@@ -68,6 +68,7 @@ export default function JobsList() {
     status: string;
     fileCount: number;
     createdAt: string;
+    completedAt?: string | null;
     recentUsers?: RecentUser[];
     files?: { id: string; originalName: string }[];
   }>;
@@ -201,7 +202,7 @@ export default function JobsList() {
         ) : (
           <div className="bg-card rounded-xl border border-border overflow-hidden shadow-lg">
             {/* Header row */}
-            <div className="grid grid-cols-[36px_1fr_100px_120px_40px_180px_48px] gap-3 px-4 py-3 border-b border-border bg-secondary/50 text-xs font-display font-semibold uppercase tracking-wider text-muted-foreground items-center">
+            <div className="grid grid-cols-[36px_1fr_100px_120px_40px_180px_180px_48px] gap-3 px-4 py-3 border-b border-border bg-secondary/50 text-xs font-display font-semibold uppercase tracking-wider text-muted-foreground items-center">
               {/* Select-all checkbox */}
               <button
                 onClick={toggleAll}
@@ -219,6 +220,7 @@ export default function JobsList() {
               <div className="text-center">Status</div>
               <div className="text-center" title="Last active user">User</div>
               <div className="text-right">Created</div>
+              <div className="text-right">Completed</div>
               <div />
             </div>
 
@@ -242,7 +244,7 @@ export default function JobsList() {
                   <div key={job.id} className="flex flex-col">
                     {/* Main row */}
                     <div
-                      className={`relative group grid grid-cols-[36px_1fr_100px_120px_40px_180px_48px] gap-3 items-center transition-colors
+                      className={`relative group grid grid-cols-[36px_1fr_100px_120px_40px_180px_180px_48px] gap-3 items-center transition-colors
                         ${isChecked ? "bg-primary/5 border-l-2 border-l-primary" : "hover:bg-secondary/40"}`}
                     >
                     {/* Checkbox */}
@@ -302,6 +304,12 @@ export default function JobsList() {
 
                       <div className="text-right text-sm text-muted-foreground py-4">
                         {format(new Date(job.createdAt), "MMM d, yyyy HH:mm")}
+                      </div>
+
+                      <div className="text-right text-sm text-muted-foreground py-4">
+                        {job.status === "completed" && job.completedAt
+                          ? format(new Date(job.completedAt), "MMM d, yyyy HH:mm")
+                          : <span className="text-muted-foreground/30">—</span>}
                       </div>
 
                       <div className="flex justify-end items-center pr-2 py-4 text-muted-foreground group-hover:text-primary transition-colors">
