@@ -891,7 +891,6 @@ export async function extractPdfMetadata(
     const outline = await doc.getOutline();
     if (outline && outline.length > 0) {
       hasBookmarks = true;
-      console.log(`[pdf-words] outline root items: ${outline.length}, file: ${pdfPath.split("/").pop()}`);
 
       // Full-depth traversal: visit every node, track the full ancestor title path.
       // A node is a "leaf" when it has no children (or all children have no dest).
@@ -903,9 +902,6 @@ export async function extractPdfMetadata(
         ancestors: string[];
       }
       const signageLeaves: LeafItem[] = [];
-      let totalVisited = 0;
-      let nullPageCount = 0;
-      let blockedByAncestor = 0;
 
       async function collectLeaves(
         items: PdfjsOutlineItem[],
@@ -914,20 +910,12 @@ export async function extractPdfMetadata(
         for (const item of items) {
           const title = item.title ?? "(untitled)";
           const hasChildren = item.items && item.items.length > 0;
-          const pageNum = await resolveDestToPage(item.dest, doc);
-          totalVisited++;
 
           if (!hasChildren) {
             // Leaf node
-            if (pageNum === null) {
-              nullPageCount++;
-              console.log(`[pdf-words] leaf NULL page: "${title}" dest=${JSON.stringify(item.dest)?.slice(0,60)}`);
-            } else if (hasNonArchAncestor(ancestors)) {
-              blockedByAncestor++;
-              console.log(`[pdf-words] leaf BLOCKED (non-arch ancestor): "${title}" ancestors=${JSON.stringify(ancestors.slice(-2))}`);
-            } else {
+            const pageNum = await resolveDestToPage(item.dest, doc);
+            if (pageNum !== null && !hasNonArchAncestor(ancestors)) {
               signageLeaves.push({ title, pageNum, ancestors });
-              console.log(`[pdf-words] leaf COLLECTED: "${title}" page=${pageNum}`);
             }
           } else {
             // Internal node — recurse with updated ancestor path
@@ -937,7 +925,6 @@ export async function extractPdfMetadata(
       }
 
       await collectLeaves(outline, []);
-      console.log(`[pdf-words] traversal done: visited=${totalVisited} collected=${signageLeaves.length} nullPage=${nullPageCount} blockedByAncestor=${blockedByAncestor}`);
 
       // Deduplicate by page number (keep first occurrence per page)
       const seenPages = new Set<number>();
