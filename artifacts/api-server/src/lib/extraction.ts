@@ -753,7 +753,6 @@ const SIGN_SCHEDULE_KEYWORDS = [
   "assistive listening",
   "glass backer",         // column header in multi-floor schedule tables
   "signage text",         // column header in multi-floor schedule tables
-  "lower level", "upper level", // floor-level column headers in schedule sheets
   "typical sign types",   // diagram label in multi-floor schedule sheets
 ];
 
@@ -2687,6 +2686,8 @@ export interface PageStats {
   titleBlockClassifiedPages?: number[];
   pageLabels?: (string | null)[];
   outlineSections?: PdfOutlineSection[];
+  /** Normalized level name (e.g. "lower level", "main level") keyed by 1-based page number. */
+  floorPageLevels?: Record<number, string>;
 }
 
 export async function extractSignsFromPdf(

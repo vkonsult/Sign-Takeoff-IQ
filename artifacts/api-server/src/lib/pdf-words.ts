@@ -724,6 +724,15 @@ const SPATIAL_FLOOR_PLAN_TITLE_PHRASES: string[] = [
   "level 3 plan",
   "level 4 plan",
   "level 5 plan",
+  // Multi-level floor plan titles — must appear BEFORE the sign-schedule scorer
+  "lower level floor plan",
+  "main level floor plan",
+  "upper level floor plan",
+  "attic floor plan",
+  "lower level",
+  "main level",
+  "upper level",
+  "attic",
 ];
 
 // Title phrases that unambiguously identify a sign schedule in the title block.
@@ -792,6 +801,63 @@ export function classifyPageFromPhrases(phrases: PdfPhrase[]): SpatialPageType {
   if (hasFpPhrase) return "floor_plan";
   if (hasSsPhrase) return "sign_schedule";
   return "unknown";
+}
+
+/**
+ * Canonical floor-level names in heuristic ascending order
+ * (lower → main → upper → attic).  Used for level detection and fallback ordering.
+ */
+export const CANONICAL_LEVEL_NAMES = [
+  "lower level",
+  "main level",
+  "upper level",
+  "attic",
+] as const;
+
+/**
+ * Extract a normalized floor level name from the title-block phrases of a page
+ * that has already been classified as `floor_plan` or `both`.
+ *
+ * Reads the same title-block region as `classifyPageFromPhrases` (bottom-right
+ * quadrant and bottom strip) and searches for known level names in order.
+ *
+ * Returns the matched level name string (e.g. "lower level") or `null` when no
+ * level indicator is found.
+ */
+export function extractFloorLevelName(phrases: PdfPhrase[]): string | null {
+  if (phrases.length === 0) return null;
+
+  const titleBlockPhrases = phrases.filter((p) => {
+    const cx = (p.x0 + p.x1) / 2;
+    const cy = (p.y0 + p.y1) / 2;
+    return (cx > 0.60 && cy > 0.60) || cy > 0.80;
+  });
+
+  const combined = (titleBlockPhrases.length > 0 ? titleBlockPhrases : phrases)
+    .map((p) => p.text)
+    .join(" ")
+    .toLowerCase();
+
+  for (const level of CANONICAL_LEVEL_NAMES) {
+    if (combined.includes(level)) return level;
+  }
+  return null;
+}
+
+/**
+ * Detect a floor level indicator in a sign location string.
+ * Returns the matched canonical level name or `null`.
+ *
+ * Handles common separator patterns like "Room 101 — Lower Level",
+ * "101 PORCH - Upper Level", "Lobby (Main Level)", etc.
+ */
+export function detectLevelInLocation(location: string | null | undefined): string | null {
+  if (!location) return null;
+  const lower = location.toLowerCase();
+  for (const level of CANONICAL_LEVEL_NAMES) {
+    if (lower.includes(level)) return level;
+  }
+  return null;
 }
 
 /**
@@ -909,6 +975,7 @@ function classifyOutlineSection(title: string): PdfOutlineSection["type"] {
     "floor plan", "floor plans", "level", "first floor", "second floor",
     "third floor", "ground floor", "basement", "site plan", "overall plan",
     "roof plan", "mezzanine",
+    "lower level", "main level", "upper level", "attic",
   ];
   if (SS_PATTERNS.some((p) => t.includes(p))) return "sign_schedule";
   if (FP_PATTERNS.some((p) => t.includes(p))) return "floor_plan";

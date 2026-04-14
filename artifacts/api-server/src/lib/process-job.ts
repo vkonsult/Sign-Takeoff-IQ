@@ -1,4 +1,5 @@
 import path from "path";
+import fs from "fs/promises";
 import { eq, and, ne, desc } from "drizzle-orm";
 import { db } from "@workspace/db";
 import {
@@ -14,7 +15,7 @@ import { extractSignsFromPdf, extractSignCalloutsPng, extractProjectInfo, extrac
 import { saveParsedResult, getFilePageImagesDir, PAGES_DIR } from "./storage";
 import { renderFloorPlanPages, detectPageRegions, type PageRegions } from "./pdf-render";
 import { logger } from "./logger";
-import { extractPagePhrases, detectFloorPlanBbox, matchLocationToCoords, classifyPageFromPhrases, type PdfPhrase, type FloorPlanBbox, type SpatialPageType } from "./pdf-words";
+import { extractPagePhrases, detectFloorPlanBbox, matchLocationToCoords, classifyPageFromPhrases, extractFloorLevelName, detectLevelInLocation, CANONICAL_LEVEL_NAMES, type PdfPhrase, type FloorPlanBbox, type SpatialPageType } from "./pdf-words";
 
 
 /**
@@ -253,6 +254,8 @@ export async function processJob(jobId: string): Promise<void> {
           unknown: number;
           excluded: number;
         };
+        /** pageNum → normalized level name for floor-plan pages (from spatial pre-pass) */
+        spatialFloorLevelNames?: Map<number, string>;
       }
     | { ok: false; file: typeof files[number]; error: string };
 
@@ -275,12 +278,15 @@ export async function processJob(jobId: string): Promise<void> {
         // text-heuristic classification.  extractPagePhrases is cached so
         // subsequent calls (coord assignment) are free.
         let spatialPageTypes: Map<number, SpatialPageType> | undefined;
+        // Maps 1-based pageNum → normalized level name for floor-plan pages.
+        let spatialFloorLevelNames: Map<number, string> | undefined;
         let fileSpatialData: { pages: number; classified: number; floorPlan: number; signSchedule: number; both: number; unknown: number; excluded: number } | undefined;
         const t_spatial = Date.now();
         try {
           const { getPdfPageCount } = await import("./pdf-words");
           const numPages = await getPdfPageCount(file.storedPath);
           spatialPageTypes = new Map<number, SpatialPageType>();
+          spatialFloorLevelNames = new Map<number, string>();
           await Promise.all(
             Array.from({ length: numPages }, (_, i) => i + 1).map(async (pageNum) => {
               try {
@@ -289,6 +295,11 @@ export async function processJob(jobId: string): Promise<void> {
                 // Store ALL page types including "unknown" — extraction.ts uses the
                 // "unknown" sentinel to hard-exclude pages from Gemini extraction passes.
                 spatialPageTypes!.set(pageNum, spatialType);
+                // For floor-plan pages, extract the level name from the title block.
+                if (spatialType === "floor_plan" || spatialType === "both") {
+                  const levelName = extractFloorLevelName(pageWords.phrases);
+                  if (levelName) spatialFloorLevelNames!.set(pageNum, levelName);
+                }
               } catch {
                 // individual page failures are non-fatal: page remains unset in the map
               }
@@ -439,16 +450,91 @@ export async function processJob(jobId: string): Promise<void> {
           }
         }
 
+        // ── Gemini Vision fallback: floor level name extraction ──────────────
+        // For floor-plan pages whose title-block text layer yielded no level name,
+        // send the pre-rendered PNG to Gemini and ask it to read the drawing title.
+        // This runs after PNG rendering so images are available.
+        if (spatialFloorLevelNames && pageImagePathsAbsolute) {
+          const fpAndBothPages = [
+            ...textResult.pageStats.floorPlanPages,
+            ...(textResult.pageStats.bothPages ?? []),
+          ];
+          const unmappedFpPages = fpAndBothPages.filter(
+            (p) => !spatialFloorLevelNames!.has(p) && pageImagePathsAbsolute![String(p)]
+          );
+          if (unmappedFpPages.length > 0) {
+            const LEVEL_VISION_PROMPT = `You are reading the title block of an architectural floor plan drawing.
+Identify which floor level or zone this plan represents.
+Return ONLY the level name as a single lowercase phrase from this list if it matches:
+- "lower level"
+- "main level"
+- "upper level"
+- "attic"
+If none match, return "none".
+Do not include any other text or explanation.`;
+            await Promise.all(
+              unmappedFpPages.map(async (pageNum) => {
+                const pngPath = pageImagePathsAbsolute![String(pageNum)];
+                try {
+                  const pngBuffer = await fs.readFile(pngPath);
+                  const base64 = pngBuffer.toString("base64");
+                  const response = await (ai as {
+                    models: {
+                      generateContent: (opts: {
+                        model: string;
+                        contents: {
+                          role: string;
+                          parts: ({ text: string } | { inlineData: { mimeType: string; data: string } })[];
+                        }[];
+                        config?: { maxOutputTokens?: number; temperature?: number; thinkingConfig?: { thinkingBudget: number } };
+                      }) => Promise<{ text: string | undefined }>;
+                    };
+                  }).models.generateContent({
+                    model: "gemini-2.5-flash",
+                    contents: [
+                      {
+                        role: "user",
+                        parts: [
+                          { inlineData: { mimeType: "image/png", data: base64 } },
+                          { text: LEVEL_VISION_PROMPT },
+                        ],
+                      },
+                    ],
+                    config: { maxOutputTokens: 32, temperature: 0.0, thinkingConfig: { thinkingBudget: 0 } },
+                  });
+                  const raw = (response.text ?? "").trim().toLowerCase();
+                  const matched = CANONICAL_LEVEL_NAMES.find((l) => raw.includes(l));
+                  if (matched) {
+                    spatialFloorLevelNames!.set(pageNum, matched);
+                    logger.info(
+                      { fileId: file.id, pageNum, levelName: matched },
+                      "Gemini Vision floor level name extracted (fallback)"
+                    );
+                  }
+                } catch (err) {
+                  logger.debug({ err, fileId: file.id, pageNum }, "Gemini Vision floor level fallback failed for page — non-fatal");
+                }
+              })
+            );
+          }
+        }
+
         // Store per-file image paths and relevant pages for post-word-match Gemini bbox scan
         if (pageImagePathsAbsolute && Object.keys(pageImagePathsAbsolute).length > 0) {
           filePageImagePaths.set(file.id, pageImagePathsAbsolute);
         }
         fileRelevantPages.set(file.id, relevantPageNums);
 
-        // Merge relative pageImagePaths into pageStats before persisting
-        const finalPageStats = pageImagePathsRelative
-          ? { ...textResult.pageStats, pageImagePaths: pageImagePathsRelative }
-          : textResult.pageStats;
+        // Merge relative pageImagePaths and floorPageLevels into pageStats before persisting
+        const floorPageLevelsRecord: Record<number, string> | undefined =
+          spatialFloorLevelNames && spatialFloorLevelNames.size > 0
+            ? Object.fromEntries(spatialFloorLevelNames)
+            : undefined;
+        const finalPageStats = {
+          ...textResult.pageStats,
+          ...(pageImagePathsRelative ? { pageImagePaths: pageImagePathsRelative } : {}),
+          ...(floorPageLevelsRecord ? { floorPageLevels: floorPageLevelsRecord } : {}),
+        };
 
         // Per-file DB update is safe to do inside the parallel map
         await db
@@ -456,7 +542,7 @@ export async function processJob(jobId: string): Promise<void> {
           .set({ pageCount: textResult.pageCount, extractedText: textResult.rawText.slice(0, 10000), pageStats: finalPageStats })
           .where(eq(jobFilesTable.id, file.id));
 
-        return { ok: true, file, textResult, textDurationMs, spatialData: fileSpatialData };
+        return { ok: true, file, textResult, textDurationMs, spatialData: fileSpatialData, spatialFloorLevelNames };
       } catch (err) {
         logger.error({ err, fileId: file.id, fileName: file.originalName }, "File extraction failed");
         return { ok: false, file, error: String(err) };
@@ -614,6 +700,72 @@ export async function processJob(jobId: string): Promise<void> {
     }
   }
 
+  // Build a lookup: fileId → Map<levelName, pageNum> for level-based routing.
+  // Populated from the spatial pre-pass floor level name extraction.
+  // Fallback: if some floor plan pages lack a level name but distinct levels appear
+  // across sign locations, map them by ascending page-number order using the
+  // canonical ordering (lower → main → upper → attic).
+  const floorLevelPageByFileId = new Map<string, Map<string, number>>();
+  for (const result of fileResults) {
+    if (!result.ok || !result.spatialFloorLevelNames || result.spatialFloorLevelNames.size === 0) continue;
+    const levelMap = new Map<string, number>();
+    for (const [pageNum, levelName] of result.spatialFloorLevelNames) {
+      levelMap.set(levelName, pageNum);
+    }
+    floorLevelPageByFileId.set(result.file.id, levelMap);
+  }
+
+  // Fallback (Task 4): for files where some (or all) floor-plan pages have no
+  // level name, attempt to fill in the gaps using canonical ordering.
+  // Strategy: find floor plan pages that are unmapped, find level names that
+  // appear in sign locations but aren't already assigned to any page, and if
+  // counts match, assign them in ascending page-number / canonical level order.
+  for (const result of fileResults) {
+    if (!result.ok) continue;
+    const fileId = result.file.id;
+    const fpPages = floorPlanPagesByFileId.get(fileId);
+    if (!fpPages || fpPages.size === 0) continue;
+
+    // Get current (possibly partial) level map, creating it if absent.
+    const existingMap = floorLevelPageByFileId.get(fileId) ?? new Map<string, number>();
+
+    // Pages that still have no level name assigned.
+    const assignedPages = new Set(existingMap.values());
+    const unmappedPages = Array.from(fpPages)
+      .filter((p) => !assignedPages.has(p))
+      .sort((a, b) => a - b);
+
+    if (unmappedPages.length === 0) continue; // all pages already have a level
+
+    // Level names appearing in sign locations for this file.
+    const locationLevels = new Set<string>();
+    for (const row of result.textResult.rows) {
+      const loc = detectLevelInLocation(row.location);
+      if (loc) locationLevels.add(loc);
+    }
+
+    // Remove levels already assigned in the existing map.
+    for (const assignedLevel of existingMap.keys()) {
+      locationLevels.delete(assignedLevel);
+    }
+
+    if (locationLevels.size === 0 || locationLevels.size !== unmappedPages.length) continue;
+
+    // Order unassigned levels by canonical order.
+    const orderedLevels = CANONICAL_LEVEL_NAMES.filter((l) => locationLevels.has(l));
+    if (orderedLevels.length !== unmappedPages.length) continue;
+
+    const fallbackMap = new Map<string, number>(existingMap);
+    for (let i = 0; i < orderedLevels.length; i++) {
+      fallbackMap.set(orderedLevels[i]!, unmappedPages[i]!);
+    }
+    floorLevelPageByFileId.set(fileId, fallbackMap);
+    logger.warn(
+      { jobId, fileId, unmappedPages, orderedLevels, mapping: Object.fromEntries(fallbackMap) },
+      "Floor level routing: fallback page-order heuristic used for unmapped pages — verify manually"
+    );
+  }
+
   async function assignCoords(rows: InsertExtractedSign[]): Promise<InsertExtractedSign[]> {
     // Per-page exclusion sets: keyed by "fileId:pageNum".
     // Seeded with already-placed coordinates so re-processing never reassigns them.
@@ -645,8 +797,10 @@ export async function processJob(jobId: string): Promise<void> {
       }
     }
 
-    // Group rows needing coords by (jobFileId, pageNumber).
-    // Rows without a valid file/page are passed through unchanged.
+    // Group rows needing coords by (jobFileId, resolvedPageNumber).
+    // If a sign's location contains a level indicator (e.g. "Lower Level"), look up
+    // which floor-plan page carries that level and override pageNumber before grouping.
+    // Signs without a level indicator use their original page assignment (existing behaviour).
     type PageGroupValue = { fileId: string; pageNum: number; rows: InsertExtractedSign[] };
     const pageGroups = new Map<string, PageGroupValue>();
     for (const row of needsCoords) {
@@ -654,11 +808,26 @@ export async function processJob(jobId: string): Promise<void> {
         result.push(row);
         continue;
       }
-      const k = `${row.jobFileId}:${row.pageNumber}`;
-      if (!pageGroups.has(k)) {
-        pageGroups.set(k, { fileId: row.jobFileId, pageNum: row.pageNumber, rows: [] });
+
+      let resolvedPageNum = row.pageNumber;
+      const locationLevel = detectLevelInLocation(row.location);
+      if (locationLevel) {
+        const levelMap = floorLevelPageByFileId.get(row.jobFileId);
+        const targetPage = levelMap?.get(locationLevel);
+        if (targetPage && targetPage !== resolvedPageNum) {
+          logger.debug(
+            { signId: row.signIdentifier, location: row.location, locationLevel, originalPage: resolvedPageNum, targetPage },
+            "Level routing: sign rerouted to matching floor-plan page"
+          );
+          resolvedPageNum = targetPage;
+        }
       }
-      pageGroups.get(k)!.rows.push(row);
+
+      const k = `${row.jobFileId}:${resolvedPageNum}`;
+      if (!pageGroups.has(k)) {
+        pageGroups.set(k, { fileId: row.jobFileId, pageNum: resolvedPageNum, rows: [] });
+      }
+      pageGroups.get(k)!.rows.push({ ...row, pageNumber: resolvedPageNum });
     }
 
     // Pass 2: Process each page group sequentially so each sign claims
