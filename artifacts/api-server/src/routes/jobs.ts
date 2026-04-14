@@ -530,7 +530,7 @@ router.post("/jobs/:jobId/compare", async (req, res) => {
       Promise.all(
         files.map(async (file) => {
           try {
-            const result = await extractSignsFromPdf(file.storedPath, ai);
+            const result = await extractSignsFromPdf(file.storedPath, file.id, ai);
             return { file, ...result };
           } catch (err) {
             req.log.error({ err, fileId: file.id }, "Text extraction failed for file in compare pass");

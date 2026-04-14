@@ -169,7 +169,7 @@ export async function processJob(jobId: string): Promise<void> {
   try {
     logger.info({ jobId, file: firstFile.originalName }, "Extracting project info");
     const t_proj = Date.now();
-    const { info, inputTokens: piIn, outputTokens: piOut } = await extractProjectInfo(firstFile.storedPath, ai);
+    const { info, inputTokens: piIn, outputTokens: piOut } = await extractProjectInfo(firstFile.storedPath, firstFile.id, ai);
     projectContext = info;
     totalInputTokens += piIn;
     totalOutputTokens += piOut;
@@ -207,7 +207,7 @@ export async function processJob(jobId: string): Promise<void> {
     const specTexts: string[] = [];
     for (const specFile of specFiles) {
       try {
-        const { pages } = await extractTextFromPdf(specFile.storedPath);
+        const { pages } = await extractTextFromPdf(specFile.storedPath, specFile.id);
         const raw = pages.map((p) => p.text).join("\n");
         specTexts.push(raw);
         // Still record page count / text for the spec file in the DB
@@ -317,6 +317,7 @@ export async function processJob(jobId: string): Promise<void> {
         const t_text = Date.now();
         const textResult = await extractSignsFromPdf(
           file.storedPath,
+          file.id,
           ai,
           projectContext,
           allVerifiedForFile.length > 0 ? allVerifiedForFile : undefined,

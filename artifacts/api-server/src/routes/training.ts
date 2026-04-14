@@ -350,7 +350,7 @@ router.post(
 
       try {
         logger.info({ jobId: job.id }, "Running verification extraction on training PDF");
-        const { rows: extractedRows } = await extractSignsFromPdf(destPath, ai);
+        const { rows: extractedRows } = await extractSignsFromPdf(destPath, fileRecord.id, ai);
 
         function normType(t: string | null | undefined): string {
           return (t ?? "").toLowerCase().replace(/[^a-z]/g, "");

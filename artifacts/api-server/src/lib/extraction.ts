@@ -1,8 +1,7 @@
 import fs from "fs/promises";
-import pdfParse from "pdf-parse/lib/pdf-parse.js";
 import { z } from "zod";
 import { logger } from "./logger";
-import { extractPdfMetadata } from "./pdf-words";
+import { extractPdfMetadata, buildPageTextsFromPhraseCache, getPdfPageCount } from "./pdf-words";
 import type { PdfOutlineSection } from "./pdf-words";
 
 // ── Module-level cache for PDF text extraction ────────────────────────────────
@@ -1121,7 +1120,7 @@ function classifyPage(pageNum: number, text: string): ScoredPage {
 
 // ─── PDF TEXT EXTRACTION ──────────────────────────────────────────────────────
 
-export async function extractTextFromPdf(filePath: string): Promise<{
+export async function extractTextFromPdf(filePath: string, fileId: string): Promise<{
   pages: ScoredPage[];
   numPages: number;
 }> {
@@ -1133,21 +1132,8 @@ export async function extractTextFromPdf(filePath: string): Promise<{
   }
 
   try {
-    const dataBuffer = await fs.readFile(filePath);
-    const pageTexts: string[] = [];
-
-    const options = {
-      pagerender: (pageData: { getTextContent: () => Promise<{ items: Array<{ str: string }> }> }) => {
-        return pageData.getTextContent().then((textContent) => {
-          const pageText = textContent.items.map((item) => item.str).join(" ");
-          pageTexts.push(pageText);
-          return pageText;
-        });
-      },
-    };
-
-    const result = await pdfParse(dataBuffer, options as Parameters<typeof pdfParse>[1]);
-    const rawPages = pageTexts.length > 0 ? pageTexts : [result.text];
+    const numPages = await getPdfPageCount(filePath);
+    const rawPages = await buildPageTextsFromPhraseCache(filePath, fileId, numPages);
 
     const basename = filePath.split("/").pop() ?? "";
     const pages = rawPages.map((text, i) => classifyPage(i + 1, text));
@@ -1170,7 +1156,7 @@ export async function extractTextFromPdf(filePath: string): Promise<{
       "PDF pages classified"
     );
 
-    const value = { pages, numPages: result.numpages };
+    const value = { pages, numPages };
     pdfTextCacheSet(filePath, value);
     return value;
   } catch (err) {
@@ -2385,9 +2371,10 @@ export async function extractSignsFromPdfImage(
 
 export async function extractProjectInfo(
   filePath: string,
+  fileId: string,
   ai: GeminiAI
 ): Promise<{ info: ProjectInfo; inputTokens: number; outputTokens: number }> {
-  const { pages } = await extractTextFromPdf(filePath);
+  const { pages } = await extractTextFromPdf(filePath, fileId);
 
   if (pages.length === 0) {
     return { info: { project_name: null, address: null, city: null, state: null, zip: null, occupancy_type: null, ahj: null }, inputTokens: 0, outputTokens: 0 };
@@ -2498,6 +2485,7 @@ export interface PageStats {
 
 export async function extractSignsFromPdf(
   filePath: string,
+  fileId: string,
   ai: GeminiAI,
   projectContext?: ProjectInfo,
   verifiedSigns?: VerifiedSignSummary[],
@@ -2505,7 +2493,7 @@ export async function extractSignsFromPdf(
   specTypeContext?: string,
   spatialPageTypes?: Map<number, import("./pdf-words").SpatialPageType>
 ): Promise<{ rows: ExtractedSignRow[]; pageCount: number; rawText: string; inputTokens: number; outputTokens: number; pageStats: PageStats }> {
-  const { pages: rawPages, numPages } = await extractTextFromPdf(filePath);
+  const { pages: rawPages, numPages } = await extractTextFromPdf(filePath, fileId);
 
   // Fetch PDF metadata (outline sections + page labels).
   // This is supplementary — failures must never abort extraction.

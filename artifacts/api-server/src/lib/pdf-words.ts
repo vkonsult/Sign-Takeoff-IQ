@@ -98,6 +98,49 @@ interface PdfjsLib {
 // and avoids re-parsing on every navigation page-turn in the UI.
 const phraseCache = new Map<string, PageWords>();
 
+// ── In-memory pdfjs document cache keyed by absolute file path ────────────
+// getDocument() is expensive (reads + parses the entire PDF) — caching avoids
+// re-opening the same file once per page during the spatial pre-pass.
+// Each entry is a Promise so concurrent first-touch calls to the same path
+// share a single in-flight getDocument() rather than racing to open duplicates.
+// Capped at PDFJS_DOC_CACHE_MAX entries; oldest is evicted (and destroyed) when full.
+const PDFJS_DOC_CACHE_MAX = 20;
+const pdfjsDocCache = new Map<string, Promise<PdfjsDocument>>();
+
+async function getOrOpenPdfjsDoc(pdfPath: string): Promise<PdfjsDocument> {
+  const existing = pdfjsDocCache.get(pdfPath);
+  if (existing) return existing;
+
+  const docPromise = (async (): Promise<PdfjsDocument> => {
+    const lib = await getPdfjs();
+    const rawBuffer = await fs.readFile(pdfPath);
+    const data = new Uint8Array(rawBuffer);
+    return lib.getDocument({ data, disableAutoFetch: true, disableStream: true }).promise;
+  })();
+
+  // Evict oldest entry when at capacity
+  if (pdfjsDocCache.size >= PDFJS_DOC_CACHE_MAX) {
+    const oldestKey = pdfjsDocCache.keys().next().value as string | undefined;
+    if (oldestKey) {
+      const old = pdfjsDocCache.get(oldestKey);
+      pdfjsDocCache.delete(oldestKey);
+      // Destroy asynchronously; ignore errors
+      old?.then((d) => { try { d.destroy(); } catch { /* ignore */ } }).catch(() => { /* ignore */ });
+    }
+  }
+
+  pdfjsDocCache.set(pdfPath, docPromise);
+
+  // Remove cache entry on failure so callers can retry without a stale rejected promise
+  docPromise.catch(() => {
+    if (pdfjsDocCache.get(pdfPath) === docPromise) {
+      pdfjsDocCache.delete(pdfPath);
+    }
+  });
+
+  return docPromise;
+}
+
 // ── pdfjs-dist lazy loader ────────────────────────────────────────────────
 // Must use the "legacy" build in Node.js — the standard build references
 // browser-only APIs (DOMMatrix, CanvasRenderingContext2D, …) at module
@@ -165,12 +208,7 @@ export async function extractPagePhrases(
   const cached = phraseCache.get(cacheKey);
   if (cached) return cached;
 
-  const lib = await getPdfjs();
-
-  const rawBuffer = await fs.readFile(pdfPath);
-  const data = new Uint8Array(rawBuffer);
-
-  const doc = await lib.getDocument({ data, disableAutoFetch: true, disableStream: true }).promise;
+  const doc = await getOrOpenPdfjsDoc(pdfPath);
 
   const page = await doc.getPage(pageNum);
   // getViewport({ scale: 1.0 }) without an explicit rotation argument uses the
@@ -317,8 +355,6 @@ export async function extractPagePhrases(
     }
   }
   flushGroup();
-
-  doc.destroy();
 
   const result: PageWords = { pageWidth: pageW, pageHeight: pageH, phrases };
 
@@ -737,13 +773,30 @@ export function classifyPageFromPhrases(phrases: PdfPhrase[]): SpatialPageType {
  * Used by the heuristic extractor to know how many pages to iterate.
  */
 export async function getPdfPageCount(pdfPath: string): Promise<number> {
-  const lib = await getPdfjs();
-  const rawBuffer = await fs.readFile(pdfPath);
-  const data = new Uint8Array(rawBuffer);
-  const doc = await lib.getDocument({ data, disableAutoFetch: true, disableStream: true }).promise;
-  const count = doc.numPages;
-  doc.destroy();
-  return count;
+  const doc = await getOrOpenPdfjsDoc(pdfPath);
+  return doc.numPages;
+}
+
+/**
+ * Build a plain-text string per page by draining the phrase cache that was
+ * populated during the spatial pre-pass.  If a page was not cached yet,
+ * `extractPagePhrases` is called (which will also populate the cache).
+ *
+ * Returns an array indexed 0..numPages-1 where each element is the
+ * concatenated text of all phrases on that page separated by spaces.
+ */
+export async function buildPageTextsFromPhraseCache(
+  pdfPath: string,
+  fileId: string,
+  numPages: number,
+): Promise<string[]> {
+  const pageTexts: string[] = [];
+  for (let pageNum = 1; pageNum <= numPages; pageNum++) {
+    const pageWords = await extractPagePhrases(pdfPath, fileId, pageNum);
+    const text = pageWords.phrases.map((p) => p.text).join(" ");
+    pageTexts.push(text);
+  }
+  return pageTexts;
 }
 
 // ── PDF metadata extraction (outline sections + page labels) ─────────────
