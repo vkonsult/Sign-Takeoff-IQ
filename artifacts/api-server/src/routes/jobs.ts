@@ -517,8 +517,10 @@ router.post("/jobs/:jobId/compare", async (req, res) => {
         messageContent: row.message_content,
         notes: row.notes,
         pageNumber: row.page_number,
-        xPos: row.x_pos ?? null,
-        yPos: row.y_pos ?? null,
+        xPos: null as number | null,
+        yPos: null as number | null,
+        aiXPos: row.ai_x_pos ?? null,
+        aiYPos: row.ai_y_pos ?? null,
         confidenceScore: row.confidence_score,
         reviewFlag: row.review_flag,
         extractionMethod: "image",
@@ -622,9 +624,15 @@ router.post("/jobs/:jobId/compare", async (req, res) => {
     }
 
     function positionProximity(imgSign: typeof extractedSignsTable.$inferSelect, txtSign: typeof extractedSignsTable.$inferSelect): number {
-      if (imgSign.xPos == null || imgSign.yPos == null || txtSign.xPos == null || txtSign.yPos == null) return 0;
-      const dx = imgSign.xPos - txtSign.xPos;
-      const dy = imgSign.yPos - txtSign.yPos;
+      // Image rows store Gemini coords in aiXPos/aiYPos (xPos/yPos is filled by word-match).
+      // Use aiXPos/aiYPos for image-side proximity; xPos/yPos for text-side.
+      const ix = imgSign.aiXPos ?? imgSign.xPos;
+      const iy = imgSign.aiYPos ?? imgSign.yPos;
+      const tx = txtSign.xPos;
+      const ty = txtSign.yPos;
+      if (ix == null || iy == null || tx == null || ty == null) return 0;
+      const dx = ix - tx;
+      const dy = iy - ty;
       const dist = Math.sqrt(dx * dx + dy * dy);
       return dist < 0.1 ? 1 : dist < 0.25 ? 0.5 : 0;
     }
@@ -1051,7 +1059,7 @@ const UpdateSignSchema = z.object({
   hidden: z.boolean().optional(),
   xPos: z.number().min(0).max(1).nullable().optional(),
   yPos: z.number().min(0).max(1).nullable().optional(),
-  placementSource: z.enum(["word_match", "text_match", "gemini_vision", "user_confirmed", "manual", "user_drag"]).nullable().optional(),
+  placementSource: z.enum(["word_match", "text_match", "gemini_vision", "user_confirmed", "manual", "user_drag", "ai"]).nullable().optional(),
 });
 
 router.patch("/extracted-signs/:signId", async (req, res) => {

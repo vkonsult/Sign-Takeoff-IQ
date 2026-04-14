@@ -610,6 +610,8 @@ export async function processJob(jobId: string): Promise<void> {
         pageNumber: row.page_number,
         xPos: null,
         yPos: null,
+        aiXPos: row.ai_x_pos ?? null,
+        aiYPos: row.ai_y_pos ?? null,
         confidenceScore: row.confidence_score,
         reviewFlag: true,
         extractionMethod: "image",
@@ -687,8 +689,12 @@ export async function processJob(jobId: string): Promise<void> {
   async function assignCoords(rows: InsertExtractedSign[]): Promise<InsertExtractedSign[]> {
     return Promise.all(
       rows.map(async (row) => {
-        // Skip rows that already have a manually placed position
-        if (row.xPos != null && row.yPos != null) return row;
+        // Skip rows that have been manually/human placed — never overwrite those
+        if (
+          row.placementSource === "manual" ||
+          row.placementSource === "user_drag" ||
+          row.placementSource === "user_confirmed"
+        ) return row;
         if (!row.jobFileId || !row.pageNumber) return row;
         const storedPath = filePathById.get(row.jobFileId);
         if (!storedPath) return row;
@@ -711,6 +717,10 @@ export async function processJob(jobId: string): Promise<void> {
           }
         } catch (err) {
           logger.debug({ err, signId: row.signIdentifier, location: row.location }, "Word-match failed for sign");
+        }
+        // No word-match result — fall back to Gemini's visual coordinate if available
+        if (row.aiXPos != null && row.aiYPos != null) {
+          return { ...row, xPos: row.aiXPos, yPos: row.aiYPos, placementSource: "ai" };
         }
         return row;
       })

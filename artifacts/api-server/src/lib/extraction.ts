@@ -36,6 +36,8 @@ export interface ExtractedSignRow {
   page_number: number | null;
   x_pos?: number | null;
   y_pos?: number | null;
+  ai_x_pos?: number | null;
+  ai_y_pos?: number | null;
   confidence_score: number;
   review_flag: boolean;
 }
@@ -1758,8 +1760,10 @@ function parseImageExtractionResponse(raw: string, source: string): ExtractedSig
       message_content: item.message_content ?? null,
       notes: item.notes ?? null,
       page_number: item.page_number ?? null,
-      x_pos: item.x_position ?? null,
-      y_pos: item.y_position ?? null,
+      x_pos: null,
+      y_pos: null,
+      ai_x_pos: item.x_position ?? null,
+      ai_y_pos: item.y_position ?? null,
       confidence_score: score,
       review_flag: item.review_flag ?? computeReviewFlag(item as unknown as Record<string, unknown>, score),
     };
