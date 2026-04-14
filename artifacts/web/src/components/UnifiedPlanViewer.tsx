@@ -1,7 +1,6 @@
 import { useState, useCallback, useEffect, useMemo, useRef } from "react";
 import { apiFetch } from "@/lib/apiClient";
 import { AddMarkerForm } from "./AddMarkerForm";
-import { Document, Page as PdfPage, pdfjs } from "react-pdf";
 import {
   X,
   ChevronLeft,
@@ -37,10 +36,6 @@ import {
   findPairedClusterMatch,
 } from "@/lib/signMatcher";
 
-pdfjs.GlobalWorkerOptions.workerSrc = new URL(
-  "pdfjs-dist/build/pdf.worker.min.mjs",
-  import.meta.url,
-).toString();
 
 // ── Public Types ─────────────────────────────────────────────────────────────
 
@@ -487,11 +482,6 @@ function PageViewer({
   const [imageError, setImageError] = useState(false);
   const prevImageUrlRef = useRef<string | null>(null);
 
-  // PDF fallback: blob URL of the original PDF for react-pdf rendering
-  const [pdfBlobUrl, setPdfBlobUrl] = useState<string | null>(null);
-  const [pdfLoading, setPdfLoading] = useState(false);
-  const prevPdfUrlRef = useRef<string | null>(null);
-
   useEffect(() => {
     if (prevImageUrlRef.current) {
       URL.revokeObjectURL(prevImageUrlRef.current);
@@ -501,7 +491,6 @@ function PageViewer({
     setImageError(false);
 
     if (!hasPrerenderedImage) {
-      // Will fall back to PDF rendering — don't set imageError
       return;
     }
 
@@ -528,47 +517,9 @@ function PageViewer({
     return () => { cancelled = true; };
   }, [jobId, file.id, pageNumber, hasPrerenderedImage]);
 
-  // Load PDF blob for fallback rendering when no PNG exists
-  useEffect(() => {
-    if (hasPrerenderedImage) return;
-    if (pdfBlobUrl) return; // already loaded for this file
-    let cancelled = false;
-    setPdfLoading(true);
-    apiFetch(`/api/jobs/${jobId}/files/${file.id}/download`)
-      .then((res) => {
-        if (!res.ok) throw new Error(`Server returned ${res.status}`);
-        return res.blob();
-      })
-      .then((blob) => {
-        if (cancelled) return;
-        if (prevPdfUrlRef.current) URL.revokeObjectURL(prevPdfUrlRef.current);
-        const url = URL.createObjectURL(blob);
-        prevPdfUrlRef.current = url;
-        setPdfBlobUrl(url);
-      })
-      .catch(() => {
-        if (!cancelled) setImageError(true);
-      })
-      .finally(() => {
-        if (!cancelled) setPdfLoading(false);
-      });
-    return () => { cancelled = true; };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [jobId, file.id, hasPrerenderedImage]);
-
-  // Reset PDF blob when file changes
-  useEffect(() => {
-    if (prevPdfUrlRef.current) {
-      URL.revokeObjectURL(prevPdfUrlRef.current);
-      prevPdfUrlRef.current = null;
-    }
-    setPdfBlobUrl(null);
-  }, [file.id]);
-
   useEffect(() => {
     return () => {
       if (prevImageUrlRef.current) URL.revokeObjectURL(prevImageUrlRef.current);
-      if (prevPdfUrlRef.current) URL.revokeObjectURL(prevPdfUrlRef.current);
     };
   }, []);
 
@@ -653,8 +604,18 @@ function PageViewer({
 
   // ── Signs on current page ──────────────────────────────────────────────────
   const signsOnCurrentPage = useMemo(
-    () => localSigns.filter((s) => s.jobFileId === file.id && (s.pageNumber ?? 1) === pageNumber),
-    [localSigns, file.id, pageNumber]
+    () => {
+      const schedulePages = file.pageStats?.signSchedulePages ?? [];
+      return localSigns.filter((s) => {
+        if (s.jobFileId !== file.id) return false;
+        if ((s.pageNumber ?? 1) === pageNumber) return true;
+        // Include unplaced signs whose pageNumber is a sign-schedule page — they haven't been
+        // placed on a floor plan page yet and should participate in text-matching on this page.
+        if (s.xPos == null && s.pageNumber != null && schedulePages.includes(s.pageNumber)) return true;
+        return false;
+      });
+    },
+    [localSigns, file.id, file.pageStats, pageNumber]
   );
 
   // ── Modes ──────────────────────────────────────────────────────────────────
@@ -819,15 +780,18 @@ function PageViewer({
       apiFetch(`/api/extracted-signs/${m.signId}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ xPos: m.x, yPos: m.y, placementSource: "word_match" }),
+        body: JSON.stringify({ xPos: m.x, yPos: m.y, pageNumber, placementSource: "word_match" }),
       })
         .then((res) => {
           if (!res.ok) throw new Error(`PATCH failed: ${res.status}`);
+          setLocalSigns((prev) => prev.map((s) =>
+            s.id === m.signId ? { ...s, xPos: m.x, yPos: m.y, pageNumber } : s
+          ));
           onSignUpdated?.(m.signId, m.x, m.y);
         })
         .catch(() => { writtenBackRef.current.delete(m.signId); });
     }
-  }, [textMarkers, mode, localSigns, onSignUpdated]);
+  }, [textMarkers, mode, localSigns, onSignUpdated, pageNumber, setLocalSigns]);
 
   // ── Auto visual-locate ─────────────────────────────────────────────────────
   useEffect(() => {
@@ -992,7 +956,7 @@ function PageViewer({
   const pageLabel = file.pageStats?.pageLabels?.[pageNumber - 1] ?? null;
   const imageReady = !!imageUrl;
   // pageReady: true when either the PNG or the PDF fallback is available for interaction
-  const pageReady = imageReady || (!hasPrerenderedImage && !!pdfBlobUrl);
+  const pageReady = imageReady;
   const realMarkers = textMarkers.filter((m) => !m.isGhost);
   const ghostCount = textMarkers.filter((m) => m.isGhost).length;
 
@@ -1168,81 +1132,52 @@ function PageViewer({
       {/* Canvas */}
       <div ref={pdfContainerRef} className="flex-1 overflow-auto p-4">
         <div style={{ minWidth: "max-content", display: "flex", justifyContent: "center", alignItems: "flex-start" }}>
-          {(imageLoading || pdfLoading) && !imageUrl && !pdfBlobUrl && (
+          {imageLoading && !imageUrl && (
             <div className="flex items-center justify-center h-64">
               <Loader2 className="w-8 h-8 text-primary animate-spin" />
             </div>
           )}
-          {imageError && !imageUrl && !pdfBlobUrl && (
+          {imageError && !imageUrl && (
             <div className="flex flex-col items-center justify-center h-64 text-destructive gap-2">
               <AlertTriangle className="w-8 h-8" />
               <p className="text-sm">Failed to load page image</p>
             </div>
           )}
+          {!hasPrerenderedImage && !imageLoading && !imageError && (
+            <div className="flex flex-col items-center justify-center h-64 text-muted-foreground gap-2">
+              <p className="text-sm">No preview available for this page</p>
+            </div>
+          )}
 
-          {/* Unified page container: renders PNG or PDF fallback + all shared overlays */}
-          {(imageUrl || (!hasPrerenderedImage && pdfBlobUrl)) && (
+          {/* Unified page container: renders PNG + all shared overlays */}
+          {imageUrl && (
             <div ref={pageWrapRef} className="relative shadow-2xl inline-block">
 
               {/* PNG path */}
-              {imageUrl && (
-                <img
-                  key={`${file.id}-${pageNumber}-img`}
-                  src={imageUrl}
-                  alt={`Page ${pageNumber}`}
-                  style={{ display: "block", width: nativeSize ? `${nativeSize.w * scale}px` : undefined, height: nativeSize ? `${nativeSize.h * scale}px` : "auto", maxWidth: "none" }}
-                  onLoad={(e) => {
-                    const img = e.currentTarget;
-                    const nw = img.naturalWidth;
-                    const nh = img.naturalHeight;
-                    if (nw > 0 && nh > 0) {
-                      setNativeSize({ w: nw, h: nh });
-                      setMeasuredPageSize({ w: img.offsetWidth, h: img.offsetHeight });
-                      if (!hasSetScaleRef.current && pdfContainerRef.current) {
-                        const cw = pdfContainerRef.current.clientWidth - 32;
-                        if (cw > 0) {
-                          hasSetScaleRef.current = true;
-                          const fit = Math.min(1.2, Math.max(0.3, cw / nw));
-                          setFitScale(fit);
-                          setScale(fit);
-                        }
+              <img
+                key={`${file.id}-${pageNumber}-img`}
+                src={imageUrl}
+                alt={`Page ${pageNumber}`}
+                style={{ display: "block", width: nativeSize ? `${nativeSize.w * scale}px` : undefined, height: nativeSize ? `${nativeSize.h * scale}px` : "auto", maxWidth: "none" }}
+                onLoad={(e) => {
+                  const img = e.currentTarget;
+                  const nw = img.naturalWidth;
+                  const nh = img.naturalHeight;
+                  if (nw > 0 && nh > 0) {
+                    setNativeSize({ w: nw, h: nh });
+                    setMeasuredPageSize({ w: img.offsetWidth, h: img.offsetHeight });
+                    if (!hasSetScaleRef.current && pdfContainerRef.current) {
+                      const cw = pdfContainerRef.current.clientWidth - 32;
+                      if (cw > 0) {
+                        hasSetScaleRef.current = true;
+                        const fit = Math.min(1.2, Math.max(0.3, cw / nw));
+                        setFitScale(fit);
+                        setScale(fit);
                       }
                     }
-                  }}
-                />
-              )}
-
-              {/* PDF fallback path */}
-              {!imageUrl && !hasPrerenderedImage && pdfBlobUrl && (
-                <Document
-                  file={pdfBlobUrl}
-                  loading={<div className="flex items-center justify-center h-64"><Loader2 className="w-8 h-8 text-primary animate-spin" /></div>}
-                  error={<div className="flex flex-col items-center justify-center h-64 text-destructive gap-2"><AlertTriangle className="w-8 h-8" /><p className="text-sm">Failed to load PDF</p></div>}
-                >
-                  <PdfPage
-                    pageNumber={pageNumber}
-                    scale={scale}
-                    renderTextLayer={false}
-                    renderAnnotationLayer={false}
-                    onRenderSuccess={(page) => {
-                      const vp = page.getViewport({ scale });
-                      const nw = vp.width / scale;
-                      const nh = vp.height / scale;
-                      setNativeSize({ w: nw, h: nh });
-                      setMeasuredPageSize({ w: vp.width, h: vp.height });
-                      if (!hasSetScaleRef.current && pdfContainerRef.current) {
-                        const cw = pdfContainerRef.current.clientWidth - 32;
-                        if (cw > 0) {
-                          hasSetScaleRef.current = true;
-                          const fit = Math.min(1.2, Math.max(0.3, cw / nw));
-                          setFitScale(fit);
-                          setScale(fit);
-                        }
-                      }
-                    }}
-                  />
-                </Document>
-              )}
+                  }
+                }}
+              />
 
               {/* ── Shared overlays (identical for both PNG and PDF paths) ── */}
 

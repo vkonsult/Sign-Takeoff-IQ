@@ -1052,6 +1052,7 @@ const UpdateSignSchema = z.object({
   xPos: z.number().min(0).max(1).nullable().optional(),
   yPos: z.number().min(0).max(1).nullable().optional(),
   placementSource: z.enum(["word_match", "text_match", "gemini_vision", "user_confirmed", "manual", "user_drag"]).nullable().optional(),
+  pageNumber: z.number().int().positive().nullable().optional(),
 });
 
 router.patch("/extracted-signs/:signId", async (req, res) => {
