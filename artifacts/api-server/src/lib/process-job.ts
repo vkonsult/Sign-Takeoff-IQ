@@ -1044,8 +1044,8 @@ Do not include any other text or explanation.`;
       };
       const rowIdx = textRows.indexOf(row);
       if (rowIdx !== -1) textRows[rowIdx] = updatedRow;
-      calloutMatches.get(bestCallout)!.push(row);
-      matchedRowSet.add(row);
+      calloutMatches.get(bestCallout)!.push(updatedRow);
+      matchedRowSet.add(updatedRow);
     }
 
     // Build the final set of text rows (may discard duplicates)
