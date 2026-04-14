@@ -593,7 +593,13 @@ export default function JobDetails() {
                   />
                 </div>
               ) : activeTab === "sheets" ? (
-                <SheetsPanel files={files} onOpenSpec={setSpecViewer} />
+                <SheetsPanel
+                  files={files}
+                  onOpenSpec={setSpecViewer}
+                  allSigns={extractedSigns}
+                  hiddenSigns={hiddenSigns}
+                  toggleHidden={toggleHidden}
+                />
               ) : activeTab === "summary" ? (
                 <SignSummaryPanel signs={extractedSigns} />
               ) : (
@@ -1092,11 +1098,19 @@ function DetectionTable({
   regionColHeader,
   rows,
   colorScheme,
+  allSigns,
+  hiddenSigns,
+  toggleHidden,
+  fileId,
 }: {
   title: string;
   regionColHeader: string;
   rows: DetectionRow[];
   colorScheme: "primary" | "accent";
+  allSigns: Array<{ id: string; pageNumber?: number | null; jobFileId?: string | null; hidden?: boolean }>;
+  hiddenSigns: Array<{ id: string; pageNumber?: number | null; jobFileId?: string | null; hidden?: boolean }>;
+  toggleHidden: (signId: string, currentlyHidden: boolean) => void;
+  fileId: string;
 }) {
   if (rows.length === 0) return null;
   const headCls =
@@ -1111,6 +1125,27 @@ function DetectionTable({
     if (source === "Heuristic") return "bg-secondary text-muted-foreground border-border";
     return "bg-muted text-muted-foreground/60 border-border/40";
   };
+
+  const signsOnPage = (pageNo: number) => {
+    const visible = allSigns.filter((s) => s.pageNumber === pageNo && s.jobFileId === fileId);
+    const hidden = hiddenSigns.filter((s) => s.pageNumber === pageNo && s.jobFileId === fileId);
+    return { visible, hidden, all: [...visible, ...hidden] };
+  };
+
+  const isPageRejected = (pageNo: number) => {
+    const { all, hidden } = signsOnPage(pageNo);
+    return all.length > 0 && hidden.length === all.length;
+  };
+
+  const handleRejectToggle = (pageNo: number) => {
+    const { visible, hidden } = signsOnPage(pageNo);
+    if (isPageRejected(pageNo)) {
+      hidden.forEach((s) => toggleHidden(s.id, true));
+    } else {
+      visible.forEach((s) => toggleHidden(s.id, false));
+    }
+  };
+
   return (
     <div className="mt-3">
       <p className={`text-[10px] font-display font-semibold uppercase tracking-wider mb-1 ${colorScheme === "primary" ? "text-primary/70" : "text-accent/70"}`}>
@@ -1125,27 +1160,48 @@ function DetectionTable({
               <th className="px-2 py-1 font-semibold whitespace-nowrap">Bookmark</th>
               <th className="px-2 py-1 font-semibold whitespace-nowrap">{regionColHeader}</th>
               <th className="px-2 py-1 font-semibold whitespace-nowrap">Bounding Box (x0, y0, x1, y1)</th>
+              <th className="px-2 py-1 font-semibold whitespace-nowrap">Action</th>
             </tr>
           </thead>
           <tbody>
-            {rows.map((row, i) => (
-              <tr
-                key={`${row.pageNo}-${i}`}
-                className={`border-b border-border/30 last:border-0 ${i % 2 === 0 ? "bg-background" : "bg-card/40"}`}
-              >
-                <td className="px-2 py-1 text-muted-foreground">{row.pageNo}</td>
-                <td className="px-2 py-1 text-foreground/80">{row.label}</td>
-                <td className="px-2 py-1 text-foreground/70 max-w-[160px] truncate" title={row.bookmarkTitle ?? undefined}>
-                  {row.bookmarkTitle ?? "—"}
-                </td>
-                <td className="px-2 py-1">
-                  <span className={`px-1.5 py-px rounded text-[9px] font-bold uppercase tracking-wider border ${badgeCls(row.source)}`}>
-                    {row.source}
-                  </span>
-                </td>
-                <td className="px-2 py-1 text-muted-foreground/70">{fmtBbox(row.bbox)}</td>
-              </tr>
-            ))}
+            {rows.map((row, i) => {
+              const rejected = isPageRejected(row.pageNo);
+              const { all } = signsOnPage(row.pageNo);
+              return (
+                <tr
+                  key={`${row.pageNo}-${i}`}
+                  className={`border-b border-border/30 last:border-0 ${i % 2 === 0 ? "bg-background" : "bg-card/40"}`}
+                >
+                  <td className="px-2 py-1 text-muted-foreground">{row.pageNo}</td>
+                  <td className="px-2 py-1 text-foreground/80">{row.label}</td>
+                  <td className="px-2 py-1 text-foreground/70 max-w-[160px] truncate" title={row.bookmarkTitle ?? undefined}>
+                    {row.bookmarkTitle ?? "—"}
+                  </td>
+                  <td className="px-2 py-1">
+                    <span className={`px-1.5 py-px rounded text-[9px] font-bold uppercase tracking-wider border ${badgeCls(row.source)}`}>
+                      {row.source}
+                    </span>
+                  </td>
+                  <td className="px-2 py-1 text-muted-foreground/70">{fmtBbox(row.bbox)}</td>
+                  <td className="px-2 py-1">
+                    {all.length > 0 ? (
+                      <button
+                        onClick={() => handleRejectToggle(row.pageNo)}
+                        className={`px-2 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider border transition-colors ${
+                          rejected
+                            ? "bg-muted text-muted-foreground border-border/60 hover:bg-secondary"
+                            : "bg-destructive/10 text-destructive border-destructive/30 hover:bg-destructive/20"
+                        }`}
+                      >
+                        {rejected ? "Rejected" : "Reject"}
+                      </button>
+                    ) : (
+                      <span className="text-muted-foreground/30">—</span>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </div>
@@ -1214,9 +1270,15 @@ function OutlineSectionsTree({ sections }: { sections: OutlineSection[] }) {
 function SheetsPanel({
   files,
   onOpenSpec,
+  allSigns,
+  hiddenSigns,
+  toggleHidden,
 }: {
   files: FileWithStats[];
   onOpenSpec: (v: SpecViewerState) => void;
+  allSigns: Array<{ id: string; pageNumber?: number | null; jobFileId?: string | null; hidden?: boolean }>;
+  hiddenSigns: Array<{ id: string; pageNumber?: number | null; jobFileId?: string | null; hidden?: boolean }>;
+  toggleHidden: (signId: string, currentlyHidden: boolean) => void;
 }) {
   const [open, setOpen] = useState(true);
 
@@ -1408,12 +1470,20 @@ function SheetsPanel({
                               regionColHeader="Floor Plan Region Detected"
                               rows={floorPlanRows}
                               colorScheme="primary"
+                              allSigns={allSigns}
+                              hiddenSigns={hiddenSigns}
+                              toggleHidden={toggleHidden}
+                              fileId={f.id}
                             />
                             <DetectionTable
                               title="Sign Specs / Schedules Detected"
                               regionColHeader="Sign Spec Region Detected"
                               rows={signSpecRows}
                               colorScheme="accent"
+                              allSigns={allSigns}
+                              hiddenSigns={hiddenSigns}
+                              toggleHidden={toggleHidden}
+                              fileId={f.id}
                             />
                           </>
                         );
