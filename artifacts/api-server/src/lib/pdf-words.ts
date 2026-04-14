@@ -476,6 +476,7 @@ export function matchLocationToCoords(
   floorPlanBbox: FloorPlanBbox | null,
   location: string | null | undefined,
   signIdentifier: string | null | undefined,
+  excludeCoords?: Set<string>,
 ): MatchedCoords | null {
   const query = [location, signIdentifier].filter(Boolean).join(" ").trim();
   if (!query) return null;
@@ -499,7 +500,9 @@ export function matchLocationToCoords(
 
   if (drawingPhrases.length === 0) return null;
 
-  // Score each phrase
+  // Score each phrase, skipping any whose centre is already claimed by another sign.
+  // Uses a proximity threshold so sub-pixel aliasing at different precisions is handled.
+  const EXCLUDE_THRESHOLD = 0.015; // page-unit distance
   const ROOM_NUM_RE =
     /\b(?:[A-Za-z]{1,2}-\d{2,4}|[A-Za-z]{1,2}\d{2,4}[A-Za-z]?|\d{2,4}[A-Za-z]{1,2})\b/g;
   const roomTokens = (query.match(ROOM_NUM_RE) ?? []).map((t) => _normId(t));
@@ -509,6 +512,22 @@ export function matchLocationToCoords(
   for (const p of drawingPhrases) {
     const cx = (p.x0 + p.x1) / 2;
     const cy = (p.y0 + p.y1) / 2;
+
+    // Skip phrases too close to an already-claimed coordinate
+    if (excludeCoords && excludeCoords.size > 0) {
+      let tooClose = false;
+      for (const excKey of excludeCoords) {
+        const sep = excKey.indexOf(",");
+        const ex = Number(excKey.slice(0, sep));
+        const ey = Number(excKey.slice(sep + 1));
+        if (Math.sqrt((cx - ex) ** 2 + (cy - ey) ** 2) < EXCLUDE_THRESHOLD) {
+          tooClose = true;
+          break;
+        }
+      }
+      if (tooClose) continue;
+    }
+
     const pn = _normId(p.text);
 
     // Room-number exact match gets a high bonus

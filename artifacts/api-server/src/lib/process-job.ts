@@ -33,7 +33,10 @@ export function deduplicateSignRows(rows: InsertExtractedSign[]): InsertExtracte
       out.push(row);
       continue;
     }
-    const key = `${row.location.toLowerCase().trim()}||${row.signType.toLowerCase().trim()}`;
+    const idPart = row.signIdentifier?.toLowerCase().trim() ?? "";
+    const key = idPart
+      ? `${row.location.toLowerCase().trim()}||${row.signType.toLowerCase().trim()}||${idPart}`
+      : `${row.location.toLowerCase().trim()}||${row.signType.toLowerCase().trim()}`;
     const existingIdx = seenKeys.get(key);
     if (existingIdx === undefined) {
       seenKeys.set(key, out.length);
@@ -685,36 +688,101 @@ export async function processJob(jobId: string): Promise<void> {
   }
 
   async function assignCoords(rows: InsertExtractedSign[]): Promise<InsertExtractedSign[]> {
-    return Promise.all(
-      rows.map(async (row) => {
-        // Skip rows that already have a manually placed position
-        if (row.xPos != null && row.yPos != null) return row;
-        if (!row.jobFileId || !row.pageNumber) return row;
-        const storedPath = filePathById.get(row.jobFileId);
-        if (!storedPath) return row;
+    // Per-page exclusion sets: keyed by "fileId:pageNum".
+    // Seeded with already-placed coordinates so re-processing never reassigns them.
+    const usedCoordsPerPage = new Map<string, Set<string>>();
+    function getExcludeSet(fileId: string, pageNum: number): Set<string> {
+      const k = `${fileId}:${pageNum}`;
+      if (!usedCoordsPerPage.has(k)) usedCoordsPerPage.set(k, new Set());
+      return usedCoordsPerPage.get(k)!;
+    }
 
-        // Do not place markers for signs on sign-schedule-only pages.
-        // These rows appear in the review table but should have no floor plan marker.
-        // We check whether we have floor plan page info for this file: if we do,
-        // any page not in the floor-plan set (including when the set is empty, which
-        // means the file has NO floor plan pages at all) must not receive coordinates.
-        const fpPages = floorPlanPagesByFileId.get(row.jobFileId);
-        if (fpPages !== undefined && !fpPages.has(row.pageNumber)) {
-          return row; // skip coordinate assignment — not a floor plan page
-        }
+    // Pass 1: Seed exclusion sets from rows that already have coordinates
+    // (manually placed or assigned in a prior run) so they are never displaced.
+    for (const row of rows) {
+      if (row.xPos != null && row.yPos != null && row.jobFileId && row.pageNumber) {
+        getExcludeSet(row.jobFileId, row.pageNumber).add(
+          `${row.xPos.toFixed(4)},${row.yPos.toFixed(4)}`
+        );
+      }
+    }
 
+    // Separate already-coordinated rows (pass-through) from those that need matching.
+    const result: InsertExtractedSign[] = [];
+    const needsCoords: InsertExtractedSign[] = [];
+    for (const row of rows) {
+      if (row.xPos != null && row.yPos != null) {
+        result.push(row);
+      } else {
+        needsCoords.push(row);
+      }
+    }
+
+    // Group rows needing coords by (jobFileId, pageNumber).
+    // Rows without a valid file/page are passed through unchanged.
+    type PageGroupValue = { fileId: string; pageNum: number; rows: InsertExtractedSign[] };
+    const pageGroups = new Map<string, PageGroupValue>();
+    for (const row of needsCoords) {
+      if (!row.jobFileId || !row.pageNumber) {
+        result.push(row);
+        continue;
+      }
+      const k = `${row.jobFileId}:${row.pageNumber}`;
+      if (!pageGroups.has(k)) {
+        pageGroups.set(k, { fileId: row.jobFileId, pageNum: row.pageNumber, rows: [] });
+      }
+      pageGroups.get(k)!.rows.push(row);
+    }
+
+    // Pass 2: Process each page group sequentially so each sign claims
+    // a unique phrase coordinate before the next sign on the same page runs.
+    for (const { fileId, pageNum, rows: groupRows } of pageGroups.values()) {
+      const storedPath = filePathById.get(fileId);
+      if (!storedPath) {
+        result.push(...groupRows);
+        continue;
+      }
+
+      // Do not place markers for signs on sign-schedule-only pages.
+      const fpPages = floorPlanPagesByFileId.get(fileId);
+      if (fpPages !== undefined && !fpPages.has(pageNum)) {
+        result.push(...groupRows);
+        continue;
+      }
+
+      const excl = getExcludeSet(fileId, pageNum);
+      let pageData: { phrases: PdfPhrase[]; bbox: FloorPlanBbox | null } | null = null;
+      try {
+        pageData = await getPageData(storedPath, fileId, pageNum);
+      } catch (err) {
+        logger.debug({ err, fileId, pageNum }, "getPageData failed — skipping coordinate assignment for page");
+        result.push(...groupRows);
+        continue;
+      }
+
+      for (const row of groupRows) {
         try {
-          const { phrases, bbox } = await getPageData(storedPath, row.jobFileId, row.pageNumber);
-          const match = matchLocationToCoords(phrases, bbox, row.location, row.signIdentifier);
+          const match = matchLocationToCoords(
+            pageData.phrases,
+            pageData.bbox,
+            row.location,
+            row.signIdentifier,
+            excl,
+          );
           if (match) {
-            return { ...row, xPos: match.xPos, yPos: match.yPos, placementSource: "word_match" };
+            excl.add(`${match.xPos.toFixed(4)},${match.yPos.toFixed(4)}`);
+            result.push({ ...row, xPos: match.xPos, yPos: match.yPos, placementSource: "word_match" });
+          } else {
+            result.push(row);
           }
         } catch (err) {
           logger.debug({ err, signId: row.signIdentifier, location: row.location }, "Word-match failed for sign");
+          result.push(row);
         }
-        return row;
-      })
-    );
+      }
+    }
+
+    return result;
   }
 
   // Deduplicate within each pass, then remove cross-pass duplicates from image rows
