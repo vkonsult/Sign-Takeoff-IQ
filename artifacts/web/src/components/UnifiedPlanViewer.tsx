@@ -1039,6 +1039,47 @@ function PageViewer({
             </button>
           )}
 
+          {/* Undo / Redo / Save — modal only, grouped with debug */}
+          {mode === "modal" && (
+            <>
+              <div className="w-px h-4 bg-border" />
+              <button
+                disabled={historyStack.length === 0}
+                onClick={handleUndo}
+                title="Undo (Ctrl+Z)"
+                className="p-1.5 rounded hover:bg-secondary disabled:opacity-25 transition-colors text-muted-foreground hover:text-foreground"
+              >
+                <Undo2 className="w-4 h-4" />
+              </button>
+              <button
+                disabled={redoStack.length === 0}
+                onClick={handleRedo}
+                title="Redo (Ctrl+Y)"
+                className="p-1.5 rounded hover:bg-secondary disabled:opacity-25 transition-colors text-muted-foreground hover:text-foreground"
+              >
+                <Redo2 className="w-4 h-4" />
+              </button>
+              <button
+                onClick={handleBatchSave}
+                disabled={!hasPendingChanges || batchSaving}
+                title={hasPendingChanges ? `Save ${pendingCount} pending change${pendingCount !== 1 ? "s" : ""}` : "No unsaved changes"}
+                className={`relative flex items-center gap-1.5 px-3 py-1.5 text-xs font-display font-bold uppercase tracking-wide rounded-lg transition-all ${
+                  hasPendingChanges
+                    ? "bg-primary text-primary-foreground hover:bg-primary/90 shadow-[0_0_12px_rgba(255,170,0,0.2)]"
+                    : "bg-secondary text-muted-foreground opacity-40 cursor-not-allowed"
+                }`}
+              >
+                {batchSaving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
+                Save
+                {hasPendingChanges && pendingCount > 0 && (
+                  <span className="absolute -top-1.5 -right-1.5 flex items-center justify-center w-4 h-4 rounded-full bg-destructive text-[9px] font-bold text-destructive-foreground leading-none">
+                    {pendingCount > 9 ? "9+" : pendingCount}
+                  </span>
+                )}
+              </button>
+            </>
+          )}
+
           {/* Show/hide markers — both modes */}
           {textMarkers.length > 0 && (
             <>
@@ -2059,44 +2100,8 @@ export function UnifiedPlanViewer({
             )}
           </div>
 
-          {/* Undo / Redo / Save / Close */}
+          {/* Close */}
           <div className="flex items-center gap-1 flex-shrink-0 ml-3">
-            <button
-              disabled={historyStack.length === 0}
-              onClick={handleUndo}
-              title="Undo (Ctrl+Z)"
-              className="p-1.5 rounded hover:bg-secondary disabled:opacity-25 transition-colors text-muted-foreground hover:text-foreground"
-            >
-              <Undo2 className="w-4 h-4" />
-            </button>
-            <button
-              disabled={redoStack.length === 0}
-              onClick={handleRedo}
-              title="Redo (Ctrl+Y)"
-              className="p-1.5 rounded hover:bg-secondary disabled:opacity-25 transition-colors text-muted-foreground hover:text-foreground"
-            >
-              <Redo2 className="w-4 h-4" />
-            </button>
-            <div className="w-px h-4 bg-border mx-1" />
-            <button
-              onClick={handleBatchSave}
-              disabled={!hasPendingChanges || batchSaving}
-              title={hasPendingChanges ? `Save ${pendingCount} pending change${pendingCount !== 1 ? "s" : ""}` : "No unsaved changes"}
-              className={`relative flex items-center gap-1.5 px-3 py-1.5 text-xs font-display font-bold uppercase tracking-wide rounded-lg transition-all ${
-                hasPendingChanges
-                  ? "bg-primary text-primary-foreground hover:bg-primary/90 shadow-[0_0_12px_rgba(255,170,0,0.2)]"
-                  : "bg-secondary text-muted-foreground opacity-40 cursor-not-allowed"
-              }`}
-            >
-              {batchSaving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
-              Save
-              {hasPendingChanges && pendingCount > 0 && (
-                <span className="absolute -top-1.5 -right-1.5 flex items-center justify-center w-4 h-4 rounded-full bg-destructive text-[9px] font-bold text-destructive-foreground leading-none">
-                  {pendingCount > 9 ? "9+" : pendingCount}
-                </span>
-              )}
-            </button>
-            <div className="w-px h-4 bg-border mx-1" />
             <button onClick={handleCloseWithGuard} className="p-2 rounded-lg hover:bg-secondary text-muted-foreground hover:text-foreground transition-colors">
               <X className="w-5 h-5" />
             </button>
