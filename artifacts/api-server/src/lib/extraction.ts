@@ -55,7 +55,7 @@ For each unique sign or sign entry identified, extract the following fields. Use
 - sign_type: The type or category of sign (e.g. "Building ID", "Wayfinding", "Regulatory", "Exit", "Room ID", "Parking", "Monument", "Pylon", "Cabinet", "Channel Letter", "Dimensional Letter", "ADA", "Informational", "Directional")
 - sign_identifier: The sign code, number, or label that uniquely identifies it in the schedule (e.g. "S-01", "EX-1", "P1", "Sign Type A")
 - quantity: Number of signs of this type (integer). Default to 1 if a specific sign is referenced but no quantity given.
-- location: For the location field, use only the room identifier exactly as it appears printed on the plan — for example UNIT 2A 406B or ELEC A404. Do not add descriptive phrases, door positions, or narrative text. The location value must match the printed label verbatim so it can be found in the plan's text layer. In educational and school facilities, single-word room names without a number are valid location identifiers — for example MUSIC, ART ROOM, PRE-K, CLASSROOM 101, LIBRARY, CAFETERIA, SCIENCE LAB, GYMNASIUM, ADMINISTRATION. Treat any such label as a complete, valid location.
+- location: For the location field, use only the room identifier exactly as it appears printed on the plan — for example UNIT 2A 406B or ELEC A404. Do not add descriptive phrases, door positions, or narrative text. The location value must match the printed label verbatim so it can be found in the plan's text layer. In educational and school facilities, single-word room names without a number are valid location identifiers — for example MUSIC, ART ROOM, PRE-K, CLASSROOM 101, LIBRARY, CAFETERIA, SCIENCE LAB, GYMNASIUM, ADMINISTRATION. In church and religious-use facilities, abbreviations and multi-word labels are valid location identifiers — for example MRR (Men's Restroom), WRR (Women's Restroom), SANCTUARY, FELLOWSHIP HALL, NURSERY, CHAPEL, NARTHEX, Collaboration Room 130. Output the location exactly as the label appears on the plan (e.g. "MRR", "Collaboration Room 130") so it can be found in the text layer. Treat any such label as a complete, valid location.
 - dimensions: Physical size of the sign (e.g. '24" x 36"', "4'0\" x 8'0\"", "18 x 24 inches")
 - mounting_type: How the sign is attached (e.g. "Wall Mounted", "Post Mounted", "Suspended", "Floor Standing", "Flush Mount", "Projecting", "Cabinet Mount", "Direct Applied")
 - finish_color: Surface finish, paint color, or material finish (e.g. "Brushed Aluminum", "Matte Black", "PMS 485 Red", "White with Blue Copy", "Clear Anodized")
@@ -631,7 +631,7 @@ For every identifiable space or required sign location, output one JSON object p
 - sign_type: the required sign type per the rules above
 - sign_identifier: generate a short code (e.g. "RI-01" room ID, "EX-01" exit, "RS-01" restroom, "ST-01" stair, "FE-01" fire extinguisher, "FA-01" fire alarm, "FD-01" fire door, "EV-01" evacuation, "NS-01" no smoking, "EL-01" electrical, "HM-01" hazmat)
 - quantity: 1 per location unless otherwise noted
-- location: use only the room identifier exactly as it appears printed on the plan — for example UNIT 2A 406B or ELEC A404. Do not add descriptive phrases, door positions, or narrative text. The location value must match the printed label verbatim so it can be found in the plan's text layer.
+- location: use only the room identifier exactly as it appears printed on the plan — for example UNIT 2A 406B or ELEC A404. Do not add descriptive phrases, door positions, or narrative text. The location value must match the printed label verbatim so it can be found in the plan's text layer. In church and religious-use facilities, abbreviations and multi-word labels are valid identifiers — for example MRR (Men's Restroom), WRR (Women's Restroom), SANCTUARY, FELLOWSHIP HALL, NURSERY, CHAPEL, NARTHEX, Collaboration Room 130. Output the label exactly as it appears on the plan.
 - dimensions: standard dimensions per the code rules above
 - mounting_type: as specified above for each sign type
 - finish_color: null (to be specified by contractor)
@@ -1539,6 +1539,9 @@ You are viewing the actual PDF pages as images. Scan every square inch of each p
 EDUCATIONAL FACILITY ROOM NAMES — DO NOT MISS:
 In school and educational facility floor plans, any space name near a door represents a Room ID sign location and must be extracted — even uncommon single-word labels that have no room number. Examples include: MUSIC, ART, ART ROOM, PRE-K, STORAGE, LIBRARY, CAFETERIA, GYM, GYMNASIUM, CLASSROOM, SCIENCE LAB, ADMINISTRATION, OFFICE, NURSE, COUNSELOR, MEDIA CENTER, COMPUTER LAB, TECHNOLOGY, AUDITORIUM, and similar. These single-word labels are complete, valid room identifiers and must not be skipped because they lack a numeric suffix.
 
+CHURCH / RELIGIOUS-USE FACILITY ROOM NAMES — DO NOT MISS:
+In church and religious building floor plans, abbreviations and multi-word room labels are complete, valid room identifiers and must not be skipped. Examples include: MRR (Men's Restroom), WRR (Women's Restroom), SANCTUARY, FELLOWSHIP HALL, NURSERY, CHAPEL, NARTHEX, SACRISTY, VESTRY, CHOIR ROOM, BRIDE ROOM, PASTOR OFFICE, COLLABORATION ROOM, and any "Collaboration Room NNN" label (e.g. "Collaboration Room 130"). Extract these exactly as they appear on the plan — output "MRR" if the plan says "MRR", output "Collaboration Room 130" if the plan says that. Do not paraphrase or expand abbreviations in the location field.
+
 IMPORTANT — DO NOT MISS SMALL CALLOUTS:
 ADA floor plans often have very small (6–8pt font) circular or triangular callout symbols scattered throughout the floor plan. These are easy to overlook. Zoom in mentally on every doorway and room entry. Every room with a door almost certainly has a Room ID sign callout.
 
@@ -1615,6 +1618,9 @@ You are viewing the actual PDF pages as images. Scan every square inch of each p
 
 EDUCATIONAL FACILITY ROOM NAMES — DO NOT MISS:
 In school and educational facility floor plans, any space name near a door represents a Room ID sign location and must be extracted — even uncommon single-word labels that have no room number. Examples include: MUSIC, ART, ART ROOM, PRE-K, STORAGE, LIBRARY, CAFETERIA, GYM, GYMNASIUM, CLASSROOM, SCIENCE LAB, ADMINISTRATION, OFFICE, NURSE, COUNSELOR, MEDIA CENTER, COMPUTER LAB, TECHNOLOGY, AUDITORIUM, and similar. These single-word labels are complete, valid room identifiers and must not be skipped because they lack a numeric suffix.
+
+CHURCH / RELIGIOUS-USE FACILITY ROOM NAMES — DO NOT MISS:
+In church and religious building floor plans, abbreviations and multi-word room labels are complete, valid room identifiers and must not be skipped. Examples include: MRR (Men's Restroom), WRR (Women's Restroom), SANCTUARY, FELLOWSHIP HALL, NURSERY, CHAPEL, NARTHEX, SACRISTY, VESTRY, CHOIR ROOM, BRIDE ROOM, PASTOR OFFICE, COLLABORATION ROOM, and any "Collaboration Room NNN" label (e.g. "Collaboration Room 130"). Extract these exactly as they appear on the plan — output "MRR" if the plan says "MRR", output "Collaboration Room 130" if the plan says that. Do not paraphrase or expand abbreviations in the location field.
 
 IMPORTANT — DO NOT MISS SMALL CALLOUTS:
 ADA floor plans often have very small (6–8pt font) circular or triangular callout symbols scattered throughout the floor plan. These are easy to overlook. Zoom in mentally on every doorway and room entry. Every room with a door almost certainly has a Room ID sign callout.

@@ -388,6 +388,64 @@ function _normId(s: string): string {
   return s.toLowerCase().replace(/[\s\-_]/g, "");
 }
 
+/**
+ * Static map of common architectural room abbreviations to their expanded
+ * forms.  Each entry maps an abbreviation (upper-case, no spaces) to one or
+ * more canonical expanded phrases (lower-case, space-separated tokens).
+ * Used bidirectionally: if the query contains the abbreviation, all expanded
+ * forms are also tested against the candidate phrase, and vice-versa.
+ */
+const ROOM_ABBREV_MAP: Record<string, string[]> = {
+  MRR:  ["mens restroom", "men restroom", "mens rest room", "men rest room", "mens room", "men room"],
+  WRR:  ["womens restroom", "women restroom", "womens rest room", "women rest room", "womens room", "women room"],
+  MR:   ["mens restroom", "men restroom", "mens room", "men room"],
+  WR:   ["womens restroom", "women restroom", "womens room", "women room"],
+  RR:   ["restroom", "rest room"],
+  WC:   ["water closet", "restroom", "toilet"],
+  JAN:  ["janitor", "janitorial", "custodial"],
+  ELEC: ["electrical", "electric"],
+  MECH: ["mechanical"],
+  IT:   ["information technology", "it room", "server room"],
+  IDF:  ["intermediate distribution frame", "telecom room"],
+  MDF:  ["main distribution frame", "telecom room"],
+  AHU:  ["air handling unit"],
+  RTU:  ["rooftop unit"],
+  FEC:  ["fire extinguisher cabinet"],
+  FE:   ["fire extinguisher"],
+  EV:   ["electrical vehicle", "ev charging"],
+};
+
+/**
+ * Given a string (already lower-cased, alphanumeric+spaces only), returns an
+ * array of alternative strings to try when scoring — the original plus any
+ * expansions or contractions found in ROOM_ABBREV_MAP.
+ */
+function _expandAbbreviations(text: string): string[] {
+  const variants = new Set<string>([text]);
+
+  // Forward: abbreviation found in text → add expanded forms
+  for (const [abbr, expansions] of Object.entries(ROOM_ABBREV_MAP)) {
+    const abbrLower = abbr.toLowerCase();
+    // Check if the abbreviation appears as a whole word in the text
+    const re = new RegExp(`(?:^|\\s)${abbrLower}(?:\\s|$)`);
+    if (re.test(text)) {
+      for (const exp of expansions) {
+        variants.add(text.replace(new RegExp(`\\b${abbrLower}\\b`, "g"), exp));
+        variants.add(exp);
+      }
+    }
+    // Reverse: expanded form found in text → add abbreviation
+    for (const exp of expansions) {
+      if (text.includes(exp)) {
+        variants.add(text.replace(exp, abbrLower));
+        variants.add(abbrLower);
+      }
+    }
+  }
+
+  return Array.from(variants);
+}
+
 function _exactBoundaryMatch(haystack: string, needle: string): boolean {
   let idx = haystack.indexOf(needle);
   while (idx !== -1) {
@@ -464,13 +522,13 @@ export interface MatchedCoords {
 }
 
 /**
- * Given the page's word phrases and the floor plan bbox, finds the phrase whose
- * text best matches the sign's location / signIdentifier using token-overlap and
- * room-number matching.  Returns the phrase centre normalised to [0, 1].
- *
- * Only considers phrases whose centre falls inside floorPlanBbox (with small tolerance).
- * Returns null when no confident match is found (score < 0.5).
+ * Normalise a raw phrase string for abbreviation expansion: lower-case,
+ * replace non-alphanumeric with spaces, collapse spaces.
  */
+function _normaliseForExpansion(s: string): string {
+  return s.toLowerCase().replace(/[^a-z0-9]/g, " ").replace(/\s+/g, " ").trim();
+}
+
 export function matchLocationToCoords(
   phrases: PdfPhrase[],
   floorPlanBbox: FloorPlanBbox | null,
@@ -499,10 +557,22 @@ export function matchLocationToCoords(
 
   if (drawingPhrases.length === 0) return null;
 
-  // Score each phrase
+  // Build expanded query variants (abbreviation ↔ expansion, bidirectional).
+  const queryNorm = _normaliseForExpansion(query);
+  const queryVariants = _expandAbbreviations(queryNorm);
+
+  // Room-number tokens from every query variant.
+  // Extended regex also captures standalone 3–4 digit numbers (e.g. "130")
+  // which are common room numbers even without an alpha prefix.
   const ROOM_NUM_RE =
-    /\b(?:[A-Za-z]{1,2}-\d{2,4}|[A-Za-z]{1,2}\d{2,4}[A-Za-z]?|\d{2,4}[A-Za-z]{1,2})\b/g;
-  const roomTokens = (query.match(ROOM_NUM_RE) ?? []).map((t) => _normId(t));
+    /\b(?:[A-Za-z]{1,2}-\d{2,4}|[A-Za-z]{1,2}\d{2,4}[A-Za-z]?|\d{2,4}[A-Za-z]{1,2}|\d{3,4})\b/g;
+  const roomTokenSet = new Set<string>();
+  for (const qv of queryVariants) {
+    for (const t of (qv.match(ROOM_NUM_RE) ?? [])) {
+      roomTokenSet.add(_normId(t));
+    }
+  }
+  const roomTokens = Array.from(roomTokenSet);
 
   let best: { score: number; cx: number; cy: number } | null = null;
 
@@ -511,8 +581,21 @@ export function matchLocationToCoords(
     const cy = (p.y0 + p.y1) / 2;
     const pn = _normId(p.text);
 
-    // Room-number exact match gets a high bonus
-    let score = _phraseMatchScore(p.text, query);
+    // Build expanded phrase variants for bidirectional abbreviation matching.
+    const phraseNorm = _normaliseForExpansion(p.text);
+    const phraseVariants = _expandAbbreviations(phraseNorm);
+
+    // Best score across all (queryVariant × phraseVariant) combinations.
+    let score = 0;
+    for (const qv of queryVariants) {
+      for (const pv of phraseVariants) {
+        score = Math.max(score, _phraseMatchScore(pv, qv));
+      }
+      // Also score against the raw phrase text (original behaviour).
+      score = Math.max(score, _phraseMatchScore(p.text, qv));
+    }
+
+    // Room-number exact match gets a high bonus.
     if (roomTokens.length > 0) {
       const hasRoomMatch = roomTokens.some((rt) => _exactBoundaryMatch(pn, rt));
       if (hasRoomMatch) score = Math.max(score, 0.85);
