@@ -70,6 +70,7 @@ export interface UnifiedPlanViewerProps {
   signs?: ExtractedSign[];
   allSigns?: ExtractedSign[];
   initialSignId?: string;
+  showAiHighlight?: boolean;
   onClose?: () => void;
   onSaved?: (updated: ExtractedSign) => void;
   onSignAdded?: (sign: ExtractedSign) => void;
@@ -452,6 +453,7 @@ interface PageViewerProps {
   setPageNumber: (p: number) => void;
   onTextSearchStatusChange: (status: "idle" | "found" | "not-found") => void;
   onRegisterResetAiPlacement?: (fn: (signId: string) => void) => void;
+  showAiHighlight?: boolean;
   // Undo / Redo / Save — modal toolbar only
   canUndo?: boolean;
   canRedo?: boolean;
@@ -481,6 +483,7 @@ function PageViewer({
   setPageNumber,
   onTextSearchStatusChange,
   onRegisterResetAiPlacement,
+  showAiHighlight,
   canUndo,
   canRedo,
   onUndo,
@@ -1318,6 +1321,7 @@ function PageViewer({
                       const dotR = m.isCurrent ? 7 : 5;
                       const sign = signsOnCurrentPage.find((s) => s.id === m.signId);
                       const hasBbox = sign && sign.aiBboxX != null && sign.aiBboxY != null && sign.aiBboxW != null && sign.aiBboxH != null;
+                      const isAiSign = showAiHighlight && ((sign as Record<string, unknown> | undefined)?.dataSource === "ai" || (sign as Record<string, unknown> | undefined)?.aiBbox === true);
                       return (
                         <g key={m.signId} opacity={isGhost ? 0.15 : 1}>
                           {hasBbox && (
@@ -1326,20 +1330,23 @@ function PageViewer({
                               y={sign.aiBboxY! * renderedH}
                               width={sign.aiBboxW! * renderedW}
                               height={sign.aiBboxH! * renderedH}
-                              fill={m.color}
+                              fill={isAiSign ? "#8b5cf6" : m.color}
                               fillOpacity={0.12}
-                              stroke={m.color}
-                              strokeWidth={1}
-                              strokeOpacity={0.5}
+                              stroke={isAiSign ? "#8b5cf6" : m.color}
+                              strokeWidth={isAiSign ? 1.5 : 1}
+                              strokeOpacity={0.7}
                               rx={2}
                             />
                           )}
-                          {m.isCurrent && !isGhost && <circle cx={cx} cy={cy} r={dotR + 5} fill="none" stroke={m.color} strokeWidth={1.5} opacity={0.8} />}
+                          {isAiSign && !isGhost && (
+                            <circle cx={cx} cy={cy} r={dotR + 7} fill="none" stroke="#8b5cf6" strokeWidth={2} strokeDasharray="3 2" opacity={0.9} />
+                          )}
+                          {m.isCurrent && !isGhost && <circle cx={cx} cy={cy} r={dotR + 5} fill="none" stroke={isAiSign ? "#8b5cf6" : m.color} strokeWidth={1.5} opacity={0.8} />}
                           {isHovered && !m.isCurrent && !isGhost && <circle cx={cx} cy={cy} r={dotR + 4} fill="none" stroke={m.color} strokeWidth={1} opacity={0.5} />}
                           {isDraggingThis && <circle cx={cx} cy={cy} r={dotR + 10} fill="none" stroke={m.color} strokeWidth={2} strokeDasharray="4 3" opacity={0.7} />}
-                          <circle cx={cx} cy={cy} r={dotR} fill={m.color} />
+                          <circle cx={cx} cy={cy} r={dotR} fill={isAiSign ? "#8b5cf6" : m.color} />
                           {m.isCurrent && !isGhost && (
-                            <text x={cx} y={cy - dotR - 7} textAnchor="middle" fill={m.color} fontSize={9} fontWeight="bold" fontFamily="monospace" style={{ userSelect: "none" }}>
+                            <text x={cx} y={cy - dotR - 7} textAnchor="middle" fill={isAiSign ? "#8b5cf6" : m.color} fontSize={9} fontWeight="bold" fontFamily="monospace" style={{ userSelect: "none" }}>
                               {debugMode && m.phraseCenter ? `${m.label}-LOCK` : m.label}
                             </text>
                           )}
@@ -1659,6 +1666,7 @@ export function UnifiedPlanViewer({
   signs,
   allSigns: allSignsProp,
   initialSignId,
+  showAiHighlight,
   onClose,
   onSaved,
   onSignAdded,
@@ -2009,6 +2017,7 @@ export function UnifiedPlanViewer({
       setPageNumber={setPageNumber}
       onTextSearchStatusChange={setTextSearchStatus}
       onRegisterResetAiPlacement={handleRegisterResetAiPlacement}
+      showAiHighlight={showAiHighlight}
       canUndo={historyStack.length > 0}
       canRedo={redoStack.length > 0}
       onUndo={handleUndo}

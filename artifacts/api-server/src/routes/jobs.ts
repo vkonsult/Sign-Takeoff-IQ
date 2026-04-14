@@ -10,10 +10,11 @@ import {
 } from "@workspace/db";
 import { buildExcelExport } from "../lib/export";
 import { getJobExportPath, PAGES_DIR } from "../lib/storage";
-import { extractPagePhrases, detectFloorPlanBbox } from "../lib/pdf-words";
 import { processJob, deduplicateSignRows } from "../lib/process-job";
 import { extractSignsFromPdfImage, extractSignsFromPdf, visualLocateDoors } from "../lib/extraction";
 import { ai } from "@workspace/integrations-gemini-ai";
+import { AI_CALL_REGISTRY, type AiCallType, runProjectInfoExtraction, runSignScheduleTextExtraction, runFloorPlanTextExtraction, runBboxDetection, runVisionFallback, runTitleBlockVision } from "../lib/ai-processor";
+import { extractPagePhrases, detectFloorPlanBbox, matchLocationToCoords, type SpatialPageType } from "../lib/pdf-words";
 import fs from "fs/promises";
 import fsSync from "fs";
 import { z } from "zod/v4";
@@ -981,6 +982,7 @@ router.post("/extracted-signs", async (req, res) => {
         ...parsed.data,
         manuallyAdded: true,
         extractionMethod: "manual",
+        dataSource: "manual",
         confidenceScore: 1.0,
         reviewFlag: false,
       })
@@ -1268,5 +1270,358 @@ router.get("/jobs/:jobId/export", async (req, res) => {
     res.status(500).json({ error: "Export failed", details: String(err) });
   }
 });
+
+// ── AI Calls Registry ──────────────────────────────────────────────────────────
+router.get("/jobs/:jobId/ai-calls", async (req, res) => {
+  const jobId = req.params.jobId;
+  if (!jobId) { res.status(400).json({ error: "Job ID required" }); return; }
+  try {
+    const job = await getJobWithOrgCheck(req, res, jobId);
+    if (!job) return;
+    res.json({ callTypes: AI_CALL_REGISTRY });
+  } catch (err) {
+    req.log.error({ err, jobId }, "ai-calls registry error");
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// ── AI Scan Endpoint ─────────────────────────────────────────────────────────
+const aiScanSchema = z.object({
+  callTypes: z.array(z.enum(["project_info", "sign_schedule_text", "floor_plan_text", "vision_fallback", "bbox_detection", "title_block_vision"])),
+});
+
+router.post("/jobs/:jobId/ai-scan", async (req, res) => {
+  const jobId = req.params.jobId;
+  if (!jobId) { res.status(400).json({ error: "Job ID required" }); return; }
+
+  const parsed = aiScanSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: "Invalid request body", details: parsed.error.message });
+    return;
+  }
+  const { callTypes } = parsed.data;
+
+  try {
+    const job = await getJobWithOrgCheck(req, res, jobId);
+    if (!job) return;
+    if (job.status === "processing") {
+      res.status(409).json({ error: "Job is currently being processed — try again shortly" });
+      return;
+    }
+
+    const files = await db.select().from(jobFilesTable).where(eq(jobFilesTable.jobId, jobId));
+    if (files.length === 0) {
+      res.status(404).json({ error: "No files found for this job" });
+      return;
+    }
+
+    const results: Record<string, unknown> = {};
+    let totalNewSigns = 0;
+    let totalUpdatedSigns = 0;
+
+    // Load existing signs for deduplication
+    const existingSigns = await db.select().from(extractedSignsTable).where(eq(extractedSignsTable.jobId, jobId));
+    const existingSignKeys = new Set(existingSigns.map((s) => `${s.jobFileId ?? ""}||${s.pageNumber ?? ""}||${(s.location ?? "").toLowerCase().trim()}||${(s.signType ?? "").toLowerCase().trim()}`));
+
+    // Build project context from job record
+    const projectContext = (job.projectAddress || job.projectCity || job.projectState) ? {
+      address: job.projectAddress ?? undefined,
+      city: job.projectCity ?? undefined,
+      state: job.projectState ?? undefined,
+    } : undefined;
+
+    // Process each file
+    for (const file of files) {
+      const pageStats = file.pageStats as {
+        floorPlanPages?: number[];
+        signSchedulePages?: number[];
+        bothPages?: number[];
+        pageImagePaths?: Record<string, string> | null;
+        floorPageLevels?: Record<string, string>;
+      } | null;
+
+      // Build spatial page type maps from stored pageStats
+      function buildSpatialMap(filter: "sign_schedule" | "floor_plan"): Map<number, SpatialPageType> {
+        const m = new Map<number, SpatialPageType>();
+        if (!pageStats) return m;
+        const ssPages = new Set([...(pageStats.signSchedulePages ?? []), ...(pageStats.bothPages ?? [])]);
+        const fpPages = new Set([...(pageStats.floorPlanPages ?? []), ...(pageStats.bothPages ?? [])]);
+        if (filter === "sign_schedule") {
+          for (const p of ssPages) m.set(p, "sign_schedule");
+        } else {
+          for (const p of fpPages) m.set(p, "floor_plan");
+        }
+        return m;
+      }
+
+      let pageImagePaths = (pageStats?.pageImagePaths ?? {}) as Record<string, string>;
+
+      for (const callType of callTypes as AiCallType[]) {
+        try {
+          if (callType === "project_info") {
+            const { info, inputTokens, outputTokens } = await runProjectInfoExtraction(file);
+            // Update job record with extracted project location info (only if not already set)
+            const jobUpdate: Partial<typeof jobsTable.$inferInsert> = {};
+            if (info.address && !job.projectAddress) jobUpdate.projectAddress = info.address;
+            if (info.city && !job.projectCity) jobUpdate.projectCity = info.city;
+            if (info.state && !job.projectState) jobUpdate.projectState = info.state;
+            if (Object.keys(jobUpdate).length > 0) {
+              jobUpdate.updatedAt = new Date();
+              await db.update(jobsTable).set(jobUpdate).where(eq(jobsTable.id, jobId));
+            }
+            results[`${callType}_${file.id}`] = { info, inputTokens, outputTokens, updatedFields: Object.keys(jobUpdate) };
+
+          } else if (callType === "sign_schedule_text") {
+            const spatialMap = buildSpatialMap("sign_schedule");
+            const { rows, inputTokens, outputTokens } = await runSignScheduleTextExtraction(file, projectContext, spatialMap.size > 0 ? spatialMap : undefined);
+            const { newCount, updateCount } = await mergeAiSignRows(rows, jobId, file.id, existingSignKeys, existingSigns, files);
+            totalNewSigns += newCount;
+            totalUpdatedSigns += updateCount;
+            results[`${callType}_${file.id}`] = { rowsExtracted: rows.length, newSigns: newCount, updatedSigns: updateCount, inputTokens, outputTokens };
+
+          } else if (callType === "floor_plan_text") {
+            const spatialMap = buildSpatialMap("floor_plan");
+            const { rows, inputTokens, outputTokens } = await runFloorPlanTextExtraction(file, projectContext, spatialMap.size > 0 ? spatialMap : undefined);
+            const { newCount, updateCount } = await mergeAiSignRows(rows, jobId, file.id, existingSignKeys, existingSigns, files);
+            totalNewSigns += newCount;
+            totalUpdatedSigns += updateCount;
+            results[`${callType}_${file.id}`] = { rowsExtracted: rows.length, newSigns: newCount, updatedSigns: updateCount, inputTokens, outputTokens };
+
+          } else if (callType === "bbox_detection") {
+            const { scanResult, pageImagePaths: updatedPaths } = await runBboxDetection(file, pageImagePaths);
+            if (!scanResult.skipped && scanResult.callouts.length > 0) {
+              const bboxCount = await applyBboxCallouts(scanResult.callouts, jobId, file.id, existingSigns);
+              totalUpdatedSigns += bboxCount;
+            }
+            // Update file pageStats with any newly rendered image paths, and sync in-memory
+            if (updatedPaths && Object.keys(updatedPaths).length > 0) {
+              pageImagePaths = { ...pageImagePaths, ...updatedPaths }; // in-memory update for same-run calls
+              const updatedStats = { ...(pageStats ?? {}), pageImagePaths };
+              await db.update(jobFilesTable).set({ pageStats: updatedStats }).where(eq(jobFilesTable.id, file.id));
+            }
+            results[`${callType}_${file.id}`] = { callouts: scanResult.callouts?.length ?? 0, skipped: scanResult.skipped, skipReason: scanResult.skipReason, inputTokens: scanResult.inputTokens, outputTokens: scanResult.outputTokens };
+
+          } else if (callType === "vision_fallback") {
+            const { scanResult } = await runVisionFallback(file, pageImagePaths);
+            if (!scanResult.skipped && scanResult.callouts.length > 0) {
+              const bboxCount = await applyBboxCallouts(scanResult.callouts, jobId, file.id, existingSigns);
+              totalUpdatedSigns += bboxCount;
+            }
+            results[`${callType}_${file.id}`] = { callouts: scanResult.callouts?.length ?? 0, skipped: scanResult.skipped, inputTokens: scanResult.inputTokens, outputTokens: scanResult.outputTokens };
+
+          } else if (callType === "title_block_vision") {
+            const { levelMap } = await runTitleBlockVision(file, pageImagePaths);
+            if (levelMap.size > 0) {
+              const floorPageLevels: Record<string, string> = {};
+              for (const [pageNum, level] of levelMap) {
+                floorPageLevels[String(pageNum)] = level;
+              }
+              const updatedStats = { ...(pageStats ?? {}), floorPageLevels };
+              await db.update(jobFilesTable).set({ pageStats: updatedStats }).where(eq(jobFilesTable.id, file.id));
+            }
+            results[`${callType}_${file.id}`] = { levelsFound: levelMap.size, levels: Object.fromEntries(levelMap) };
+          }
+        } catch (callErr) {
+          req.log.error({ callErr, callType, fileId: file.id }, "AI scan call failed");
+          results[`${callType}_${file.id}_error`] = String(callErr);
+        }
+      }
+    }
+
+    // After AI sign insertion, run coordinate matching for any signs missing coordinates
+    await assignMissingCoordinates(jobId, files);
+
+    res.json({
+      success: true,
+      jobId,
+      callTypes,
+      newSignsCreated: totalNewSigns,
+      signsUpdated: totalUpdatedSigns,
+      details: results,
+    });
+
+    recordActivity(req, "ai_scan_run", jobId);
+  } catch (err) {
+    req.log.error({ err, jobId }, "ai-scan failed");
+    res.status(500).json({ error: "AI scan failed", details: String(err) });
+  }
+});
+
+// ── AI Scan Helpers ───────────────────────────────────────────────────────────
+
+type DbSign = typeof extractedSignsTable.$inferSelect;
+type DbFile = typeof jobFilesTable.$inferSelect;
+
+async function mergeAiSignRows(
+  rows: import("../lib/extraction").ExtractedSignRow[],
+  jobId: string,
+  fileId: string,
+  existingSignKeys: Set<string>,
+  existingSigns: DbSign[],
+  _files: DbFile[],
+): Promise<{ newCount: number; updateCount: number }> {
+  let newCount = 0;
+  let updateCount = 0;
+
+  for (const row of rows) {
+    const key = `${fileId}||${row.page_number ?? ""}||${(row.location ?? "").toLowerCase().trim()}||${(row.sign_type ?? "").toLowerCase().trim()}`;
+
+    if (existingSignKeys.has(key)) {
+      // Key exists — perform additive update on non-protected rows only
+      const existingSign = existingSigns.find((s) =>
+        `${s.jobFileId ?? ""}||${s.pageNumber ?? ""}||${(s.location ?? "").toLowerCase().trim()}||${(s.signType ?? "").toLowerCase().trim()}` === key
+      );
+      // Never touch userVerified or manuallyAdded rows
+      if (existingSign && !existingSign.userVerified && !existingSign.manuallyAdded) {
+        // Build partial update: only fill in fields that are currently null/missing, and mark AI provenance
+        const update: Partial<typeof extractedSignsTable.$inferInsert> = {
+          dataSource: "ai", // AI has now contributed to this row
+        };
+        if (!existingSign.dimensions && row.dimensions) update.dimensions = row.dimensions;
+        if (!existingSign.mountingType && row.mounting_type) update.mountingType = row.mounting_type;
+        if (!existingSign.finishColor && row.finish_color) update.finishColor = row.finish_color;
+        if (!existingSign.illumination && row.illumination) update.illumination = row.illumination;
+        if (!existingSign.materials && row.materials) update.materials = row.materials;
+        if (!existingSign.messageContent && row.message_content) update.messageContent = row.message_content;
+        if (!existingSign.notes && row.notes) update.notes = row.notes;
+        if (!existingSign.signIdentifier && row.sign_identifier) update.signIdentifier = row.sign_identifier;
+        try {
+          await db.update(extractedSignsTable).set(update).where(eq(extractedSignsTable.id, existingSign.id));
+          updateCount++;
+        } catch {
+          // non-fatal
+        }
+      }
+      continue;
+    }
+
+    // New AI-sourced sign — map snake_case ExtractedSignRow → camelCase Drizzle insert schema
+    const insertRow = {
+      jobId,
+      jobFileId: fileId,
+      sheetNumber: row.sheet_number,
+      detailReference: row.detail_reference,
+      signType: row.sign_type,
+      signIdentifier: row.sign_identifier,
+      quantity: row.quantity,
+      location: row.location,
+      dimensions: row.dimensions,
+      mountingType: row.mounting_type,
+      finishColor: row.finish_color,
+      illumination: row.illumination,
+      materials: row.materials,
+      messageContent: row.message_content,
+      notes: row.notes,
+      pageNumber: row.page_number,
+      xPos: row.x_pos ?? null,
+      yPos: row.y_pos ?? null,
+      confidenceScore: row.confidence_score,
+      reviewFlag: row.review_flag,
+      extractionMethod: "text" as const,
+      dataSource: "ai" as const,
+      userVerified: false,
+      manuallyAdded: false,
+    };
+
+    try {
+      await db.insert(extractedSignsTable).values(insertRow);
+      existingSignKeys.add(key);
+      newCount++;
+    } catch {
+      // non-fatal: skip duplicate
+    }
+  }
+  return { newCount, updateCount };
+}
+
+async function applyBboxCallouts(
+  callouts: import("../lib/extraction").GeminiCallout[],
+  jobId: string,
+  fileId: string,
+  _existingSigns: DbSign[], // kept for signature compat; fresh signs are loaded from DB
+): Promise<number> {
+  // Always reload from DB to include signs inserted earlier in the same scan run
+  const freshSigns = await db
+    .select()
+    .from(extractedSignsTable)
+    .where(and(eq(extractedSignsTable.jobId, jobId), eq(extractedSignsTable.jobFileId, fileId)));
+
+  let updatedCount = 0;
+  for (const callout of callouts) {
+    if (!callout.label_text && !callout.sign_type) continue;
+    // Try to find a matching sign by label or sign type + page
+    const match = freshSigns.find((s) =>
+      (callout.label_text && s.signIdentifier === callout.label_text) ||
+      (callout.sign_type && s.signType?.toLowerCase() === callout.sign_type?.toLowerCase() &&
+        callout.page_number === s.pageNumber)
+    );
+    // Never overwrite userVerified or manuallyAdded rows
+    if (match && !match.userVerified && !match.manuallyAdded) {
+      await db.update(extractedSignsTable)
+        .set({
+          aiBboxX: callout.bbox_x ?? null,
+          aiBboxY: callout.bbox_y ?? null,
+          aiBboxW: callout.bbox_w ?? null,
+          aiBboxH: callout.bbox_h ?? null,
+          aiBbox: true, // mark row-level AI bbox provenance flag
+        })
+        .where(eq(extractedSignsTable.id, match.id));
+      updatedCount++;
+    }
+  }
+  return updatedCount;
+}
+
+async function assignMissingCoordinates(jobId: string, files: DbFile[]): Promise<void> {
+  const signsWithoutCoords = await db
+    .select()
+    .from(extractedSignsTable)
+    .where(and(
+      eq(extractedSignsTable.jobId, jobId),
+      isNull(extractedSignsTable.xPos),
+    ));
+
+  if (signsWithoutCoords.length === 0) return;
+
+  const filePathById = new Map<string, string>(files.map((f) => [f.id, f.storedPath]));
+
+  type PageCache = { phrases: import("../lib/pdf-words").PdfPhrase[]; bbox: import("../lib/pdf-words").FloorPlanBbox | null };
+  const pageCache = new Map<string, PageCache>();
+
+  async function getPageData(fileStoredPath: string, fileId: string, page: number): Promise<PageCache> {
+    const key = `${fileId}:${page}`;
+    const cached = pageCache.get(key);
+    if (cached) return cached;
+    try {
+      const pageWords = await extractPagePhrases(fileStoredPath, fileId, page);
+      const bbox = detectFloorPlanBbox(pageWords.phrases);
+      const entry: PageCache = { phrases: pageWords.phrases, bbox };
+      pageCache.set(key, entry);
+      return entry;
+    } catch {
+      const entry: PageCache = { phrases: [], bbox: null };
+      pageCache.set(key, entry);
+      return entry;
+    }
+  }
+
+  for (const sign of signsWithoutCoords) {
+    if (!sign.jobFileId || !sign.pageNumber || !sign.location) continue;
+    const storedPath = filePathById.get(sign.jobFileId);
+    if (!storedPath) continue;
+    try {
+      const pageData = await getPageData(storedPath, sign.jobFileId, sign.pageNumber);
+      const excl = new Set<string>();
+      const match = matchLocationToCoords(pageData.phrases, pageData.bbox, sign.location, sign.signIdentifier, excl);
+      if (match) {
+        await db.update(extractedSignsTable)
+          .set({ xPos: match.xPos, yPos: match.yPos, placementSource: "word_match" })
+          .where(eq(extractedSignsTable.id, sign.id));
+      }
+    } catch {
+      // non-fatal
+    }
+  }
+}
 
 export default router;

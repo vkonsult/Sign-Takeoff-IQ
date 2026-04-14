@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import { useRoute } from "wouter";
 import { useQueryClient } from "@tanstack/react-query";
 import { AppShell } from "@/components/layout/Shell";
@@ -7,6 +7,7 @@ import { useJobDetails, useStartExtraction, downloadExport, useUpdateJobName } f
 import { UnifiedPlanViewer } from "@/components/UnifiedPlanViewer";
 import type { ExtractedSign as SignMarker } from "@/components/UnifiedPlanViewer";
 import { SignSpecModal } from "@/components/SignSpecModal";
+import { AiScansTab } from "@/components/AiScansTab";
 import { getGetJobQueryKey } from "@workspace/api-client-react";
 import { 
   FileText, 
@@ -36,6 +37,7 @@ import {
   LayoutGrid,
   ExternalLink,
   Clock,
+  Brain,
 } from "lucide-react";
 import { format, formatDistanceToNow } from "date-fns";
 import { exportMarkedupPdf, type MarkerSign } from "@/lib/exportMarkedupPdf";
@@ -501,7 +503,8 @@ export default function JobDetails() {
   const [showHidden, setShowHidden] = useState(false);
   const [sortField, setSortField] = useState<string | null>(null);
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
-  const [activeTab, setActiveTab] = useState<"table" | "sheets" | "summary" | "floorplans" | "timeline" | "coords">("table");
+  const [activeTab, setActiveTab] = useState<"table" | "sheets" | "summary" | "floorplans" | "timeline" | "coords" | "ai_scans">("table");
+  const [showAiHighlight, setShowAiHighlight] = useState(false);
 
   const PROCESSING_TIMEOUT_SECONDS = 5 * 60;
   const [processingSeconds, setProcessingSeconds] = useState(0);
@@ -982,6 +985,19 @@ export default function JobDetails() {
                       Coordinates
                     </button>
                   )}
+                  {(isCompleted || isFailed) && (
+                    <button
+                      onClick={() => setActiveTab("ai_scans")}
+                      className={`flex items-center gap-1.5 px-4 py-2.5 text-[11px] font-display font-semibold uppercase tracking-wide border-b-2 transition-all ${
+                        activeTab === "ai_scans"
+                          ? "border-violet-500 text-violet-400"
+                          : "border-transparent text-muted-foreground hover:text-foreground"
+                      }`}
+                    >
+                      <Brain className="w-3.5 h-3.5" />
+                      AI Scans
+                    </button>
+                  )}
                 </div>
               </div>
 
@@ -992,6 +1008,7 @@ export default function JobDetails() {
                     jobId={jobId}
                     files={files}
                     signs={extractedSigns}
+                    showAiHighlight={showAiHighlight}
                     onSignAdded={handleSignAdded}
                     onSignUpdated={handleSignUpdated}
                     onEditSign={(s) => setReviewSign(s as SignRow)}
@@ -1025,7 +1042,18 @@ export default function JobDetails() {
                 <SignSummaryPanel signs={extractedSigns} />
               ) : activeTab === "coords" ? (
                 <div className="flex-1 overflow-auto bg-card border-t border-border">
-                  <CoordinatesTable signs={extractedSigns} onView={(sign) => setReviewSign(sign as SignRow)} />
+                  <CoordinatesTable signs={extractedSigns} showAiHighlight={showAiHighlight} onView={(sign) => setReviewSign(sign as SignRow)} />
+                </div>
+              ) : activeTab === "ai_scans" ? (
+                <div className="flex-1 overflow-auto bg-card border-t border-border">
+                  <AiScansTab
+                    jobId={jobId}
+                    showAiHighlight={showAiHighlight}
+                    onToggleAiHighlight={() => setShowAiHighlight((v) => !v)}
+                    onScansComplete={() => {
+                      queryClient.invalidateQueries({ queryKey: getGetJobQueryKey(jobId) });
+                    }}
+                  />
                 </div>
               ) : (
                 <>
@@ -1074,14 +1102,18 @@ export default function JobDetails() {
                       </tr>
                     </thead>
                     <tbody className="bg-background">
-                      {sortedSigns.map((sign, idx) => (
+                      {sortedSigns.map((sign, idx) => {
+                        const isAiRow = showAiHighlight && ((sign as Record<string, unknown>).dataSource === "ai" || (sign as Record<string, unknown>).aiBbox === true);
+                        return (
                         <tr 
                           key={sign.id} 
                           className={`
                             hover:bg-secondary/40 transition-colors
                             ${sign.reviewFlag ? 'bg-primary/5' : ''}
                             ${idx % 2 === 0 ? '' : 'bg-card/30'}
+                            ${isAiRow ? 'border-l-2 border-violet-500' : ''}
                           `}
+                          style={isAiRow ? { boxShadow: 'inset 3px 0 0 rgba(139, 92, 246, 0.6)', background: 'rgba(139, 92, 246, 0.04)' } : undefined}
                         >
                           <td className="data-cell sticky left-0 z-10 bg-inherit shadow-[2px_0_5px_-2px_rgba(0,0,0,0.3)]">
                             <div className="flex items-center gap-1.5 mb-1">
@@ -1142,7 +1174,8 @@ export default function JobDetails() {
                             </div>
                           </td>
                         </tr>
-                      ))}
+                      );
+                      })}
 
                       {/* Hidden rows — shown only when "Show hidden" is toggled on */}
                       {showHidden && hiddenSigns.map((sign) => (
@@ -1279,9 +1312,11 @@ export default function JobDetails() {
 
 function CoordinatesTable({
   signs,
+  showAiHighlight,
   onView,
 }: {
   signs: AnySign[];
+  showAiHighlight?: boolean;
   onView: (sign: AnySign) => void;
 }) {
   const sorted = [...signs].sort((a, b) => {
@@ -1320,6 +1355,8 @@ function CoordinatesTable({
               const bboxY = sign.aiBboxY as number | null | undefined;
               const bboxW = sign.aiBboxW as number | null | undefined;
               const bboxH = sign.aiBboxH as number | null | undefined;
+              const isAiRow = showAiHighlight && ((sign.dataSource as string | null | undefined) === "ai" || (sign as Record<string, unknown>).aiBbox === true);
+              const isBboxAi = showAiHighlight && (sign as Record<string, unknown>).aiBbox === true;
 
               const hasCoords = xPos != null && yPos != null;
               const hasBbox = bboxX != null && bboxY != null && bboxW != null && bboxH != null;
@@ -1350,6 +1387,7 @@ function CoordinatesTable({
                     ${idx % 2 === 0 ? "" : "bg-card/30"}
                     ${isNone ? "opacity-50" : ""}
                   `}
+                  style={isAiRow ? { boxShadow: 'inset 3px 0 0 rgba(139, 92, 246, 0.6)', background: 'rgba(139, 92, 246, 0.04)' } : undefined}
                 >
                   <td className="data-cell sticky left-0 z-10 bg-inherit shadow-[2px_0_5px_-2px_rgba(0,0,0,0.3)]">
                     <div className="flex flex-col gap-0.5">
@@ -1381,9 +1419,9 @@ function CoordinatesTable({
                       <span className="text-xs text-muted-foreground/50">—</span>
                     )}
                   </td>
-                  <td className="data-cell">
+                  <td className={`data-cell ${isBboxAi ? "bg-violet-500/5" : ""}`}>
                     {hasBbox ? (
-                      <div className="text-[10px] font-mono leading-tight bg-secondary/60 rounded px-1.5 py-1 inline-block">
+                      <div className={`text-[10px] font-mono leading-tight rounded px-1.5 py-1 inline-block ${isBboxAi ? "bg-violet-500/15 text-violet-300 border border-violet-500/20" : "bg-secondary/60"}`}>
                         <div>x: {fmtCoord(bboxX)}  y: {fmtCoord(bboxY)}</div>
                         <div>w: {fmtCoord(bboxW)}  h: {fmtCoord(bboxH)}</div>
                       </div>
@@ -2073,11 +2111,20 @@ function SourceBadge({ sign }: { sign: Record<string, unknown> }) {
   const method = sign.extractionMethod as string | null | undefined;
   const paired = sign.pairedSignId as string | null | undefined;
   const manual = sign.manuallyAdded as boolean | undefined;
+  const dataSource = sign.dataSource as string | null | undefined;
 
   if (manual) {
     return (
       <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider bg-purple-500/10 text-purple-400 border border-purple-500/20 whitespace-nowrap">
         <Pencil className="w-2.5 h-2.5" /> Manual
+      </span>
+    );
+  }
+
+  if (dataSource === "ai") {
+    return (
+      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider bg-violet-500/10 text-violet-400 border border-violet-500/20 whitespace-nowrap">
+        <Brain className="w-2.5 h-2.5" /> AI Scan
       </span>
     );
   }

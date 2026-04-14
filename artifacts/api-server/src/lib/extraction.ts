@@ -3234,3 +3234,130 @@ export async function visualLocateDoors(
     return signs.map((s) => ({ signId: s.signId, candidates: [] }));
   }
 }
+
+// ── Isolated per-call-type extraction functions ────────────────────────────────
+// These run exactly ONE bounded Gemini pass. They do NOT call extractSignsFromPdf
+// and do NOT trigger any other AI pass, making them safe for on-demand /ai-scan use.
+
+/**
+ * Sign schedule only — extracts sign data from sign schedule / specification pages.
+ * Runs exactly one Gemini call (SIGN_SCHEDULE_PROMPT) against sign_schedule-classified pages.
+ */
+export async function extractSignScheduleOnly(
+  filePath: string,
+  fileId: string,
+  ai: GeminiAI,
+  projectContext?: ProjectInfo,
+  spatialPageTypes?: Map<number, import("./pdf-words").SpatialPageType>,
+): Promise<{ rows: ExtractedSignRow[]; inputTokens: number; outputTokens: number; pageCount: number }> {
+  const { pages: rawPages, numPages } = await extractTextFromPdf(filePath, fileId);
+
+  // Apply spatial overrides (no Gemini for classification)
+  const pages = rawPages.map((p) => {
+    const spatialType = spatialPageTypes?.get(p.pageNum);
+    if (!spatialType || spatialType === "unknown") {
+      return spatialType === "unknown" ? { ...p, type: "other" as const } : p;
+    }
+    return { ...p, type: spatialType as PageType };
+  });
+
+  const signScheduleBlock = buildPageBlock(pages, "sign_schedule", 300000, 8000);
+  if (signScheduleBlock.trim().length <= 50) {
+    logger.info({ filePath: filePath.split("/").pop() }, "extractSignScheduleOnly: no sign schedule pages found");
+    return { rows: [], inputTokens: 0, outputTokens: 0, pageCount: numPages };
+  }
+
+  logger.info({ filePath: filePath.split("/").pop() }, "extractSignScheduleOnly: running sign schedule Gemini pass");
+  const { text, inputTokens, outputTokens } = await callGemini(
+    SIGN_SCHEDULE_PROMPT + signScheduleBlock,
+    ai,
+    "sign-schedule-only"
+  );
+  const rows = parseGeminiResponse(text, "sign-schedule-only");
+  logger.info({ count: rows.length }, "extractSignScheduleOnly: complete");
+  return { rows, inputTokens, outputTokens, pageCount: numPages };
+}
+
+/**
+ * Floor plan only — extracts ADA/code-required signs from floor plan pages.
+ * Runs one Gemini call per batch of floor plan pages (no sign schedule pass, no fallback).
+ */
+export async function extractFloorPlanOnly(
+  filePath: string,
+  fileId: string,
+  ai: GeminiAI,
+  projectContext?: ProjectInfo,
+  spatialPageTypes?: Map<number, import("./pdf-words").SpatialPageType>,
+): Promise<{ rows: ExtractedSignRow[]; inputTokens: number; outputTokens: number; pageCount: number }> {
+  const { pages: rawPages, numPages } = await extractTextFromPdf(filePath, fileId);
+
+  // Apply spatial overrides (no Gemini for classification)
+  const pages = rawPages.map((p) => {
+    const spatialType = spatialPageTypes?.get(p.pageNum);
+    if (!spatialType || spatialType === "unknown") {
+      return spatialType === "unknown" ? { ...p, type: "other" as const } : p;
+    }
+    return { ...p, type: spatialType as PageType };
+  });
+
+  const MAX_FP_CHARS = 240000;
+  const MAX_FP_PAGE_CHARS = 5000;
+
+  const floorPlanPages = pages
+    .filter((p) => p.type === "floor_plan" || p.type === "both")
+    .sort((a, b) => b.floorPlanScore - a.floorPlanScore);
+
+  if (floorPlanPages.length === 0) {
+    logger.info({ filePath: filePath.split("/").pop() }, "extractFloorPlanOnly: no floor plan pages found");
+    return { rows: [], inputTokens: 0, outputTokens: 0, pageCount: numPages };
+  }
+
+  // Batch floor plan pages by character count
+  const batches: ScoredPage[][] = [];
+  let currentBatch: ScoredPage[] = [];
+  let currentChars = 0;
+  for (const page of floorPlanPages) {
+    const truncated = page.text.length > MAX_FP_PAGE_CHARS ? page.text.slice(0, MAX_FP_PAGE_CHARS) : page.text;
+    const chunkLen = truncated.length + 20;
+    if (currentChars + chunkLen > MAX_FP_CHARS && currentBatch.length > 0) {
+      batches.push(currentBatch);
+      currentBatch = [];
+      currentChars = 0;
+    }
+    currentBatch.push({ ...page, text: truncated });
+    currentChars += chunkLen;
+  }
+  if (currentBatch.length > 0) batches.push(currentBatch);
+
+  logger.info(
+    { filePath: filePath.split("/").pop(), floorPlanPages: floorPlanPages.length, batches: batches.length },
+    "extractFloorPlanOnly: starting ADA floor plan passes"
+  );
+
+  const floorPlanPromptPrefix = buildFloorPlanADAPrompt(projectContext);
+
+  let totalInputTokens = 0;
+  let totalOutputTokens = 0;
+  const allRows: ExtractedSignRow[] = [];
+
+  const batchResults = await Promise.all(
+    batches.map(async (batch, batchIdx) => {
+      const sorted = [...batch].sort((a, b) => a.pageNum - b.pageNum);
+      const block = sorted.map((p) => `--- PAGE ${p.pageNum} ---\n${p.text}`).join("\n\n");
+      const label = `floor-plan-only-batch-${batchIdx + 1}-of-${batches.length}`;
+      logger.info({ batchPages: batch.length, label }, "extractFloorPlanOnly: running pass");
+      const { text, inputTokens, outputTokens } = await callGemini(floorPlanPromptPrefix + block, ai, label);
+      const rows = parseGeminiResponse(text, label);
+      logger.info({ count: rows.length, label }, "extractFloorPlanOnly: pass complete");
+      return { rows, inputTokens, outputTokens };
+    })
+  );
+
+  for (const { rows, inputTokens: fi, outputTokens: fo } of batchResults) {
+    allRows.push(...rows);
+    totalInputTokens += fi;
+    totalOutputTokens += fo;
+  }
+
+  return { rows: allRows, inputTokens: totalInputTokens, outputTokens: totalOutputTokens, pageCount: numPages };
+}

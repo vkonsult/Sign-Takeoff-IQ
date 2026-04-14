@@ -52,6 +52,8 @@ export const extractedSignsTable = pgTable("extracted_signs", {
   aiBboxY: real("ai_bbox_y"),
   aiBboxW: real("ai_bbox_w"),
   aiBboxH: real("ai_bbox_h"),
+  aiBbox: boolean("ai_bbox").notNull().default(false),
+  dataSource: text("data_source").default("pdf"),
   rawJson: json("raw_json"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });

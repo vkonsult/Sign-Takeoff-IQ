@@ -29,4 +29,6 @@ export interface ExtractedSign {
   aiBboxY?: number | null;
   aiBboxW?: number | null;
   aiBboxH?: number | null;
+  aiBbox?: boolean | null;
+  dataSource?: "pdf" | "ai" | "manual" | null;
 }
