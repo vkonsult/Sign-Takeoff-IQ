@@ -5,7 +5,6 @@
  * Sign Takeoff Portal API
  * OpenAPI spec version: 0.1.0
  */
-import type { ExtractedSignSource } from "./extractedSignSource";
 
 export interface ExtractedSign {
   id: string;
@@ -33,7 +32,5 @@ export interface ExtractedSign {
   manuallyAdded?: boolean;
   /** True if the user has saved/confirmed this sign entry; preserved across re-extractions */
   userVerified?: boolean;
-  /** Origin of this sign row — plan_callout means the sign was explicitly called out in the plans; code_inferred means it was inferred from occupancy/code requirements */
-  source?: ExtractedSignSource;
   createdAt: Date;
 }

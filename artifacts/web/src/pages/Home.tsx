@@ -1,7 +1,7 @@
 import { useState, useCallback } from "react";
 import { useLocation } from "wouter";
 import { useDropzone } from "react-dropzone";
-import { UploadCloud, FileText, X, AlertCircle, Loader2, BookOpen } from "lucide-react";
+import { UploadCloud, FileText, X, ChevronRight, AlertCircle, Loader2 } from "lucide-react";
 import { AppShell } from "@/components/layout/Shell";
 import { useUploadJobFiles } from "@/hooks/use-takeoff";
 import { formatBytes } from "@/lib/utils";
@@ -10,46 +10,30 @@ import { Button } from "@/components/ui/button";
 
 export default function Home() {
   const [, setLocation] = useLocation();
-  const [planFiles, setPlanFiles] = useState<File[]>([]);
-  const [signageDocFiles, setSignageDocFiles] = useState<File[]>([]);
+  const [files, setFiles] = useState<File[]>([]);
   const uploadMutation = useUploadJobFiles();
 
-  const onDropPlans = useCallback((accepted: File[]) => {
-    setPlanFiles(prev => [...prev, ...accepted]);
+  const onDrop = useCallback((acceptedFiles: File[]) => {
+    setFiles(prev => [...prev, ...acceptedFiles]);
   }, []);
 
-  const onDropSignageDocs = useCallback((accepted: File[]) => {
-    setSignageDocFiles(prev => [...prev, ...accepted]);
-  }, []);
-
-  const planDropzone = useDropzone({
-    onDrop: onDropPlans,
-    accept: { "application/pdf": [".pdf"] },
+  const { getRootProps, getInputProps, isDragActive } = useDropzone({ 
+    onDrop,
+    accept: {
+      'application/pdf': ['.pdf']
+    }
   });
 
-  const signageDropzone = useDropzone({
-    onDrop: onDropSignageDocs,
-    accept: { "application/pdf": [".pdf"] },
-  });
-
-  const removePlanFile = (index: number) => {
-    setPlanFiles(prev => prev.filter((_, i) => i !== index));
+  const removeFile = (index: number) => {
+    setFiles(prev => prev.filter((_, i) => i !== index));
   };
-
-  const removeSignageDoc = (index: number) => {
-    setSignageDocFiles(prev => prev.filter((_, i) => i !== index));
-  };
-
-  const totalCount = planFiles.length + signageDocFiles.length;
 
   const handleUpload = async () => {
-    if (planFiles.length === 0) return;
+    if (files.length === 0) return;
+    
     try {
-      const result = await uploadMutation.mutateAsync({
-        data: {
-          files: planFiles,
-          ...(signageDocFiles.length > 0 ? { signageDocs: signageDocFiles } : {}),
-        },
+      const result = await uploadMutation.mutateAsync({ 
+        data: { files } 
       });
       setLocation(`/jobs/${result.jobId}`);
     } catch (error) {
@@ -63,134 +47,38 @@ export default function Home() {
         <header className="mb-8">
           <h1 className="text-3xl font-display text-foreground mb-2">New Extraction Job</h1>
           <p className="text-muted-foreground font-sans">
-            Upload architectural plan PDFs to automatically extract sign schedules,
+            Upload architectural plan PDFs to automatically extract sign schedules, 
             callouts, and material specifications using AI.
           </p>
         </header>
 
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-          <div className="lg:col-span-2 space-y-5">
+          <div className="lg:col-span-2 space-y-6">
+            <div 
+              {...getRootProps()} 
+              className={`
+                relative overflow-hidden
+                border-2 border-dashed rounded-xl p-12
+                flex flex-col items-center justify-center text-center
+                transition-all duration-300 cursor-pointer min-h-[300px]
+                ${isDragActive ? 'border-primary bg-primary/5' : 'border-border bg-card'}
+              `}
+            >
+              <input {...getInputProps()} />
 
-            {/* Primary dropzone — plan documents */}
-            <div>
-              <h2 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground mb-2 flex items-center gap-1.5">
-                <FileText className="w-3.5 h-3.5" />
-                Plan Documents
-              </h2>
-              <div
-                {...planDropzone.getRootProps()}
-                className={`
-                  relative overflow-hidden
-                  border-2 border-dashed rounded-xl p-10
-                  flex flex-col items-center justify-center text-center
-                  transition-all duration-300 cursor-pointer min-h-[220px]
-                  ${planDropzone.isDragActive ? "border-primary bg-primary/5" : "border-border bg-card"}
-                `}
-              >
-                <input {...planDropzone.getInputProps()} />
-                <div className={`p-4 rounded-full mb-3 transition-colors duration-300 ${planDropzone.isDragActive ? "bg-primary/20 text-primary" : "bg-secondary text-muted-foreground"}`}>
-                  <UploadCloud className="w-7 h-7" />
-                </div>
-                <h3 className="text-base font-medium text-foreground mb-1 font-display">
-                  {planDropzone.isDragActive ? "Drop plan PDFs here…" : "Drag & Drop Plan PDFs"}
-                </h3>
-                <p className="text-sm text-muted-foreground">
-                  Floor plans, sign schedules, and spec sheets. Only .pdf files supported.
-                </p>
+              <div className={`p-4 rounded-full mb-4 transition-colors duration-300 ${isDragActive ? 'bg-primary/20 text-primary' : 'bg-secondary text-muted-foreground'}`}>
+                <UploadCloud className="w-8 h-8" />
               </div>
-
-              <AnimatePresence>
-                {planFiles.length > 0 && (
-                  <motion.ul
-                    initial={{ opacity: 0, height: 0 }}
-                    animate={{ opacity: 1, height: "auto" }}
-                    className="mt-3 space-y-2"
-                  >
-                    {planFiles.map((file, idx) => (
-                      <motion.li
-                        key={`${file.name}-${idx}`}
-                        initial={{ opacity: 0, y: 6 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        exit={{ opacity: 0, scale: 0.95 }}
-                        className="flex items-center gap-3 px-4 py-3 rounded-lg bg-secondary border border-border/50"
-                      >
-                        <FileText className="w-4 h-4 text-primary shrink-0" />
-                        <span className="flex-1 text-sm text-foreground truncate font-medium">{file.name}</span>
-                        <span className="text-xs text-muted-foreground font-mono shrink-0">{formatBytes(file.size)}</span>
-                        <button
-                          onClick={(e) => { e.stopPropagation(); removePlanFile(idx); }}
-                          className="p-1 rounded text-muted-foreground hover:text-foreground transition-colors"
-                        >
-                          <X className="w-4 h-4" />
-                        </button>
-                      </motion.li>
-                    ))}
-                  </motion.ul>
-                )}
-              </AnimatePresence>
+              
+              <h3 className="text-lg font-medium text-foreground mb-1 font-display">
+                {isDragActive ? "Drop PDFs here..." : "Drag & Drop PDFs"}
+              </h3>
+              <p className="text-sm text-muted-foreground max-w-sm">
+                or click to browse from your computer. Only .pdf files are supported.
+              </p>
             </div>
 
-            {/* Secondary dropzone — signage docs (sign type library) */}
-            <div>
-              <h2 className="text-sm font-semibold uppercase tracking-wider text-amber-500 mb-2 flex items-center gap-1.5">
-                <BookOpen className="w-3.5 h-3.5" />
-                Sign Type / Criteria Sheets
-                <span className="ml-1 text-xs font-normal text-muted-foreground normal-case tracking-normal">(optional)</span>
-              </h2>
-              <div
-                {...signageDropzone.getRootProps()}
-                className={`
-                  relative overflow-hidden
-                  border-2 border-dashed rounded-xl p-8
-                  flex flex-col items-center justify-center text-center
-                  transition-all duration-300 cursor-pointer min-h-[140px]
-                  ${signageDropzone.isDragActive ? "border-amber-500 bg-amber-500/5" : "border-amber-500/30 bg-card"}
-                `}
-              >
-                <input {...signageDropzone.getInputProps()} />
-                <div className={`p-3 rounded-full mb-2 transition-colors duration-300 ${signageDropzone.isDragActive ? "bg-amber-500/20 text-amber-500" : "bg-secondary text-amber-500/70"}`}>
-                  <BookOpen className="w-6 h-6" />
-                </div>
-                <h3 className="text-sm font-medium text-foreground font-display mb-0.5">
-                  {signageDropzone.isDragActive ? "Drop signage docs here…" : "Drag & Drop Sign Criteria / Type Schedule"}
-                </h3>
-                <p className="text-xs text-muted-foreground">
-                  Uploads here are used exclusively to build the sign type library pre-pass (e.g. A11, Sign Criteria sheets).
-                </p>
-              </div>
-
-              <AnimatePresence>
-                {signageDocFiles.length > 0 && (
-                  <motion.ul
-                    initial={{ opacity: 0, height: 0 }}
-                    animate={{ opacity: 1, height: "auto" }}
-                    className="mt-3 space-y-2"
-                  >
-                    {signageDocFiles.map((file, idx) => (
-                      <motion.li
-                        key={`${file.name}-${idx}`}
-                        initial={{ opacity: 0, y: 6 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        exit={{ opacity: 0, scale: 0.95 }}
-                        className="flex items-center gap-3 px-4 py-3 rounded-lg bg-amber-500/10 border border-amber-500/25"
-                      >
-                        <BookOpen className="w-4 h-4 text-amber-500 shrink-0" />
-                        <span className="flex-1 text-sm text-foreground truncate font-medium">{file.name}</span>
-                        <span className="text-xs text-muted-foreground font-mono shrink-0">{formatBytes(file.size)}</span>
-                        <button
-                          onClick={(e) => { e.stopPropagation(); removeSignageDoc(idx); }}
-                          className="p-1 rounded text-muted-foreground hover:text-foreground transition-colors"
-                        >
-                          <X className="w-4 h-4" />
-                        </button>
-                      </motion.li>
-                    ))}
-                  </motion.ul>
-                )}
-              </AnimatePresence>
-            </div>
-
-            {/* Error */}
+            {/* Error Messages */}
             {uploadMutation.isError && (
               <div className="p-4 rounded-lg bg-destructive/10 border border-destructive/20 text-destructive text-sm flex items-start gap-3">
                 <AlertCircle className="w-5 h-5 shrink-0" />
@@ -202,54 +90,66 @@ export default function Home() {
             )}
           </div>
 
-          {/* Summary sidebar */}
-          <div className="bg-card rounded-xl border border-border p-6 flex flex-col">
+          {/* Sidebar / File List */}
+          <div className="bg-card rounded-xl border border-border p-6 flex flex-col h-[400px] lg:h-auto">
             <h3 className="font-display font-semibold text-sm uppercase tracking-wider text-muted-foreground mb-4">
-              Upload Summary
+              Selected Files ({files.length})
             </h3>
-
-            <div className="flex-1 space-y-3 text-sm">
-              <div className="flex justify-between items-center py-2 border-b border-border">
-                <span className="text-muted-foreground flex items-center gap-1.5">
-                  <FileText className="w-3.5 h-3.5" /> Plan files
-                </span>
-                <span className="font-mono font-medium text-foreground">{planFiles.length}</span>
-              </div>
-              <div className="flex justify-between items-center py-2 border-b border-border">
-                <span className="text-amber-500 flex items-center gap-1.5">
-                  <BookOpen className="w-3.5 h-3.5" /> Sign type docs
-                </span>
-                <span className="font-mono font-medium text-foreground">{signageDocFiles.length}</span>
-              </div>
-              <div className="flex justify-between items-center py-2">
-                <span className="text-muted-foreground">Total</span>
-                <span className="font-mono font-medium text-foreground">{totalCount}</span>
-              </div>
-
-              {signageDocFiles.length > 0 && (
-                <div className="mt-2 p-3 rounded-lg bg-amber-500/10 border border-amber-500/20 text-xs text-amber-600 dark:text-amber-400">
-                  Sign type library pre-pass enabled — Gemini will extract type codes, dimensions, and ADA properties before scanning plan files.
-                </div>
-              )}
-
-              {planFiles.length === 0 && (
-                <p className="text-xs text-muted-foreground text-center pt-4">
-                  Add at least one plan document to start an extraction job.
-                </p>
-              )}
+            
+            <div className="flex-1 overflow-y-auto space-y-2 pr-2 scrollbar-industrial">
+              <AnimatePresence>
+                {files.length === 0 && (
+                  <motion.div 
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    className="text-sm text-muted-foreground text-center py-8"
+                  >
+                    No files selected yet.
+                  </motion.div>
+                )}
+                
+                {files.map((file, i) => (
+                  <motion.div
+                    key={`${file.name}-${i}`}
+                    initial={{ opacity: 0, y: 10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, scale: 0.95 }}
+                    className="flex items-center gap-3 p-3 rounded-lg bg-secondary border border-border/50"
+                  >
+                    <FileText className="w-5 h-5 text-primary shrink-0" />
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm text-foreground truncate font-medium">
+                        {file.name}
+                      </p>
+                      <p className="text-xs text-muted-foreground font-mono mt-0.5">
+                        {formatBytes(file.size)}
+                      </p>
+                    </div>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        removeFile(i);
+                      }}
+                      className="p-1.5 rounded-md text-muted-foreground transition-colors"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                  </motion.div>
+                ))}
+              </AnimatePresence>
             </div>
 
             <div className="pt-4 mt-4 border-t border-border">
               <Button
                 onClick={handleUpload}
-                disabled={planFiles.length === 0 || uploadMutation.isPending}
+                disabled={files.length === 0 || uploadMutation.isPending}
                 size="lg"
                 className="w-full font-display font-semibold uppercase tracking-wider shadow-[0_0_20px_rgba(255,170,0,0.12)] hover:shadow-[0_0_25px_rgba(255,170,0,0.22)]"
               >
                 {uploadMutation.isPending ? (
                   <>
                     <Loader2 className="w-4 h-4 animate-spin" />
-                    Uploading…
+                    Uploading...
                   </>
                 ) : (
                   <>

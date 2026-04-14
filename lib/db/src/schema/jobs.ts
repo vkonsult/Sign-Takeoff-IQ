@@ -11,19 +11,6 @@ export const jobStatusEnum = pgEnum("job_status", [
   "archived",
 ]);
 
-export interface SignTypeLibraryEntry {
-  type_code: string;
-  description: string | null;
-  dimensions: string | null;
-  materials: string | null;
-  has_braille: boolean | null;
-  has_pictogram: boolean | null;
-  is_ada_tactile: boolean | null;
-  is_exterior: boolean | null;
-  typical_use: string | null;
-  sign_keynotes: string | null;
-}
-
 export const jobsTable = pgTable("jobs", {
   id: uuid("id").primaryKey().defaultRandom(),
   organizationId: uuid("organization_id").references(() => organizationsTable.id, { onDelete: "set null" }),
@@ -42,8 +29,6 @@ export const jobsTable = pgTable("jobs", {
   projectState: text("project_state"),
   scanMethod: text("scan_method").default("gemini"),
   processingLog: json("processing_log").$type<ProcessingStep[]>(),
-  signTypeLibrary: json("sign_type_library").$type<SignTypeLibraryEntry[]>(),
-  signTypeLibraryNotes: text("sign_type_library_notes"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });

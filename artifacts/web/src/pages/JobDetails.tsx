@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect } from "react";
 import { useRoute } from "wouter";
 import { useQueryClient } from "@tanstack/react-query";
 import { AppShell } from "@/components/layout/Shell";
@@ -36,7 +36,6 @@ import {
   LayoutGrid,
   ExternalLink,
   Clock,
-  BookOpen,
 } from "lucide-react";
 import { format, formatDistanceToNow } from "date-fns";
 import { exportMarkedupPdf, type MarkerSign } from "@/lib/exportMarkedupPdf";
@@ -502,7 +501,7 @@ export default function JobDetails() {
   const [showHidden, setShowHidden] = useState(false);
   const [sortField, setSortField] = useState<string | null>(null);
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
-  const [activeTab, setActiveTab] = useState<"table" | "sheets" | "summary" | "floorplans" | "timeline" | "coords" | "sign_types">("table");
+  const [activeTab, setActiveTab] = useState<"table" | "sheets" | "summary" | "floorplans" | "timeline" | "coords">("table");
 
   const PROCESSING_TIMEOUT_SECONDS = 5 * 60;
   const [processingSeconds, setProcessingSeconds] = useState(0);
@@ -970,22 +969,6 @@ export default function JobDetails() {
                     <Clock className="w-3.5 h-3.5" />
                     Timeline
                   </button>
-                  {job.signTypeLibrary && (job.signTypeLibrary as unknown[]).length > 0 && (
-                    <button
-                      onClick={() => setActiveTab("sign_types")}
-                      className={`flex items-center gap-1.5 px-4 py-2.5 text-[11px] font-display font-semibold uppercase tracking-wide border-b-2 transition-all ${
-                        activeTab === "sign_types"
-                          ? "border-amber-500 text-amber-500"
-                          : "border-transparent text-muted-foreground hover:text-foreground"
-                      }`}
-                    >
-                      <BookOpen className="w-3.5 h-3.5" />
-                      Sign Types
-                      <span className="ml-1 px-1 py-px rounded bg-amber-500/20 text-amber-500 text-[9px] font-mono">
-                        {(job.signTypeLibrary as unknown[]).length}
-                      </span>
-                    </button>
-                  )}
                   {(isCompleted || isFailed) && (
                     <button
                       onClick={() => setActiveTab("coords")}
@@ -1040,102 +1023,6 @@ export default function JobDetails() {
                 </div>
               ) : activeTab === "summary" ? (
                 <SignSummaryPanel signs={extractedSigns} />
-              ) : activeTab === "sign_types" ? (
-                <div className="flex-1 overflow-auto p-8">
-                  <div className="max-w-5xl mx-auto">
-                    <div className="flex items-center gap-3 mb-6">
-                      <div className="p-2 rounded-lg bg-amber-500/10">
-                        <BookOpen className="w-5 h-5 text-amber-500" />
-                      </div>
-                      <div>
-                        <h2 className="text-lg font-display font-semibold text-foreground">Sign Type Library</h2>
-                        <p className="text-sm text-muted-foreground">
-                          Extracted from the signage criteria document — used to enrich all AI extraction passes.
-                        </p>
-                      </div>
-                      <span className="ml-auto px-2 py-1 rounded-md bg-amber-500/15 text-amber-500 text-[11px] font-bold font-mono">
-                        {(job.signTypeLibrary as unknown[] ?? []).length} types
-                      </span>
-                    </div>
-
-                    <div className="overflow-x-auto rounded-xl border border-border bg-card">
-                      <table className="w-full text-xs font-mono">
-                        <thead>
-                          <tr className="border-b border-border bg-secondary/50">
-                            <th className="text-left p-3 font-display font-semibold text-[10px] uppercase tracking-wider text-muted-foreground">Type Code</th>
-                            <th className="text-left p-3 font-display font-semibold text-[10px] uppercase tracking-wider text-muted-foreground">Description</th>
-                            <th className="text-left p-3 font-display font-semibold text-[10px] uppercase tracking-wider text-muted-foreground">Dimensions</th>
-                            <th className="text-left p-3 font-display font-semibold text-[10px] uppercase tracking-wider text-muted-foreground">Materials</th>
-                            <th className="text-center p-3 font-display font-semibold text-[10px] uppercase tracking-wider text-muted-foreground">ADA</th>
-                            <th className="text-center p-3 font-display font-semibold text-[10px] uppercase tracking-wider text-muted-foreground">Braille</th>
-                            <th className="text-center p-3 font-display font-semibold text-[10px] uppercase tracking-wider text-muted-foreground">Picto</th>
-                            <th className="text-center p-3 font-display font-semibold text-[10px] uppercase tracking-wider text-muted-foreground">Ext.</th>
-                            <th className="text-left p-3 font-display font-semibold text-[10px] uppercase tracking-wider text-muted-foreground">Notes</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {(job.signTypeLibrary as Array<{
-                            type_code: string;
-                            description?: string | null;
-                            dimensions?: string | null;
-                            materials?: string | null;
-                            has_braille?: boolean | null;
-                            has_pictogram?: boolean | null;
-                            is_ada_tactile?: boolean | null;
-                            is_exterior?: boolean | null;
-                            typical_use?: string | null;
-                            sign_keynotes?: string | null;
-                          }> ?? []).map((entry, i) => (
-                            <tr key={i} className="border-b border-border/50 hover:bg-secondary/30 transition-colors">
-                              <td className="p-3">
-                                <span className="px-2 py-0.5 rounded bg-amber-500/15 text-amber-400 font-bold text-[11px] uppercase tracking-wider">
-                                  {entry.type_code}
-                                </span>
-                              </td>
-                              <td className="p-3 text-foreground max-w-[200px]">
-                                {entry.description || <span className="text-muted-foreground">—</span>}
-                              </td>
-                              <td className="p-3 text-muted-foreground whitespace-nowrap">
-                                {entry.dimensions
-                                  ? entry.dimensions
-                                  : <span className="text-muted-foreground/50">—</span>
-                                }
-                              </td>
-                              <td className="p-3 text-muted-foreground">
-                                {entry.materials
-                                  ? entry.materials
-                                  : <span className="text-muted-foreground/50">—</span>}
-                              </td>
-                              <td className="p-3 text-center">
-                                {entry.is_ada_tactile
-                                  ? <span className="text-green-400 font-bold">✓</span>
-                                  : <span className="text-muted-foreground/40">—</span>}
-                              </td>
-                              <td className="p-3 text-center">
-                                {entry.has_braille
-                                  ? <span className="text-blue-400 font-bold">✓</span>
-                                  : <span className="text-muted-foreground/40">—</span>}
-                              </td>
-                              <td className="p-3 text-center">
-                                {entry.has_pictogram
-                                  ? <span className="text-purple-400 font-bold">✓</span>
-                                  : <span className="text-muted-foreground/40">—</span>}
-                              </td>
-                              <td className="p-3 text-center">
-                                {entry.is_exterior
-                                  ? <span className="text-orange-400 font-bold">✓</span>
-                                  : <span className="text-muted-foreground/40">—</span>}
-                              </td>
-                              <td className="p-3 text-muted-foreground max-w-[200px] truncate" title={entry.sign_keynotes || entry.typical_use || undefined}>
-                                {entry.sign_keynotes || entry.typical_use || <span className="text-muted-foreground/50">—</span>}
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  </div>
-                </div>
               ) : activeTab === "coords" ? (
                 <div className="flex-1 overflow-auto bg-card border-t border-border">
                   <CoordinatesTable signs={extractedSigns} onView={(sign) => setReviewSign(sign as SignRow)} />
@@ -2186,52 +2073,35 @@ function SourceBadge({ sign }: { sign: Record<string, unknown> }) {
   const method = sign.extractionMethod as string | null | undefined;
   const paired = sign.pairedSignId as string | null | undefined;
   const manual = sign.manuallyAdded as boolean | undefined;
-  const signSource = sign.source as "plan_callout" | "code_inferred" | null | undefined;
 
-  let methodBadge: React.ReactNode;
   if (manual) {
-    methodBadge = (
+    return (
       <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider bg-purple-500/10 text-purple-400 border border-purple-500/20 whitespace-nowrap">
         <Pencil className="w-2.5 h-2.5" /> Manual
       </span>
     );
-  } else if (method === "text" && paired) {
-    methodBadge = (
+  }
+
+  if (method === "text" && paired) {
+    return (
       <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider bg-accent/10 text-accent border border-accent/20 whitespace-nowrap">
         <ShieldCheck className="w-2.5 h-2.5" /> Both
       </span>
     );
-  } else if (method === "image") {
-    methodBadge = (
+  }
+
+  if (method === "image") {
+    return (
       <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider bg-orange-500/10 text-orange-400 border border-orange-500/20 whitespace-nowrap">
         <Eye className="w-2.5 h-2.5" /> Visual
       </span>
     );
-  } else {
-    methodBadge = (
-      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider bg-blue-500/10 text-blue-400 border border-blue-500/20 whitespace-nowrap">
-        <FileText className="w-2.5 h-2.5" /> Text
-      </span>
-    );
   }
 
-  const sourceBadge = signSource === "plan_callout" ? (
-    <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider bg-green-500/10 text-green-400 border border-green-500/20 whitespace-nowrap" title="Explicitly called out in plans">
-      Callout
-    </span>
-  ) : signSource === "code_inferred" ? (
-    <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider bg-yellow-500/10 text-yellow-400 border border-yellow-500/20 whitespace-nowrap" title="Inferred from code / occupancy requirements">
-      Code
-    </span>
-  ) : null;
-
-  if (!sourceBadge) return <>{methodBadge}</>;
-
   return (
-    <div className="flex flex-col items-center gap-0.5">
-      {methodBadge}
-      {sourceBadge}
-    </div>
+    <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider bg-blue-500/10 text-blue-400 border border-blue-500/20 whitespace-nowrap">
+      <FileText className="w-2.5 h-2.5" /> Text
+    </span>
   );
 }
 

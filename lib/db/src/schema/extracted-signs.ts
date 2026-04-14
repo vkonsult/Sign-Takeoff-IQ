@@ -43,9 +43,6 @@ export const extractedSignsTable = pgTable("extracted_signs", {
     { onDelete: "set null" }
   ),
   adaRequired: boolean("ada_required").default(false),
-  hasBraille: boolean("has_braille"),
-  hasPictogram: boolean("has_pictogram"),
-  isAdaTactile: boolean("is_ada_tactile"),
   manuallyAdded: boolean("manually_added").notNull().default(false),
   userVerified: boolean("user_verified").notNull().default(false),
   hidden: boolean("hidden").notNull().default(false),
@@ -56,7 +53,6 @@ export const extractedSignsTable = pgTable("extracted_signs", {
   aiBboxW: real("ai_bbox_w"),
   aiBboxH: real("ai_bbox_h"),
   rawJson: json("raw_json"),
-  source: text("source"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 

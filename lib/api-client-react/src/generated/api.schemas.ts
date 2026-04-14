@@ -42,19 +42,6 @@ export const JobSummaryStatus = {
   failed: "failed",
 } as const;
 
-export type JobSummarySignTypeLibraryItem = {
-  type_code: string;
-  description?: string | null;
-  dimensions?: string | null;
-  materials?: string | null;
-  has_braille?: boolean | null;
-  has_pictogram?: boolean | null;
-  is_ada_tactile?: boolean | null;
-  is_exterior?: boolean | null;
-  typical_use?: string | null;
-  sign_keynotes?: string | null;
-};
-
 export interface JobSummary {
   id: string;
   status: JobSummaryStatus;
@@ -72,38 +59,14 @@ export interface JobSummary {
   projectState?: string | null;
   createdAt: string;
   updatedAt: string;
-  /** Structured sign type library extracted from a signage criteria document, when one was uploaded */
-  signTypeLibrary?: JobSummarySignTypeLibraryItem[] | null;
 }
-
-/**
- * Classified type of this outline section
- */
-export type PdfOutlineSectionType =
-  | (typeof PdfOutlineSectionType)[keyof typeof PdfOutlineSectionType]
-  | null;
-
-export const PdfOutlineSectionType = {
-  floor_plan: "floor_plan",
-  sign_schedule: "sign_schedule",
-  other: "other",
-} as const;
 
 export interface PdfOutlineSection {
-  /** Bookmark / outline item title */
   title: string;
-  /** First page of this section (1-indexed) */
   pageStart: number;
-  /** Last page of this section (1-indexed, inclusive) */
   pageEnd: number;
-  /** Classified type of this outline section */
-  type: PdfOutlineSectionType;
+  type: "floor_plan" | "sign_schedule" | "other" | null;
 }
-
-/**
- * Map of page number (as string key) to server-relative path of pre-rendered PNG image (resolved server-side; not exposed to clients)
- */
-export type PageStatsPageImagePaths = { [key: string]: string } | null;
 
 export interface PageStats {
   /** PDF page numbers classified as floor plans */
@@ -118,8 +81,15 @@ export interface PageStats {
   pageLabels?: (string | null)[] | null;
   /** Top-level PDF outline (bookmark) sections with classified page ranges */
   outlineSections?: PdfOutlineSection[] | null;
-  /** Map of page number (as string key) to server-relative path of pre-rendered PNG image (resolved server-side; not exposed to clients) */
-  pageImagePaths?: PageStatsPageImagePaths;
+  /** Map of page number (as string key) to absolute file path of pre-rendered PNG image */
+  pageImagePaths?: Record<string, string> | null;
+  /** Heuristic-detected floor plan bounding boxes per page (string page number key) */
+  floorPlanBboxes?: Record<string, { x0: number; y0: number; x1: number; y1: number }> | null;
+  /** Gemini AI-detected region bboxes per page (floor plan drawing area + sign schedule table) */
+  aiRegionBboxes?: Record<string, {
+    floorPlan: { x0: number; y0: number; x1: number; y1: number } | null;
+    signSchedule: { x0: number; y0: number; x1: number; y1: number } | null;
+  }> | null;
 }
 
 export interface JobFile {
@@ -130,18 +100,6 @@ export interface JobFile {
   pageStats?: PageStats | null;
   createdAt: string;
 }
-
-/**
- * Origin of this sign row — plan_callout means the sign was explicitly called out in the plans; code_inferred means it was inferred from occupancy/code requirements
- */
-export type ExtractedSignSource =
-  | (typeof ExtractedSignSource)[keyof typeof ExtractedSignSource]
-  | null;
-
-export const ExtractedSignSource = {
-  plan_callout: "plan_callout",
-  code_inferred: "code_inferred",
-} as const;
 
 export interface ExtractedSign {
   id: string;
@@ -165,12 +123,6 @@ export interface ExtractedSign {
    */
   confidenceScore: number;
   reviewFlag: boolean;
-  /** True if this sign was manually placed by the user (not AI-extracted) */
-  manuallyAdded?: boolean;
-  /** True if the user has saved/confirmed this sign entry; preserved across re-extractions */
-  userVerified?: boolean;
-  /** Origin of this sign row — plan_callout means the sign was explicitly called out in the plans; code_inferred means it was inferred from occupancy/code requirements */
-  source?: ExtractedSignSource;
   createdAt: string;
 }
 
@@ -275,8 +227,6 @@ export interface ErrorResponse {
 
 export type UploadFilesBody = {
   files: Blob[];
-  /** Optional signage criteria / sign type schedule documents to enable the sign type library pre-pass */
-  signageDocs?: Blob[];
 };
 
 export type ListJobs200 = {

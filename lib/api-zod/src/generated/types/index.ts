@@ -8,12 +8,10 @@
 
 export * from "./errorResponse";
 export * from "./extractedSign";
-export * from "./extractedSignSource";
 export * from "./healthStatus";
 export * from "./jobDetails";
 export * from "./jobFile";
 export * from "./jobSummary";
-export * from "./jobSummarySignTypeLibraryItem";
 export * from "./jobSummaryStatus";
 export * from "./knowledgeIngestFileResult";
 export * from "./knowledgeIngestRequest";
@@ -25,9 +23,6 @@ export * from "./knowledgeResult";
 export * from "./knowledgeResultMetadata";
 export * from "./listJobs200";
 export * from "./pageStats";
-export * from "./pageStatsPageImagePaths";
-export * from "./pdfOutlineSection";
-export * from "./pdfOutlineSectionType";
 export * from "./processResponse";
 export * from "./processResponseStatus";
 export * from "./uploadFilesBody";

@@ -5,7 +5,6 @@
  * Sign Takeoff Portal API
  * OpenAPI spec version: 0.1.0
  */
-import type { JobSummarySignTypeLibraryItem } from "./jobSummarySignTypeLibraryItem";
 import type { JobSummaryStatus } from "./jobSummaryStatus";
 
 export interface JobSummary {
@@ -25,6 +24,4 @@ export interface JobSummary {
   projectState?: string | null;
   createdAt: Date;
   updatedAt: Date;
-  /** Structured sign type library extracted from a signage criteria document, when one was uploaded */
-  signTypeLibrary?: JobSummarySignTypeLibraryItem[] | null;
 }
