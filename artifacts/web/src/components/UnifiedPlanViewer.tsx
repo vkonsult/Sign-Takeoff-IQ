@@ -716,7 +716,7 @@ function PageViewer({
       const isCurrent = s.id === activeSignId;
       const color = isCurrent ? "#22c55e" : (s.manuallyAdded ? "#a855f7" : "#eab308");
 
-      if (s.xPos != null && s.yPos != null && (s.manuallyAdded || s.placementSource != null)) {
+      if (s.xPos != null && s.yPos != null && (s.manuallyAdded || s.placementSource != null || s.dataSource === "pdf")) {
         markers.push({
           x: s.xPos, y: s.yPos,
           signId: s.id, color,
