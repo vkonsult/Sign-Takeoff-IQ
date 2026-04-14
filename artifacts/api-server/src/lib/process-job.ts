@@ -10,7 +10,7 @@ import {
 } from "@workspace/db";
 
 import { ai } from "@workspace/integrations-gemini-ai";
-import { extractSignsFromPdf, extractSignsFromPdfImageVerify, extractProjectInfo, extractTextFromPdf, isSpecFile, buildSpecContextString, type ProjectInfo, type VerifiedSignSummary, type TextContextSign, type VerificationItem, type ExtractedSignRow } from "./extraction";
+import { extractSignsFromPdf, extractSignCalloutsPng, extractProjectInfo, extractTextFromPdf, isSpecFile, buildSpecContextString, type ProjectInfo, type VerifiedSignSummary, type GeminiCallout, type ScanResult, type ExtractedSignRow } from "./extraction";
 import { saveParsedResult, getFilePageImagesDir, PAGES_DIR } from "./storage";
 import { renderFloorPlanPages, detectPageRegions, type PageRegions } from "./pdf-render";
 import { logger } from "./logger";
@@ -33,10 +33,7 @@ export function deduplicateSignRows(rows: InsertExtractedSign[]): InsertExtracte
       out.push(row);
       continue;
     }
-    const idPart = row.signIdentifier?.toLowerCase().trim() ?? "";
-    const key = idPart
-      ? `${row.location.toLowerCase().trim()}||${row.signType.toLowerCase().trim()}||${idPart}`
-      : `${row.location.toLowerCase().trim()}||${row.signType.toLowerCase().trim()}`;
+    const key = `${row.location.toLowerCase().trim()}||${row.signType.toLowerCase().trim()}`;
     const existingIdx = seenKeys.get(key);
     if (existingIdx === undefined) {
       seenKeys.set(key, out.length);
@@ -158,8 +155,11 @@ export async function processJob(jobId: string): Promise<void> {
 
   const allTextRows: InsertExtractedSign[] = [];
   const allImageRows: InsertExtractedSign[] = [];
-  const allVerifications: (VerificationItem & { fileId: string })[] = [];
   const parsedResults: Record<string, unknown>[] = [];
+  // Per-file PNG image paths and relevant page sets — populated during per-file loop,
+  // consumed later by the post-word-match Gemini bbox scan.
+  const filePageImagePaths = new Map<string, Record<string, string>>();
+  const fileRelevantPages = new Map<string, Set<number>>();
   let totalInputTokens = 0;
   let totalOutputTokens = 0;
   let totalImageInputTokens = 0;
@@ -243,9 +243,7 @@ export async function processJob(jobId: string): Promise<void> {
         ok: true;
         file: typeof files[number];
         textResult: Awaited<ReturnType<typeof extractSignsFromPdf>>;
-        imageResult: Awaited<ReturnType<typeof extractSignsFromPdfImageVerify>>;
         textDurationMs: number;
-        imageDurationMs: number;
         spatialData?: {
           pages: number;
           classified: number;
@@ -368,43 +366,7 @@ export async function processJob(jobId: string): Promise<void> {
         );
         const textDurationMs = Date.now() - t_text;
 
-        // Build page → text-sign context map for the visual verification prompt
-        const textSignsByPage = new Map<number, TextContextSign[]>();
-        for (const row of textResult.rows) {
-          const pg = row.page_number ?? 1;
-          if (!textSignsByPage.has(pg)) textSignsByPage.set(pg, []);
-          textSignsByPage.get(pg)!.push({
-            sign_identifier: row.sign_identifier,
-            location: row.location,
-            sign_type: row.sign_type,
-            sheet_number: row.sheet_number,
-            page_number: row.page_number,
-          });
-        }
-
-        // Gate: skip visual verification if text extraction is already high-confidence
-        const HIGH_CONF_THRESHOLD = 0.80;   // per-sign minimum
-        const HIGH_CONF_RATIO     = 0.80;   // fraction of signs that must meet it
-        const MIN_SIGNS_TO_GATE   = 3;      // don't gate on tiny extractions
-
-        const highConfCount = textResult.rows.filter(
-          (r) => (r.confidence_score ?? 0) >= HIGH_CONF_THRESHOLD
-        ).length;
-        const highConfRatio = textResult.rows.length > 0
-          ? highConfCount / textResult.rows.length
-          : 0;
-
-        const skipVerification =
-          textResult.rows.length >= MIN_SIGNS_TO_GATE &&
-          highConfRatio >= HIGH_CONF_RATIO;
-
-        if (skipVerification) {
-          logger.info(
-            { jobId, fileId: file.id, signs: textResult.rows.length, highConfRatio: Math.round(highConfRatio * 100) },
-            "Visual verification skipped — text extraction confidence is high"
-          );
-        }
-
+        // Floor plan + sign_schedule pages are relevant for the bbox scan
         const relevantPageNums = new Set([
           ...textResult.pageStats.floorPlanPages,
           ...textResult.pageStats.signSchedulePages,
@@ -413,14 +375,14 @@ export async function processJob(jobId: string): Promise<void> {
         // ── PNG pre-render: rasterize floor_plan and "both" pages only ─────────
         // Sign schedule pages don't need PNGs — they're not rendered in the
         // viewer and coordinate matching only needs floor plan imagery.
-        // Run BEFORE verification.  Failures are non-fatal.
+        // Failures are non-fatal.
         const pngPageNumsSet = new Set([
           ...textResult.pageStats.floorPlanPages,
           ...(textResult.pageStats.bothPages ?? []),
         ]);
         const pngPageNums = Array.from(pngPageNumsSet).sort((a, b) => a - b);
         // pageImagePathsRelative: stored in DB (relative paths, no filesystem disclosure)
-        // pageImagePathsAbsolute: passed to extraction / Gemini (must be absolute for fs.readFile)
+        // pageImagePathsAbsolute: passed to Gemini (must be absolute for fs.readFile)
         let pageImagePathsRelative: Record<string, string> | null = null;
         let pageImagePathsAbsolute: Record<string, string> | null = null;
         if (pngPageNums.length > 0) {
@@ -477,27 +439,11 @@ export async function processJob(jobId: string): Promise<void> {
           }
         }
 
-        const t_image = skipVerification ? 0 : Date.now();
-        const imageResult = skipVerification
-          ? {
-              verifications: [] as VerificationItem[],
-              discoveries: [],
-              inputTokens: 0,
-              outputTokens: 0,
-              skipped: true as const,
-              skipReason: `High-confidence skip (${Math.round(highConfRatio * 100)}% of ${textResult.rows.length} signs ≥ ${HIGH_CONF_THRESHOLD} confidence)`,
-            }
-          : await extractSignsFromPdfImageVerify(
-              file.storedPath,
-              ai,
-              textSignsByPage,
-              relevantPageNums,
-              pageImagePathsAbsolute ?? undefined,
-            ).catch((err) => {
-              logger.warn({ err, fileId: file.id }, "Visual verification threw unexpectedly — skipping");
-              return { verifications: [] as VerificationItem[], discoveries: [], inputTokens: 0, outputTokens: 0, skipped: true as const, skipReason: "Internal error" };
-            });
-        const imageDurationMs = skipVerification ? 0 : Date.now() - t_image;
+        // Store per-file image paths and relevant pages for post-word-match Gemini bbox scan
+        if (pageImagePathsAbsolute && Object.keys(pageImagePathsAbsolute).length > 0) {
+          filePageImagePaths.set(file.id, pageImagePathsAbsolute);
+        }
+        fileRelevantPages.set(file.id, relevantPageNums);
 
         // Merge relative pageImagePaths into pageStats before persisting
         const finalPageStats = pageImagePathsRelative
@@ -510,7 +456,7 @@ export async function processJob(jobId: string): Promise<void> {
           .set({ pageCount: textResult.pageCount, extractedText: textResult.rawText.slice(0, 10000), pageStats: finalPageStats })
           .where(eq(jobFilesTable.id, file.id));
 
-        return { ok: true, file, textResult, imageResult, textDurationMs, imageDurationMs, spatialData: fileSpatialData };
+        return { ok: true, file, textResult, textDurationMs, spatialData: fileSpatialData };
       } catch (err) {
         logger.error({ err, fileId: file.id, fileName: file.originalName }, "File extraction failed");
         return { ok: false, file, error: String(err) };
@@ -535,7 +481,6 @@ export async function processJob(jobId: string): Promise<void> {
         excluded: r.spatialData?.unknown ?? 0,
       },
       textDurationMs: r.textDurationMs,
-      imageDurationMs: r.imageDurationMs,
     }));
   recordStep("extraction", "Sign extraction (all files)", t_extraction, {
     fileCount: filesToProcess.length,
@@ -551,7 +496,7 @@ export async function processJob(jobId: string): Promise<void> {
       continue;
     }
 
-    const { file, textResult, imageResult, textDurationMs, imageDurationMs, spatialData } = result;
+    const { file, textResult, textDurationMs, spatialData } = result;
     const fileExcludedPages = spatialData?.unknown ?? 0;
     const fileClassifiedPages = spatialData
       ? {
@@ -570,7 +515,7 @@ export async function processJob(jobId: string): Promise<void> {
         ? `Text extraction — ${file.originalName}`
         : "Text extraction",
       durationMs: textDurationMs,
-      startedAt: new Date(Date.now() - textDurationMs - imageDurationMs).toISOString(),
+      startedAt: new Date(Date.now() - textDurationMs).toISOString(),
       details: {
         rows: textResult.rows.length,
         pages: textResult.pageCount,
@@ -580,71 +525,19 @@ export async function processJob(jobId: string): Promise<void> {
         ...(fileClassifiedPages ? { classifiedPages: fileClassifiedPages } : {}),
       },
     });
-    pipelineSteps.push({
-      step: `visual_verification_${file.id}`,
-      label: filesToProcess.length > 1
-        ? `Visual verification — ${file.originalName}`
-        : "Visual verification",
-      durationMs: imageDurationMs,
-      startedAt: new Date(Date.now() - imageDurationMs).toISOString(),
-      details: {
-        verified: imageResult.verifications?.length ?? 0,
-        discoveries: imageResult.discoveries?.length ?? 0,
-        skipped: imageResult.skipped ?? false,
-        excludedPages: fileExcludedPages,
-        ...(imageResult.skipReason ? { skipReason: imageResult.skipReason } : {}),
-        ...(fileClassifiedPages ? { classifiedPages: fileClassifiedPages } : {}),
-      },
-    });
 
     totalInputTokens += textResult.inputTokens;
     totalOutputTokens += textResult.outputTokens;
-    totalImageInputTokens += imageResult.inputTokens;
-    totalImageOutputTokens += imageResult.outputTokens;
 
     parsedResults.push({
       fileId: file.id,
       fileName: file.originalName,
       pageCount: textResult.pageCount,
       rowCount: textResult.rows.length,
-      imageRowCount: imageResult.discoveries.length,
-      imageSkipped: imageResult.skipped ?? false,
       rows: textResult.rows,
     });
 
-    // Apply visual-verification boosts / flags to text rows in-memory
-    const findVerification = (row: ExtractedSignRow): VerificationItem | undefined => {
-      if (imageResult.skipped) return undefined;
-      if (row.sign_identifier) {
-        const m = imageResult.verifications.find(
-          (v) => v.sign_identifier?.toLowerCase() === row.sign_identifier!.toLowerCase()
-        );
-        if (m) return m;
-      }
-      if (row.location) {
-        const rLoc = row.location.toLowerCase();
-        const m = imageResult.verifications.find(
-          (v) => v.location != null && (v.location.toLowerCase().includes(rLoc) || rLoc.includes(v.location.toLowerCase()))
-        );
-        if (m) return m;
-      }
-      return undefined;
-    };
-
     for (const row of textResult.rows) {
-      const verif = findVerification(row);
-      let conf = row.confidence_score;
-      let flag = row.review_flag;
-
-      if (verif) {
-        if (verif.status === "CONFIRMED") {
-          conf = Math.min(1.0, conf + 0.15);
-          flag = conf < 0.75;
-        } else if (verif.status === "NOT_FOUND") {
-          flag = true;
-        }
-      }
-
       allTextRows.push({
         jobId,
         jobFileId: file.id,
@@ -662,53 +555,11 @@ export async function processJob(jobId: string): Promise<void> {
         messageContent: row.message_content,
         notes: row.notes,
         pageNumber: row.page_number,
-        confidenceScore: conf,
-        reviewFlag: flag,
+        confidenceScore: row.confidence_score,
+        reviewFlag: row.review_flag ?? false,
         extractionMethod: "text",
         rawJson: row as unknown as Record<string, unknown>,
       });
-    }
-
-    for (const row of imageResult.discoveries) {
-      allImageRows.push({
-        jobId,
-        jobFileId: file.id,
-        sheetNumber: row.sheet_number,
-        detailReference: row.detail_reference,
-        signType: row.sign_type,
-        signIdentifier: row.sign_identifier,
-        quantity: row.quantity,
-        location: row.location,
-        dimensions: row.dimensions,
-        mountingType: row.mounting_type,
-        finishColor: row.finish_color,
-        illumination: row.illumination,
-        materials: row.materials,
-        messageContent: row.message_content,
-        notes: row.notes,
-        pageNumber: row.page_number,
-        xPos: null,
-        yPos: null,
-        confidenceScore: row.confidence_score,
-        reviewFlag: true,
-        extractionMethod: "image",
-        rawJson: row as unknown as Record<string, unknown>,
-      });
-    }
-
-    allVerifications.push(...imageResult.verifications.map(v => ({ ...v, fileId: file.id })));
-
-    if (imageResult.skipped) {
-      logger.info({ jobId, file: file.originalName, reason: imageResult.skipReason }, "Visual verification skipped for file");
-    } else {
-      logger.info({
-        jobId,
-        file: file.originalName,
-        verifications: imageResult.verifications.length,
-        confirmed: imageResult.verifications.filter(v => v.status === "CONFIRMED").length,
-        notFound: imageResult.verifications.filter(v => v.status === "NOT_FOUND").length,
-        discoveries: imageResult.discoveries.length,
-      }, "Visual verification complete for file");
     }
   }
 
@@ -861,58 +712,294 @@ export async function processJob(jobId: string): Promise<void> {
     return result;
   }
 
-  // Deduplicate within each pass, then remove cross-pass duplicates from image rows
+  // Deduplicate text rows — key on location + signType only (no signIdentifier)
+  // so that same-room same-type duplicates from different text passes are collapsed.
   const t_dedup = Date.now();
   const dedupedTextRows = deduplicateSignRows(allTextRows);
-  // Build cross-pass seen-key set using the same composite key logic as deduplicateSignRows:
-  // include signIdentifier when present so distinct instances with the same label/type are
-  // not suppressed when they carry different identifiers (e.g. RI-25 vs RI-26 in the same room).
-  function crossPassKey(location: string, signType: string, signIdentifier: string | null | undefined): string {
-    const idPart = signIdentifier?.toLowerCase().trim() ?? "";
-    return idPart
-      ? `${location.toLowerCase().trim()}||${signType.toLowerCase().trim()}||${idPart}`
-      : `${location.toLowerCase().trim()}||${signType.toLowerCase().trim()}`;
-  }
-  const textSeenKeys = new Set(
-    dedupedTextRows
-      .filter((r) => r.location && r.signType)
-      .map((r) => crossPassKey(r.location!, r.signType!, r.signIdentifier)),
-  );
-  const dedupedImageRows = deduplicateSignRows(
-    allImageRows.filter((r) => {
-      if (!r.location || !r.signType) return true;
-      return !textSeenKeys.has(crossPassKey(r.location, r.signType, r.signIdentifier));
-    }),
-  );
 
   logger.info(
     {
       jobId,
       textBefore: allTextRows.length,
       textAfter: dedupedTextRows.length,
-      imageBefore: allImageRows.length,
-      imageAfter: dedupedImageRows.length,
     },
     "Sign deduplication complete",
   );
   recordStep("deduplication", "Sign deduplication", t_dedup, {
     textBefore: allTextRows.length,
     textAfter: dedupedTextRows.length,
-    imageBefore: allImageRows.length,
-    imageAfter: dedupedImageRows.length,
   });
 
-  // Run word-match coordinate assignment on both sets of rows
+  // ── Word-match coordinate assignment (runs BEFORE Gemini bbox scan) ─────────
+  // Text signs must have (x,y) coordinates before spatial matching can occur.
   const t_wordmatch = Date.now();
   const coordedTextRows = await assignCoords(dedupedTextRows);
-  const coordedImageRows = await assignCoords(dedupedImageRows);
 
   const matchedText = coordedTextRows.filter((r) => r.placementSource === "word_match").length;
-  const matchedImage = coordedImageRows.filter((r) => r.placementSource === "word_match").length;
-  logger.info({ jobId, textRows: coordedTextRows.length, matchedText, imageRows: coordedImageRows.length, matchedImage }, "Word-match coordinate assignment complete");
+  logger.info({ jobId, textRows: coordedTextRows.length, matchedText }, "Word-match coordinate assignment complete");
   recordStep("word_match", "Coordinate matching (word-match)", t_wordmatch, {
-    totalSigns: coordedTextRows.length + coordedImageRows.length,
-    matched: matchedText + matchedImage,
+    totalSigns: coordedTextRows.length,
+    matched: matchedText,
+  });
+
+  // ── Gemini bbox scan + spatial deduplication ─────────────────────────────────
+  // For each file, send the pre-rendered PNGs to Gemini for a pure visual scan
+  // that returns bounding boxes for all visible sign callouts. Then spatially
+  // match text signs to callouts to dedup and boost confidence.
+  const t_scan = Date.now();
+
+  /**
+   * Spatial match and dedup:
+   * - Tolerance = 0.03 normalized units around each Gemini bbox.
+   * - 2+ text signs match same bbox → keep best (highest confidence, prefer detailReference).
+   * - 1 text sign matches → update xPos/yPos to bbox center, set aiBbox*, boost confidence.
+   * - 0 text signs match (confidence ≥ 0.80) → create discovery row (extractionMethod = "image").
+   * - Text sign with no matching callout → keep as-is but set reviewFlag if unconfirmed.
+   */
+  function spatialMatchAndDedup(
+    textRows: InsertExtractedSign[],
+    calloutsByPage: Map<number, GeminiCallout[]>,
+    fileId: string,
+  ): { finalRows: InsertExtractedSign[]; discoveryRows: InsertExtractedSign[] } {
+    const SPATIAL_TOLERANCE = 0.03;
+
+    function calloutCenter(c: GeminiCallout): { cx: number; cy: number } {
+      return { cx: c.bbox_x + c.bbox_w / 2, cy: c.bbox_y + c.bbox_h / 2 };
+    }
+
+    function isInsideBbox(x: number, y: number, c: GeminiCallout): boolean {
+      return (
+        x >= c.bbox_x - SPATIAL_TOLERANCE &&
+        x <= c.bbox_x + c.bbox_w + SPATIAL_TOLERANCE &&
+        y >= c.bbox_y - SPATIAL_TOLERANCE &&
+        y <= c.bbox_y + c.bbox_h + SPATIAL_TOLERANCE
+      );
+    }
+
+    // Map: callout identity → matched text rows
+    const calloutMatches = new Map<GeminiCallout, InsertExtractedSign[]>();
+    for (const [, callouts] of calloutsByPage) {
+      for (const c of callouts) {
+        calloutMatches.set(c, []);
+      }
+    }
+
+    // Track which text rows matched at least one callout
+    const matchedRowSet = new Set<InsertExtractedSign>();
+
+    // Enforce one-callout-per-text-row: each row is assigned only to its closest
+    // matching callout (by distance from row center to callout center), preventing
+    // a single row from suppressing discovery rows for multiple overlapping callouts.
+    for (const row of textRows) {
+      if (row.jobFileId !== fileId) continue;
+      if (row.xPos == null || row.yPos == null) continue;
+      const pageCallouts = calloutsByPage.get(row.pageNumber ?? 1) ?? [];
+      let bestCallout: GeminiCallout | null = null;
+      let bestDist = Infinity;
+      for (const c of pageCallouts) {
+        if (isInsideBbox(row.xPos, row.yPos, c)) {
+          const { cx, cy } = calloutCenter(c);
+          const dist = Math.hypot(row.xPos - cx, row.yPos - cy);
+          if (dist < bestDist) {
+            bestDist = dist;
+            bestCallout = c;
+          }
+        }
+      }
+      if (bestCallout) {
+        calloutMatches.get(bestCallout)!.push(row);
+        matchedRowSet.add(row);
+      }
+    }
+
+    // Build the final set of text rows (may discard duplicates)
+    const keptRows = new Set<InsertExtractedSign>();
+    const discardedRows = new Set<InsertExtractedSign>();
+
+    for (const [callout, matches] of calloutMatches) {
+      const { cx, cy } = calloutCenter(callout);
+
+      if (matches.length === 0) continue;
+
+      if (matches.length === 1) {
+        // Single match: update position to bbox center, boost confidence
+        const row = matches[0]!;
+        const newConf = Math.min(1.0, (row.confidenceScore ?? 0) + 0.10);
+        const updatedRow: InsertExtractedSign = {
+          ...row,
+          xPos: cx,
+          yPos: cy,
+          aiBboxX: callout.bbox_x,
+          aiBboxY: callout.bbox_y,
+          aiBboxW: callout.bbox_w,
+          aiBboxH: callout.bbox_h,
+          confidenceScore: newConf,
+          reviewFlag: newConf < 0.75 ? true : false,
+        };
+        const rowIdx = textRows.indexOf(row);
+        if (rowIdx !== -1) textRows[rowIdx] = updatedRow;
+        keptRows.add(updatedRow);
+      } else {
+        // Multiple matches for same bbox → keep best, discard rest
+        const sorted = [...matches].sort((a, b) => {
+          const aHasRef = a.detailReference ? 1 : 0;
+          const bHasRef = b.detailReference ? 1 : 0;
+          if (bHasRef !== aHasRef) return bHasRef - aHasRef;
+          return (b.confidenceScore ?? 0) - (a.confidenceScore ?? 0);
+        });
+        const best = sorted[0]!;
+        const newConf = Math.min(1.0, (best.confidenceScore ?? 0) + 0.10);
+        const updatedBest: InsertExtractedSign = {
+          ...best,
+          xPos: cx,
+          yPos: cy,
+          aiBboxX: callout.bbox_x,
+          aiBboxY: callout.bbox_y,
+          aiBboxW: callout.bbox_w,
+          aiBboxH: callout.bbox_h,
+          confidenceScore: newConf,
+          reviewFlag: newConf < 0.75 ? true : false,
+        };
+        const bestIdx = textRows.indexOf(best);
+        if (bestIdx !== -1) textRows[bestIdx] = updatedBest;
+        keptRows.add(updatedBest);
+        for (const dup of sorted.slice(1)) {
+          discardedRows.add(dup);
+        }
+      }
+    }
+
+    // Rows from this file that had no matching callout → keep but always set reviewFlag.
+    // In the new pipeline there is no prior confirmation signal, so any text sign
+    // that Gemini did not find a callout for is considered unconfirmed.
+    const finalRows: InsertExtractedSign[] = [];
+    for (const row of textRows) {
+      if (row.jobFileId !== fileId) {
+        finalRows.push(row);
+        continue;
+      }
+      if (discardedRows.has(row)) continue; // discard spatial duplicates
+      if (!matchedRowSet.has(row) && !keptRows.has(row)) {
+        // Unmatched: always flag for review (no Gemini bbox found for this sign)
+        finalRows.push({ ...row, reviewFlag: true });
+      } else {
+        finalRows.push(row);
+      }
+    }
+
+    // Discovery rows for Gemini callouts with no matching text sign (confidence ≥ 0.80)
+    const discoveryRows: InsertExtractedSign[] = [];
+    for (const [callout, matches] of calloutMatches) {
+      if (matches.length > 0) continue;
+      if (callout.confidence < 0.80) continue;
+      const { cx, cy } = calloutCenter(callout);
+      discoveryRows.push({
+        jobId,
+        jobFileId: fileId,
+        signType: callout.sign_type,
+        signIdentifier: callout.label_text,
+        location: callout.label_text,
+        pageNumber: callout.page_number,
+        xPos: cx,
+        yPos: cy,
+        aiBboxX: callout.bbox_x,
+        aiBboxY: callout.bbox_y,
+        aiBboxW: callout.bbox_w,
+        aiBboxH: callout.bbox_h,
+        confidenceScore: Math.min(0.85, callout.confidence),
+        reviewFlag: true,
+        extractionMethod: "image",
+        notes: "Discovered by visual bbox scan",
+        placementSource: "ai_bbox",
+      });
+    }
+
+    return { finalRows, discoveryRows };
+  }
+
+  let finalTextRows = coordedTextRows;
+  let totalScanCallouts = 0;
+  let totalScanInputTokens = 0;
+  let totalScanOutputTokens = 0;
+
+  for (const result of fileResults) {
+    if (!result.ok) continue;
+    const file = result.file;
+    const imagePaths = filePageImagePaths.get(file.id);
+    const relevantPages = fileRelevantPages.get(file.id);
+
+    if (!imagePaths || !relevantPages || relevantPages.size === 0) {
+      logger.info({ fileId: file.id }, "Bbox scan skipped — no PNG images available");
+      continue;
+    }
+
+    let scanResult: ScanResult;
+    const t_fileScan = Date.now();
+    try {
+      scanResult = await extractSignCalloutsPng(
+        file.originalName,
+        ai,
+        imagePaths,
+        relevantPages,
+      );
+    } catch (err) {
+      logger.warn({ err, fileId: file.id }, "Bbox scan threw unexpectedly — skipping for file");
+      continue;
+    }
+    const fileScanDurationMs = Date.now() - t_fileScan;
+
+    if (scanResult.skipped) {
+      logger.info({ fileId: file.id, reason: scanResult.skipReason }, "Bbox scan skipped for file");
+      continue;
+    }
+
+    totalScanInputTokens += scanResult.inputTokens;
+    totalScanOutputTokens += scanResult.outputTokens;
+    totalScanCallouts += scanResult.callouts.length;
+
+    // Group callouts by page number for efficient lookup
+    const calloutsByPage = new Map<number, GeminiCallout[]>();
+    for (const c of scanResult.callouts) {
+      const pg = c.page_number;
+      if (!calloutsByPage.has(pg)) calloutsByPage.set(pg, []);
+      calloutsByPage.get(pg)!.push(c);
+    }
+
+    const { finalRows, discoveryRows } = spatialMatchAndDedup(finalTextRows, calloutsByPage, file.id);
+    finalTextRows = finalRows;
+    allImageRows.push(...discoveryRows);
+
+    pipelineSteps.push({
+      step: `visual_scan_${file.id}`,
+      label: filesToProcess.length > 1
+        ? `Visual bbox scan — ${file.originalName}`
+        : "Visual bbox scan",
+      durationMs: fileScanDurationMs,
+      startedAt: new Date(t_fileScan).toISOString(),
+      details: {
+        callouts: scanResult.callouts.length,
+        discoveries: discoveryRows.length,
+        inputTokens: scanResult.inputTokens,
+        outputTokens: scanResult.outputTokens,
+      },
+    });
+
+    logger.info({
+      jobId,
+      fileId: file.id,
+      callouts: scanResult.callouts.length,
+      discoveries: discoveryRows.length,
+    }, "Spatial match and dedup complete for file");
+  }
+
+  totalImageInputTokens += totalScanInputTokens;
+  totalImageOutputTokens += totalScanOutputTokens;
+
+  recordStep("visual_scan", "Visual bbox scan + spatial dedup", t_scan, {
+    totalCallouts: totalScanCallouts,
+    totalDiscoveries: allImageRows.length,
+    inputTokens: totalScanInputTokens,
+    outputTokens: totalScanOutputTokens,
   });
 
   // ── Persist floor plan bboxes + AI region bboxes to DB ──────────────────────
@@ -1002,33 +1089,16 @@ export async function processJob(jobId: string): Promise<void> {
   }
 
   const t_insert = Date.now();
-  if (coordedTextRows.length > 0) {
-    await db.insert(extractedSignsTable).values(coordedTextRows);
+  if (finalTextRows.length > 0) {
+    await db.insert(extractedSignsTable).values(finalTextRows);
   }
-  if (coordedImageRows.length > 0) {
-    await db.insert(extractedSignsTable).values(coordedImageRows);
+  if (allImageRows.length > 0) {
+    await db.insert(extractedSignsTable).values(allImageRows);
   }
   recordStep("db_insert", "Database insertion", t_insert, {
-    textRows: coordedTextRows.length,
-    imageRows: coordedImageRows.length,
+    textRows: finalTextRows.length,
+    imageRows: allImageRows.length,
   });
-
-  // Log overall verification stats (actual boosts applied in-memory per-file above)
-  if (allVerifications.length > 0) {
-    const confirmed = allVerifications.filter(v => v.status === "CONFIRMED").length;
-    const notFound = allVerifications.filter(v => v.status === "NOT_FOUND").length;
-    logger.info(
-      {
-        jobId,
-        totalVerifications: allVerifications.length,
-        confirmed,
-        notFound,
-        uncertain: allVerifications.length - confirmed - notFound,
-        discoveries: allImageRows.length,
-      },
-      "Verification complete"
-    );
-  }
 
   await saveParsedResult(jobId, parsedResults);
 
@@ -1041,7 +1111,7 @@ export async function processJob(jobId: string): Promise<void> {
     totalOutputTokens,
     totalImageInputTokens,
     totalImageOutputTokens,
-    signsExtracted: coordedTextRows.length + coordedImageRows.length,
+    signsExtracted: finalTextRows.length + allImageRows.length,
   });
 
   if (allFailed) {
@@ -1073,7 +1143,7 @@ export async function processJob(jobId: string): Promise<void> {
   logger.info(
     {
       jobId,
-      textCount: allTextRows.length,
+      textCount: finalTextRows.length,
       imageCount: allImageRows.length,
       failedCount,
       totalInputTokens,

@@ -1832,6 +1832,212 @@ const VerificationResponseSchema = z.object({
   discoveries: z.array(DiscoveryItemSchema).default([]),
 });
 
+// ── Gemini bbox scan (pure visual, no text-sign list) ──────────────────────
+
+export interface GeminiCallout {
+  page_number: number;
+  bbox_x: number;
+  bbox_y: number;
+  bbox_w: number;
+  bbox_h: number;
+  label_text: string | null;
+  sign_type: string | null;
+  confidence: number;
+}
+
+export interface ScanResult {
+  callouts: GeminiCallout[];
+  inputTokens: number;
+  outputTokens: number;
+  skipped: boolean;
+  skipReason?: string;
+}
+
+function buildScanPrompt(): string {
+  return `You are scanning architectural floor plans to locate sign callouts.
+
+Find EVERY sign callout visible in this floor plan image.
+A "sign callout" is any symbol, tag, bubble, circle, dot, diamond, or annotation with a
+letter/number code or label that marks where a specific sign will be installed.
+
+Do NOT include:
+- Room name labels that are just printed in the center of a room with no callout symbol
+- Dimension strings, structural tags, door swing marks, or revision clouds
+- Anything inside a legend box, symbol key, or drawing notes panel
+
+COORDINATE SYSTEM:
+  x, y, w, h are fractions 0.0–1.0 of the page image dimensions (origin = top-left).
+  x increases rightward, y increases downward.
+
+SIGN TYPE ENUM — use ONLY these exact strings:
+  Room ID | Exit | Accessibility | Restroom | Stair | Elevator | Fire Safety | Wayfinding | Other
+
+For each callout you can clearly see (confidence ≥ 0.75):
+  Return its bounding box (tight around the callout symbol + label), any text you can read,
+  the sign type from the enum above, and your confidence.
+
+Return ONLY valid JSON — no markdown fences, no extra text:
+{
+  "callouts": [
+    {
+      "page_number": 1,
+      "bbox_x": 0.42,
+      "bbox_y": 0.31,
+      "bbox_w": 0.05,
+      "bbox_h": 0.03,
+      "label_text": "101",
+      "sign_type": "Room ID",
+      "confidence": 0.90
+    }
+  ]
+}
+
+If no sign callouts are visible, return: {"callouts": []}`;
+}
+
+const GEMINI_SIGN_TYPE_ENUM = z.enum([
+  "Room ID", "Exit", "Accessibility", "Restroom", "Stair", "Elevator",
+  "Fire Safety", "Wayfinding", "Other",
+]);
+
+const GeminiCalloutSchema = z.object({
+  page_number: z
+    .union([z.number(), z.string().transform((s) => { const n = parseInt(s, 10); return isNaN(n) ? 1 : n; })])
+    .default(1),
+  bbox_x: z.number().min(0).max(1).default(0),
+  bbox_y: z.number().min(0).max(1).default(0),
+  bbox_w: z.number().min(0).max(1).default(0),
+  bbox_h: z.number().min(0).max(1).default(0),
+  label_text: z.string().nullable().optional().default(null),
+  sign_type: GEMINI_SIGN_TYPE_ENUM.nullable().optional().default(null).catch(null),
+  confidence: z.number().min(0).max(1).default(0.75),
+});
+
+const ScanResponseSchema = z.object({
+  callouts: z.array(GeminiCalloutSchema).default([]),
+});
+
+function parseScanResponse(raw: string, label: string): GeminiCallout[] {
+  let cleaned = raw.trim();
+  const fenceMatch = cleaned.match(/```(?:json)?\n?([\s\S]*?)```/);
+  if (fenceMatch) cleaned = fenceMatch[1]!.trim();
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(cleaned);
+  } catch {
+    logger.warn({ label, raw: cleaned.slice(0, 500) }, "Scan response not valid JSON — trying to extract JSON object");
+    const objMatch = cleaned.match(/\{[\s\S]*\}/);
+    if (!objMatch) {
+      logger.error({ label }, "Could not extract JSON from scan response");
+      return [];
+    }
+    try {
+      parsed = JSON.parse(objMatch[0]);
+    } catch {
+      logger.error({ label }, "Failed to parse extracted JSON from scan response");
+      return [];
+    }
+  }
+
+  const result = ScanResponseSchema.safeParse(parsed);
+  if (!result.success) {
+    logger.warn({ label, errors: result.error.flatten() }, "Scan schema validation failed");
+    return [];
+  }
+
+  const callouts: GeminiCallout[] = result.data.callouts
+    .filter((c) => c.confidence >= 0.75)
+    .map((c) => ({
+      page_number: c.page_number as number,
+      bbox_x: c.bbox_x,
+      bbox_y: c.bbox_y,
+      bbox_w: c.bbox_w,
+      bbox_h: c.bbox_h,
+      label_text: c.label_text ?? null,
+      sign_type: c.sign_type ?? null,
+      confidence: c.confidence,
+    }));
+
+  logger.info({ label, callouts: callouts.length }, "Scan response parsed");
+  return callouts;
+}
+
+/**
+ * Pure visual scan: sends page PNGs to Gemini and returns bounding boxes
+ * for every sign callout visible on the page. No text sign list is sent.
+ */
+export async function extractSignCalloutsPng(
+  fileName: string,
+  ai: GeminiAI,
+  pageImagePaths: Record<string, string>,
+  relevantPages: Set<number>
+): Promise<ScanResult> {
+  if (relevantPages.size === 0) {
+    return { callouts: [], inputTokens: 0, outputTokens: 0, skipped: true, skipReason: "No relevant pages" };
+  }
+
+  const relevantSorted = Array.from(relevantPages).sort((a, b) => a - b);
+  const allCovered = relevantSorted.every((p) => pageImagePaths[String(p)]);
+  if (!allCovered) {
+    const missing = relevantSorted.filter((p) => !pageImagePaths[String(p)]);
+    logger.warn({ fileName, missing }, "Bbox scan: missing PNG for some pages — scanning only available pages");
+  }
+
+  const availablePages = relevantSorted.filter((p) => pageImagePaths[String(p)]);
+  if (availablePages.length === 0) {
+    return { callouts: [], inputTokens: 0, outputTokens: 0, skipped: true, skipReason: "No PNG images available for relevant pages" };
+  }
+
+  const prompt = buildScanPrompt();
+  const allCallouts: GeminiCallout[] = [];
+  let totalIn = 0;
+  let totalOut = 0;
+
+  for (let batchStart = 0; batchStart < availablePages.length; batchStart += IMAGE_BATCH_PAGES) {
+    const batchPages = availablePages.slice(batchStart, batchStart + IMAGE_BATCH_PAGES);
+    const inlineParts: GeminiInlinePart[] = [];
+
+    for (const pageNum of batchPages) {
+      try {
+        const buf = await fs.readFile(pageImagePaths[String(pageNum)]!);
+        inlineParts.push({ inlineData: { mimeType: "image/png", data: buf.toString("base64") } });
+      } catch (err) {
+        logger.warn({ err, pageNum }, "Bbox scan: could not read page PNG — skipping page in batch");
+      }
+    }
+
+    if (inlineParts.length === 0) continue;
+
+    const firstPage = batchPages[0]!;
+    const lastPage = batchPages[batchPages.length - 1]!;
+    const label = `scan-${fileName}-p${firstPage}-${lastPage}-png`;
+
+    try {
+      const { text, inputTokens, outputTokens } = await callGeminiMultimodal(prompt, inlineParts, ai, label);
+      const batchCallouts = parseScanResponse(text, label);
+
+      // When multiple pages are batched, Gemini sees them as page 1, 2, 3... in the batch.
+      // Remap page_number from batch-relative (1-based) to original page number.
+      for (const callout of batchCallouts) {
+        const batchIdx = callout.page_number - 1; // 0-based index within this batch
+        const originalPage = batchPages[batchIdx] ?? batchPages[0]!;
+        allCallouts.push({ ...callout, page_number: originalPage });
+      }
+
+      totalIn += inputTokens;
+      totalOut += outputTokens;
+    } catch (err) {
+      logger.warn({ err, label }, "Bbox scan batch call failed — skipping batch");
+    }
+  }
+
+  logger.info({ fileName, callouts: allCallouts.length, inputTokens: totalIn, outputTokens: totalOut }, "Bbox scan complete");
+  return { callouts: allCallouts, inputTokens: totalIn, outputTokens: totalOut, skipped: false };
+}
+
+// ── Legacy verification (kept for reference, no longer called by pipeline) ──
+
 function buildVerificationPrompt(textSignsByPage: Map<number, TextContextSign[]>): string {
   const pages = Array.from(textSignsByPage.entries()).sort(([a], [b]) => a - b);
   const signListLines: string[] = [];

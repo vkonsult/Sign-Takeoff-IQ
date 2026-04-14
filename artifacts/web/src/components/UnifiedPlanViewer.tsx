@@ -1316,8 +1316,24 @@ function PageViewer({
                       const isHovered = m.signId === hoveredMarkerId;
                       const isGhost = m.isGhost === true;
                       const dotR = m.isCurrent ? 7 : 5;
+                      const sign = signsOnCurrentPage.find((s) => s.id === m.signId);
+                      const hasBbox = sign && sign.aiBboxX != null && sign.aiBboxY != null && sign.aiBboxW != null && sign.aiBboxH != null;
                       return (
                         <g key={m.signId} opacity={isGhost ? 0.15 : 1}>
+                          {hasBbox && (
+                            <rect
+                              x={sign.aiBboxX! * renderedW}
+                              y={sign.aiBboxY! * renderedH}
+                              width={sign.aiBboxW! * renderedW}
+                              height={sign.aiBboxH! * renderedH}
+                              fill={m.color}
+                              fillOpacity={0.12}
+                              stroke={m.color}
+                              strokeWidth={1}
+                              strokeOpacity={0.5}
+                              rx={2}
+                            />
+                          )}
                           {m.isCurrent && !isGhost && <circle cx={cx} cy={cy} r={dotR + 5} fill="none" stroke={m.color} strokeWidth={1.5} opacity={0.8} />}
                           {isHovered && !m.isCurrent && !isGhost && <circle cx={cx} cy={cy} r={dotR + 4} fill="none" stroke={m.color} strokeWidth={1} opacity={0.5} />}
                           {isDraggingThis && <circle cx={cx} cy={cy} r={dotR + 10} fill="none" stroke={m.color} strokeWidth={2} strokeDasharray="4 3" opacity={0.7} />}

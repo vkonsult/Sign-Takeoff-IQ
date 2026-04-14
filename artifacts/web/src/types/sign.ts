@@ -25,4 +25,8 @@ export interface ExtractedSign {
   adaRequired?: boolean;
   confidenceScore: number;
   reviewFlag: boolean;
+  aiBboxX?: number | null;
+  aiBboxY?: number | null;
+  aiBboxW?: number | null;
+  aiBboxH?: number | null;
 }

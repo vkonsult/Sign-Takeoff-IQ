@@ -48,6 +48,10 @@ export const extractedSignsTable = pgTable("extracted_signs", {
   hidden: boolean("hidden").notNull().default(false),
   confidenceScore: real("confidence_score").notNull().default(0),
   reviewFlag: boolean("review_flag").notNull().default(false),
+  aiBboxX: real("ai_bbox_x"),
+  aiBboxY: real("ai_bbox_y"),
+  aiBboxW: real("ai_bbox_w"),
+  aiBboxH: real("ai_bbox_h"),
   rawJson: json("raw_json"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
