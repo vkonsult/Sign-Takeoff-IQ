@@ -840,12 +840,16 @@ function classifyOutlineSection(title: string): PdfOutlineSection["type"] {
  * Extract PDF document metadata: PDF page labels (logical names like "A1.1")
  * and outline/bookmark sections with classified page ranges.
  *
- * The bookmark traversal now:
+ * The bookmark traversal:
  *   1. Traverses the FULL bookmark tree (no depth cap) carrying ancestor context.
- *   2. Collects ONLY leaf nodes whose title contains "signs" or "signage"
- *      (case-insensitive substring match).
+ *   2. Collects ALL leaf nodes (floor plans, sign schedules, general sections).
  *   3. Excludes leaves whose parent or grandparent belongs to a known
  *      non-architectural discipline (civil, electrical, mechanical, etc.).
+ *   Each leaf is classified as "floor_plan" | "sign_schedule" | "other" by
+ *   classifyOutlineSection(), and stored for both:
+ *     - The outline-section classification override in extraction.ts
+ *       (only "floor_plan" / "sign_schedule" leaves affect page type).
+ *     - The Bookmark column display in the Sheets Analysis table.
  *
  * When the PDF has no bookmarks at all, an AI fallback is triggered via the
  * optional `geminiCallFn` parameter so the caller can classify pages from
@@ -908,8 +912,13 @@ export async function extractPdfMetadata(
           const pageNum = await resolveDestToPage(item.dest, doc);
 
           if (!hasChildren) {
-            // Leaf node — apply signage and discipline filters
-            if (pageNum !== null && isSignageLeaf(title) && !hasNonArchAncestor(ancestors)) {
+            // Leaf node — collect all architectural bookmarks (floor plans AND
+            // sign schedules AND general).  isSignageLeaf was removed because
+            // it dropped all non-signage bookmarks, which broke the Bookmark
+            // column display and lost floor-plan classification hints from
+            // bookmarks like "Level 1 Floor Plan".
+            // We still exclude leaves under known non-arch disciplines.
+            if (pageNum !== null && !hasNonArchAncestor(ancestors)) {
               signageLeaves.push({ title, pageNum, ancestors });
             }
           } else {
