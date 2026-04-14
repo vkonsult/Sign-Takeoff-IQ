@@ -788,15 +788,24 @@ export async function processJob(jobId: string): Promise<void> {
   // Deduplicate within each pass, then remove cross-pass duplicates from image rows
   const t_dedup = Date.now();
   const dedupedTextRows = deduplicateSignRows(allTextRows);
+  // Build cross-pass seen-key set using the same composite key logic as deduplicateSignRows:
+  // include signIdentifier when present so distinct instances with the same label/type are
+  // not suppressed when they carry different identifiers (e.g. RI-25 vs RI-26 in the same room).
+  function crossPassKey(location: string, signType: string, signIdentifier: string | null | undefined): string {
+    const idPart = signIdentifier?.toLowerCase().trim() ?? "";
+    return idPart
+      ? `${location.toLowerCase().trim()}||${signType.toLowerCase().trim()}||${idPart}`
+      : `${location.toLowerCase().trim()}||${signType.toLowerCase().trim()}`;
+  }
   const textSeenKeys = new Set(
     dedupedTextRows
       .filter((r) => r.location && r.signType)
-      .map((r) => `${r.location!.toLowerCase().trim()}||${r.signType!.toLowerCase().trim()}`),
+      .map((r) => crossPassKey(r.location!, r.signType!, r.signIdentifier)),
   );
   const dedupedImageRows = deduplicateSignRows(
     allImageRows.filter((r) => {
       if (!r.location || !r.signType) return true;
-      return !textSeenKeys.has(`${r.location.toLowerCase().trim()}||${r.signType.toLowerCase().trim()}`);
+      return !textSeenKeys.has(crossPassKey(r.location, r.signType, r.signIdentifier));
     }),
   );
 
