@@ -59,10 +59,110 @@ function formatDuration(ms: number): string {
   return `${m}m ${s}s`;
 }
 
+// UUID pattern to detect per-file step suffixes
+const PER_FILE_STEP_RE = /^(.+?)_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/;
+
+interface FileSummary {
+  fileId: string;
+  fileName: string;
+  pages: number;
+  excludedPages: number;
+  classifiedPages: { floor_plan: number; sign_schedule: number; both: number; unknown: number; excluded: number };
+  textDurationMs: number;
+  imageDurationMs: number;
+}
+
+function getClassificationLabel(cp: { floor_plan: number; sign_schedule: number; both: number; unknown: number; excluded: number }): string {
+  const hasFP = cp.floor_plan > 0;
+  const hasSS = cp.sign_schedule > 0;
+  const hasBoth = cp.both > 0;
+  // A file with ONLY "both" pages → "both"; mixed floor+sched without "both" pages → "both"
+  if (hasBoth || (hasFP && hasSS)) return "both";
+  if (hasFP) return "floor plan";
+  if (hasSS) return "sign schedule";
+  return "unknown";
+}
+
 function ProcessingTimeline({ steps }: { steps: ProcessingStep[] }) {
-  const filtered = steps.filter((s) => s.step !== "total");
+  // Separate total step and per-file steps from top-level steps
   const total = steps.find((s) => s.step === "total");
-  const maxMs = Math.max(...filtered.map((s) => s.durationMs), 1);
+
+  // Classify each step: top-level vs per-file (has UUID suffix)
+  const topLevelSteps: ProcessingStep[] = [];
+  const perFileSteps: ProcessingStep[] = [];
+  for (const step of steps) {
+    if (step.step === "total") continue;
+    if (PER_FILE_STEP_RE.test(step.step)) {
+      perFileSteps.push(step);
+    } else {
+      topLevelSteps.push(step);
+    }
+  }
+
+  // Build fileId → { spatial, text, visual } map from per-file steps
+  type FileStepGroup = {
+    fileId: string;
+    spatial?: ProcessingStep;
+    text?: ProcessingStep;
+    visual?: ProcessingStep;
+    others: ProcessingStep[];
+  };
+  const fileStepGroups = new Map<string, FileStepGroup>();
+  for (const step of perFileSteps) {
+    const match = PER_FILE_STEP_RE.exec(step.step);
+    if (!match) continue;
+    const [, baseType, fileId] = match as [string, string, string];
+    if (!fileStepGroups.has(fileId)) {
+      fileStepGroups.set(fileId, { fileId, others: [] });
+    }
+    const group = fileStepGroups.get(fileId)!;
+    if (baseType === "spatial_prepass") group.spatial = step;
+    else if (baseType === "text_extraction") group.text = step;
+    else if (baseType === "visual_verification") group.visual = step;
+    else group.others.push(step);
+  }
+
+  // Use the extraction step's details.files array (from backend) when available,
+  // falling back to per-file step aggregation.
+  const extractionStep = topLevelSteps.find((s) => s.step === "extraction");
+  const backendFiles = extractionStep?.details?.files as FileSummary[] | undefined;
+
+  // Build a generic map: parentStepKey → ordered list of child fileIds.
+  // For each per-file step group, determine the appropriate parent:
+  //   1. Look for a matching top-level step with the same base name (e.g. "text_extraction")
+  //   2. Fall back to the "extraction" aggregate step
+  // This ensures future per-file step types are automatically grouped under their parent.
+  const topLevelStepKeys = new Set(topLevelSteps.map((s) => s.step));
+  const parentToFileIds = new Map<string, string[]>();
+
+  // Seed extraction's ordered fileIds from the backend files array when available
+  if (backendFiles && backendFiles.length > 0) {
+    parentToFileIds.set("extraction", backendFiles.map((f) => f.fileId));
+  }
+
+  for (const [fileId, group] of fileStepGroups.entries()) {
+    // Collect all base types present for this file group
+    const baseTypes = [
+      group.spatial ? "spatial_prepass" : null,
+      group.text ? "text_extraction" : null,
+      group.visual ? "visual_verification" : null,
+      ...group.others.map((s) => PER_FILE_STEP_RE.exec(s.step)?.[1] ?? null),
+    ].filter((t): t is string => t !== null);
+
+    // For each base type, find the parent top-level step
+    const assignedParents = new Set<string>();
+    for (const bt of baseTypes) {
+      const parentId = topLevelStepKeys.has(bt) ? bt : "extraction";
+      if (!assignedParents.has(parentId)) {
+        assignedParents.add(parentId);
+        if (!parentToFileIds.has(parentId)) parentToFileIds.set(parentId, []);
+        const arr = parentToFileIds.get(parentId)!;
+        if (!arr.includes(fileId)) arr.push(fileId);
+      }
+    }
+  }
+
+  const maxMs = Math.max(...topLevelSteps.map((s) => s.durationMs), 1);
 
   const STEP_COLORS: Record<string, string> = {
     project_info: "bg-blue-500",
@@ -75,9 +175,6 @@ function ProcessingTimeline({ steps }: { steps: ProcessingStep[] }) {
   };
 
   function getBarColor(step: string): string {
-    if (step.startsWith("text_extraction_")) return "bg-amber-400";
-    if (step.startsWith("visual_verification_")) return "bg-orange-400";
-    if (step.startsWith("spatial_prepass_")) return "bg-indigo-400";
     return STEP_COLORS[step] ?? "bg-muted-foreground";
   }
 
@@ -114,33 +211,205 @@ function ProcessingTimeline({ steps }: { steps: ProcessingStep[] }) {
     return parts.length > 0 ? parts.join(" · ") : null;
   }
 
+  // Build sub-row data for a given fileId
+  function buildFileSummary(fileId: string): FileSummary | null {
+    // Prefer backend-provided files array
+    if (backendFiles) {
+      const f = backendFiles.find((bf) => bf.fileId === fileId);
+      if (f) {
+        // Ensure classifiedPages has all required fields (backward compat with older jobs)
+        return {
+          ...f,
+          classifiedPages: {
+            floor_plan: f.classifiedPages?.floor_plan ?? 0,
+            sign_schedule: f.classifiedPages?.sign_schedule ?? 0,
+            both: (f.classifiedPages as Record<string, number>)?.both ?? 0,
+            unknown: (f.classifiedPages as Record<string, number>)?.unknown ?? 0,
+            excluded: (f.classifiedPages as Record<string, number>)?.excluded ?? 0,
+          },
+        };
+      }
+    }
+    // Fall back to assembling from per-file steps
+    const group = fileStepGroups.get(fileId);
+    if (!group) return null;
+    const spatialDetails = group.spatial?.details ?? {};
+    const textDetails = group.text?.details ?? {};
+    const fileName = group.text
+      ? (group.text.label.includes(" — ") ? group.text.label.split(" — ").slice(1).join(" — ") : group.text.label)
+      : group.spatial
+        ? (group.spatial.label.includes(" — ") ? group.spatial.label.split(" — ").slice(1).join(" — ") : group.spatial.label)
+        : fileId.slice(0, 8);
+    // Prefer nested classifiedPages (new schema) then fall back to flat legacy fields
+    const cp = (spatialDetails.classifiedPages as Record<string, number> | undefined) ?? {};
+    const fpCount = cp.floor_plan ?? (spatialDetails.floorPlan as number) ?? 0;
+    const ssCount = cp.sign_schedule ?? (spatialDetails.signSchedule as number) ?? 0;
+    const bothCount = cp.both ?? (spatialDetails.both as number) ?? 0;
+    const unknownCount = cp.unknown ?? (spatialDetails.unknown as number) ?? 0;
+    // Prefer excludedPages key, then legacy excluded key, then unknown count
+    const excludedCount = (spatialDetails.excludedPages as number) ?? cp.excluded ?? (spatialDetails.excluded as number) ?? unknownCount;
+    return {
+      fileId,
+      fileName,
+      pages: (spatialDetails.pages as number) ?? (textDetails.pages as number) ?? 0,
+      excludedPages: excludedCount,
+      classifiedPages: {
+        floor_plan: fpCount,
+        sign_schedule: ssCount,
+        both: bothCount,
+        unknown: unknownCount,
+        excluded: excludedCount,
+      },
+      textDurationMs: group.text?.durationMs ?? 0,
+      imageDurationMs: group.visual?.durationMs ?? 0,
+    };
+  }
+
+  function renderTopLevelRow(step: ProcessingStep) {
+    const widthPct = Math.max(2, (step.durationMs / maxMs) * 100);
+    const detailStr = formatDetails(step.details);
+    // Generic: render sub-rows for any parent step that has per-file children
+    const childFileIds = parentToFileIds.get(step.step) ?? [];
+    const hasSubRows = childFileIds.length > 0;
+    const borderColor = step.step === "extraction" ? "border-amber-500/30" : "border-muted-foreground/20";
+    return (
+      <div key={step.step}>
+        <div className="flex items-center gap-4" title={detailStr ?? undefined}>
+          <div className="w-56 shrink-0 text-sm text-foreground/80 truncate leading-tight">
+            {step.label}
+          </div>
+          <div className="flex-1 h-5 bg-muted/40 rounded overflow-hidden">
+            <div
+              className={`h-full rounded ${getBarColor(step.step)}`}
+              style={{ width: `${widthPct}%`, opacity: 0.75 }}
+            />
+          </div>
+          <div className="w-16 shrink-0 text-right text-sm font-mono text-foreground/70">
+            {formatDuration(step.durationMs)}
+          </div>
+          {detailStr && (
+            <div className="w-72 shrink-0 text-xs text-muted-foreground truncate">
+              {detailStr}
+            </div>
+          )}
+        </div>
+        {hasSubRows && (
+          <div className={`mt-1 space-y-1 pl-4 border-l-2 ${borderColor} ml-4`}>
+            {childFileIds.map((fileId) => renderFileSubRow(fileId, step.step))}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  // Parent-context-aware sub-row rendering.
+  // parentStepKey controls duration and details displayed:
+  //   "text_extraction"     → text-only duration, row count
+  //   "visual_verification" → visual-only duration, verifications count
+  //   "extraction" / other  → combined duration, classification badge + T/V breakdown
+  function renderFileSubRow(fileId: string, parentStepKey: string) {
+    const summary = buildFileSummary(fileId);
+    if (!summary) return null;
+
+    const group = fileStepGroups.get(fileId);
+    const visualSkipped = (group?.visual?.details?.skipped as boolean | undefined) ?? false;
+
+    let displayMs: number;
+    let detailContent: React.ReactNode;
+
+    const processedPages = summary.pages - summary.excludedPages;
+    const exclLabel = summary.excludedPages > 0
+      ? `${summary.excludedPages} unclassified`
+      : null;
+
+    if (parentStepKey === "text_extraction") {
+      displayMs = summary.textDurationMs;
+      const rows = group?.text?.details?.rows as number | undefined;
+      detailContent = (
+        <>
+          {processedPages} processed
+          {exclLabel && <span className="text-orange-400/80 ml-1">· {exclLabel} excl</span>}
+          {rows != null && <span className="ml-1 text-foreground/40">· {rows} rows</span>}
+        </>
+      );
+    } else if (parentStepKey === "visual_verification") {
+      displayMs = summary.imageDurationMs;
+      const verified = group?.visual?.details?.verified as number | undefined;
+      const discoveries = group?.visual?.details?.discoveries as number | undefined;
+      const classLabel = getClassificationLabel(summary.classifiedPages);
+      detailContent = visualSkipped
+        ? (
+          <>
+            <span className="inline-block bg-muted/60 rounded px-1 mr-1 text-[10px] font-medium text-foreground/60">
+              {classLabel}
+            </span>
+            <span className="text-muted-foreground/50">skipped</span>
+          </>
+        )
+        : (
+          <>
+            <span className="inline-block bg-muted/60 rounded px-1 mr-1 text-[10px] font-medium text-foreground/60">
+              {classLabel}
+            </span>
+            {processedPages} of {summary.pages} pg
+            {exclLabel && <span className="text-orange-400/80 ml-1">· {exclLabel} skipped</span>}
+            {verified != null && <span className="ml-1 text-foreground/40">· {verified} verified</span>}
+            {discoveries != null && discoveries > 0 && <span className="ml-1 text-foreground/40">· {discoveries} found</span>}
+          </>
+        );
+    } else {
+      displayMs = summary.textDurationMs + summary.imageDurationMs;
+      const classLabel = getClassificationLabel(summary.classifiedPages);
+      detailContent = (
+        <>
+          <span className="inline-block bg-muted/60 rounded px-1 mr-1 text-[10px] font-medium text-foreground/60">
+            {classLabel}
+          </span>
+          {processedPages} of {summary.pages} pg
+          {exclLabel && (
+            <span className="text-orange-400/80 ml-1">· {exclLabel} skipped</span>
+          )}
+          <span className="ml-1 text-foreground/40">
+            · T:{formatDuration(summary.textDurationMs)}
+            {" "}V:{visualSkipped ? "skip" : formatDuration(summary.imageDurationMs)}
+          </span>
+        </>
+      );
+    }
+
+    const subBarWidthPct = Math.max(2, (displayMs / maxMs) * 100);
+    const tooltipParts = [
+      summary.fileName,
+      `${summary.pages} pages`,
+      summary.excludedPages > 0 ? `${summary.excludedPages} excluded` : "",
+      `Text: ${formatDuration(summary.textDurationMs)}`,
+      visualSkipped ? "Visual: skipped" : `Visual: ${formatDuration(summary.imageDurationMs)}`,
+    ].filter(Boolean);
+
+    return (
+      <div key={fileId} className="flex items-center gap-3 py-0.5" title={tooltipParts.join(" · ")}>
+        <div className="w-52 shrink-0 text-xs text-foreground/70 truncate leading-tight pl-1">
+          {summary.fileName}
+        </div>
+        <div className="flex-1 h-3.5 bg-muted/30 rounded overflow-hidden">
+          <div
+            className="h-full rounded bg-amber-400/70"
+            style={{ width: `${subBarWidthPct}%` }}
+          />
+        </div>
+        <div className="w-16 shrink-0 text-right text-xs font-mono text-foreground/60">
+          {formatDuration(displayMs)}
+        </div>
+        <div className="w-72 shrink-0 text-xs text-muted-foreground truncate">
+          {detailContent}
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-2">
-      {filtered.map((step) => {
-        const widthPct = Math.max(2, (step.durationMs / maxMs) * 100);
-        const detailStr = formatDetails(step.details);
-        return (
-          <div key={step.step} className="flex items-center gap-4" title={detailStr ?? undefined}>
-            <div className="w-56 shrink-0 text-sm text-foreground/80 truncate leading-tight">
-              {step.label}
-            </div>
-            <div className="flex-1 h-5 bg-muted/40 rounded overflow-hidden">
-              <div
-                className={`h-full rounded ${getBarColor(step.step)}`}
-                style={{ width: `${widthPct}%`, opacity: 0.75 }}
-              />
-            </div>
-            <div className="w-16 shrink-0 text-right text-sm font-mono text-foreground/70">
-              {formatDuration(step.durationMs)}
-            </div>
-            {detailStr && (
-              <div className="w-72 shrink-0 text-xs text-muted-foreground truncate">
-                {detailStr}
-              </div>
-            )}
-          </div>
-        );
-      })}
+      {topLevelSteps.map((step) => renderTopLevelRow(step))}
       {total && (
         <div className="mt-4 pt-3 border-t border-border/60 flex items-center justify-between">
           <span className="text-sm text-muted-foreground font-display font-semibold uppercase tracking-wide">Total</span>

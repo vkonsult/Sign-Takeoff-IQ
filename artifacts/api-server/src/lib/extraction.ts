@@ -2546,24 +2546,32 @@ Pages:
   // Apply spatial page type overrides when provided.
   // The spatial classifier reads the bottom-right title block quadrant of each
   // page and is the highest-priority signal for floor_plan / sign_schedule /
-  // both classification.  "unknown" from spatial means fall through to the
-  // existing heuristic result.
+  // both classification.  "unknown" from spatial means the page is hard-excluded:
+  // it is forced to "other" and never eligible for heuristic re-promotion or
+  // outline-section boosts.
   //
   // After spatial overrides, outline-section boosts are applied as a lower-priority
   // signal: if a page is still classified as "other" but falls within an outline
   // section identified as a floor plan or sign schedule, its type is promoted.
+  // This boost is explicitly suppressed for spatially-unknown pages.
   const pages: typeof rawPages = rawPages.map((p) => {
     let type = p.type;
 
     // 1. Spatial override (highest priority)
+    const spatialType = spatialPageTypes?.get(p.pageNum);
     if (spatialPageTypes && spatialPageTypes.size > 0) {
-      const spatial = spatialPageTypes.get(p.pageNum);
-      if (spatial && spatial !== "unknown") {
+      if (spatialType === "unknown") {
+        // Hard-exclude: spatial pre-pass explicitly classified this page as unknown.
+        // Force to "other" so it is excluded from all sign-schedule and floor-plan
+        // Gemini extraction passes — no heuristic or outline fallback applies.
+        type = "other";
+        logger.debug({ pageNum: p.pageNum }, "Spatial hard-exclude: unknown page forced to other");
+      } else if (spatialType && spatialType !== "unknown") {
         logger.debug(
-          { pageNum: p.pageNum, spatial, heuristic: p.type },
+          { pageNum: p.pageNum, spatial: spatialType, heuristic: p.type },
           "Spatial override applied"
         );
-        type = spatial as PageType;
+        type = spatialType as PageType;
       }
     }
 
@@ -2574,9 +2582,11 @@ Pages:
     // Exception: preserve "both" pages since they are the most specific classification.
     // Skip if spatial already provided a definitive classification for this page —
     // spatial is higher priority and must not be overridden by outline sections.
-    const hasSpatialResult = spatialPageTypes?.get(p.pageNum) != null &&
-      spatialPageTypes.get(p.pageNum) !== "unknown";
-    if (!hasSpatialResult && pdfMeta.outlineSections.length > 0 && type !== "both") {
+    // Also skip if spatial explicitly classified the page as "unknown" — those pages
+    // are hard-excluded and outline sections must not re-introduce them.
+    const hasSpatialResult = spatialType != null && spatialType !== "unknown";
+    const isSpatiallyUnknown = spatialType === "unknown";
+    if (!hasSpatialResult && !isSpatiallyUnknown && pdfMeta.outlineSections.length > 0 && type !== "both") {
       const section = pdfMeta.outlineSections.find(
         (s) => p.pageNum >= s.pageStart && p.pageNum <= s.pageEnd
       );

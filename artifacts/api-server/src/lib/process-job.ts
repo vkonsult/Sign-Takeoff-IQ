@@ -246,6 +246,15 @@ export async function processJob(jobId: string): Promise<void> {
         imageResult: Awaited<ReturnType<typeof extractSignsFromPdfImageVerify>>;
         textDurationMs: number;
         imageDurationMs: number;
+        spatialData?: {
+          pages: number;
+          classified: number;
+          floorPlan: number;
+          signSchedule: number;
+          both: number;
+          unknown: number;
+          excluded: number;
+        };
       }
     | { ok: false; file: typeof files[number]; error: string };
 
@@ -268,6 +277,7 @@ export async function processJob(jobId: string): Promise<void> {
         // text-heuristic classification.  extractPagePhrases is cached so
         // subsequent calls (coord assignment) are free.
         let spatialPageTypes: Map<number, SpatialPageType> | undefined;
+        let fileSpatialData: { pages: number; classified: number; floorPlan: number; signSchedule: number; both: number; unknown: number; excluded: number } | undefined;
         const t_spatial = Date.now();
         try {
           const { getPdfPageCount } = await import("./pdf-words");
@@ -278,26 +288,47 @@ export async function processJob(jobId: string): Promise<void> {
               try {
                 const pageWords = await extractPagePhrases(file.storedPath, file.id, pageNum);
                 const spatialType = classifyPageFromPhrases(pageWords.phrases);
-                if (spatialType !== "unknown") {
-                  spatialPageTypes!.set(pageNum, spatialType);
-                }
+                // Store ALL page types including "unknown" — extraction.ts uses the
+                // "unknown" sentinel to hard-exclude pages from Gemini extraction passes.
+                spatialPageTypes!.set(pageNum, spatialType);
               } catch {
-                // individual page failures are non-fatal
+                // individual page failures are non-fatal: page remains unset in the map
               }
             })
           );
-          const floorPlanCount = [...spatialPageTypes.values()].filter((t) => t === "floor_plan" || t === "both").length;
-          const signScheduleCount = [...spatialPageTypes.values()].filter((t) => t === "sign_schedule" || t === "both").length;
+          const floorPlanCount = [...spatialPageTypes.values()].filter((t) => t === "floor_plan").length;
+          const signScheduleCount = [...spatialPageTypes.values()].filter((t) => t === "sign_schedule").length;
+          const bothCount = [...spatialPageTypes.values()].filter((t) => t === "both").length;
+          const unknownCount = [...spatialPageTypes.values()].filter((t) => t === "unknown").length;
+          // Pages that failed spatial classification entirely (not set in the map)
+          const unclassifiedCount = numPages - spatialPageTypes.size;
+          // Only pages explicitly classified as "unknown" are hard-excluded from extraction.
+          // Pages that failed spatial classification (unclassifiedCount) still go through
+          // heuristic classification inside extractSignsFromPdf, so they are NOT excluded.
+          const totalExcluded = unknownCount;
           logger.info(
             {
               jobId,
               file: file.originalName,
-              spatialClassified: spatialPageTypes.size,
+              pages: numPages,
               floorPlan: floorPlanCount,
               signSchedule: signScheduleCount,
+              both: bothCount,
+              unknown: unknownCount,
+              unclassified: unclassifiedCount,
+              excluded: totalExcluded,
             },
             "Spatial page classification complete"
           );
+          fileSpatialData = {
+            pages: numPages,
+            classified: floorPlanCount + signScheduleCount + bothCount,
+            floorPlan: floorPlanCount,
+            signSchedule: signScheduleCount,
+            unknown: unknownCount,
+            both: bothCount,
+            excluded: totalExcluded,
+          };
           pipelineSteps.push({
             step: `spatial_prepass_${file.id}`,
             label: filesToProcess.length > 1
@@ -307,9 +338,16 @@ export async function processJob(jobId: string): Promise<void> {
             startedAt: new Date(t_spatial).toISOString(),
             details: {
               pages: numPages,
-              classified: spatialPageTypes.size,
-              floorPlan: floorPlanCount,
-              signSchedule: signScheduleCount,
+              classified: floorPlanCount + signScheduleCount + bothCount,
+              excludedPages: totalExcluded,
+              // Nested classifiedPages for schema consistency with text/visual/extraction steps
+              classifiedPages: {
+                floor_plan: floorPlanCount,
+                sign_schedule: signScheduleCount,
+                both: bothCount,
+                unknown: unknownCount,
+                excluded: totalExcluded,
+              },
             },
           });
         } catch (err) {
@@ -472,7 +510,7 @@ export async function processJob(jobId: string): Promise<void> {
           .set({ pageCount: textResult.pageCount, extractedText: textResult.rawText.slice(0, 10000), pageStats: finalPageStats })
           .where(eq(jobFilesTable.id, file.id));
 
-        return { ok: true, file, textResult, imageResult, textDurationMs, imageDurationMs };
+        return { ok: true, file, textResult, imageResult, textDurationMs, imageDurationMs, spatialData: fileSpatialData };
       } catch (err) {
         logger.error({ err, fileId: file.id, fileName: file.originalName }, "File extraction failed");
         return { ok: false, file, error: String(err) };
@@ -481,10 +519,29 @@ export async function processJob(jobId: string): Promise<void> {
   );
 
   // Record overall extraction wall-clock time (files ran in parallel)
+  const extractionFileSummaries = fileResults
+    .filter((r): r is Extract<typeof r, { ok: true }> => r.ok)
+    .map((r) => ({
+      fileId: r.file.id,
+      fileName: r.file.originalName,
+      pages: r.spatialData?.pages ?? r.textResult.pageCount,
+      // excludedPages = only spatially "unknown" pages (hard-excluded from Gemini passes)
+      excludedPages: r.spatialData?.unknown ?? 0,
+      classifiedPages: {
+        floor_plan: r.spatialData?.floorPlan ?? 0,
+        sign_schedule: r.spatialData?.signSchedule ?? 0,
+        both: r.spatialData?.both ?? 0,
+        unknown: r.spatialData?.unknown ?? 0,
+        excluded: r.spatialData?.unknown ?? 0,
+      },
+      textDurationMs: r.textDurationMs,
+      imageDurationMs: r.imageDurationMs,
+    }));
   recordStep("extraction", "Sign extraction (all files)", t_extraction, {
     fileCount: filesToProcess.length,
     succeeded: fileResults.filter((r) => r.ok).length,
     failed: fileResults.filter((r) => !r.ok).length,
+    files: extractionFileSummaries,
   });
 
   // ── Merge parallel results into accumulator arrays ────────────────────────
@@ -494,7 +551,17 @@ export async function processJob(jobId: string): Promise<void> {
       continue;
     }
 
-    const { file, textResult, imageResult, textDurationMs, imageDurationMs } = result;
+    const { file, textResult, imageResult, textDurationMs, imageDurationMs, spatialData } = result;
+    const fileExcludedPages = spatialData?.unknown ?? 0;
+    const fileClassifiedPages = spatialData
+      ? {
+          floor_plan: spatialData.floorPlan,
+          sign_schedule: spatialData.signSchedule,
+          both: spatialData.both,
+          unknown: spatialData.unknown,
+          excluded: spatialData.unknown,
+        }
+      : undefined;
 
     // Record individual file steps so users can see per-file breakdown
     pipelineSteps.push({
@@ -504,7 +571,14 @@ export async function processJob(jobId: string): Promise<void> {
         : "Text extraction",
       durationMs: textDurationMs,
       startedAt: new Date(Date.now() - textDurationMs - imageDurationMs).toISOString(),
-      details: { rows: textResult.rows.length, pages: textResult.pageCount, inputTokens: textResult.inputTokens, outputTokens: textResult.outputTokens },
+      details: {
+        rows: textResult.rows.length,
+        pages: textResult.pageCount,
+        excludedPages: fileExcludedPages,
+        inputTokens: textResult.inputTokens,
+        outputTokens: textResult.outputTokens,
+        ...(fileClassifiedPages ? { classifiedPages: fileClassifiedPages } : {}),
+      },
     });
     pipelineSteps.push({
       step: `visual_verification_${file.id}`,
@@ -517,7 +591,9 @@ export async function processJob(jobId: string): Promise<void> {
         verified: imageResult.verifications?.length ?? 0,
         discoveries: imageResult.discoveries?.length ?? 0,
         skipped: imageResult.skipped ?? false,
+        excludedPages: fileExcludedPages,
         ...(imageResult.skipReason ? { skipReason: imageResult.skipReason } : {}),
+        ...(fileClassifiedPages ? { classifiedPages: fileClassifiedPages } : {}),
       },
     });
 
