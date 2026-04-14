@@ -452,6 +452,15 @@ interface PageViewerProps {
   setPageNumber: (p: number) => void;
   onTextSearchStatusChange: (status: "idle" | "found" | "not-found") => void;
   onRegisterResetAiPlacement?: (fn: (signId: string) => void) => void;
+  // Undo / Redo / Save — modal toolbar only
+  canUndo?: boolean;
+  canRedo?: boolean;
+  onUndo?: () => void;
+  onRedo?: () => void;
+  onSave?: () => void;
+  hasPendingChanges?: boolean;
+  batchSaving?: boolean;
+  pendingCount?: number;
 }
 
 function PageViewer({
@@ -472,6 +481,14 @@ function PageViewer({
   setPageNumber,
   onTextSearchStatusChange,
   onRegisterResetAiPlacement,
+  canUndo,
+  canRedo,
+  onUndo,
+  onRedo,
+  onSave,
+  hasPendingChanges,
+  batchSaving,
+  pendingCount,
 }: PageViewerProps) {
   // ── Image loading ──────────────────────────────────────────────────────────
   const pageImagePaths = file.pageStats?.pageImagePaths ?? null;
@@ -1040,27 +1057,27 @@ function PageViewer({
           )}
 
           {/* Undo / Redo / Save — modal only, grouped with debug */}
-          {mode === "modal" && (
+          {mode === "modal" && (onUndo || onRedo || onSave) && (
             <>
               <div className="w-px h-4 bg-border" />
               <button
-                disabled={historyStack.length === 0}
-                onClick={handleUndo}
+                disabled={!canUndo}
+                onClick={onUndo}
                 title="Undo (Ctrl+Z)"
                 className="p-1.5 rounded hover:bg-secondary disabled:opacity-25 transition-colors text-muted-foreground hover:text-foreground"
               >
                 <Undo2 className="w-4 h-4" />
               </button>
               <button
-                disabled={redoStack.length === 0}
-                onClick={handleRedo}
+                disabled={!canRedo}
+                onClick={onRedo}
                 title="Redo (Ctrl+Y)"
                 className="p-1.5 rounded hover:bg-secondary disabled:opacity-25 transition-colors text-muted-foreground hover:text-foreground"
               >
                 <Redo2 className="w-4 h-4" />
               </button>
               <button
-                onClick={handleBatchSave}
+                onClick={onSave}
                 disabled={!hasPendingChanges || batchSaving}
                 title={hasPendingChanges ? `Save ${pendingCount} pending change${pendingCount !== 1 ? "s" : ""}` : "No unsaved changes"}
                 className={`relative flex items-center gap-1.5 px-3 py-1.5 text-xs font-display font-bold uppercase tracking-wide rounded-lg transition-all ${
@@ -1071,9 +1088,9 @@ function PageViewer({
               >
                 {batchSaving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
                 Save
-                {hasPendingChanges && pendingCount > 0 && (
+                {hasPendingChanges && (pendingCount ?? 0) > 0 && (
                   <span className="absolute -top-1.5 -right-1.5 flex items-center justify-center w-4 h-4 rounded-full bg-destructive text-[9px] font-bold text-destructive-foreground leading-none">
-                    {pendingCount > 9 ? "9+" : pendingCount}
+                    {(pendingCount ?? 0) > 9 ? "9+" : pendingCount}
                   </span>
                 )}
               </button>
@@ -1976,6 +1993,14 @@ export function UnifiedPlanViewer({
       setPageNumber={setPageNumber}
       onTextSearchStatusChange={setTextSearchStatus}
       onRegisterResetAiPlacement={handleRegisterResetAiPlacement}
+      canUndo={historyStack.length > 0}
+      canRedo={redoStack.length > 0}
+      onUndo={handleUndo}
+      onRedo={handleRedo}
+      onSave={handleBatchSave}
+      hasPendingChanges={hasPendingChanges}
+      batchSaving={batchSaving}
+      pendingCount={pendingCount}
     />
   );
 
