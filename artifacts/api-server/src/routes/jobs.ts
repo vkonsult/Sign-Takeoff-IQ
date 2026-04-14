@@ -1124,6 +1124,8 @@ const VisualLocateSchema = z.object({
     typeToken: z.string().nullable().optional(),
     anchorX: z.number().min(0).max(1).nullable().optional(),
     anchorY: z.number().min(0).max(1).nullable().optional(),
+    xPos: z.number().min(0).max(1).nullable().optional(),
+    yPos: z.number().min(0).max(1).nullable().optional(),
   })).min(1).max(20),
 });
 
@@ -1161,14 +1163,35 @@ router.post("/jobs/:jobId/visual-locate", async (req, res) => {
       return;
     }
 
-    const results = await visualLocateDoors(
-      file.storedPath,
-      parsed.data.pageNumber,
-      parsed.data.signs,
-      ai,
+    const allSigns = parsed.data.signs;
+
+    // Signs that already have coordinates skip the Gemini call entirely.
+    const signsWithCoords = allSigns.filter(
+      (s) => s.xPos != null && s.yPos != null,
+    );
+    const signsNeedingLocate = allSigns.filter(
+      (s) => s.xPos == null || s.yPos == null,
     );
 
-    req.log.info({ jobId, pageNumber: parsed.data.pageNumber, signCount: parsed.data.signs.length }, "visual-locate complete");
+    // Return pre-existing coordinates as a single high-confidence candidate.
+    const preLocatedResults = signsWithCoords.map((s) => ({
+      signId: s.signId,
+      candidates: [{ x: s.xPos!, y: s.yPos!, description: "existing coordinates", confidence: 1 }],
+    }));
+
+    let geminiResults: Awaited<ReturnType<typeof visualLocateDoors>> = [];
+    if (signsNeedingLocate.length > 0) {
+      geminiResults = await visualLocateDoors(
+        file.storedPath,
+        parsed.data.pageNumber,
+        signsNeedingLocate,
+        ai,
+      );
+    }
+
+    const results = [...preLocatedResults, ...geminiResults];
+
+    req.log.info({ jobId, pageNumber: parsed.data.pageNumber, signCount: allSigns.length, skipped: signsWithCoords.length, located: signsNeedingLocate.length }, "visual-locate complete");
     res.json({ results });
   } catch (err) {
     req.log.error({ err, jobId }, "visual-locate failed");

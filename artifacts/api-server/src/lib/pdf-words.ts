@@ -1006,7 +1006,16 @@ export async function extractPdfMetadata(
   // When the PDF has no bookmarks at all and a Gemini callback is provided,
   // extract the first ~3 lines of text from each page and ask Gemini which
   // pages are signage-related.
-  if (!hasBookmarks && geminiCallFn) {
+  // Single-page shortcut: if there's only one page, skip the Gemini call and
+  // treat that page as a signage page directly.
+  if (!hasBookmarks && numPages === 1) {
+    outlineSections.push({
+      title: "Signage Page 1",
+      pageStart: 1,
+      pageEnd: 1,
+      type: "sign_schedule",
+    });
+  } else if (!hasBookmarks && geminiCallFn) {
     try {
       const pageTexts: Array<{ pageNum: number; text: string }> = [];
       for (let pageNum = 1; pageNum <= numPages; pageNum++) {
