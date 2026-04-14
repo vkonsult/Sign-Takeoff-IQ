@@ -369,14 +369,13 @@ export async function processJob(jobId: string): Promise<void> {
           ...textResult.pageStats.signSchedulePages,
         ]);
 
-        // ── PNG pre-render: rasterize ALL relevant pages ──────────────────────
-        // Includes floor_plan, both, AND sign_schedule pages so the Gemini
-        // PNG fast-path can always use images for every relevant page.
+        // ── PNG pre-render: rasterize floor_plan and "both" pages only ─────────
+        // Sign schedule pages don't need PNGs — they're not rendered in the
+        // viewer and coordinate matching only needs floor plan imagery.
         // Run BEFORE verification.  Failures are non-fatal.
         const pngPageNumsSet = new Set([
           ...textResult.pageStats.floorPlanPages,
           ...(textResult.pageStats.bothPages ?? []),
-          ...textResult.pageStats.signSchedulePages,
         ]);
         const pngPageNums = Array.from(pngPageNumsSet).sort((a, b) => a - b);
         // pageImagePathsRelative: stored in DB (relative paths, no filesystem disclosure)
