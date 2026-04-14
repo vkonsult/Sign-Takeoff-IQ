@@ -981,6 +981,73 @@ Do not include any other text or explanation.`;
       }
     }
 
+    // ── Null-coord fallback pass ────────────────────────────────────────────────
+    // Text rows with no word-match coordinates (xPos/yPos == null) are skipped by
+    // the spatial match above. Give them a second chance: match by sign-type
+    // affinity against unmatched callouts on the same page, or fall back to a
+    // greedy assignment when there is exactly one unmatched callout on the page.
+    function coarseSignTypeGroup(signType: string | null | undefined): string {
+      if (!signType) return "";
+      const t = signType.toLowerCase();
+      if (t.includes("room id")) return "room_id";
+      if (t.includes("exit")) return "exit";
+      if (t.includes("restroom") || t.includes("accessibility") || t.includes("accessible parking")) return "accessible";
+      if (t.includes("stair")) return "stair";
+      if (t.includes("elevator")) return "elevator";
+      if (t.includes("fire") || t.includes("standpipe")) return "fire_safety";
+      if (t.includes("wayfinding") || t.includes("directional")) return "wayfinding";
+      return "";
+    }
+
+    for (const row of textRows) {
+      if (row.jobFileId !== fileId) continue;
+      if (matchedRowSet.has(row)) continue;
+      if (row.xPos != null && row.yPos != null) continue;
+
+      const pageCallouts = calloutsByPage.get(row.pageNumber ?? 1) ?? [];
+      const unmatchedCallouts = pageCallouts.filter((c) => calloutMatches.get(c)!.length === 0);
+      if (unmatchedCallouts.length === 0) continue;
+
+      const rowGroup = coarseSignTypeGroup(row.signType);
+
+      let bestCallout: GeminiCallout | null = null;
+      let bestScore = -1;
+      for (const c of unmatchedCallouts) {
+        const cGroup = coarseSignTypeGroup(c.sign_type);
+        const score = rowGroup && cGroup && rowGroup === cGroup ? 2 : 0;
+        if (score > bestScore || (score === bestScore && bestCallout && c.confidence > bestCallout.confidence)) {
+          bestScore = score;
+          bestCallout = c;
+        }
+      }
+
+      if (bestScore <= 0 && unmatchedCallouts.length === 1) {
+        bestCallout = unmatchedCallouts[0]!;
+      } else if (bestScore <= 0) {
+        bestCallout = null;
+      }
+
+      if (!bestCallout) continue;
+
+      const { cx, cy } = calloutCenter(bestCallout);
+      const newConf = Math.min(1.0, (row.confidenceScore ?? 0) + 0.08);
+      const updatedRow: InsertExtractedSign = {
+        ...row,
+        xPos: cx,
+        yPos: cy,
+        aiBboxX: bestCallout.bbox_x,
+        aiBboxY: bestCallout.bbox_y,
+        aiBboxW: bestCallout.bbox_w,
+        aiBboxH: bestCallout.bbox_h,
+        confidenceScore: newConf,
+        reviewFlag: newConf < 0.75 ? true : false,
+      };
+      const rowIdx = textRows.indexOf(row);
+      if (rowIdx !== -1) textRows[rowIdx] = updatedRow;
+      calloutMatches.get(bestCallout)!.push(row);
+      matchedRowSet.add(row);
+    }
+
     // Build the final set of text rows (may discard duplicates)
     const keptRows = new Set<InsertExtractedSign>();
     const discardedRows = new Set<InsertExtractedSign>();
