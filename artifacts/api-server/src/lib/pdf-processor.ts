@@ -26,6 +26,7 @@ import {
   matchLocationToCoords,
   classifyPageFromPhrases,
   extractFloorLevelName,
+  extractPdfMetadata,
   type PdfPhrase,
   type FloorPlanBbox,
   type SpatialPageType,
@@ -131,6 +132,7 @@ export async function runPdfProcessor(jobId: string): Promise<void> {
         // ── Spatial pre-pass ──────────────────────────────────────────────
         let spatialPageTypes: Map<number, SpatialPageType> | undefined;
         let spatialFloorLevelNames: Map<number, string> | undefined;
+        let bookmarkTitles: Record<number, string> | undefined;
         const t_spatial = Date.now();
         try {
           const { getPdfPageCount } = await import("./pdf-words");
@@ -138,11 +140,46 @@ export async function runPdfProcessor(jobId: string): Promise<void> {
           spatialPageTypes = new Map<number, SpatialPageType>();
           spatialFloorLevelNames = new Map<number, string>();
 
+          // ── Bookmark extraction ────────────────────────────────────────
+          // Load PDF outline to build a pageNum→bookmark map (title + classified type).
+          // Bookmark classification is the primary signal; phrase-based
+          // classification is the fallback when no bookmark covers a page.
+          const bookmarkPageMap = new Map<number, { title: string; type: "floor_plan" | "sign_schedule" | "other" | null }>();
+          try {
+            const pdfMeta = await extractPdfMetadata(file.storedPath);
+            for (const section of pdfMeta.outlineSections) {
+              for (let p = section.pageStart; p <= section.pageEnd; p++) {
+                if (!bookmarkPageMap.has(p)) {
+                  bookmarkPageMap.set(p, { title: section.title, type: section.type });
+                }
+              }
+            }
+          } catch (err) {
+            logger.warn({ err, file: file.originalName }, "[PDF Processor] Bookmark extraction failed — falling back to phrase classification");
+          }
+
           await Promise.all(
             Array.from({ length: numPages }, (_, i) => i + 1).map(async (pageNum) => {
               try {
                 const pageWords = await extractPagePhrases(file.storedPath, file.id, pageNum);
-                const spatialType = classifyPageFromPhrases(pageWords.phrases);
+
+                let spatialType: SpatialPageType;
+                const bookmark = bookmarkPageMap.get(pageNum);
+
+                if (bookmark) {
+                  // Primary signal: bookmark covers this page — use its classification directly.
+                  // "floor_plan" and "sign_schedule" map directly to SpatialPageType.
+                  // "other" and null map to "unknown" (page is excluded, not re-promoted).
+                  if (bookmark.type === "floor_plan" || bookmark.type === "sign_schedule") {
+                    spatialType = bookmark.type as SpatialPageType;
+                  } else {
+                    spatialType = "unknown";
+                  }
+                } else {
+                  // No bookmark covers this page — fall back to phrase-based classification.
+                  spatialType = classifyPageFromPhrases(pageWords.phrases);
+                }
+
                 spatialPageTypes!.set(pageNum, spatialType);
                 if (spatialType === "floor_plan" || spatialType === "both") {
                   const levelName = extractFloorLevelName(pageWords.phrases);
@@ -153,6 +190,14 @@ export async function runPdfProcessor(jobId: string): Promise<void> {
               }
             })
           );
+
+          // Build bookmarkTitles record for pageStats
+          if (bookmarkPageMap.size > 0) {
+            bookmarkTitles = {};
+            for (const [pageNum, bm] of bookmarkPageMap) {
+              bookmarkTitles[pageNum] = bm.title;
+            }
+          }
 
           const floorPlanCount = [...spatialPageTypes.values()].filter((t) => t === "floor_plan").length;
           const bothCount = [...spatialPageTypes.values()].filter((t) => t === "both").length;
@@ -169,7 +214,7 @@ export async function runPdfProcessor(jobId: string): Promise<void> {
             label: filesToProcess.length > 1 ? `Spatial pre-pass — ${file.originalName}` : "Spatial pre-pass",
             durationMs: Date.now() - t_spatial,
             startedAt: new Date(t_spatial).toISOString(),
-            details: { pages: numPages, floorPlan: floorPlanCount, both: bothCount },
+            details: { pages: numPages, floorPlan: floorPlanCount, both: bothCount, bookmarks: bookmarkPageMap.size },
           });
         } catch (err) {
           logger.warn({ err, file: file.originalName }, "[PDF Processor] Spatial pre-pass failed");
@@ -244,7 +289,8 @@ export async function runPdfProcessor(jobId: string): Promise<void> {
         // These become the initial sign data for the job (dataSource: "pdf").
         try {
           const t_heuristic = Date.now();
-          const { rows: heuristicRows } = await extractSignsHeuristic(file.storedPath, file.id);
+          const fpPagesForHeuristic = fileFloorPlanPages.get(file.id);
+          const { rows: heuristicRows } = await extractSignsHeuristic(file.storedPath, file.id, fpPagesForHeuristic);
           if (heuristicRows.length > 0) {
             const insertRows = heuristicRows.map((row) => ({
               ...row,
@@ -276,6 +322,7 @@ export async function runPdfProcessor(jobId: string): Promise<void> {
           otherPages,
           ...(pageImagePathsRelative ? { pageImagePaths: pageImagePathsRelative } : {}),
           ...(floorPageLevels ? { floorPageLevels } : {}),
+          ...(bookmarkTitles ? { bookmarkTitles } : {}),
         };
 
         await db

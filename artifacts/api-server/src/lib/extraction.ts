@@ -3,6 +3,22 @@ import { z } from "zod";
 import { logger } from "./logger";
 import { extractPdfMetadata, buildPageTextsFromPhraseCache, getPdfPageCount } from "./pdf-words";
 import type { PdfOutlineSection } from "./pdf-words";
+import {
+  FLOOR_PLAN_INCLUSION_PHRASES,
+  FLOOR_PLAN_EXCLUSION_PHRASES,
+  SIGN_SCHEDULE_PHRASES,
+  CANONICAL_LEVEL_NAMES,
+} from "./sign-vocabulary";
+
+// ── Shared vocabulary–derived prompt fragments ────────────────────────────────
+// Built once at module load from the canonical level names list so prompts
+// automatically reflect any future vocabulary changes.
+const LEVEL_NAMES_PIPE = CANONICAL_LEVEL_NAMES
+  .map((n) => n.replace(/\b\w/g, (c) => c.toUpperCase()))
+  .join(" | ");
+const LEVEL_NAMES_CONJUNCTION = CANONICAL_LEVEL_NAMES
+  .map((n) => n.replace(/\b\w/g, (c) => c.toUpperCase()))
+  .join(", ");
 
 // ── Module-level cache for PDF text extraction ────────────────────────────────
 // PDF files are immutable once uploaded, so caching by path is safe.
@@ -90,10 +106,10 @@ DEDUPLICATION RULES:
 - Do NOT output a sign entry solely because it is code-required for that occupancy type if no actual sign symbol or annotation is visible in the document.
 
 SIGN SCHEDULE / SPECIFICATION PAGES:
-When you encounter a structured sign schedule table (even if split across multiple columns), extract every row. If the table has separate columns per floor/level (e.g. "Lower Level | Main Level | Upper Level"), treat each column independently and include the floor/level name in the location.
+When you encounter a structured sign schedule table (even if split across multiple columns), extract every row. If the table has separate columns per floor/level (e.g. "${LEVEL_NAMES_PIPE}"), treat each column independently and include the floor/level name in the location.
 
 MULTI-COLUMN / MULTI-FLOOR SCHEDULE TABLES:
-When a page contains parallel floor-level columns (e.g. "Signage Schedule - Lower Level", "Signage Schedule - Main Level", "Signage Schedule - Upper Level" side by side):
+When a page contains parallel floor-level columns (e.g. ${CANONICAL_LEVEL_NAMES.map((n) => `"Signage Schedule - ${n.replace(/\b\w/g, (c) => c.toUpperCase())}"`).join(", ")} side by side):
 - Process each column independently from left to right.
 - Within each column, room sections appear as room-number + room-name headings (e.g. "101" followed by "PORCH", or "201 STAIR / ELEVATOR LOBBY"). Use the most recent room section heading as the location for all sign rows beneath it until the next room heading.
 - Sign rows follow the pattern: [Sign Type Code] [Quantity] [Signage Text] [Glass Backer: Yes/No] [Comments].
@@ -102,7 +118,7 @@ When a page contains parallel floor-level columns (e.g. "Signage Schedule - Lowe
 - If the Glass Backer column is "Yes", append "glass backer" to the materials field.
 - If there are comment letter codes (A, B, G, etc.), append them to the notes field as "Comment: A" etc.
 - A "Typical Sign Types" diagram column may appear on the far right with dimension callouts (e.g. "6 1/2\"", "8 1/4\"", "11\"", "7 1/2\""). Associate these dimensions with the corresponding sign type codes shown in the diagram (e.g. type 1A = "6 1/2\" x 8 1/4\"") and use them to populate the dimensions field for rows with that type code.
-- Include the floor/level name in the location, e.g. "101 PORCH — Lower Level", "201 STAIR / ELEVATOR LOBBY — Main Level".
+- Include the floor/level name in the location, e.g. "101 PORCH — ${CANONICAL_LEVEL_NAMES[0]?.replace(/\b\w/g, (c) => c.toUpperCase()) ?? "Lower Level"}", "201 STAIR / ELEVATOR LOBBY — ${CANONICAL_LEVEL_NAMES[1]?.replace(/\b\w/g, (c) => c.toUpperCase()) ?? "Main Level"}".
 
 CSI SPECIFICATION SECTION PAGES (e.g. Section 10 14 00 SIGNAGE):
 When the document is a CSI-format specification section listing sign type definitions (e.g. "Types 1A and 1B Interior Room Signage", "Type 3A Interior Wayfinding Signage"):
@@ -696,15 +712,7 @@ function scoreForLegendPage(text: string): number {
 // because they appear throughout any multi-page architectural document.
 // scoreForFloorPlan counts 1 per unique match (not per occurrence) to
 // prevent score inflation from repeated room labels.
-const FLOOR_PLAN_KEYWORDS = [
-  // Explicit floor-plan terminology
-  "floor plan", "plan view", "partition", "floor level",
-  // Drawing-sheet room-code abbreviations (appear as labels on plan drawings)
-  "rm.", " rm ", "stair 1", "stair 2", "stair 3",
-  "elev.", "elev 1", "elev 2",
-  // Code-compliance markers drawn on floor plans (fire exit / pull station symbols)
-  "f.e.", "fire exit", "fire extinguisher", "pull station",
-];
+const FLOOR_PLAN_KEYWORDS = FLOOR_PLAN_INCLUSION_PHRASES;
 
 const SIGN_SCHEDULE_KEYWORDS = [
   // Standard sign schedule terminology
@@ -874,35 +882,12 @@ const OTHER_TITLE_KEYWORDS_NUMBER_REQUIRED: string[] = [
 ];
 
 // Title keywords that clearly mark a page as a floor plan.
-const FLOOR_PLAN_TITLE_KEYWORDS: string[] = [
-  "floor plan",
-  "level plan",
-  "first floor plan",
-  "second floor plan",
-  "third floor plan",
-  "fourth floor plan",
-  "fifth floor plan",
-  "ground floor plan",
-  "basement plan",
-  "mezzanine plan",
-  "penthouse plan",
-  "parking plan",
-];
+// Imported from sign-vocabulary.ts — single source of truth.
+const FLOOR_PLAN_TITLE_KEYWORDS = FLOOR_PLAN_INCLUSION_PHRASES;
 
 // Title keywords that clearly mark a page as a sign schedule.
-// These are specific enough to be trusted standalone (no drawing-number required).
-const SIGN_SCHEDULE_TITLE_KEYWORDS: string[] = [
-  "sign schedule",
-  "signage schedule",
-  "sign plan",
-  "sign detail",
-  "signage detail",
-  "sign elevation",
-  "sign criteria",
-  "signage criteria",
-  "sign program",
-  "signage program",
-];
+// Imported from sign-vocabulary.ts — single source of truth.
+const SIGN_SCHEDULE_TITLE_KEYWORDS = SIGN_SCHEDULE_PHRASES;
 
 /**
  * Attempt to classify a page using the drawing title block.
@@ -931,7 +916,9 @@ function detectTitleBlock(text: string): TitleBlockType {
 
   // Gather presence flags up front (reused across all steps).
   const hasFpNumber = FLOOR_PLAN_DRAWING_NUMBER_PATTERNS.some((p) => p.test(text));
-  const hasFpTitle = FLOOR_PLAN_TITLE_KEYWORDS.some((kw) => upper.includes(kw.toUpperCase()));
+  // Apply shared exclusion veto: if any exclusion phrase matches, floor-plan title is vetoed.
+  const hasExclusion = FLOOR_PLAN_EXCLUSION_PHRASES.some((kw) => upper.includes(kw.toUpperCase()));
+  const hasFpTitle = !hasExclusion && FLOOR_PLAN_TITLE_KEYWORDS.some((kw) => upper.includes(kw.toUpperCase()));
   const hasOtherNumber = OTHER_DRAWING_NUMBER_PATTERNS.some((p) => p.test(text));
   const hasAnyNumber = hasFpNumber || hasOtherNumber;
   const hasSignScheduleTitle = SIGN_SCHEDULE_TITLE_KEYWORDS.some((kw) => upper.includes(kw.toUpperCase()));
@@ -1575,10 +1562,10 @@ LEGEND EXCLUSION — READ CAREFULLY:
 - Exception: sign SCHEDULE tables (rows listing sign IDs with quantities and locations) ARE valid — extract every row.
 
 MULTI-COLUMN SIGNAGE SCHEDULE SHEETS:
-If the page is a wide drawing sheet with parallel floor-level columns (e.g. "Signage Schedule - Lower Level", "Signage Schedule - Main Level", "Signage Schedule - Upper Level" side by side), read each column independently:
+If the page is a wide drawing sheet with parallel floor-level columns (e.g. ${CANONICAL_LEVEL_NAMES.map((n) => `"Signage Schedule - ${n.replace(/\b\w/g, (c) => c.toUpperCase())}"`).join(", ")} side by side), read each column independently:
 - Room section headings (larger/bolder text with a room number and name, e.g. "101 PORCH", "201 STAIR / ELEVATOR LOBBY") define the location for all sign rows beneath them in that column until the next room heading.
 - Sign rows follow the pattern: [Type Code] [Qty] [Signage Text] [Glass Backer Yes/No] [Comment codes].
-- Include the floor/level name in the location, e.g. "101 PORCH — Lower Level".
+- Include the floor/level name in the location, e.g. "101 PORCH — ${CANONICAL_LEVEL_NAMES[0]?.replace(/\b\w/g, (c) => c.toUpperCase()) ?? "Lower Level"}".
 - A "TYPICAL SIGN TYPES" diagram on the right shows dimension callouts (e.g. "6 1/2\"", "8 1/4\"", "11\"") per type code — read these and populate the dimensions field for matching type codes.
 - "Glass Backer: Yes" → add "glass backer" to materials. Comment codes (A, B, G) → add to notes.
 - Set x_position and y_position to null for schedule rows.

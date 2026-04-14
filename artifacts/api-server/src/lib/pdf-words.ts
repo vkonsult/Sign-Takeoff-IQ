@@ -1,4 +1,10 @@
 import fs from "fs/promises";
+import {
+  FLOOR_PLAN_INCLUSION_PHRASES,
+  FLOOR_PLAN_EXCLUSION_PHRASES,
+  SIGN_SCHEDULE_PHRASES,
+  CANONICAL_LEVEL_NAMES as CANONICAL_LEVEL_NAMES_FROM_VOCAB,
+} from "./sign-vocabulary";
 
 export interface PdfPhrase {
   text: string;
@@ -701,53 +707,11 @@ export function detectFloorPlanBbox(phrases: PdfPhrase[]): FloorPlanBbox | null 
 // ── Spatial page-type classification ─────────────────────────────────────────
 // Title phrases that unambiguously identify a floor plan when found in the
 // bottom-right title block region (x > 0.60 AND y > 0.60 in normalised coords).
-// Matching uses substring/includes so "FIRST FLOOR PLAN - OVERALL" triggers on
-// "first floor plan".
-const SPATIAL_FLOOR_PLAN_TITLE_PHRASES: string[] = [
-  "floor plan",
-  "level plan",
-  "first floor plan",
-  "second floor plan",
-  "third floor plan",
-  "fourth floor plan",
-  "fifth floor plan",
-  "ground floor plan",
-  "basement plan",
-  "mezzanine plan",
-  "penthouse plan",
-  "parking plan",
-  "sanctuary floor plan",
-  "chapel floor plan",
-  "classroom plan",
-  "level 1 plan",
-  "level 2 plan",
-  "level 3 plan",
-  "level 4 plan",
-  "level 5 plan",
-  // Multi-level floor plan titles — must appear BEFORE the sign-schedule scorer
-  "lower level floor plan",
-  "main level floor plan",
-  "upper level floor plan",
-  "attic floor plan",
-  "lower level",
-  "main level",
-  "upper level",
-  "attic",
-];
+// Imported from sign-vocabulary.ts — do not duplicate lists here.
+// The catch-all "* level plan" pattern is handled dynamically in the classifier.
 
 // Title phrases that unambiguously identify a sign schedule in the title block.
-const SPATIAL_SIGN_SCHEDULE_TITLE_PHRASES: string[] = [
-  "sign schedule",
-  "signage schedule",
-  "sign plan",
-  "sign detail",
-  "signage detail",
-  "sign elevation",
-  "sign criteria",
-  "signage criteria",
-  "sign program",
-  "signage program",
-];
+// Imported from sign-vocabulary.ts — do not duplicate lists here.
 
 export type SpatialPageType = "floor_plan" | "sign_schedule" | "both" | "unknown";
 
@@ -790,10 +754,20 @@ export function classifyPageFromPhrases(phrases: PdfPhrase[]): SpatialPageType {
 
   const combined = titleBlockPhrases.map((p) => p.text).join(" ").toLowerCase();
 
-  const hasFpPhrase = SPATIAL_FLOOR_PLAN_TITLE_PHRASES.some((phrase) =>
+  // Step 1: Apply exclusion veto — if any exclusion phrase matches, this is not a floor plan.
+  const hasExclusion = FLOOR_PLAN_EXCLUSION_PHRASES.some((phrase) =>
     combined.includes(phrase.toLowerCase())
   );
-  const hasSsPhrase = SPATIAL_SIGN_SCHEDULE_TITLE_PHRASES.some((phrase) =>
+
+  // Step 2: Check inclusion phrases (from shared vocabulary).
+  // Also apply a catch-all: any "<word> level plan" pattern.
+  const LEVEL_PLAN_RE = /\b\w+ level plan\b/;
+  const hasFpPhrase = !hasExclusion && (
+    FLOOR_PLAN_INCLUSION_PHRASES.some((phrase) => combined.includes(phrase.toLowerCase()))
+    || LEVEL_PLAN_RE.test(combined)
+  );
+
+  const hasSsPhrase = SIGN_SCHEDULE_PHRASES.some((phrase) =>
     combined.includes(phrase.toLowerCase())
   );
 
@@ -806,13 +780,9 @@ export function classifyPageFromPhrases(phrases: PdfPhrase[]): SpatialPageType {
 /**
  * Canonical floor-level names in heuristic ascending order
  * (lower → main → upper → attic).  Used for level detection and fallback ordering.
+ * Re-exported from sign-vocabulary.ts for backwards compatibility.
  */
-export const CANONICAL_LEVEL_NAMES = [
-  "lower level",
-  "main level",
-  "upper level",
-  "attic",
-] as const;
+export const CANONICAL_LEVEL_NAMES = CANONICAL_LEVEL_NAMES_FROM_VOCAB;
 
 /**
  * Extract a normalized floor level name from the title-block phrases of a page
@@ -966,19 +936,21 @@ function isSignageLeaf(title: string): boolean {
 
 function classifyOutlineSection(title: string): PdfOutlineSection["type"] {
   const t = title.toLowerCase();
-  const SS_PATTERNS = [
-    "sign schedule", "signage", "sign spec", "sign legend",
-    "sign program", "sign list", "sign detail", "signage plan",
-    "signs",
-  ];
-  const FP_PATTERNS = [
-    "floor plan", "floor plans", "level", "first floor", "second floor",
-    "third floor", "ground floor", "basement", "site plan", "overall plan",
-    "roof plan", "mezzanine",
-    "lower level", "main level", "upper level", "attic",
-  ];
-  if (SS_PATTERNS.some((p) => t.includes(p))) return "sign_schedule";
-  if (FP_PATTERNS.some((p) => t.includes(p))) return "floor_plan";
+
+  // Apply exclusion veto first — if any exclusion phrase matches, this is not a floor plan.
+  const hasExclusion = FLOOR_PLAN_EXCLUSION_PHRASES.some((p) => t.includes(p.toLowerCase()));
+
+  // Check sign schedule patterns from shared vocabulary.
+  if (SIGN_SCHEDULE_PHRASES.some((p) => t.includes(p.toLowerCase()))) return "sign_schedule";
+
+  // Check floor plan inclusion patterns from shared vocabulary only.
+  // Catch-all: any "<word> level plan" pattern (e.g. "sanctuary level plan").
+  const LEVEL_PLAN_RE = /\b\w+ level plan\b/;
+  if (!hasExclusion && (
+    FLOOR_PLAN_INCLUSION_PHRASES.some((p) => t.includes(p.toLowerCase()))
+    || LEVEL_PLAN_RE.test(t)
+  )) return "floor_plan";
+
   return "other";
 }
 

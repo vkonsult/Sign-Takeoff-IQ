@@ -15,6 +15,7 @@
  */
 
 import { extractPagePhrases, getPdfPageCount } from "./pdf-words";
+import { ROOM_LABEL_MAP } from "./sign-vocabulary";
 import { logger } from "./logger";
 
 // ── Regex patterns (ported from Python) ──────────────────────────────────────
@@ -61,15 +62,25 @@ function classifySign(roomId: string, roomType: string): SignClassification {
     const bedsLabel = beds[ut] ?? "";
     return { signType: `${bedsLabel} UNIT SIGN`.trim(), notes: "Suite ID Sign" };
   }
-  if (rt.includes("LOBBY"))       return { signType: "LOBBY SIGN",            notes: "Directory / Lobby ID Sign" };
-  if (rt.includes("MECH"))        return { signType: "MECHANICAL ROOM SIGN",  notes: "Hazard / ID Sign" };
-  if (rt.includes("ELEC"))        return { signType: "ELECTRICAL ROOM SIGN",  notes: "Hazard / ID Sign" };
-  if (rt.includes("STAIR") || /^[AB]S/.test(rid))
-                                   return { signType: "STAIRWELL SIGN",        notes: "Egress Sign" };
-  if (rt.includes("ELEV EQUIP"))  return { signType: "ELEV EQUIPMENT SIGN",   notes: "Elevator ID Sign" };
-  if (rt.includes("ELEV"))        return { signType: "ELEVATOR SIGN",         notes: "Elevator ID Sign" };
-  if (rt.includes("TENANT STOR")) return { signType: "TENANT STORAGE SIGN",   notes: "Room ID Sign" };
-  if (rt.includes("CORR"))        return { signType: "CORRIDOR SIGN",         notes: "Wayfinding Sign" };
+
+  // Stairwell: check roomId prefix pattern before ROOM_LABEL_MAP lookup
+  // (legacy A401-style IDs like "AS1-4" → STAIR come via SERVICE_LABEL_MAP → roomType)
+  if (/^[AB]S/.test(rid)) {
+    return { signType: "STAIRWELL SIGN", notes: "Egress Sign" };
+  }
+
+  // Use ROOM_LABEL_MAP for all other sign type classification.
+  // Check each token of the room type string against the map.
+  const tokens = rt.toLowerCase().split(/\s+/);
+  for (const token of tokens) {
+    const signType = ROOM_LABEL_MAP[token];
+    if (signType) return { signType, notes: "Room ID Sign" };
+  }
+
+  // Legacy special cases not covered by ROOM_LABEL_MAP tokens.
+  if (rt.includes("ELEV EQUIP"))  return { signType: "ELEV EQUIPMENT SIGN",  notes: "Elevator ID Sign" };
+  if (rt.includes("TENANT STOR")) return { signType: "TENANT STORAGE SIGN",  notes: "Room ID Sign" };
+
   return { signType: "ROOM ID SIGN", notes: "Room ID Sign" };
 }
 
@@ -209,6 +220,184 @@ function extractRoomsFromWords(words: Word[], pageNum: number): ExtractedRoom[] 
   return rooms;
 }
 
+// ── Institutional/church floor plan room-pair extraction ──────────────────────
+
+/**
+ * Phrase record with position in pts for spatial proximity checks.
+ */
+interface PhraseRecord {
+  text: string;
+  cx_pts: number;   // center x in pts
+  cy_pts: number;   // center y in pts
+  nx: number;       // normalized x
+  ny: number;       // normalized y
+}
+
+/**
+ * Noise-filter: returns true if the phrase should be skipped.
+ * Skips: purely numeric, drawing-reference codes like A123, dimension strings,
+ * or phrases shorter than 2 characters.
+ */
+function isNoisyPhrase(text: string): boolean {
+  const t = text.trim();
+  if (t.length < 2) return true;
+  // Purely numeric
+  if (/^[0-9]+$/.test(t)) return true;
+  // Drawing reference code: single uppercase letter + 2-3 digits
+  if (/^[A-Z][0-9]{2,3}$/.test(t)) return true;
+  // Dimension string: contains ', ", /, or only digits+units like "6'-8""
+  if (/['"/]/.test(t)) return true;
+  if (/^[0-9]+(\.?[0-9]*)?(\s*[a-z]{0,3})?$/i.test(t) && /[0-9]/.test(t)) return true;
+  return false;
+}
+
+/**
+ * Look up sign type from ROOM_LABEL_MAP by checking each token in the phrase.
+ * Returns the sign type string, or null if no token matches.
+ */
+function lookupRoomLabelMap(text: string): string | null {
+  const tokens = text.toLowerCase().trim().split(/\s+/);
+  for (const token of tokens) {
+    const clean = token.replace(/[^a-z']/g, "");
+    if (ROOM_LABEL_MAP[clean]) return ROOM_LABEL_MAP[clean]!;
+    if (ROOM_LABEL_MAP[token]) return ROOM_LABEL_MAP[token]!;
+  }
+  return null;
+}
+
+/**
+ * Return true if the phrase is a useful companion (not a match in ROOM_LABEL_MAP itself
+ * but contains enough alphabetic characters to be a room name label).
+ */
+function isValidCompanion(text: string): boolean {
+  const alphaCount = (text.match(/[a-zA-Z]/g) || []).length;
+  return alphaCount >= 3;
+}
+
+/**
+ * Extract institutional/church room sign pairs from floor plan pages using
+ * spatial proximity matching.
+ *
+ * Strategy:
+ * 1. Work at the phrase level (not individual words) to preserve multi-word labels.
+ * 2. Apply drawing-area filter: exclude title block region.
+ * 3. For each phrase whose token(s) match ROOM_LABEL_MAP (anchor), search for a
+ *    companion phrase within the proximity window.
+ * 4. Combine anchor + companion into one sign row, or emit anchor alone.
+ */
+function extractInstitutionalRoomsFromPhrases(
+  pw: { pageWidth: number; pageHeight: number; phrases: Array<{ text: string; x0: number; y0: number; x1: number; y1: number }> },
+  pageNum: number,
+): HeuristicSignInsert[] {
+  const { pageWidth, pageHeight, phrases } = pw;
+
+  // Build phrase records with pts coordinates.
+  const records: PhraseRecord[] = phrases.map((p) => ({
+    text: p.text.trim(),
+    cx_pts: ((p.x0 + p.x1) / 2) * pageWidth,
+    cy_pts: ((p.y0 + p.y1) / 2) * pageHeight,
+    nx: (p.x0 + p.x1) / 2,
+    ny: (p.y0 + p.y1) / 2,
+  }));
+
+  // Apply drawing-area filter: exclude title block region.
+  // cy_centre < 0.85 AND NOT (cx_centre > 0.65 AND cy_centre > 0.65)
+  const drawingArea = records.filter((r) => {
+    const cy_norm = r.ny;
+    const cx_norm = r.nx;
+    return cy_norm < 0.85 && !(cx_norm > 0.65 && cy_norm > 0.65);
+  });
+
+  // Apply noise filter.
+  const usable = drawingArea.filter((r) => !isNoisyPhrase(r.text));
+
+  const rows: HeuristicSignInsert[] = [];
+  const usedKeys = new Set<string>(); // deduplicate by normalized text + grid-rounded position
+
+  for (let i = 0; i < usable.length; i++) {
+    const anchor = usable[i]!;
+
+    // Step A: check if this phrase is an anchor (matches ROOM_LABEL_MAP).
+    const anchorSignType = lookupRoomLabelMap(anchor.text);
+    if (!anchorSignType) continue;
+
+    const dedupeKey = `${anchor.text.toLowerCase().trim()}:${Math.round(anchor.cx_pts / 10)}:${Math.round(anchor.cy_pts / 10)}`;
+    if (usedKeys.has(dedupeKey)) continue;
+
+    // Step B: companion scan — search for a nearby phrase.
+    let bestCompanion: PhraseRecord | null = null;
+    let bestCompanionSignType: string | null = null;
+
+    for (let j = 0; j < usable.length; j++) {
+      if (i === j) continue;
+      const candidate = usable[j]!;
+      const dx = Math.abs(candidate.cx_pts - anchor.cx_pts);
+      const dy = Math.abs(candidate.cy_pts - anchor.cy_pts);
+
+      // Proximity window: stacked vertically or side by side
+      const isStacked = dy < 40 && dx < 80;
+      const isSideBySide = dy < 15 && dx < 200;
+      if (!isStacked && !isSideBySide) continue;
+
+      // Check companion quality
+      const companionSignType = lookupRoomLabelMap(candidate.text);
+      if (companionSignType || isValidCompanion(candidate.text)) {
+        bestCompanion = candidate;
+        bestCompanionSignType = companionSignType;
+        break;
+      }
+    }
+
+    // Step C: pair or standalone
+    let finalSignType: string;
+    let locationLabel: string;
+
+    if (bestCompanion) {
+      // The better-matching token wins for sign type; the fuller text is the location label.
+      const anchorLen = anchor.text.length;
+      const companionLen = bestCompanion.text.length;
+      finalSignType = bestCompanionSignType ?? anchorSignType;
+      // Fuller text (longer) becomes the location label.
+      locationLabel = companionLen >= anchorLen ? bestCompanion.text : anchor.text;
+
+      // Mark companion as used too
+      const companionKey = `${bestCompanion.text.toLowerCase().trim()}:${Math.round(bestCompanion.cx_pts / 10)}:${Math.round(bestCompanion.cy_pts / 10)}`;
+      usedKeys.add(companionKey);
+    } else {
+      finalSignType = anchorSignType;
+      locationLabel = anchor.text;
+    }
+
+    usedKeys.add(dedupeKey);
+
+    rows.push({
+      sheetNumber: null,
+      detailReference: null,
+      signType: finalSignType,
+      signIdentifier: anchor.text.toUpperCase().replace(/\s+/g, "_").slice(0, 40),
+      quantity: 1,
+      location: locationLabel,
+      dimensions: null,
+      mountingType: null,
+      finishColor: null,
+      illumination: null,
+      materials: null,
+      messageContent: null,
+      notes: "Institutional room label (spatial proximity)",
+      pageNumber: pageNum,
+      xPos: anchor.nx,
+      yPos: anchor.ny,
+      placementSource: "heuristic",
+      confidenceScore: 0.6,
+      reviewFlag: true,
+      extractionMethod: "heuristic",
+      rawJson: { anchorText: anchor.text, companionText: bestCompanion?.text ?? null },
+    });
+  }
+
+  return rows;
+}
+
 // ── Public row type (compatible with InsertExtractedSign minus job IDs) ───────
 export interface HeuristicSignInsert {
   sheetNumber: null;
@@ -239,16 +428,20 @@ export interface HeuristicSignInsert {
 /**
  * Extract sign rows from a PDF using the heuristic algorithm.
  *
- * @param filePath  Absolute path to the PDF
- * @param fileId    Opaque string used as the pdfjs phrase-cache key (use job-file DB UUID)
+ * @param filePath         Absolute path to the PDF
+ * @param fileId           Opaque string used as the pdfjs phrase-cache key (use job-file DB UUID)
+ * @param floorPlanPages   Optional set of page numbers classified as floor plans;
+ *                         when provided, institutional room-pair extraction is run on those pages.
  */
 export async function extractSignsHeuristic(
   filePath: string,
   fileId: string,
+  floorPlanPages?: Set<number>,
 ): Promise<{ rows: HeuristicSignInsert[]; pageCount: number }> {
   const pageCount = await getPdfPageCount(filePath);
 
   const allRooms: ExtractedRoom[] = [];
+  const institutionalRows: HeuristicSignInsert[] = [];
 
   for (let pageNum = 1; pageNum <= pageCount; pageNum++) {
     try {
@@ -256,8 +449,15 @@ export async function extractSignsHeuristic(
       const words = phrasesToWords(pw);
       const rooms = extractRoomsFromWords(words, pageNum);
       allRooms.push(...rooms);
+
+      // Institutional/church room-pair extraction for floor plan pages
+      if (floorPlanPages && floorPlanPages.has(pageNum)) {
+        const instRows = extractInstitutionalRoomsFromPhrases(pw, pageNum);
+        institutionalRows.push(...instRows);
+      }
+
       logger.debug(
-        { filePath: filePath.split("/").pop(), pageNum, wordsFound: words.length, roomsFound: rooms.length },
+        { filePath: filePath.split("/").pop(), pageNum, wordsFound: words.length, roomsFound: rooms.length, institutionalFound: institutionalRows.length },
         "Heuristic page scan complete"
       );
     } catch (err) {
@@ -299,10 +499,13 @@ export async function extractSignsHeuristic(
     };
   });
 
+  // Combine residential + institutional rows
+  const allRows = [...rows, ...institutionalRows];
+
   logger.info(
-    { filePath: filePath.split("/").pop(), pageCount, roomsFound: allRooms.length },
+    { filePath: filePath.split("/").pop(), pageCount, roomsFound: allRooms.length, institutionalFound: institutionalRows.length },
     "Heuristic extraction complete"
   );
 
-  return { rows, pageCount };
+  return { rows: allRows, pageCount };
 }
