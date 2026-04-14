@@ -1024,6 +1024,7 @@ type DetectionRow = {
   label: string;
   source: "AI region" | "Heuristic" | "Full page";
   bbox: BboxCoords;
+  bookmarkTitle: string | null;
 };
 
 type RawPageStats = NonNullable<FileWithStats["pageStats"]>;
@@ -1036,10 +1037,20 @@ function buildDetectionRows(
   const pageLabels = stats.pageLabels ?? [];
   const aiRegionBboxes = stats.aiRegionBboxes;
   const floorPlanBboxes = stats.floorPlanBboxes;
+  const outlineSections = stats.outlineSections ?? [];
 
   const getLabel = (pgNo: number): string => {
     const label = pageLabels[pgNo - 1];
     return label ? String(label) : `pg ${pgNo}`;
+  };
+
+  const getBookmarkTitle = (pgNo: number): string | null => {
+    for (const section of outlineSections) {
+      if (pgNo >= section.pageStart && pgNo <= section.pageEnd) {
+        return section.title ?? null;
+      }
+    }
+    return null;
   };
 
   const floorPlanRows: DetectionRow[] = [];
@@ -1056,7 +1067,7 @@ function buildDetectionRows(
       : heuristicBbox
       ? "Heuristic"
       : "Full page";
-    floorPlanRows.push({ pageNo: pgNo, label: getLabel(pgNo), source, bbox });
+    floorPlanRows.push({ pageNo: pgNo, label: getLabel(pgNo), source, bbox, bookmarkTitle: getBookmarkTitle(pgNo) });
   }
 
   for (const pgNo of signSchedulePages) {
@@ -1064,7 +1075,7 @@ function buildDetectionRows(
     const aiEntry = aiRegionBboxes?.[key];
     const bbox: BboxCoords = aiEntry?.signSchedule ?? null;
     const source: DetectionRow["source"] = bbox ? "AI region" : "Full page";
-    signSpecRows.push({ pageNo: pgNo, label: getLabel(pgNo), source, bbox });
+    signSpecRows.push({ pageNo: pgNo, label: getLabel(pgNo), source, bbox, bookmarkTitle: getBookmarkTitle(pgNo) });
   }
 
   return { floorPlanRows, signSpecRows };
@@ -1111,6 +1122,7 @@ function DetectionTable({
             <tr className={`border-b border-border/60 ${headCls}`}>
               <th className="px-2 py-1 font-semibold whitespace-nowrap">Page No</th>
               <th className="px-2 py-1 font-semibold whitespace-nowrap">Label</th>
+              <th className="px-2 py-1 font-semibold whitespace-nowrap">Bookmark</th>
               <th className="px-2 py-1 font-semibold whitespace-nowrap">{regionColHeader}</th>
               <th className="px-2 py-1 font-semibold whitespace-nowrap">Bounding Box (x0, y0, x1, y1)</th>
             </tr>
@@ -1123,6 +1135,9 @@ function DetectionTable({
               >
                 <td className="px-2 py-1 text-muted-foreground">{row.pageNo}</td>
                 <td className="px-2 py-1 text-foreground/80">{row.label}</td>
+                <td className="px-2 py-1 text-foreground/70 max-w-[160px] truncate" title={row.bookmarkTitle ?? undefined}>
+                  {row.bookmarkTitle ?? "—"}
+                </td>
                 <td className="px-2 py-1">
                   <span className={`px-1.5 py-px rounded text-[9px] font-bold uppercase tracking-wider border ${badgeCls(row.source)}`}>
                     {row.source}
