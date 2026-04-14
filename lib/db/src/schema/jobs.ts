@@ -31,7 +31,6 @@ export const jobsTable = pgTable("jobs", {
   processingLog: json("processing_log").$type<ProcessingStep[]>(),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
-  completedAt: timestamp("completed_at", { withTimezone: true }),
 });
 
 export interface ProcessingStep {

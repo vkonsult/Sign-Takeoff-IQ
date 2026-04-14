@@ -19,8 +19,6 @@ export interface ExtractedSign {
   pageNumber?: number | null;
   xPos?: number | null;
   yPos?: number | null;
-  aiXPos?: number | null;
-  aiYPos?: number | null;
   placementSource?: string | null;
   manuallyAdded?: boolean;
   userVerified?: boolean;

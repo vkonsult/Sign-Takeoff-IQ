@@ -9,10 +9,122 @@ import { Button } from "@/components/ui/button";
 import {
   FolderOpen, ChevronRight, FileText, CheckCircle2, Cpu,
   AlertTriangle, Trash2, X, Square, CheckSquare, MinusSquare,
-  ExternalLink, Archive, EyeOff,
+  Clock, ChevronDown, ExternalLink, Archive, EyeOff,
 } from "lucide-react";
 import { Link } from "wouter";
 
+interface ProcessingStep {
+  step: string;
+  label: string;
+  durationMs: number;
+  startedAt: string;
+  details?: Record<string, unknown>;
+}
+
+function formatDuration(ms: number): string {
+  if (ms < 1000) return `${ms}ms`;
+  if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`;
+  const m = Math.floor(ms / 60000);
+  const s = Math.round((ms % 60000) / 1000);
+  return `${m}m ${s}s`;
+}
+
+function ProcessingLog({ steps }: { steps: ProcessingStep[] }) {
+  const filtered = steps.filter((s) => s.step !== "total");
+  const total = steps.find((s) => s.step === "total");
+  const maxMs = Math.max(...filtered.map((s) => s.durationMs), 1);
+
+  const STEP_COLORS: Record<string, string> = {
+    project_info: "bg-blue-500",
+    spec_processing: "bg-purple-500",
+    extraction: "bg-amber-500",
+    deduplication: "bg-teal-500",
+    word_match: "bg-green-500",
+    db_insert: "bg-gray-400",
+    bbox_persist: "bg-cyan-500",
+  };
+
+  function getBarColor(step: string): string {
+    if (step.startsWith("text_extraction_")) return "bg-amber-400";
+    if (step.startsWith("visual_verification_")) return "bg-orange-400";
+    if (step.startsWith("spatial_prepass_")) return "bg-indigo-400";
+    return STEP_COLORS[step] ?? "bg-muted-foreground";
+  }
+
+  function formatDetails(details: Record<string, unknown> | undefined): string | null {
+    if (!details) return null;
+    const parts: string[] = [];
+    const d = details as Record<string, number | string | boolean | undefined>;
+    const { rows, pages, inputTokens, outputTokens, verified, discoveries, matched, totalSigns, textAfter, imageAfter, textRows, imageRows, signsExtracted, specFileCount, succeeded, failed, textBefore, imageBefore, classified, floorPlan, signSchedule, filesWithBboxes, pagesWithBboxes } = d;
+    const { skipReason, skipped } = details as Record<string, string | boolean | undefined>;
+    if (specFileCount != null) parts.push(`${specFileCount} spec file${Number(specFileCount) !== 1 ? "s" : ""}`);
+    if (rows != null) parts.push(`${rows} rows`);
+    if (pages != null) parts.push(`${pages} pages`);
+    if (classified != null) parts.push(`${classified} classified`);
+    if (floorPlan != null) parts.push(`${floorPlan} floor plan`);
+    if (signSchedule != null) parts.push(`${signSchedule} sign sched`);
+    if (filesWithBboxes != null) parts.push(`${filesWithBboxes} file${Number(filesWithBboxes) !== 1 ? "s" : ""}`);
+    if (pagesWithBboxes != null) parts.push(`${pagesWithBboxes} page${Number(pagesWithBboxes) !== 1 ? "s" : ""}`);
+    if (inputTokens != null) parts.push(`${Number(inputTokens).toLocaleString()} in-tok`);
+    if (outputTokens != null) parts.push(`${Number(outputTokens).toLocaleString()} out-tok`);
+    if (succeeded != null) parts.push(`${succeeded} ok`);
+    if (failed != null && Number(failed) > 0) parts.push(`${failed} failed`);
+    if (verified != null) parts.push(`${verified} verified`);
+    if (discoveries != null) parts.push(`${discoveries} discoveries`);
+    if (totalSigns != null && matched != null) parts.push(`${matched}/${totalSigns} matched`);
+    if (textBefore != null && textAfter != null) parts.push(`${textAfter}/${textBefore} text`);
+    else if (textAfter != null) parts.push(`${textAfter} text`);
+    if (imageBefore != null && imageAfter != null) parts.push(`${imageAfter}/${imageBefore} image`);
+    else if (imageAfter != null) parts.push(`${imageAfter} image`);
+    if (textRows != null) parts.push(`${textRows} text rows`);
+    if (imageRows != null) parts.push(`${imageRows} image rows`);
+    if (signsExtracted != null) parts.push(`${signsExtracted} signs`);
+    if (skipped && skipReason) parts.push(`skipped: ${skipReason}`);
+    else if (skipped) parts.push("skipped");
+    return parts.length > 0 ? parts.join(" · ") : null;
+  }
+
+  return (
+    <div className="px-4 pb-4 pt-2 bg-secondary/30 border-t border-border">
+      <div className="text-[11px] font-display font-semibold uppercase tracking-wider text-muted-foreground mb-3">
+        Processing Timeline
+      </div>
+      <div className="space-y-1.5">
+        {filtered.map((step) => {
+          const widthPct = Math.max(2, (step.durationMs / maxMs) * 100);
+          const detailStr = formatDetails(step.details);
+          return (
+            <div key={step.step} className="flex items-center gap-3" title={detailStr ?? undefined}>
+              <div className="w-52 shrink-0 text-xs text-foreground/80 truncate leading-tight">
+                {step.label}
+              </div>
+              <div className="flex-1 h-4 bg-muted/40 rounded-sm overflow-hidden">
+                <div
+                  className={`h-full rounded-sm ${getBarColor(step.step)}`}
+                  style={{ width: `${widthPct}%`, opacity: 0.75 }}
+                />
+              </div>
+              <div className="w-14 shrink-0 text-right text-xs font-mono text-foreground/70">
+                {formatDuration(step.durationMs)}
+              </div>
+              {detailStr && (
+                <div className="w-48 shrink-0 text-[10px] text-muted-foreground truncate">
+                  {detailStr}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+      {total && (
+        <div className="mt-3 pt-2 border-t border-border/60 flex items-center justify-between">
+          <span className="text-xs text-muted-foreground font-display">Total</span>
+          <span className="text-xs font-bold font-mono text-foreground">{formatDuration(total.durationMs)}</span>
+        </div>
+      )}
+    </div>
+  );
+}
 
 interface RecentUser {
   userName: string;
@@ -61,6 +173,7 @@ export default function JobsList() {
   const [deletingSingle, setDeletingSingle] = useState<string | null>(null);
   const [bulkConfirming, setBulkConfirming] = useState(false);
   const [bulkDeleting, setBulkDeleting] = useState(false);
+  const [expandedLog, setExpandedLog] = useState<string | null>(null);
 
   const jobs = (data?.jobs ?? []) as Array<{
     id: string;
@@ -68,7 +181,7 @@ export default function JobsList() {
     status: string;
     fileCount: number;
     createdAt: string;
-    completedAt?: string | null;
+    processingLog?: ProcessingStep[] | null;
     recentUsers?: RecentUser[];
     files?: { id: string; originalName: string }[];
   }>;
@@ -202,7 +315,7 @@ export default function JobsList() {
         ) : (
           <div className="bg-card rounded-xl border border-border overflow-hidden shadow-lg">
             {/* Header row */}
-            <div className="grid grid-cols-[36px_1fr_100px_120px_40px_180px_180px_48px] gap-3 px-4 py-3 border-b border-border bg-secondary/50 text-xs font-display font-semibold uppercase tracking-wider text-muted-foreground items-center">
+            <div className="grid grid-cols-[36px_1fr_100px_120px_40px_180px_48px] gap-3 px-4 py-3 border-b border-border bg-secondary/50 text-xs font-display font-semibold uppercase tracking-wider text-muted-foreground items-center">
               {/* Select-all checkbox */}
               <button
                 onClick={toggleAll}
@@ -220,7 +333,6 @@ export default function JobsList() {
               <div className="text-center">Status</div>
               <div className="text-center" title="Last active user">User</div>
               <div className="text-right">Created</div>
-              <div className="text-right">Completed</div>
               <div />
             </div>
 
@@ -235,17 +347,20 @@ export default function JobsList() {
                   recentUsers?: RecentUser[];
                   lastActivityAt?: string | null;
                   lastActivityType?: string | null;
+                  processingLog?: ProcessingStep[] | null;
                   files?: { id: string; originalName: string }[];
                 };
                 const recentUsers: RecentUser[] = jobAny.recentUsers ?? [];
+                const processingLog: ProcessingStep[] | null = jobAny.processingLog ?? null;
                 const jobFiles: { id: string; originalName: string }[] = jobAny.files ?? [];
+                const isLogExpanded = expandedLog === job.id;
 
                 return (
                   <div key={job.id} className="flex flex-col">
                     {/* Main row */}
                     <div
-                      className={`relative group grid grid-cols-[36px_1fr_100px_120px_40px_180px_180px_48px] gap-3 items-center transition-colors
-                        ${isChecked ? "bg-primary/5 border-l-2 border-l-primary" : "hover:bg-secondary/40"}`}
+                      className={`relative group grid grid-cols-[36px_1fr_100px_120px_40px_180px_48px] gap-3 items-center transition-colors
+                        ${isChecked ? "bg-primary/5 border-l-2 border-l-primary" : isLogExpanded ? "bg-secondary/40" : "hover:bg-secondary/40"}`}
                     >
                     {/* Checkbox */}
                     <button
@@ -269,6 +384,24 @@ export default function JobsList() {
                             {job.id.split("-")[0]}
                           </div>
                         </div>
+                        {processingLog && processingLog.length > 0 && (
+                          <button
+                            onClick={(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              setExpandedLog(isLogExpanded ? null : job.id);
+                            }}
+                            title={isLogExpanded ? "Hide processing log" : "View processing log"}
+                            className={`flex-none flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-mono transition-all border
+                              ${isLogExpanded
+                                ? "text-primary bg-primary/10 border-primary/30"
+                                : "text-muted-foreground/40 border-border/40 hover:text-primary hover:bg-primary/10 hover:border-primary/30"
+                              }`}
+                          >
+                            <Clock className="w-3 h-3" />
+                            <ChevronDown className={`w-3 h-3 transition-transform ${isLogExpanded ? "rotate-180" : ""}`} />
+                          </button>
+                        )}
                       </div>
 
                       <div className="flex flex-col items-center justify-center gap-1 py-4">
@@ -304,12 +437,6 @@ export default function JobsList() {
 
                       <div className="text-right text-sm text-muted-foreground py-4">
                         {format(new Date(job.createdAt), "MMM d, yyyy HH:mm")}
-                      </div>
-
-                      <div className="text-right text-sm text-muted-foreground py-4">
-                        {job.status === "completed" && job.completedAt
-                          ? format(new Date(job.completedAt), "MMM d, yyyy HH:mm")
-                          : <span className="text-muted-foreground/30">—</span>}
                       </div>
 
                       <div className="flex justify-end items-center pr-2 py-4 text-muted-foreground group-hover:text-primary transition-colors">
@@ -349,6 +476,9 @@ export default function JobsList() {
                     )}
                     </div>
 
+                    {isLogExpanded && processingLog && processingLog.length > 0 && (
+                      <ProcessingLog steps={processingLog} />
+                    )}
                   </div>
                 );
               })}

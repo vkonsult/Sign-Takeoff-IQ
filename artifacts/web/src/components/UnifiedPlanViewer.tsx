@@ -657,21 +657,6 @@ function PageViewer({
     [localSigns, file.id, pageNumber]
   );
 
-  // ── Coordinate source toggle ───────────────────────────────────────────────
-  const [coordSource, setCoordSource] = useState<"text" | "ai">("text");
-
-  // Helpers: resolve effective pin position based on coordSource.
-  // Manual/user-placed pins always use xPos/yPos regardless of toggle.
-  const isManualPlacement = (s: ExtractedSign) =>
-    s.placementSource === "manual" ||
-    s.placementSource === "user_drag" ||
-    s.placementSource === "user_confirmed" ||
-    s.manuallyAdded;
-  const effectiveX = (s: ExtractedSign): number | null | undefined =>
-    coordSource === "ai" && !isManualPlacement(s) ? (s.aiXPos ?? null) : s.xPos;
-  const effectiveY = (s: ExtractedSign): number | null | undefined =>
-    coordSource === "ai" && !isManualPlacement(s) ? (s.aiYPos ?? null) : s.yPos;
-
   // ── Modes ──────────────────────────────────────────────────────────────────
   const [showOverlay, setShowOverlay] = useState(true);
   const [showBoundaries, setShowBoundaries] = useState(mode === "modal");
@@ -730,8 +715,8 @@ function PageViewer({
   }, [textSearchStatus, onTextSearchStatusChange]);
 
   const signPlacementKey = signsOnCurrentPage
-    .map((s) => `${s.id}:${s.xPos?.toFixed(4) ?? ""}:${s.yPos?.toFixed(4) ?? ""}:${s.aiXPos?.toFixed(4) ?? ""}:${s.aiYPos?.toFixed(4) ?? ""}:${s.placementSource ?? ""}`)
-    .join("|") + `:${coordSource}`;
+    .map((s) => `${s.id}:${s.xPos?.toFixed(4) ?? ""}:${s.yPos?.toFixed(4) ?? ""}:${s.placementSource ?? ""}`)
+    .join("|");
 
   useEffect(() => {
     if (!serverPhrases && !phrasesFetchFailed) return;
@@ -750,11 +735,9 @@ function PageViewer({
       const isCurrent = s.id === activeSignId;
       const color = isCurrent ? "#22c55e" : (s.manuallyAdded ? "#a855f7" : "#eab308");
 
-      const ex = effectiveX(s);
-      const ey = effectiveY(s);
-      if (ex != null && ey != null && (s.manuallyAdded || s.placementSource != null)) {
+      if (s.xPos != null && s.yPos != null && (s.manuallyAdded || s.placementSource != null)) {
         markers.push({
-          x: ex, y: ey,
+          x: s.xPos, y: s.yPos,
           signId: s.id, color,
           label: s.signIdentifier ?? s.signType?.slice(0, 6) ?? "SIGN",
           isCurrent, placementScore: 1.0,
@@ -762,8 +745,6 @@ function PageViewer({
         if (isCurrent) currentSignFound = true;
         continue;
       }
-      // In AI mode, skip non-manual signs with no AI coordinates (they have no pin to show)
-      if (coordSource === "ai" && !isManualPlacement(s)) continue;
       if (visualLocateFailed.has(s.id)) continue;
       if (visualCandidates.has(s.id)) continue;
       if (visualLocateSubmittedRef.current.has(s.id)) continue;
@@ -1080,33 +1061,6 @@ function PageViewer({
             AI found {visualCandidates.size > 1 ? `${visualCandidates.size} signs` : "a sign"} — pick a numbered dot to confirm
           </span>
         )}
-
-        {/* Coord source toggle */}
-        <div className="flex items-center rounded border border-border overflow-hidden text-[10px] font-display font-semibold uppercase tracking-wide flex-shrink-0">
-          <button
-            onClick={() => setCoordSource("text")}
-            className="px-2 py-1 transition-colors"
-            style={coordSource === "text"
-              ? { background: "#eab30820", color: "#eab308", borderRight: "1px solid var(--border)" }
-              : { background: "transparent", color: "var(--muted-foreground)", borderRight: "1px solid var(--border)" }
-            }
-            title="Show word-match (text layer) pin positions"
-          >
-            Text Coords
-          </button>
-          <button
-            onClick={() => setCoordSource("ai")}
-            className="px-2 py-1 transition-colors"
-            style={coordSource === "ai"
-              ? { background: "#a855f720", color: "#a855f7" }
-              : { background: "transparent", color: "var(--muted-foreground)" }
-            }
-            title="Show AI (Gemini visual) pin positions"
-          >
-            AI Coords
-          </button>
-        </div>
-        <div className="w-px h-4 bg-border mx-0.5" />
 
         <div className="ml-auto flex items-center gap-2">
           {/* Debug — modal only */}

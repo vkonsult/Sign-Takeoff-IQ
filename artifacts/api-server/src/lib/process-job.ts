@@ -610,8 +610,6 @@ export async function processJob(jobId: string): Promise<void> {
         pageNumber: row.page_number,
         xPos: null,
         yPos: null,
-        aiXPos: row.ai_x_pos ?? null,
-        aiYPos: row.ai_y_pos ?? null,
         confidenceScore: row.confidence_score,
         reviewFlag: true,
         extractionMethod: "image",
@@ -689,12 +687,8 @@ export async function processJob(jobId: string): Promise<void> {
   async function assignCoords(rows: InsertExtractedSign[]): Promise<InsertExtractedSign[]> {
     return Promise.all(
       rows.map(async (row) => {
-        // Skip rows that have been manually/human placed — never overwrite those
-        if (
-          row.placementSource === "manual" ||
-          row.placementSource === "user_drag" ||
-          row.placementSource === "user_confirmed"
-        ) return row;
+        // Skip rows that already have a manually placed position
+        if (row.xPos != null && row.yPos != null) return row;
         if (!row.jobFileId || !row.pageNumber) return row;
         const storedPath = filePathById.get(row.jobFileId);
         if (!storedPath) return row;
@@ -718,10 +712,6 @@ export async function processJob(jobId: string): Promise<void> {
         } catch (err) {
           logger.debug({ err, signId: row.signIdentifier, location: row.location }, "Word-match failed for sign");
         }
-        // No word-match result — fall back to Gemini's visual coordinate if available
-        if (row.aiXPos != null && row.aiYPos != null) {
-          return { ...row, xPos: row.aiXPos, yPos: row.aiYPos, placementSource: "ai" };
-        }
         return row;
       })
     );
@@ -735,29 +725,6 @@ export async function processJob(jobId: string): Promise<void> {
       .filter((r) => r.location && r.signType)
       .map((r) => `${r.location!.toLowerCase().trim()}||${r.signType!.toLowerCase().trim()}`),
   );
-
-  // Step 1: Build a coord map from image rows so we can transfer Gemini's
-  // individually-placed coordinates onto text rows that share the same key.
-  const imageAiCoordMap = new Map<string, { aiXPos: number; aiYPos: number }>();
-  for (const r of allImageRows) {
-    if (!r.location || !r.signType || r.aiXPos == null || r.aiYPos == null) continue;
-    const key = `${r.location.toLowerCase().trim()}||${r.signType.toLowerCase().trim()}`;
-    if (!imageAiCoordMap.has(key)) {
-      imageAiCoordMap.set(key, { aiXPos: r.aiXPos, aiYPos: r.aiYPos });
-    }
-  }
-
-  // Step 2: Enrich text rows that are missing aiXPos with image-pass coordinates.
-  const enrichedTextRows = dedupedTextRows.map((r) => {
-    if (r.aiXPos != null || !r.location || !r.signType) return r;
-    const key = `${r.location.toLowerCase().trim()}||${r.signType.toLowerCase().trim()}`;
-    const imgCoords = imageAiCoordMap.get(key);
-    if (!imgCoords) return r;
-    return { ...r, aiXPos: imgCoords.aiXPos, aiYPos: imgCoords.aiYPos };
-  });
-
-  // Step 3: Image rows that already exist in the text pass are still filtered out
-  // (existing behaviour) to avoid double-counting signs in the results table.
   const dedupedImageRows = deduplicateSignRows(
     allImageRows.filter((r) => {
       if (!r.location || !r.signType) return true;
@@ -769,23 +736,22 @@ export async function processJob(jobId: string): Promise<void> {
     {
       jobId,
       textBefore: allTextRows.length,
-      textAfter: enrichedTextRows.length,
+      textAfter: dedupedTextRows.length,
       imageBefore: allImageRows.length,
       imageAfter: dedupedImageRows.length,
-      enrichedWithAiCoords: enrichedTextRows.filter((r) => r.aiXPos != null).length - dedupedTextRows.filter((r) => r.aiXPos != null).length,
     },
     "Sign deduplication complete",
   );
   recordStep("deduplication", "Sign deduplication", t_dedup, {
     textBefore: allTextRows.length,
-    textAfter: enrichedTextRows.length,
+    textAfter: dedupedTextRows.length,
     imageBefore: allImageRows.length,
     imageAfter: dedupedImageRows.length,
   });
 
   // Run word-match coordinate assignment on both sets of rows
   const t_wordmatch = Date.now();
-  const coordedTextRows = await assignCoords(enrichedTextRows);
+  const coordedTextRows = await assignCoords(dedupedTextRows);
   const coordedImageRows = await assignCoords(dedupedImageRows);
 
   const matchedText = coordedTextRows.filter((r) => r.placementSource === "word_match").length;
@@ -947,7 +913,6 @@ export async function processJob(jobId: string): Promise<void> {
       imageInputTokens: totalImageInputTokens,
       imageOutputTokens: totalImageOutputTokens,
       processingLog: pipelineSteps,
-      completedAt: new Date(),
       updatedAt: new Date(),
     })
     .where(eq(jobsTable.id, jobId));

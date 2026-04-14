@@ -34,127 +34,11 @@ import {
   RotateCcw,
   LayoutGrid,
   ExternalLink,
-  Clock,
 } from "lucide-react";
 import { format, formatDistanceToNow } from "date-fns";
 import { exportMarkedupPdf, type MarkerSign } from "@/lib/exportMarkedupPdf";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger, TooltipProvider } from "@/components/ui/tooltip";
-
-interface ProcessingStep {
-  step: string;
-  label: string;
-  durationMs: number;
-  startedAt: string;
-  details?: Record<string, unknown>;
-}
-
-function formatDuration(ms: number): string {
-  if (ms < 1000) return `${ms}ms`;
-  if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`;
-  const m = Math.floor(ms / 60000);
-  const s = Math.round((ms % 60000) / 1000);
-  return `${m}m ${s}s`;
-}
-
-function ProcessingLog({ steps }: { steps: ProcessingStep[] }) {
-  const filtered = steps.filter((s) => s.step !== "total");
-  const total = steps.find((s) => s.step === "total");
-  const maxMs = Math.max(...filtered.map((s) => s.durationMs), 1);
-
-  const STEP_COLORS: Record<string, string> = {
-    project_info: "bg-blue-500",
-    spec_processing: "bg-purple-500",
-    extraction: "bg-amber-500",
-    deduplication: "bg-teal-500",
-    word_match: "bg-green-500",
-    db_insert: "bg-gray-400",
-    bbox_persist: "bg-cyan-500",
-  };
-
-  function getBarColor(step: string): string {
-    if (step.startsWith("text_extraction_")) return "bg-amber-400";
-    if (step.startsWith("visual_verification_")) return "bg-orange-400";
-    if (step.startsWith("spatial_prepass_")) return "bg-indigo-400";
-    return STEP_COLORS[step] ?? "bg-muted-foreground";
-  }
-
-  function formatDetails(details: Record<string, unknown> | undefined): string | null {
-    if (!details) return null;
-    const parts: string[] = [];
-    const d = details as Record<string, number | string | boolean | undefined>;
-    const { rows, pages, inputTokens, outputTokens, verified, discoveries, matched, totalSigns, textAfter, imageAfter, textRows, imageRows, signsExtracted, specFileCount, succeeded, failed, textBefore, imageBefore, classified, floorPlan, signSchedule, filesWithBboxes, pagesWithBboxes } = d;
-    const { skipReason, skipped } = details as Record<string, string | boolean | undefined>;
-    if (specFileCount != null) parts.push(`${specFileCount} spec file${Number(specFileCount) !== 1 ? "s" : ""}`);
-    if (rows != null) parts.push(`${rows} rows`);
-    if (pages != null) parts.push(`${pages} pages`);
-    if (classified != null) parts.push(`${classified} classified`);
-    if (floorPlan != null) parts.push(`${floorPlan} floor plan`);
-    if (signSchedule != null) parts.push(`${signSchedule} sign sched`);
-    if (filesWithBboxes != null) parts.push(`${filesWithBboxes} file${Number(filesWithBboxes) !== 1 ? "s" : ""}`);
-    if (pagesWithBboxes != null) parts.push(`${pagesWithBboxes} page${Number(pagesWithBboxes) !== 1 ? "s" : ""}`);
-    if (inputTokens != null) parts.push(`${Number(inputTokens).toLocaleString()} in-tok`);
-    if (outputTokens != null) parts.push(`${Number(outputTokens).toLocaleString()} out-tok`);
-    if (succeeded != null) parts.push(`${succeeded} ok`);
-    if (failed != null && Number(failed) > 0) parts.push(`${failed} failed`);
-    if (verified != null) parts.push(`${verified} verified`);
-    if (discoveries != null) parts.push(`${discoveries} discoveries`);
-    if (totalSigns != null && matched != null) parts.push(`${matched}/${totalSigns} matched`);
-    if (textBefore != null && textAfter != null) parts.push(`${textAfter}/${textBefore} text`);
-    else if (textAfter != null) parts.push(`${textAfter} text`);
-    if (imageBefore != null && imageAfter != null) parts.push(`${imageAfter}/${imageBefore} image`);
-    else if (imageAfter != null) parts.push(`${imageAfter} image`);
-    if (textRows != null) parts.push(`${textRows} text rows`);
-    if (imageRows != null) parts.push(`${imageRows} image rows`);
-    if (signsExtracted != null) parts.push(`${signsExtracted} signs`);
-    if (skipped && skipReason) parts.push(`skipped: ${skipReason}`);
-    else if (skipped) parts.push("skipped");
-    return parts.length > 0 ? parts.join(" · ") : null;
-  }
-
-  return (
-    <div className="flex-1 overflow-auto p-6">
-      <div className="max-w-3xl mx-auto">
-        <div className="text-[11px] font-display font-semibold uppercase tracking-wider text-muted-foreground mb-4">
-          Processing Timeline
-        </div>
-        <div className="space-y-2">
-          {filtered.map((step) => {
-            const widthPct = Math.max(2, (step.durationMs / maxMs) * 100);
-            const detailStr = formatDetails(step.details);
-            return (
-              <div key={step.step} className="flex items-center gap-3" title={detailStr ?? undefined}>
-                <div className="w-56 shrink-0 text-xs text-foreground/80 truncate leading-tight">
-                  {step.label}
-                </div>
-                <div className="flex-1 h-4 bg-muted/40 rounded-sm overflow-hidden">
-                  <div
-                    className={`h-full rounded-sm ${getBarColor(step.step)}`}
-                    style={{ width: `${widthPct}%`, opacity: 0.75 }}
-                  />
-                </div>
-                <div className="w-14 shrink-0 text-right text-xs font-mono text-foreground/70">
-                  {formatDuration(step.durationMs)}
-                </div>
-                {detailStr && (
-                  <div className="w-56 shrink-0 text-[10px] text-muted-foreground truncate">
-                    {detailStr}
-                  </div>
-                )}
-              </div>
-            );
-          })}
-        </div>
-        {total && (
-          <div className="mt-4 pt-3 border-t border-border/60 flex items-center justify-between">
-            <span className="text-xs text-muted-foreground font-display">Total</span>
-            <span className="text-xs font-bold font-mono text-foreground">{formatDuration(total.durationMs)}</span>
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
 
 export default function JobDetails() {
   const [, params] = useRoute("/jobs/:jobId");
@@ -236,7 +120,7 @@ export default function JobDetails() {
   const [showHidden, setShowHidden] = useState(false);
   const [sortField, setSortField] = useState<string | null>(null);
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
-  const [activeTab, setActiveTab] = useState<"table" | "sheets" | "summary" | "floorplans" | "timeline">("table");
+  const [activeTab, setActiveTab] = useState<"table" | "sheets" | "summary" | "floorplans">("table");
 
   const PROCESSING_TIMEOUT_SECONDS = 5 * 60;
   const [processingSeconds, setProcessingSeconds] = useState(0);
@@ -376,8 +260,6 @@ export default function JobDetails() {
   };
   const lastScan = dataAny.lastScan ?? null;
   const lastEdit = dataAny.lastEdit ?? null;
-  const jobWithLog = job as typeof job & { processingLog?: ProcessingStep[] | null };
-  const processingLog: ProcessingStep[] | null = jobWithLog.processingLog ?? null;
 
   // Show all signs: text, manual, and image-only (visual-only finds).
   // Paired image signs are excluded by the API (their data is in the paired text row).
@@ -695,31 +577,10 @@ export default function JobDetails() {
                     <MapPin className="w-3.5 h-3.5" />
                     Floor Plans
                   </button>
-                  {processingLog && processingLog.length > 0 ? (
-                    <button
-                      onClick={() => setActiveTab("timeline")}
-                      className={`flex items-center gap-1.5 px-4 py-2.5 text-[11px] font-display font-semibold uppercase tracking-wide border-b-2 transition-all ${
-                        activeTab === "timeline"
-                          ? "border-primary text-primary"
-                          : "border-transparent text-muted-foreground hover:text-foreground"
-                      }`}
-                    >
-                      <Clock className="w-3.5 h-3.5" />
-                      Timeline
-                    </button>
-                  ) : null}
                 </div>
               </div>
 
-              {activeTab === "timeline" ? (
-                processingLog && processingLog.length > 0 ? (
-                  <ProcessingLog steps={processingLog} />
-                ) : (
-                  <div className="flex-1 flex items-center justify-center text-muted-foreground text-sm">
-                    No processing timeline available for this job.
-                  </div>
-                )
-              ) : activeTab === "floorplans" ? (
+              {activeTab === "floorplans" ? (
                 <div className="flex-1 min-h-0">
                   <UnifiedPlanViewer
                     mode="tab"

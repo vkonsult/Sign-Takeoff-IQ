@@ -7,7 +7,6 @@ import router from "./routes";
 import { logger } from "./lib/logger";
 import { ensureDirectories } from "./lib/storage";
 import { seedDefaultOrg } from "./lib/seed";
-import { backfillCompletedAt } from "./lib/backfill";
 
 ensureDirectories().catch((err) => {
   logger.error({ err }, "Failed to initialize storage directories");
@@ -15,10 +14,6 @@ ensureDirectories().catch((err) => {
 
 seedDefaultOrg().catch((err) => {
   logger.error({ err }, "Failed to seed default organization");
-});
-
-backfillCompletedAt().catch((err) => {
-  logger.error({ err }, "Failed to backfill completedAt");
 });
 
 const app: Express = express();
