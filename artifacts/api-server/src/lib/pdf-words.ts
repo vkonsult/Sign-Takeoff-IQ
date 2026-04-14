@@ -770,11 +770,61 @@ async function resolveDestToPage(
   }
 }
 
+// ── Non-architectural discipline blocklist ────────────────────────────────
+// Leaf bookmarks whose ancestor title contains any of these keywords (case-insensitive)
+// are excluded from signage processing — they belong to MEP or civil disciplines.
+const NON_ARCH_DISCIPLINE_KEYWORDS: string[] = [
+  "civil",
+  "electrical",
+  "mechanical",
+  "structural",
+  "plumbing",
+  "fire protection",
+  "technology",
+  "telecom",
+  "telecommunications",
+  "low voltage",
+  "data/communications",
+  "data / communications",
+  "it drawings",
+  "it plans",
+  "hvac",
+  "lighting",
+  "power",
+  "sprinkler",
+];
+
+/**
+ * Returns true when the ancestor chain of a bookmark leaf contains a
+ * non-architectural discipline keyword.  Only the direct parent (last element
+ * of ancestors) and grandparent (second-to-last) are inspected, because
+ * higher-level section headings (e.g. "Project Documents") are neutral.
+ */
+function hasNonArchAncestor(ancestors: string[]): boolean {
+  const relevantAncestors = ancestors.slice(-2);
+  return relevantAncestors.some((ancestor) => {
+    const lower = ancestor.toLowerCase();
+    return NON_ARCH_DISCIPLINE_KEYWORDS.some((kw) => lower.includes(kw));
+  });
+}
+
+/**
+ * Returns true when the leaf title contains "signs" or "signage" as a
+ * case-insensitive substring.  This matches both exact titles ("Signs",
+ * "Signage") and compound titles ("Main Floor Plan and Signs",
+ * "Level 2 Signage Plan").
+ */
+function isSignageLeaf(title: string): boolean {
+  const lower = title.toLowerCase();
+  return lower.includes("signs") || lower.includes("signage");
+}
+
 function classifyOutlineSection(title: string): PdfOutlineSection["type"] {
   const t = title.toLowerCase();
   const SS_PATTERNS = [
     "sign schedule", "signage", "sign spec", "sign legend",
     "sign program", "sign list", "sign detail", "signage plan",
+    "signs",
   ];
   const FP_PATTERNS = [
     "floor plan", "floor plans", "level", "first floor", "second floor",
@@ -790,10 +840,24 @@ function classifyOutlineSection(title: string): PdfOutlineSection["type"] {
  * Extract PDF document metadata: PDF page labels (logical names like "A1.1")
  * and outline/bookmark sections with classified page ranges.
  *
+ * The bookmark traversal now:
+ *   1. Traverses the FULL bookmark tree (no depth cap) carrying ancestor context.
+ *   2. Collects ONLY leaf nodes whose title contains "signs" or "signage"
+ *      (case-insensitive substring match).
+ *   3. Excludes leaves whose parent or grandparent belongs to a known
+ *      non-architectural discipline (civil, electrical, mechanical, etc.).
+ *
+ * When the PDF has no bookmarks at all, an AI fallback is triggered via the
+ * optional `geminiCallFn` parameter so the caller can classify pages from
+ * their visible text instead.
+ *
  * Results are cached in memory per file path (PDFs are immutable once uploaded).
  * Failures are swallowed — metadata is supplementary and must never break extraction.
  */
-export async function extractPdfMetadata(pdfPath: string): Promise<PdfDocumentMetadata> {
+export async function extractPdfMetadata(
+  pdfPath: string,
+  geminiCallFn?: (pageTexts: Array<{ pageNum: number; text: string }>) => Promise<number[]>,
+): Promise<PdfDocumentMetadata> {
   const cached = metadataCache.get(pdfPath);
   if (cached) return cached;
 
@@ -817,55 +881,113 @@ export async function extractPdfMetadata(pdfPath: string): Promise<PdfDocumentMe
     // ignore — not all PDFs have page labels
   }
 
+  let hasBookmarks = false;
+
   try {
     const outline = await doc.getOutline();
     if (outline && outline.length > 0) {
-      // Collect destination-bearing outline nodes from top-level items AND their
-      // immediate children (depth 1–2).  Many PDFs nest all real sections under a
-      // single top-level container (e.g. "Document" with no destination) while the
-      // child items carry the actual page destinations.
-      const itemsWithPages: Array<{ title: string; pageNum: number }> = [];
+      hasBookmarks = true;
 
-      async function collectItems(items: PdfjsOutlineItem[], depth: number): Promise<void> {
-        if (depth > 2) return;
+      // Full-depth traversal: visit every node, track the full ancestor title path.
+      // A node is a "leaf" when it has no children (or all children have no dest).
+      // We collect only signage leaves that are not under a non-arch discipline.
+      interface LeafItem {
+        title: string;
+        pageNum: number;
+        ancestors: string[];
+      }
+      const signageLeaves: LeafItem[] = [];
+
+      async function collectLeaves(
+        items: PdfjsOutlineItem[],
+        ancestors: string[],
+      ): Promise<void> {
         for (const item of items) {
+          const title = item.title ?? "(untitled)";
+          const hasChildren = item.items && item.items.length > 0;
           const pageNum = await resolveDestToPage(item.dest, doc);
-          if (pageNum !== null) {
-            itemsWithPages.push({ title: item.title ?? "(untitled)", pageNum });
-          }
-          // Only recurse one level deeper — depth-3+ bookmarks are typically
-          // individual drawings within a section, not section headers.
-          if (item.items && item.items.length > 0 && depth < 2) {
-            await collectItems(item.items, depth + 1);
+
+          if (!hasChildren) {
+            // Leaf node — apply signage and discipline filters
+            if (pageNum !== null && isSignageLeaf(title) && !hasNonArchAncestor(ancestors)) {
+              signageLeaves.push({ title, pageNum, ancestors });
+            }
+          } else {
+            // Internal node — recurse with updated ancestor path
+            await collectLeaves(item.items, [...ancestors, title]);
           }
         }
       }
 
-      await collectItems(outline, 1);
+      await collectLeaves(outline, []);
 
       // Deduplicate by page number (keep first occurrence per page)
       const seenPages = new Set<number>();
-      const uniqueItems = itemsWithPages.filter((it) => {
-        if (seenPages.has(it.pageNum)) return false;
-        seenPages.add(it.pageNum);
+      const uniqueLeaves = signageLeaves.filter((leaf) => {
+        if (seenPages.has(leaf.pageNum)) return false;
+        seenPages.add(leaf.pageNum);
         return true;
       });
 
-      uniqueItems.sort((a, b) => a.pageNum - b.pageNum);
+      uniqueLeaves.sort((a, b) => a.pageNum - b.pageNum);
 
-      for (let i = 0; i < uniqueItems.length; i++) {
-        const item = uniqueItems[i]!;
-        const nextItem = uniqueItems[i + 1];
+      for (const leaf of uniqueLeaves) {
         outlineSections.push({
-          title: item.title,
-          pageStart: item.pageNum,
-          pageEnd: nextItem ? nextItem.pageNum - 1 : numPages,
-          type: classifyOutlineSection(item.title),
+          title: leaf.title,
+          pageStart: leaf.pageNum,
+          pageEnd: leaf.pageNum,
+          type: classifyOutlineSection(leaf.title),
         });
       }
     }
   } catch {
     // ignore — outline is optional
+  }
+
+  // ── No-bookmark AI fallback ──────────────────────────────────────────────
+  // When the PDF has no bookmarks at all and a Gemini callback is provided,
+  // extract the first ~3 lines of text from each page and ask Gemini which
+  // pages are signage-related.
+  if (!hasBookmarks && geminiCallFn) {
+    try {
+      const pageTexts: Array<{ pageNum: number; text: string }> = [];
+      for (let pageNum = 1; pageNum <= numPages; pageNum++) {
+        try {
+          const page = await doc.getPage(pageNum);
+          const content = await page.getTextContent();
+          const lines: string[] = [];
+          for (const item of content.items) {
+            if (
+              typeof (item as { str?: string }).str === "string" &&
+              (item as { str: string }).str.trim().length > 0
+            ) {
+              lines.push((item as { str: string }).str.trim());
+              if (lines.length >= 3) break;
+            }
+          }
+          if (lines.length > 0) {
+            pageTexts.push({ pageNum, text: lines.join(" ") });
+          }
+        } catch {
+          // skip page on error
+        }
+      }
+
+      const signagePageNums = await geminiCallFn(pageTexts);
+      const sortedPageNums = [...signagePageNums].sort((a, b) => a - b);
+
+      for (let i = 0; i < sortedPageNums.length; i++) {
+        const pageNum = sortedPageNums[i]!;
+        outlineSections.push({
+          title: `Signage Page ${pageNum}`,
+          pageStart: pageNum,
+          pageEnd: pageNum,
+          type: "sign_schedule",
+        });
+      }
+    } catch {
+      // fallback failure is non-fatal
+    }
   }
 
   doc.destroy();

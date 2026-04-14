@@ -8,6 +8,7 @@ export const jobStatusEnum = pgEnum("job_status", [
   "processing",
   "completed",
   "failed",
+  "archived",
 ]);
 
 export const jobsTable = pgTable("jobs", {

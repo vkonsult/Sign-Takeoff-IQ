@@ -1,4 +1,4 @@
-import { useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { 
   useUploadFiles, 
   useProcessJob, 
@@ -9,14 +9,30 @@ import {
 } from "@workspace/api-client-react";
 import { apiFetch } from "@/lib/apiClient";
 
-export function useJobsList() {
-  const queryKey = getListJobsQueryKey();
-  return useListJobs({
+export function useJobsList(includeArchived = false) {
+  const standardQueryKey = getListJobsQueryKey();
+  const archivedQueryKey = [...standardQueryKey, "includeArchived"];
+
+  const standardResult = useListJobs({
     query: {
-      queryKey,
+      queryKey: standardQueryKey,
       refetchInterval: 10000,
+      enabled: !includeArchived,
     },
   });
+
+  const archivedResult = useQuery({
+    queryKey: archivedQueryKey,
+    queryFn: async () => {
+      const res = await apiFetch("/api/jobs?includeArchived=true");
+      if (!res.ok) throw new Error("Failed to fetch jobs");
+      return res.json() as Promise<{ jobs: unknown[] }>;
+    },
+    refetchInterval: 10000,
+    enabled: includeArchived,
+  });
+
+  return includeArchived ? archivedResult : standardResult;
 }
 
 export function useJobDetails(jobId: string) {

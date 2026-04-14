@@ -56,6 +56,11 @@ router.get("/jobs", async (req, res) => {
       res.status(403).json({ error: "No organization context" });
       return;
     }
+    const includeArchived = req.query.includeArchived === "true";
+    const archivedFilter = includeArchived ? undefined : ne(jobsTable.status, "archived");
+    const whereClause = filter
+      ? archivedFilter ? and(filter, archivedFilter) : filter
+      : archivedFilter;
     const jobs = await db
       .select({
         ...getTableColumns(jobsTable),
@@ -65,7 +70,7 @@ router.get("/jobs", async (req, res) => {
         lastActivityType: sql<string | null>`(SELECT event_type FROM activity_logs WHERE job_id = ${jobsTable.id} ORDER BY created_at DESC LIMIT 1)`.as("last_activity_type"),
       })
       .from(jobsTable)
-      .where(filter)
+      .where(whereClause)
       .orderBy(desc(jobsTable.createdAt));
 
     const jobIds = jobs.map((j) => j.id);

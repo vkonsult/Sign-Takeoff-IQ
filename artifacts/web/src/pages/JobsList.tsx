@@ -9,7 +9,7 @@ import { Button } from "@/components/ui/button";
 import {
   FolderOpen, ChevronRight, FileText, CheckCircle2, Cpu,
   AlertTriangle, Trash2, X, Square, CheckSquare, MinusSquare,
-  Clock, ChevronDown, ExternalLink,
+  Clock, ChevronDown, ExternalLink, Archive, EyeOff,
 } from "lucide-react";
 import { Link } from "wouter";
 
@@ -164,7 +164,8 @@ function StackedUserBadges({ users }: { users: RecentUser[] }) {
 }
 
 export default function JobsList() {
-  const { data, isLoading } = useJobsList();
+  const [showArchived, setShowArchived] = useState(false);
+  const { data, isLoading } = useJobsList(showArchived);
   const queryClient = useQueryClient();
 
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -174,7 +175,16 @@ export default function JobsList() {
   const [bulkDeleting, setBulkDeleting] = useState(false);
   const [expandedLog, setExpandedLog] = useState<string | null>(null);
 
-  const jobs = data?.jobs ?? [];
+  const jobs = (data?.jobs ?? []) as Array<{
+    id: string;
+    name?: string | null;
+    status: string;
+    fileCount: number;
+    createdAt: string;
+    processingLog?: ProcessingStep[] | null;
+    recentUsers?: RecentUser[];
+    files?: { id: string; originalName: string }[];
+  }>;
   const allIds = jobs.map((j) => j.id);
   const allSelected = allIds.length > 0 && allIds.every((id) => selected.has(id));
   const someSelected = selected.size > 0 && !allSelected;
@@ -269,12 +279,31 @@ export default function JobsList() {
               History of all processed architectural plan extractions.
             </p>
           </div>
-          <Link
-            href="/"
-            className="px-4 py-2 bg-secondary text-foreground hover:text-primary border border-border rounded-lg text-sm font-medium transition-colors"
-          >
-            + New Upload
-          </Link>
+          <div className="flex items-center gap-3">
+            <button
+              onClick={() => {
+                setShowArchived((prev) => !prev);
+                setSelected(new Set());
+              }}
+              className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium border transition-colors
+                ${showArchived
+                  ? "bg-amber-500/10 text-amber-500 border-amber-500/30 hover:bg-amber-500/20"
+                  : "bg-secondary text-muted-foreground border-border hover:text-foreground"
+                }`}
+            >
+              {showArchived ? (
+                <><EyeOff className="w-4 h-4" /> Hide Archived</>
+              ) : (
+                <><Archive className="w-4 h-4" /> Show Archived</>
+              )}
+            </button>
+            <Link
+              href="/"
+              className="px-4 py-2 bg-secondary text-foreground hover:text-primary border border-border rounded-lg text-sm font-medium transition-colors"
+            >
+              + New Upload
+            </Link>
+          </div>
         </header>
 
         {isLoading ? (
@@ -549,6 +578,11 @@ function StatusIcon({ status }: { status: string }) {
   if (status === "failed") return (
     <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-display font-bold uppercase tracking-wider bg-destructive/20 text-destructive border border-destructive/30">
       <AlertTriangle className="w-3 h-3" /> Failed
+    </span>
+  );
+  if (status === "archived") return (
+    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-display font-bold uppercase tracking-wider bg-amber-500/10 text-amber-500 border border-amber-500/30">
+      <Archive className="w-3 h-3" /> Archived
     </span>
   );
   return (

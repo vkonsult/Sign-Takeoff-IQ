@@ -2509,9 +2509,38 @@ export async function extractSignsFromPdf(
 
   // Fetch PDF metadata (outline sections + page labels).
   // This is supplementary — failures must never abort extraction.
+  //
+  // When the PDF has no bookmarks, a lightweight Gemini fallback is provided:
+  // it receives the first ~3 lines of text from each page and returns the page
+  // numbers that appear to be signage-related (sign schedule, sign plan, sign
+  // details).  The fallback is only invoked when no outline exists.
+  const NO_BOOKMARK_FALLBACK_PROMPT = `You are reviewing page titles from a PDF document.
+For each page listed below, determine if it is a signage-related page — this includes sign schedules, sign plans, sign details, signage criteria, sign programs, or any page primarily about architectural signage.
+
+Return ONLY a JSON array of page numbers (integers) that are signage-related. Do not include any explanation.
+Example: [3, 7, 12]
+If none are signage-related, return: []
+
+Pages:
+`;
+
+  async function noBookmarkGeminiFallback(
+    pageTexts: Array<{ pageNum: number; text: string }>
+  ): Promise<number[]> {
+    const pageList = pageTexts
+      .map((p) => `Page ${p.pageNum}: ${p.text}`)
+      .join("\n");
+    const prompt = NO_BOOKMARK_FALLBACK_PROMPT + pageList;
+    const { text } = await callGemini(prompt, ai, "no-bookmark-fallback");
+    const cleaned = text.replace(/```json|```/g, "").trim();
+    const parsed = JSON.parse(cleaned);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((n): n is number => typeof n === "number" && Number.isFinite(n));
+  }
+
   let pdfMeta: Awaited<ReturnType<typeof extractPdfMetadata>> = { pageLabels: [], outlineSections: [] };
   try {
-    pdfMeta = await extractPdfMetadata(filePath);
+    pdfMeta = await extractPdfMetadata(filePath, noBookmarkGeminiFallback);
     if (pdfMeta.outlineSections.length > 0 || pdfMeta.pageLabels.length > 0) {
       logger.info(
         {
