@@ -21,6 +21,7 @@ import {
   PenLine,
   Zap,
   MapPin,
+  Crosshair,
   ChevronDown,
   ChevronUp,
   ChevronsUpDown,
@@ -500,7 +501,7 @@ export default function JobDetails() {
   const [showHidden, setShowHidden] = useState(false);
   const [sortField, setSortField] = useState<string | null>(null);
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
-  const [activeTab, setActiveTab] = useState<"table" | "sheets" | "summary" | "floorplans" | "timeline">("table");
+  const [activeTab, setActiveTab] = useState<"table" | "sheets" | "summary" | "floorplans" | "timeline" | "coords">("table");
 
   const PROCESSING_TIMEOUT_SECONDS = 5 * 60;
   const [processingSeconds, setProcessingSeconds] = useState(0);
@@ -884,7 +885,7 @@ export default function JobDetails() {
                 </div>
               )}
             </div>
-          ) : isCompleted ? (
+          ) : (isCompleted || isFailed) ? (
             <div className="flex flex-col h-full">
               <div className="flex-none px-4 pt-3 pb-2 max-w-7xl mx-auto w-full grid grid-cols-2 md:grid-cols-4 gap-3">
                 <SummaryCard 
@@ -968,6 +969,19 @@ export default function JobDetails() {
                     <Clock className="w-3.5 h-3.5" />
                     Timeline
                   </button>
+                  {(isCompleted || isFailed) && (
+                    <button
+                      onClick={() => setActiveTab("coords")}
+                      className={`flex items-center gap-1.5 px-4 py-2.5 text-[11px] font-display font-semibold uppercase tracking-wide border-b-2 transition-all ${
+                        activeTab === "coords"
+                          ? "border-primary text-primary"
+                          : "border-transparent text-muted-foreground hover:text-foreground"
+                      }`}
+                    >
+                      <Crosshair className="w-3.5 h-3.5" />
+                      Coordinates
+                    </button>
+                  )}
                 </div>
               </div>
 
@@ -1009,6 +1023,10 @@ export default function JobDetails() {
                 </div>
               ) : activeTab === "summary" ? (
                 <SignSummaryPanel signs={extractedSigns} />
+              ) : activeTab === "coords" ? (
+                <div className="flex-1 overflow-auto bg-card border-t border-border">
+                  <CoordinatesTable signs={extractedSigns} onView={(sign) => setReviewSign(sign as SignRow)} />
+                </div>
               ) : (
                 <>
                   {/* Data Table Container */}
@@ -1256,6 +1274,144 @@ export default function JobDetails() {
         />
       )}
     </AppShell>
+  );
+}
+
+function CoordinatesTable({
+  signs,
+  onView,
+}: {
+  signs: AnySign[];
+  onView: (sign: AnySign) => void;
+}) {
+  const sorted = [...signs].sort((a, b) => {
+    const pageA = (a.pageNumber as number | null) ?? 0;
+    const pageB = (b.pageNumber as number | null) ?? 0;
+    if (pageA !== pageB) return pageA - pageB;
+    const idA = (a.signIdentifier as string | null) ?? "";
+    const idB = (b.signIdentifier as string | null) ?? "";
+    return idA.localeCompare(idB);
+  });
+
+  const fmtCoord = (v: unknown) =>
+    v != null ? `${(v as number).toFixed(1)}%` : null;
+
+  return (
+    <div className="overflow-x-auto">
+      <div className="min-w-[max-content] inline-block align-top w-full">
+        <table className="w-full text-left border-collapse border-spacing-0">
+          <thead>
+            <tr>
+              <th className="data-header sticky left-0 z-30 shadow-[2px_0_5px_-2px_rgba(0,0,0,0.3)]">Sheet / ID</th>
+              <th className="data-header">Sign Type</th>
+              <th className="data-header">Location</th>
+              <th className="data-header">Message</th>
+              <th className="data-header">Word-match Coords</th>
+              <th className="data-header">AI Bbox</th>
+              <th className="data-header text-center">Status</th>
+              <th className="data-header text-center w-20">View</th>
+            </tr>
+          </thead>
+          <tbody className="bg-background">
+            {sorted.map((sign, idx) => {
+              const xPos = sign.xPos as number | null | undefined;
+              const yPos = sign.yPos as number | null | undefined;
+              const bboxX = sign.aiBboxX as number | null | undefined;
+              const bboxY = sign.aiBboxY as number | null | undefined;
+              const bboxW = sign.aiBboxW as number | null | undefined;
+              const bboxH = sign.aiBboxH as number | null | undefined;
+
+              const hasCoords = xPos != null && yPos != null;
+              const hasBbox = bboxX != null && bboxY != null && bboxW != null && bboxH != null;
+
+              let statusLabel: string;
+              let statusCls: string;
+              if (hasCoords && hasBbox) {
+                statusLabel = "Both";
+                statusCls = "bg-green-500/15 text-green-600 border-green-500/30";
+              } else if (hasBbox) {
+                statusLabel = "Bbox only";
+                statusCls = "bg-blue-500/15 text-blue-600 border-blue-500/30";
+              } else if (hasCoords) {
+                statusLabel = "Coords only";
+                statusCls = "bg-amber-500/15 text-amber-600 border-amber-500/30";
+              } else {
+                statusLabel = "None";
+                statusCls = "bg-muted/40 text-muted-foreground border-border";
+              }
+
+              const isNone = !hasCoords && !hasBbox;
+
+              return (
+                <tr
+                  key={sign.id as string}
+                  className={`
+                    hover:bg-secondary/40 transition-colors
+                    ${idx % 2 === 0 ? "" : "bg-card/30"}
+                    ${isNone ? "opacity-50" : ""}
+                  `}
+                >
+                  <td className="data-cell sticky left-0 z-10 bg-inherit shadow-[2px_0_5px_-2px_rgba(0,0,0,0.3)]">
+                    <div className="flex flex-col gap-0.5">
+                      {sign.sheetNumber && (
+                        <span className="text-[10px] font-mono text-muted-foreground">
+                          {sign.sheetNumber as string}
+                        </span>
+                      )}
+                      <span className="text-xs font-semibold">
+                        {(sign.signIdentifier as string | null) ?? "—"}
+                      </span>
+                    </div>
+                  </td>
+                  <td className="data-cell">
+                    <span className="text-xs">{(sign.signType as string | null) ?? "—"}</span>
+                  </td>
+                  <td className="data-cell">
+                    <span className="text-xs text-muted-foreground">{(sign.location as string | null) ?? "—"}</span>
+                  </td>
+                  <td className="data-cell max-w-[200px]">
+                    <span className="text-xs text-muted-foreground line-clamp-2">{(sign.messageContent as string | null) ?? "—"}</span>
+                  </td>
+                  <td className="data-cell">
+                    {hasCoords ? (
+                      <span className="text-xs font-mono text-foreground">
+                        ({fmtCoord(xPos)}, {fmtCoord(yPos)})
+                      </span>
+                    ) : (
+                      <span className="text-xs text-muted-foreground/50">—</span>
+                    )}
+                  </td>
+                  <td className="data-cell">
+                    {hasBbox ? (
+                      <div className="text-[10px] font-mono leading-tight bg-secondary/60 rounded px-1.5 py-1 inline-block">
+                        <div>x: {fmtCoord(bboxX)}  y: {fmtCoord(bboxY)}</div>
+                        <div>w: {fmtCoord(bboxW)}  h: {fmtCoord(bboxH)}</div>
+                      </div>
+                    ) : (
+                      <span className="text-xs text-muted-foreground/50">—</span>
+                    )}
+                  </td>
+                  <td className="data-cell text-center">
+                    <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold border ${statusCls}`}>
+                      {statusLabel}
+                    </span>
+                  </td>
+                  <td className="data-cell text-center">
+                    <button
+                      onClick={() => onView(sign)}
+                      className="inline-flex items-center justify-center w-7 h-7 rounded hover:bg-secondary transition-colors text-muted-foreground hover:text-foreground"
+                      title="Open in plan viewer"
+                    >
+                      <MapPin className="w-3.5 h-3.5" />
+                    </button>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
   );
 }
 
