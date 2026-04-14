@@ -8,4 +8,6 @@
 
 export type UploadFilesBody = {
   files: Blob[];
+  /** Optional signage criteria / sign type schedule documents to enable the sign type library pre-pass */
+  signageDocs?: Blob[];
 };

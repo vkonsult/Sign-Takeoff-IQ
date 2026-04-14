@@ -38,6 +38,20 @@ export interface ExtractedSignRow {
   y_pos?: number | null;
   confidence_score: number;
   review_flag: boolean;
+  source?: "plan_callout" | "code_inferred" | null;
+}
+
+export interface SignTypeLibraryEntry {
+  type_code: string;
+  description: string | null;
+  dimensions: string | null;
+  materials: string | null;
+  has_braille: boolean | null;
+  has_pictogram: boolean | null;
+  is_ada_tactile: boolean | null;
+  is_exterior: boolean | null;
+  typical_use: string | null;
+  sign_keynotes: string | null;
 }
 
 // ─── PROMPTS ────────────────────────────────────────────────────────────────
@@ -64,6 +78,7 @@ For each unique sign or sign entry identified, extract the following fields. Use
 - page_number: The PDF page number (integer, 1-indexed) where this sign callout, schedule row, or reference appears. Use the "--- PAGE N ---" markers to determine this.
 
 After extracting all fields, compute:
+- source: Always set to "plan_callout" for schedule rows — these are explicitly listed in the plan document.
 - confidence_score: A number from 0.0 to 1.0 indicating how confident you are in the extraction.
   * 1.0 = All key fields present (sign_type, sign_identifier, quantity, location, dimensions)
   * 0.8 = Most key fields present, minor details missing
@@ -411,7 +426,17 @@ function buildTrainingContext(trainingSigns: VerifiedSignSummary[]): string {
   return `\n\n${blocks.join("\n\n")}\n`;
 }
 
-function buildFloorPlanADAPrompt(projectContext?: ProjectInfo, signScheduleContext?: string, verifiedSigns?: VerifiedSignSummary[], trainingContext?: VerifiedSignSummary[], specTypeContext?: string): string {
+function buildSignTypeLibraryContext(library: SignTypeLibraryEntry[]): string {
+  if (!library || library.length === 0) return "";
+  // Inject as raw JSON so the model receives a machine-parseable, unambiguous
+  // representation of each type code and its properties.
+  return `\n\nSIGN TYPE LIBRARY (structured JSON extracted from project signage document):
+IMPORTANT: When a sign's sign_identifier or sign_type matches one of the type_codes below, use that entry's dimensions, materials, has_braille, has_pictogram, and is_ada_tactile values instead of deriving your own. Do NOT generate separate output rows for these library entries themselves.
+${JSON.stringify(library, null, 2)}
+`;
+}
+
+function buildFloorPlanADAPrompt(projectContext?: ProjectInfo, signScheduleContext?: string, verifiedSigns?: VerifiedSignSummary[], trainingContext?: VerifiedSignSummary[], specTypeContext?: string, signTypeLibrary?: SignTypeLibraryEntry[]): string {
   const locationLine = projectContext?.address || projectContext?.city || projectContext?.state
     ? `\nPROJECT LOCATION: ${[projectContext.address, projectContext.city, projectContext.state, projectContext.zip].filter(Boolean).join(", ")}`
     : "";
@@ -422,7 +447,11 @@ function buildFloorPlanADAPrompt(projectContext?: ProjectInfo, signScheduleConte
   const scheduleCtx = signScheduleContext
     ? `\n\nSIGN SCHEDULE / SPECIFICATION CONTEXT (for reference only — do NOT re-list these as output rows; use them to understand sign types, identifiers, and specs defined for this project):\n---\n${signScheduleContext.slice(0, 10000)}\n---\n`
     : "";
-  const specCtx = specTypeContext
+  // When a structured sign type library is available it supersedes the raw spec text —
+  // the library is already distilled into structured JSON from the signage document.
+  // Fall back to spec text only when no library is present.
+  const libraryCtx = signTypeLibrary && signTypeLibrary.length > 0 ? buildSignTypeLibraryContext(signTypeLibrary) : "";
+  const specCtx = !libraryCtx && specTypeContext
     ? `\n\nPROJECT SIGN TYPE CATALOG FROM SPECIFICATION (for reference only — use these definitions to correctly identify and describe sign types; do NOT generate separate output rows for the spec definitions themselves):\n---\n${specTypeContext.slice(0, 12000)}\n---\n`
     : "";
   const verifiedCtx = verifiedSigns && verifiedSigns.length > 0 ? buildVerifiedContext(verifiedSigns) : "";
@@ -638,6 +667,8 @@ For every identifiable space or required sign location, output one JSON object p
 - message_content: exact text the sign displays
 - notes: cite the specific code reference (e.g. "NFPA 10 §6.1 Required", "IBC 1013.1 Required", "ADA 703.1 Required"); flag any uncertainty
 - page_number: PDF page number where you found this space (use "--- PAGE N ---" markers)
+- source: "plan_callout" if this sign has an explicit callout symbol, bubble, or label visible on the plan (even if code also requires it); "code_inferred" if you are inferring the sign is required purely from code/occupancy logic without a visible callout symbol.
+  IMPORTANT TWO-SIGNAL RULE: A fire or life-safety sign (Exit, Fire Extinguisher, Fire Door, Sprinkler, FDC, Fire Alarm, etc.) may ONLY be set to source = "code_inferred" when at least TWO independent contextual signals support it — for example: (1) room name indicates hazard AND (2) occupancy type/building use confirms the requirement. A single signal (e.g. only the room name or only the occupancy type) is insufficient — in that case, omit the sign entry rather than guess.
 - confidence_score: 0.9 = clearly visible space/location; 0.7 = likely present based on building type; 0.5 = inferred from context; 0.3 = uncertain
 - review_flag: true if confidence_score < 0.7
 
@@ -649,7 +680,9 @@ CRITICAL RULES:
 - If a floor plan shows 12 offices, output 12 separate Room ID sign entries (one per room)
 - Return ONLY a valid JSON array. No markdown, no code blocks, no explanation.
 - If you cannot read the floor plan, return []
-- COMPACT JSON: Omit any field whose value is null or empty — do NOT include it in the object. Only include fields that have actual values. Every object must include at minimum: sign_type, location, page_number, confidence_score, review_flag.
+- COMPACT JSON: Omit any field whose value is null or empty — do NOT include it in the object. Only include fields that have actual values. Every object must include at minimum: sign_type, location, page_number, confidence_score, review_flag, source.
+
+SIGN TYPE LIBRARY USAGE: If a sign_identifier matches a type_code in the sign type library provided above, use that entry's dimensions, materials, has_braille, and has_pictogram values. Do not re-derive them.
 
 LEGEND / SYMBOL KEY EXCLUSION (important):
 - Architectural drawings often include a bordered "Life Safety Legend", "Signage Legend", "Symbol Key", or "Drawing Legend" box that defines what each symbol means. This may appear in the corner or margin of a floor plan page.
@@ -657,7 +690,7 @@ LEGEND / SYMBOL KEY EXCLUSION (important):
 - Only extract sign entries from actual room labels, space designations, and code requirements applicable to the real spaces shown in the floor plan — not from the legend.
 
 FLOOR PLAN PAGES (with page markers):
-${scheduleCtx}${specCtx}${trainingCtx}${verifiedCtx}---
+${scheduleCtx}${specCtx}${libraryCtx}${trainingCtx}${verifiedCtx}---
 `;
 }
 
@@ -1245,6 +1278,7 @@ const GeminiSignRowSchema = z.object({
     .transform((v) => (v !== null && v !== undefined && typeof v === "number" ? Math.round(v) : (v as number | null))),
   confidence_score: z.number().min(0).max(1).optional(),
   review_flag: z.boolean().optional(),
+  source: z.enum(["plan_callout", "code_inferred"]).nullable().optional().default(null),
 });
 
 const GeminiResponseSchema = z.array(GeminiSignRowSchema);
@@ -1364,6 +1398,7 @@ function parseGeminiResponse(raw: string, source: string): ExtractedSignRow[] {
       page_number: item.page_number ?? null,
       confidence_score: score,
       review_flag: item.review_flag ?? computeReviewFlag(item as unknown as Record<string, unknown>, score),
+      source: item.source ?? null,
     };
   });
 }
@@ -2655,6 +2690,163 @@ export function isSpecFile(filename: string): boolean {
 }
 
 /**
+ * Returns true when the uploaded filename indicates a signage drawing sheet
+ * (A11 sign type legend, sign criteria PDF, CSI Section 10 14 spec, sign schedule sheet).
+ * These files are sent to the P0 sign type library extraction before any other pass.
+ */
+export function isSignageDoc(filename: string, firstPageText?: string): boolean {
+  const lower = filename.toLowerCase().replace(/[^a-z0-9]/g, " ");
+  // Filename-based detection
+  if (/\ba11\b/.test(lower)) return true;
+  if (lower.includes("signage")) return true;
+  if (lower.includes("sign schedule") || lower.includes("sign_schedule") || lower.includes("sign-schedule")) return true;
+  if (lower.includes("criteria")) return true;
+  if (/10[\s-_]*14[\s-_]*00/.test(lower)) return true;
+  if (/10[\s-_]*14(?!\d)/.test(lower)) return true;
+
+  // Text-based detection (first page text if provided)
+  if (firstPageText) {
+    const upperText = firstPageText.toUpperCase();
+    if (upperText.includes("SIGN TYPE LEGEND")) return true;
+    if (upperText.includes("SIGNAGE SCHEDULE")) return true;
+    if (upperText.includes("SECTION 10 14")) return true;
+    if (upperText.includes("SIGN KEYNOTES")) return true;
+  }
+  return false;
+}
+
+const SIGN_TYPE_LIBRARY_PROMPT = `You are an expert sign industry estimator reviewing a signage drawing sheet, sign criteria document, or CSI Section 10 14 specification.
+
+Your task is to extract a complete structured sign type library from this document. Look for any sign type legend, sign keynote schedule, sign type definitions table, or section defining individual sign types.
+
+For each distinct sign type defined, extract:
+- type_code: The short type code used to reference this sign (e.g. "1A", "2B", "5C", "Type A", "RS-01", "E-1")
+- description: Human-readable description of the sign type (e.g. "Interior Room ID Sign", "Exit Sign", "ADA Restroom Sign")
+- dimensions: Physical size (e.g. '6" x 8"', '12" x 18"')
+- materials: Construction materials (e.g. "Photopolymer on aluminum", "Acrylic with Braille", "Aluminum", "Painted steel")
+- has_braille: true if Braille is required, false if not, null if unspecified
+- has_pictogram: true if a pictogram/icon is required, false if not, null if unspecified
+- is_ada_tactile: true if ADA tactile compliance is required (raised characters + Braille), false if not, null if unspecified
+- is_exterior: true if this is an exterior sign type, false if interior, null if unspecified
+- typical_use: Short description of where this sign is typically used (e.g. "Room identification at door latch side", "Exit discharge locations")
+- sign_keynotes: Any keynote numbers or letters referenced with this type (e.g. "Keynote 1", "A, B, C")
+
+Also extract a top-level global_notes field (string or null) for any project-wide notes about the signage system (e.g. overall finish specifications, drawing set notes, general compliance statements).
+
+Return ONLY a single JSON object in this exact format:
+{
+  "sign_types": [
+    {
+      "type_code": "1A",
+      "description": "Interior Room ID Sign",
+      "dimensions": "6\\\" x 8\\\"",
+      "materials": "ADA Tactile Photopolymer",
+      "has_braille": true,
+      "has_pictogram": false,
+      "is_ada_tactile": true,
+      "is_exterior": false,
+      "typical_use": "All rooms with permanent designation — latch side of door",
+      "sign_keynotes": null
+    }
+  ],
+  "global_notes": null
+}
+
+RULES:
+- Extract EVERY defined sign type, even if only partially described
+- If the document has no sign type definitions, return: {"sign_types": [], "global_notes": null}
+- Return ONLY valid JSON. No markdown, no code blocks, no explanation.
+- type_code is required for every entry; omit entries that have no identifiable code
+- Dimensions should be formatted exactly as they appear (e.g. '6" x 8"', '6-1/2" x 8-1/4"')
+`;
+
+/**
+ * P0: Extracts a structured sign type library from a signage drawing sheet or spec document.
+ * Sends the file to Gemini (multimodal for PDFs) and returns the parsed library array.
+ * This runs before any other extraction pass so the library can be injected into downstream prompts.
+ */
+export async function extractSignTypeLibrary(
+  filePath: string,
+  fileId: string,
+  ai: GeminiAI
+): Promise<{ library: SignTypeLibraryEntry[]; globalNotes: string | null; inputTokens: number; outputTokens: number }> {
+  let fileBuffer: Buffer;
+  try {
+    fileBuffer = await fs.readFile(filePath);
+  } catch (err) {
+    logger.error({ err, filePath }, "extractSignTypeLibrary: could not read file");
+    return { library: [], globalNotes: null, inputTokens: 0, outputTokens: 0 };
+  }
+
+  // Try text-first approach for PDFs with good text layers
+  let text = "";
+  let inputTokens = 0;
+  let outputTokens = 0;
+  let usedTextPath = false;
+
+  try {
+    const { pages } = await extractTextFromPdf(filePath, fileId);
+    const combined = pages.map((p) => `--- PAGE ${p.pageNum} ---\n${p.text}`).join("\n\n");
+    if (combined.trim().length > 200) {
+      const result = await callGemini(SIGN_TYPE_LIBRARY_PROMPT + "\n\nDOCUMENT PAGES:\n" + combined.slice(0, 40000), ai, "sign-type-library-text");
+      text = result.text;
+      inputTokens = result.inputTokens;
+      outputTokens = result.outputTokens;
+      usedTextPath = true;
+    }
+  } catch (err) {
+    logger.warn({ err, filePath }, "extractSignTypeLibrary: text path failed — falling back to multimodal");
+  }
+
+  // Multimodal fallback for scanned/image-based documents
+  if (!usedTextPath || !text.trim()) {
+    try {
+      const pdfBase64 = fileBuffer.toString("base64");
+      const result = await callGeminiMultimodal(SIGN_TYPE_LIBRARY_PROMPT, pdfBase64, ai, "sign-type-library-multimodal");
+      text = result.text;
+      inputTokens = result.inputTokens;
+      outputTokens = result.outputTokens;
+    } catch (err) {
+      logger.error({ err, filePath }, "extractSignTypeLibrary: multimodal call failed");
+      return { library: [], globalNotes: null, inputTokens, outputTokens };
+    }
+  }
+
+  // Parse response
+  try {
+    let cleaned = text.trim();
+    const fenceMatch = cleaned.match(/```(?:json)?\n?([\s\S]*?)```/);
+    if (fenceMatch) cleaned = fenceMatch[1]!.trim();
+
+    const parsed = JSON.parse(cleaned) as { sign_types?: unknown[]; global_notes?: string | null };
+    const signTypes = Array.isArray(parsed.sign_types) ? parsed.sign_types : [];
+    const globalNotes = typeof parsed.global_notes === "string" ? parsed.global_notes : null;
+
+    const library: SignTypeLibraryEntry[] = signTypes
+      .filter((t): t is Record<string, unknown> => t != null && typeof t === "object")
+      .map((t) => ({
+        type_code: String(t.type_code ?? ""),
+        description: typeof t.description === "string" ? t.description : null,
+        dimensions: typeof t.dimensions === "string" ? t.dimensions : null,
+        materials: typeof t.materials === "string" ? t.materials : null,
+        has_braille: typeof t.has_braille === "boolean" ? t.has_braille : null,
+        has_pictogram: typeof t.has_pictogram === "boolean" ? t.has_pictogram : null,
+        is_ada_tactile: typeof t.is_ada_tactile === "boolean" ? t.is_ada_tactile : null,
+        is_exterior: typeof t.is_exterior === "boolean" ? t.is_exterior : null,
+        typical_use: typeof t.typical_use === "string" ? t.typical_use : null,
+        sign_keynotes: typeof t.sign_keynotes === "string" ? t.sign_keynotes : null,
+      }))
+      .filter((t) => t.type_code.length > 0);
+
+    logger.info({ filePath: filePath.split("/").pop(), libraryEntries: library.length }, "Sign type library extracted");
+    return { library, globalNotes, inputTokens, outputTokens };
+  } catch (err) {
+    logger.warn({ err, raw: text.slice(0, 300) }, "extractSignTypeLibrary: JSON parse failed");
+    return { library: [], globalNotes: null, inputTokens, outputTokens };
+  }
+}
+
+/**
  * Formats raw spec PDF text into a context block that can be injected into
  * schedule / floor-plan prompts so Gemini knows the project's sign type
  * definitions (materials, mounting rules, compliance notes) before it reads
@@ -2698,7 +2890,9 @@ export async function extractSignsFromPdf(
   verifiedSigns?: VerifiedSignSummary[],
   trainingContext?: VerifiedSignSummary[],
   specTypeContext?: string,
-  spatialPageTypes?: Map<number, import("./pdf-words").SpatialPageType>
+  spatialPageTypes?: Map<number, import("./pdf-words").SpatialPageType>,
+  signTypeLibrary?: SignTypeLibraryEntry[],
+  pageImagePaths?: Record<string, string>
 ): Promise<{ rows: ExtractedSignRow[]; pageCount: number; rawText: string; inputTokens: number; outputTokens: number; pageStats: PageStats }> {
   const { pages: rawPages, numPages } = await extractTextFromPdf(filePath, fileId);
 
@@ -2767,13 +2961,13 @@ Pages:
     // 1. Spatial override (highest priority)
     const spatialType = spatialPageTypes?.get(p.pageNum);
     if (spatialPageTypes && spatialPageTypes.size > 0) {
-      if (spatialType === "unknown") {
+      if ((spatialType as string) === "unknown") {
         // Hard-exclude: spatial pre-pass explicitly classified this page as unknown.
         // Force to "other" so it is excluded from all sign-schedule and floor-plan
         // Gemini extraction passes — no heuristic or outline fallback applies.
         type = "other";
         logger.debug({ pageNum: p.pageNum }, "Spatial hard-exclude: unknown page forced to other");
-      } else if (spatialType && spatialType !== "unknown") {
+      } else if (spatialType) {
         logger.debug(
           { pageNum: p.pageNum, spatial: spatialType, heuristic: p.type },
           "Spatial override applied"
@@ -2834,10 +3028,18 @@ Pages:
   if (signScheduleBlock.trim().length > 50) {
     signScheduleContext = signScheduleBlock; // also passed as reference context to Pass 2
     logger.info({ filePath: filePath.split("/").pop() }, "Running sign schedule extraction pass");
-    // Inject spec type definitions (from a companion spec file) at the top of the
+    // Inject spec type definitions and sign type library at the top of the
     // schedule prompt so Gemini can map type codes → materials/mounting/notes.
-    const schedulePromptPrefix = specTypeContext
-      ? SIGN_SCHEDULE_PROMPT + specTypeContext + "\n\nSIGN SCHEDULE / FLOOR PLAN PAGES:\n"
+    const libraryCtxForSchedule = signTypeLibrary && signTypeLibrary.length > 0 ? buildSignTypeLibraryContext(signTypeLibrary) : "";
+    // When sign type library exists, inject it as primary reference (structured JSON from signage doc).
+    // Fall back to raw spec text only when no library was extracted.
+    const scheduleCtxInjection = libraryCtxForSchedule
+      ? libraryCtxForSchedule
+      : specTypeContext
+        ? specTypeContext
+        : "";
+    const schedulePromptPrefix = scheduleCtxInjection
+      ? SIGN_SCHEDULE_PROMPT + scheduleCtxInjection + "\n\nSIGN SCHEDULE / FLOOR PLAN PAGES:\n"
       : SIGN_SCHEDULE_PROMPT;
     const { text: scheduleText, inputTokens: si, outputTokens: so } = await callGemini(
       schedulePromptPrefix + signScheduleBlock,
@@ -2893,20 +3095,53 @@ Pages:
     // Pre-build the prompt once (it's the same for all batches) then fire all
     // batches concurrently.  For a 5-page PDF with 5 batches this cuts latency
     // from 5 × T to T (limited by the slowest batch, not the sum).
-    const floorPlanPromptPrefix = buildFloorPlanADAPrompt(projectContext, signScheduleContext, verifiedSigns, trainingContext, specTypeContext);
+    const floorPlanPromptPrefix = buildFloorPlanADAPrompt(projectContext, signScheduleContext, verifiedSigns, trainingContext, specTypeContext, signTypeLibrary);
 
     const batchResults = await Promise.all(
       batches.map(async (batch, batchIdx) => {
         const sorted = [...batch].sort((a, b) => a.pageNum - b.pageNum);
         const block = sorted.map((p) => `--- PAGE ${p.pageNum} ---\n${p.text}`).join("\n\n");
         const label = `floor-plan-batch-${batchIdx + 1}-of-${batches.length}`;
-        logger.info({ batchPages: batch.length, label }, "Running ADA floor plan pass");
 
-        const { text: fpText, inputTokens: fi, outputTokens: fo } = await callGemini(
-          floorPlanPromptPrefix + block,
-          ai,
-          label
-        );
+        // ── Merged multimodal pass: include page images if available ───────────
+        // When pre-rendered PNGs exist for any pages in this batch, send both
+        // the extracted text and the visual page images in a single Gemini call.
+        // This allows the AI to cross-reference text analysis with visual callouts.
+        const batchImageParts: GeminiInlinePart[] = [];
+        if (pageImagePaths) {
+          for (const page of sorted) {
+            const imgPath = pageImagePaths[String(page.pageNum)];
+            if (imgPath) {
+              try {
+                const buf = await fs.readFile(imgPath);
+                batchImageParts.push({ inlineData: { mimeType: "image/png", data: buf.toString("base64") } });
+              } catch {
+                // Non-fatal: skip this image
+              }
+            }
+          }
+        }
+
+        let fpText: string;
+        let fi: number;
+        let fo: number;
+
+        if (batchImageParts.length > 0) {
+          logger.info({ batchPages: batch.length, label, images: batchImageParts.length }, "Running merged multimodal ADA floor plan pass");
+          const fullPrompt = floorPlanPromptPrefix + block;
+          const parts: GeminiInlinePart[] = [...batchImageParts];
+          const { text, inputTokens, outputTokens } = await callGeminiMultimodal(fullPrompt, parts, ai, label);
+          fpText = text;
+          fi = inputTokens;
+          fo = outputTokens;
+        } else {
+          logger.info({ batchPages: batch.length, label }, "Running ADA floor plan pass (text-only)");
+          const { text, inputTokens, outputTokens } = await callGemini(floorPlanPromptPrefix + block, ai, label);
+          fpText = text;
+          fi = inputTokens;
+          fo = outputTokens;
+        }
+
         const fpRows = parseGeminiResponse(fpText, label);
         logger.info({ count: fpRows.length, label }, "ADA floor plan pass complete");
         return { rows: fpRows, inputTokens: fi, outputTokens: fo };
@@ -2958,6 +3193,14 @@ Pages:
         "Sparse text detected — running visual extraction fallback (Pass 4)"
       );
 
+      // Enrich the visual fallback prompt with sign type library JSON when available.
+      const vfLibraryCtx = signTypeLibrary && signTypeLibrary.length > 0
+        ? buildSignTypeLibraryContext(signTypeLibrary)
+        : "";
+      const visualFallbackPrompt = vfLibraryCtx
+        ? VISUAL_FALLBACK_EXTRACTION_PROMPT + vfLibraryCtx
+        : VISUAL_FALLBACK_EXTRACTION_PROMPT;
+
       let fileBuffer: Buffer | null = null;
       try {
         fileBuffer = await fs.readFile(filePath);
@@ -2972,7 +3215,7 @@ Pages:
           const pdfBase64 = fileBuffer.toString("base64");
           const label = `visual-fallback-${fileName}`;
           try {
-            const { text: vfText, inputTokens: vi, outputTokens: vo } = await callGeminiMultimodal(VISUAL_FALLBACK_EXTRACTION_PROMPT, pdfBase64, ai, label);
+            const { text: vfText, inputTokens: vi, outputTokens: vo } = await callGeminiMultimodal(visualFallbackPrompt, pdfBase64, ai, label);
             totalInputTokens += vi;
             totalOutputTokens += vo;
             const vfRows = parseImageExtractionResponse(vfText, label);
@@ -3016,7 +3259,7 @@ Pages:
               batchCount++;
 
               try {
-                const { text: vfText, inputTokens: vi, outputTokens: vo } = await callGeminiMultimodal(VISUAL_FALLBACK_EXTRACTION_PROMPT, pdfBase64, ai, label);
+                const { text: vfText, inputTokens: vi, outputTokens: vo } = await callGeminiMultimodal(visualFallbackPrompt, pdfBase64, ai, label);
                 totalInputTokens += vi;
                 totalOutputTokens += vo;
                 const batchRows = parseImageExtractionResponse(vfText, label);

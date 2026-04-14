@@ -21,6 +21,12 @@ export const HealthCheckResponse = zod.object({
  */
 export const UploadFilesBody = zod.object({
   files: zod.array(zod.instanceof(File)),
+  signageDocs: zod
+    .array(zod.instanceof(File))
+    .optional()
+    .describe(
+      "Optional signage criteria \/ sign type schedule documents to enable the sign type library pre-pass",
+    ),
 });
 
 /**
@@ -77,6 +83,25 @@ export const GetJobResponse = zod.object({
       ),
     createdAt: zod.date(),
     updatedAt: zod.date(),
+    signTypeLibrary: zod
+      .array(
+        zod.object({
+          type_code: zod.string(),
+          description: zod.string().nullish(),
+          dimensions: zod.string().nullish(),
+          materials: zod.string().nullish(),
+          has_braille: zod.boolean().nullish(),
+          has_pictogram: zod.boolean().nullish(),
+          is_ada_tactile: zod.boolean().nullish(),
+          is_exterior: zod.boolean().nullish(),
+          typical_use: zod.string().nullish(),
+          sign_keynotes: zod.string().nullish(),
+        }),
+      )
+      .nullish()
+      .describe(
+        "Structured sign type library extracted from a signage criteria document, when one was uploaded",
+      ),
   }),
   files: zod.array(
     zod.object({
@@ -97,6 +122,44 @@ export const GetJobResponse = zod.object({
             .array(zod.number())
             .describe(
               "PDF page numbers not matching floor plan or sign schedule patterns",
+            ),
+          bothPages: zod
+            .array(zod.number())
+            .optional()
+            .describe(
+              "PDF page numbers classified as both floor plan and sign schedule",
+            ),
+          pageLabels: zod
+            .array(zod.string().nullable())
+            .nullish()
+            .describe(
+              'PDF logical page labels (e.g. \"A1.1\") indexed by page number (0-based)',
+            ),
+          outlineSections: zod
+            .array(
+              zod.object({
+                title: zod.string().describe("Bookmark \/ outline item title"),
+                pageStart: zod
+                  .number()
+                  .describe("First page of this section (1-indexed)"),
+                pageEnd: zod
+                  .number()
+                  .describe("Last page of this section (1-indexed, inclusive)"),
+                type: zod
+                  .enum(["floor_plan", "sign_schedule", "other"])
+                  .nullable()
+                  .describe("Classified type of this outline section"),
+              }),
+            )
+            .nullish()
+            .describe(
+              "Top-level PDF outline (bookmark) sections with classified page ranges",
+            ),
+          pageImagePaths: zod
+            .record(zod.string(), zod.string())
+            .nullish()
+            .describe(
+              "Map of page number (as string key) to server-relative path of pre-rendered PNG image (resolved server-side; not exposed to clients)",
             ),
         })
         .nullish()
@@ -126,6 +189,24 @@ export const GetJobResponse = zod.object({
         .min(getJobResponseExtractedSignsItemConfidenceScoreMin)
         .max(getJobResponseExtractedSignsItemConfidenceScoreMax),
       reviewFlag: zod.boolean(),
+      manuallyAdded: zod
+        .boolean()
+        .optional()
+        .describe(
+          "True if this sign was manually placed by the user (not AI-extracted)",
+        ),
+      userVerified: zod
+        .boolean()
+        .optional()
+        .describe(
+          "True if the user has saved\/confirmed this sign entry; preserved across re-extractions",
+        ),
+      source: zod
+        .enum(["plan_callout", "code_inferred"])
+        .nullish()
+        .describe(
+          "Origin of this sign row — plan_callout means the sign was explicitly called out in the plans; code_inferred means it was inferred from occupancy\/code requirements",
+        ),
       createdAt: zod.date(),
     }),
   ),
@@ -175,6 +256,25 @@ export const ListJobsResponse = zod.object({
         ),
       createdAt: zod.date(),
       updatedAt: zod.date(),
+      signTypeLibrary: zod
+        .array(
+          zod.object({
+            type_code: zod.string(),
+            description: zod.string().nullish(),
+            dimensions: zod.string().nullish(),
+            materials: zod.string().nullish(),
+            has_braille: zod.boolean().nullish(),
+            has_pictogram: zod.boolean().nullish(),
+            is_ada_tactile: zod.boolean().nullish(),
+            is_exterior: zod.boolean().nullish(),
+            typical_use: zod.string().nullish(),
+            sign_keynotes: zod.string().nullish(),
+          }),
+        )
+        .nullish()
+        .describe(
+          "Structured sign type library extracted from a signage criteria document, when one was uploaded",
+        ),
     }),
   ),
 });

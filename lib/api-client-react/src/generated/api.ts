@@ -129,6 +129,11 @@ export const uploadFiles = async (
 ): Promise<UploadResponse> => {
   const formData = new FormData();
   uploadFilesBody.files.forEach((value) => formData.append(`files`, value));
+  if (uploadFilesBody.signageDocs !== undefined) {
+    uploadFilesBody.signageDocs.forEach((value) =>
+      formData.append(`signageDocs`, value),
+    );
+  }
 
   return customFetch<UploadResponse>(getUploadFilesUrl(), {
     ...options,

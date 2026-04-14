@@ -47,6 +47,12 @@ paths:
                   items:
                     type: string
                     format: binary
+                signageDocs:
+                  type: array
+                  description: Optional signage criteria / sign type schedule documents to enable the sign type library pre-pass
+                  items:
+                    type: string
+                    format: binary
               required:
                 - files
       responses:
@@ -309,6 +315,44 @@ components:
         updatedAt:
           type: string
           format: date-time
+        signTypeLibrary:
+          type: array
+          nullable: true
+          description: Structured sign type library extracted from a signage criteria document, when one was uploaded
+          items:
+            type: object
+            properties:
+              type_code:
+                type: string
+              description:
+                type: string
+                nullable: true
+              dimensions:
+                type: string
+                nullable: true
+              materials:
+                type: string
+                nullable: true
+              has_braille:
+                type: boolean
+                nullable: true
+              has_pictogram:
+                type: boolean
+                nullable: true
+              is_ada_tactile:
+                type: boolean
+                nullable: true
+              is_exterior:
+                type: boolean
+                nullable: true
+              typical_use:
+                type: string
+                nullable: true
+              sign_keynotes:
+                type: string
+                nullable: true
+            required:
+              - type_code
       required:
         - id
         - status
@@ -472,6 +516,11 @@ components:
         userVerified:
           type: boolean
           description: True if the user has saved/confirmed this sign entry; preserved across re-extractions
+        source:
+          type: string
+          nullable: true
+          enum: [plan_callout, code_inferred]
+          description: Origin of this sign row — plan_callout means the sign was explicitly called out in the plans; code_inferred means it was inferred from occupancy/code requirements
         createdAt:
           type: string
           format: date-time

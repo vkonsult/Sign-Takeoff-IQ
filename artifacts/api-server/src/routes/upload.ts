@@ -50,7 +50,10 @@ const upload = multer({
 });
 
 router.post("/upload", (req, res, next) => {
-  upload.array("files", 20)(req, res, (err) => {
+  upload.fields([
+    { name: "files", maxCount: 20 },
+    { name: "signageDocs", maxCount: 5 },
+  ])(req, res, (err) => {
     if (err) {
       if (err.code === "LIMIT_FILE_SIZE") {
         res.status(413).json({
@@ -64,9 +67,11 @@ router.post("/upload", (req, res, next) => {
     next();
   });
 }, async (req, res) => {
-  const files = req.files as Express.Multer.File[];
+  const fieldMap = req.files as Record<string, Express.Multer.File[]> | undefined;
+  const files = fieldMap?.["files"] ?? [];
+  const signageDocFiles = fieldMap?.["signageDocs"] ?? [];
 
-  if (!files || files.length === 0) {
+  if (files.length === 0 && signageDocFiles.length === 0) {
     res.status(400).json({ error: "No PDF files uploaded" });
     return;
   }
@@ -78,7 +83,8 @@ router.post("/upload", (req, res, next) => {
   }
 
   try {
-    const firstName = files[0]?.originalname ?? "Untitled Job";
+    const allFiles = [...files, ...signageDocFiles];
+    const firstName = files[0]?.originalname ?? signageDocFiles[0]?.originalname ?? "Untitled Job";
     const jobName = firstName.replace(/\.pdf$/i, "").replace(/[_-]/g, " ").trim();
 
     // Optional form field: "method" = "gemini" (default) | "heuristic"
@@ -89,7 +95,7 @@ router.post("/upload", (req, res, next) => {
       .values({
         name: jobName,
         status: "pending",
-        fileCount: files.length,
+        fileCount: allFiles.length,
         organizationId: orgId,
         scanMethod,
       })
@@ -97,27 +103,29 @@ router.post("/upload", (req, res, next) => {
 
     const uploadDir = await ensureJobUploadDir(job.id);
 
-    const fileRecords = await Promise.all(
-      files.map(async (file) => {
-        const destPath = path.join(uploadDir, file.filename);
-        await fs.copyFile(file.path, destPath);
-        await fs.unlink(file.path).catch(() => undefined);
-        return {
-          jobId: job.id,
-          originalName: file.originalname,
-          storedPath: destPath,
-        };
-      })
-    );
+    const moveFile = async (file: Express.Multer.File, fileType: "data" | "signage_doc") => {
+      const destPath = path.join(uploadDir, file.filename);
+      await fs.copyFile(file.path, destPath);
+      await fs.unlink(file.path).catch(() => undefined);
+      return { jobId: job.id, originalName: file.originalname, storedPath: destPath, fileType } as const;
+    };
+
+    const fileRecords = await Promise.all([
+      ...files.map((f) => moveFile(f, "data")),
+      ...signageDocFiles.map((f) => moveFile(f, "signage_doc")),
+    ]);
 
     await db.insert(jobFilesTable).values(fileRecords);
 
-    req.log.info({ jobId: job.id, fileCount: files.length, scanMethod }, "Upload complete, auto-starting extraction");
+    req.log.info(
+      { jobId: job.id, fileCount: files.length, signageDocCount: signageDocFiles.length, scanMethod },
+      "Upload complete, auto-starting extraction",
+    );
 
     res.status(201).json({
       jobId: job.id,
-      fileCount: files.length,
-      message: `Successfully uploaded ${files.length} file(s). Extraction starting automatically.`,
+      fileCount: allFiles.length,
+      message: `Successfully uploaded ${allFiles.length} file(s). Extraction starting automatically.`,
     });
 
     if (scanMethod === "heuristic") {

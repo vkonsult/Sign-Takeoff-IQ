@@ -11,7 +11,7 @@ import {
 } from "@workspace/db";
 
 import { ai } from "@workspace/integrations-gemini-ai";
-import { extractSignsFromPdf, extractSignCalloutsPng, extractProjectInfo, extractTextFromPdf, isSpecFile, buildSpecContextString, type ProjectInfo, type VerifiedSignSummary, type GeminiCallout, type ScanResult, type ExtractedSignRow } from "./extraction";
+import { extractSignsFromPdf, extractSignCalloutsPng, extractProjectInfo, extractTextFromPdf, isSpecFile, isSignageDoc, buildSpecContextString, extractSignTypeLibrary, type SignTypeLibraryEntry, type ProjectInfo, type VerifiedSignSummary, type GeminiCallout, type ScanResult, type ExtractedSignRow } from "./extraction";
 import { saveParsedResult, getFilePageImagesDir, PAGES_DIR } from "./storage";
 import { renderFloorPlanPages, detectPageRegions, type PageRegions } from "./pdf-render";
 import { logger } from "./logger";
@@ -136,9 +136,12 @@ export async function processJob(jobId: string): Promise<void> {
       )
     );
 
+  // Clear stale sign type library data so re-runs start fresh.
+  // This prevents a previous library from persisting if the current run
+  // finds no signage docs or extraction returns empty.
   await db
     .update(jobsTable)
-    .set({ status: "processing", updatedAt: new Date() })
+    .set({ status: "processing", signTypeLibrary: null, signTypeLibraryNotes: null, updatedAt: new Date() })
     .where(eq(jobsTable.id, jobId));
 
   const files = await db
@@ -161,14 +164,85 @@ export async function processJob(jobId: string): Promise<void> {
   // consumed later by the post-word-match Gemini bbox scan.
   const filePageImagePaths = new Map<string, Record<string, string>>();
   const fileRelevantPages = new Map<string, Set<number>>();
+  // Tracks files that already had floor plan pages processed via the merged multimodal
+  // pass inside extractSignsFromPdf — the visual bbox scan is redundant for these.
+  const filesWithMultimodalPass = new Set<string>();
   let totalInputTokens = 0;
   let totalOutputTokens = 0;
   let totalImageInputTokens = 0;
   let totalImageOutputTokens = 0;
 
-  // ── PASS 0: Extract project info from first file ──────────────────────────
+  // ── STEP 1 (FIRST): Signage doc detection + sign type library extraction ─────
+  // This is the first extraction step — it must run before all other Gemini passes
+  // so the resulting sign type library can be injected into every downstream prompt.
+  //
+  // Detection is three-tiered:
+  //   a. Explicit DB tag: files uploaded via the signageDocs upload field
+  //   b. Filename heuristic: isSignageDoc() filename check (fast, synchronous)
+  //   c. Text-based heuristic: first-page text peek for any unclassified file
+
+  // a. Explicit and filename detection (fast — no I/O)
+  const explicitSignageDocs = files.filter((f) => f.fileType === "signage_doc");
+  const untaggedFiles = files.filter((f) => f.fileType !== "signage_doc");
+  const filenameSignageDocs = untaggedFiles.filter((f) => isSignageDoc(f.originalName));
+
+  // b. Text-based detection for files not caught by explicit tag or filename
+  const textCandidates = untaggedFiles.filter((f) => !isSignageDoc(f.originalName));
+  const textDetectedSignageDocs = (await Promise.all(
+    textCandidates.map(async (f) => {
+      try {
+        const { pages } = await extractTextFromPdf(f.storedPath, f.id);
+        const firstPageText = pages.slice(0, 2).map((p) => p.text).join("\n");
+        if (firstPageText && isSignageDoc(f.originalName, firstPageText)) {
+          logger.info({ fileName: f.originalName }, "Signage doc detected via first-page text heuristic");
+          return f;
+        }
+      } catch {
+        /* non-fatal */
+      }
+      return null;
+    })
+  )).filter((f): f is NonNullable<typeof f> => f !== null);
+
+  const signageDocs = [...explicitSignageDocs, ...filenameSignageDocs, ...textDetectedSignageDocs];
+
+  // c. Extract sign type library from signage docs (first Gemini extraction pass)
+  let signTypeLibrary: SignTypeLibraryEntry[] | undefined;
+  if (signageDocs.length > 0) {
+    logger.info({ jobId, signageDocs: signageDocs.map((f) => f.originalName) }, "Signage docs detected — extracting sign type library (first pass)");
+    const t_lib = Date.now();
+    const allEntries: SignTypeLibraryEntry[] = [];
+    let collectedGlobalNotes: string[] = [];
+    for (const sigDoc of signageDocs) {
+      try {
+        const { library: libEntries, globalNotes } = await extractSignTypeLibrary(sigDoc.storedPath, sigDoc.id, ai);
+        allEntries.push(...libEntries);
+        if (globalNotes) collectedGlobalNotes.push(globalNotes);
+        logger.info({ fileName: sigDoc.originalName, entries: libEntries.length }, "Sign type library extracted from signage doc");
+      } catch (err) {
+        logger.warn({ err, fileName: sigDoc.originalName }, "Failed to extract sign type library — non-fatal");
+      }
+    }
+    if (allEntries.length > 0) {
+      signTypeLibrary = allEntries;
+      const globalNotesMerged = collectedGlobalNotes.length > 0 ? collectedGlobalNotes.join("\n\n") : null;
+      // Persist the library and global notes to the jobs table
+      await db.update(jobsTable).set({
+        signTypeLibrary: allEntries,
+        ...(globalNotesMerged ? { signTypeLibraryNotes: globalNotesMerged } : {}),
+      }).where(eq(jobsTable.id, jobId));
+      logger.info({ jobId, entries: allEntries.length, hasGlobalNotes: !!globalNotesMerged }, "Sign type library saved to job");
+    }
+    recordStep("sign_type_library", "Sign type library extraction", t_lib, { signageDocCount: signageDocs.length, entries: allEntries.length });
+  }
+
+  // Build a complete set of signage doc IDs so they are excluded from all
+  // downstream routing (spec, data, and main extraction loop).
+  const signageDocIds = new Set(signageDocs.map((f) => f.id));
+
+  // ── PASS 0: Extract project info from first non-signage file ──────────────
   let projectContext: ProjectInfo | undefined;
-  const firstFile = files[0]!;
+  const firstFile = files.find((f) => !signageDocIds.has(f.id)) ?? files[0]!;
 
   try {
     logger.info({ jobId, file: firstFile.originalName }, "Extracting project info");
@@ -200,8 +274,9 @@ export async function processJob(jobId: string): Promise<void> {
   // (floor plans / signage schedules), the spec is read as instructional context
   // that enriches how the drawing files are extracted — it does NOT generate
   // standalone sign rows of its own.
-  const specFiles = files.filter((f) => isSpecFile(f.originalName));
-  const dataFiles = files.filter((f) => !isSpecFile(f.originalName));
+  // Signage docs are excluded via signageDocIds (built above).
+  const specFiles = files.filter((f) => !signageDocIds.has(f.id) && isSpecFile(f.originalName));
+  const dataFiles = files.filter((f) => !signageDocIds.has(f.id) && !isSpecFile(f.originalName));
   const hasDataFiles = dataFiles.length > 0;
 
   let specTypeContext: string | undefined;
@@ -233,7 +308,8 @@ export async function processJob(jobId: string): Promise<void> {
 
   // Files to actually run sign extraction on: data files when they exist;
   // fall back to all files (treating them as data) when only specs were uploaded.
-  const filesToProcess = hasDataFiles ? dataFiles : files;
+  // Either way, exclude signage docs (already handled in the library pre-pass).
+  const filesToProcess = (hasDataFiles ? dataFiles : files).filter((f) => !signageDocIds.has(f.id));
 
   // ── PASSES 1–3: Text + visual extraction — all files in parallel ─────────────
   // Within each file: text extraction runs first, then visual verification uses
@@ -256,6 +332,8 @@ export async function processJob(jobId: string): Promise<void> {
         };
         /** pageNum → normalized level name for floor-plan pages (from spatial pre-pass) */
         spatialFloorLevelNames?: Map<number, string>;
+        /** Whether floor plan PNG images were actually passed to extractSignsFromPdf (not just supplemental renders). */
+        usedMultimodalImages: boolean;
       }
     | { ok: false; file: typeof files[number]; error: string };
 
@@ -364,6 +442,53 @@ export async function processJob(jobId: string): Promise<void> {
           spatialPageTypes = undefined;
         }
 
+        // ── Early PNG pre-render: rasterize floor_plan and "both" pages ─────────
+        // We pre-render before text extraction so the merged multimodal ADA pass
+        // can send both the extracted text block AND the page image in one Gemini
+        // call, giving the model visual callout data alongside the text.
+        // Uses spatial pre-pass results (when available) to identify pages.
+        // After text extraction a supplemental render handles any additional
+        // floor plan pages found via text heuristics that weren't in the spatial map.
+        // pageImagePathsRelative: stored in DB (relative paths, no filesystem disclosure)
+        // pageImagePathsAbsolute: passed to Gemini (must be absolute for fs.readFile)
+        let pageImagePathsRelative: Record<string, string> | null = null;
+        let pageImagePathsAbsolute: Record<string, string> | null = null;
+
+        if (spatialPageTypes && spatialPageTypes.size > 0) {
+          const earlyPngPageNums = Array.from(spatialPageTypes.entries())
+            .filter(([, t]) => t === "floor_plan" || t === "both")
+            .map(([n]) => n)
+            .sort((a, b) => a - b);
+
+          if (earlyPngPageNums.length > 0) {
+            try {
+              const t_earlyRender = Date.now();
+              const outputDir = getFilePageImagesDir(file.id);
+              const rendered = await renderFloorPlanPages(file.storedPath, earlyPngPageNums, outputDir);
+              if (rendered.size > 0) {
+                pageImagePathsRelative = {};
+                pageImagePathsAbsolute = {};
+                const pagesParent = path.dirname(PAGES_DIR);
+                for (const [pageNum, absPath] of rendered) {
+                  pageImagePathsRelative[String(pageNum)] = path.relative(pagesParent, absPath);
+                  pageImagePathsAbsolute[String(pageNum)] = absPath;
+                }
+              }
+              logger.info(
+                { fileId: file.id, pagesRendered: rendered.size, durationMs: Date.now() - t_earlyRender },
+                "Early PNG pre-render complete (for merged multimodal pass)",
+              );
+            } catch (err) {
+              logger.warn({ err, fileId: file.id }, "Early PNG pre-render failed — non-fatal, will use text-only ADA pass");
+            }
+          }
+        }
+
+        // Snapshot whether images were available BEFORE the call — supplemental
+        // renders after this point do NOT count as part of the merged multimodal pass.
+        const multimodalImagesPassedToExtractor =
+          pageImagePathsAbsolute !== null && Object.keys(pageImagePathsAbsolute).length > 0;
+
         const t_text = Date.now();
         const textResult = await extractSignsFromPdf(
           file.storedPath,
@@ -373,7 +498,9 @@ export async function processJob(jobId: string): Promise<void> {
           allVerifiedForFile.length > 0 ? allVerifiedForFile : undefined,
           crossJobVerified.length > 0 ? crossJobVerified : undefined,
           specTypeContext,
-          spatialPageTypes
+          spatialPageTypes,
+          signTypeLibrary,
+          pageImagePathsAbsolute ?? undefined
         );
         const textDurationMs = Date.now() - t_text;
 
@@ -383,40 +510,36 @@ export async function processJob(jobId: string): Promise<void> {
           ...textResult.pageStats.signSchedulePages,
         ]);
 
-        // ── PNG pre-render: rasterize floor_plan and "both" pages only ─────────
-        // Sign schedule pages don't need PNGs — they're not rendered in the
-        // viewer and coordinate matching only needs floor plan imagery.
-        // Failures are non-fatal.
+        // ── Supplemental PNG pre-render: any floor plan pages from text heuristics
+        // not already rendered in the early pass (e.g. when spatial pre-pass was
+        // unavailable, or text heuristics found additional pages).
+        const alreadyRenderedPages = new Set(Object.keys(pageImagePathsAbsolute ?? {}).map(Number));
         const pngPageNumsSet = new Set([
           ...textResult.pageStats.floorPlanPages,
           ...(textResult.pageStats.bothPages ?? []),
-        ]);
-        const pngPageNums = Array.from(pngPageNumsSet).sort((a, b) => a - b);
-        // pageImagePathsRelative: stored in DB (relative paths, no filesystem disclosure)
-        // pageImagePathsAbsolute: passed to Gemini (must be absolute for fs.readFile)
-        let pageImagePathsRelative: Record<string, string> | null = null;
-        let pageImagePathsAbsolute: Record<string, string> | null = null;
-        if (pngPageNums.length > 0) {
+        ].filter((p) => !alreadyRenderedPages.has(p)));
+        const supplementalPngPageNums = Array.from(pngPageNumsSet).sort((a, b) => a - b);
+
+        if (supplementalPngPageNums.length > 0) {
           try {
             const t_render = Date.now();
             const outputDir = getFilePageImagesDir(file.id);
-            const rendered = await renderFloorPlanPages(file.storedPath, pngPageNums, outputDir);
+            const rendered = await renderFloorPlanPages(file.storedPath, supplementalPngPageNums, outputDir);
             if (rendered.size > 0) {
-              pageImagePathsRelative = {};
-              pageImagePathsAbsolute = {};
+              if (!pageImagePathsRelative) pageImagePathsRelative = {};
+              if (!pageImagePathsAbsolute) pageImagePathsAbsolute = {};
               const pagesParent = path.dirname(PAGES_DIR);
               for (const [pageNum, absPath] of rendered) {
-                // Relative path stored in DB; absolute path used for Gemini
                 pageImagePathsRelative[String(pageNum)] = path.relative(pagesParent, absPath);
                 pageImagePathsAbsolute[String(pageNum)] = absPath;
               }
             }
             logger.info(
               { fileId: file.id, pagesRendered: rendered.size, durationMs: Date.now() - t_render },
-              "PNG pre-render complete",
+              "Supplemental PNG pre-render complete",
             );
           } catch (err) {
-            logger.warn({ err, fileId: file.id }, "PNG pre-render failed — non-fatal, viewer will use PDF fallback");
+            logger.warn({ err, fileId: file.id }, "Supplemental PNG pre-render failed — non-fatal, viewer will use PDF fallback");
           }
         }
 
@@ -542,7 +665,7 @@ Do not include any other text or explanation.`;
           .set({ pageCount: textResult.pageCount, extractedText: textResult.rawText.slice(0, 10000), pageStats: finalPageStats })
           .where(eq(jobFilesTable.id, file.id));
 
-        return { ok: true, file, textResult, textDurationMs, spatialData: fileSpatialData, spatialFloorLevelNames };
+        return { ok: true, file, textResult, textDurationMs, spatialData: fileSpatialData, spatialFloorLevelNames, usedMultimodalImages: multimodalImagesPassedToExtractor };
       } catch (err) {
         logger.error({ err, fileId: file.id, fileName: file.originalName }, "File extraction failed");
         return { ok: false, file, error: String(err) };
@@ -574,6 +697,19 @@ Do not include any other text or explanation.`;
     failed: fileResults.filter((r) => !r.ok).length,
     files: extractionFileSummaries,
   });
+
+  // Mark files that had floor plan PNG images actually passed to extractSignsFromPdf
+  // (not just supplemental renders). These files already got visual data through
+  // the merged Gemini multimodal call and don't need the separate visual bbox scan.
+  for (const result of fileResults) {
+    if (result.ok && result.usedMultimodalImages) {
+      filesWithMultimodalPass.add(result.file.id);
+    }
+  }
+  logger.info(
+    { jobId, multimodalFiles: filesWithMultimodalPass.size, totalFiles: filesToProcess.length },
+    "Multimodal pass coverage"
+  );
 
   // ── Merge parallel results into accumulator arrays ────────────────────────
   for (const result of fileResults) {
@@ -645,6 +781,7 @@ Do not include any other text or explanation.`;
         reviewFlag: row.review_flag ?? false,
         extractionMethod: "text",
         rawJson: row as unknown as Record<string, unknown>,
+        source: row.source ?? null,
       });
     }
   }
@@ -1169,6 +1306,14 @@ Do not include any other text or explanation.`;
       continue;
     }
 
+    // Skip the visual bbox scan for files that already had their floor plan pages
+    // processed through the merged multimodal pass inside extractSignsFromPdf.
+    // Repeating the scan would be redundant and waste tokens.
+    if (filesWithMultimodalPass.has(file.id)) {
+      logger.info({ fileId: file.id }, "Bbox scan skipped — file covered by merged multimodal floor plan pass");
+      continue;
+    }
+
     let scanResult: ScanResult;
     const t_fileScan = Date.now();
     try {
@@ -1322,6 +1467,39 @@ Do not include any other text or explanation.`;
       filesWithBboxes: bboxesByFile.size,
       pagesWithBboxes: pagesWithBbox,
     });
+  }
+
+  // ── MERGE & ASSIGN: Backfill null sign row fields from the sign type library ─
+  // For any extracted row whose sign_identifier or sign_type matches a type_code
+  // in the library, fill in null dimensions/materials/ADA fields deterministically
+  // so the AI's structured knowledge is always applied before dedup + insert.
+  if (signTypeLibrary && signTypeLibrary.length > 0) {
+    const libByCode = new Map(signTypeLibrary.map((e) => [e.type_code.toUpperCase(), e]));
+
+    const enrichRow = (row: InsertExtractedSign): InsertExtractedSign => {
+      const key = (row.signIdentifier ?? row.signType ?? "").toUpperCase().trim();
+      const entry = libByCode.get(key);
+      if (!entry) return row;
+      return {
+        ...row,
+        dimensions: row.dimensions ?? entry.dimensions ?? null,
+        materials: row.materials ?? entry.materials ?? null,
+        hasBraille: row.hasBraille ?? entry.has_braille ?? null,
+        hasPictogram: row.hasPictogram ?? entry.has_pictogram ?? null,
+        isAdaTactile: row.isAdaTactile ?? entry.is_ada_tactile ?? null,
+        adaRequired: row.adaRequired ?? entry.is_ada_tactile ?? false,
+        notes: row.notes
+          ? row.notes
+          : [entry.typical_use, entry.sign_keynotes].filter(Boolean).join(" | ") || null,
+      };
+    };
+
+    finalTextRows = finalTextRows.map(enrichRow);
+    for (let i = 0; i < allImageRows.length; i++) {
+      allImageRows[i] = enrichRow(allImageRows[i]);
+    }
+
+    logger.info({ jobId, librarySize: signTypeLibrary.length }, "Sign type library merge & assign complete");
   }
 
   const t_insert = Date.now();

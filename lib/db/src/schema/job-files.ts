@@ -8,6 +8,7 @@ export const jobFilesTable = pgTable("job_files", {
   jobId: uuid("job_id").notNull().references(() => jobsTable.id, { onDelete: "cascade" }),
   originalName: text("original_name").notNull(),
   storedPath: text("stored_path").notNull(),
+  fileType: text("file_type").$type<"data" | "spec" | "signage_doc">(),
   pageCount: integer("page_count"),
   extractedText: text("extracted_text"),
   pageStats: json("page_stats").$type<{
