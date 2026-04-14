@@ -80,13 +80,33 @@ export async function renderFloorPlanPages(
 
   await fs.mkdir(outputDir, { recursive: true });
 
+  // Separate pages into those that need rendering vs already cached
+  const toRender: number[] = [];
+  for (const pageNum of pageNums) {
+    const filePath = path.join(outputDir, `page-${pageNum}.png`);
+    try {
+      await fs.access(filePath);
+      result.set(pageNum, filePath);
+      logger.debug({ pageNum, filePath }, "Skipping already-rendered PNG");
+    } catch {
+      toRender.push(pageNum);
+    }
+  }
+
+  if (toRender.length === 0) {
+    logger.info({ cached: result.size }, "All PNG pages already cached — skipping render");
+    return result;
+  }
+
+  logger.info({ toRender: toRender.length, cached: result.size }, "Rendering pages in parallel");
   const rawBuffer = await fs.readFile(pdfPath);
   const data = new Uint8Array(rawBuffer);
   const doc = await lib.getDocument({ data, disableAutoFetch: true, disableStream: true }).promise;
 
   try {
-    for (const pageNum of pageNums) {
-      if (pageNum < 1 || pageNum > doc.numPages) continue;
+    // Render pages in parallel for speed
+    await Promise.all(toRender.map(async (pageNum) => {
+      if (pageNum < 1 || pageNum > doc.numPages) return;
       try {
         const page = await doc.getPage(pageNum);
         const viewport = page.getViewport({ scale });
@@ -111,7 +131,7 @@ export async function renderFloorPlanPages(
       } catch (err) {
         logger.warn({ err, pageNum, pdfPath }, "renderFloorPlanPages: failed to render page — skipping");
       }
-    }
+    }));
   } finally {
     doc.destroy();
   }
