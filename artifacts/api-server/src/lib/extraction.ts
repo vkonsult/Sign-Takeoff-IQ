@@ -2572,7 +2572,11 @@ Pages:
     // the section title is high-confidence metadata — override the heuristic type
     // regardless of what the heuristic said (not just "other" pages).
     // Exception: preserve "both" pages since they are the most specific classification.
-    if (pdfMeta.outlineSections.length > 0 && type !== "both") {
+    // Skip if spatial already provided a definitive classification for this page —
+    // spatial is higher priority and must not be overridden by outline sections.
+    const hasSpatialResult = spatialPageTypes?.get(p.pageNum) != null &&
+      spatialPageTypes.get(p.pageNum) !== "unknown";
+    if (!hasSpatialResult && pdfMeta.outlineSections.length > 0 && type !== "both") {
       const section = pdfMeta.outlineSections.find(
         (s) => p.pageNum >= s.pageStart && p.pageNum <= s.pageEnd
       );
