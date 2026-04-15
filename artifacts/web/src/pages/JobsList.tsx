@@ -7,9 +7,9 @@ import { getListJobsQueryKey } from "@workspace/api-client-react";
 import { format, formatDistanceToNow } from "date-fns";
 import { Button } from "@/components/ui/button";
 import {
-  FolderOpen, ChevronRight, FileText, CheckCircle2, Cpu,
+  FolderOpen, Eye, FileText, CheckCircle2, Cpu,
   AlertTriangle, Trash2, X, Square, CheckSquare, MinusSquare,
-  ExternalLink, Archive, EyeOff,
+  Archive, EyeOff,
 } from "lucide-react";
 import { Link } from "wouter";
 
@@ -67,6 +67,7 @@ export default function JobsList() {
     status: string;
     fileCount: number;
     createdAt: string;
+    updatedAt?: string | null;
     recentUsers?: RecentUser[];
     files?: { id: string; originalName: string }[];
   }>;
@@ -84,7 +85,6 @@ export default function JobsList() {
       else next.add(id);
       return next;
     });
-    // Exit single-delete confirmation if user starts multi-selecting
     setConfirmDelete(null);
   };
 
@@ -200,7 +200,7 @@ export default function JobsList() {
         ) : (
           <div className="bg-card rounded-xl border border-border overflow-hidden shadow-lg">
             {/* Header row */}
-            <div className="grid grid-cols-[36px_1fr_100px_120px_40px_180px_48px] gap-3 px-4 py-3 border-b border-border bg-secondary/50 text-xs font-display font-semibold uppercase tracking-wider text-muted-foreground items-center">
+            <div className="grid grid-cols-[36px_1fr_120px_40px_160px_160px_48px] gap-3 px-4 py-3 border-b border-border bg-secondary/50 text-xs font-display font-semibold uppercase tracking-wider text-muted-foreground items-center">
               {/* Select-all checkbox */}
               <button
                 onClick={toggleAll}
@@ -214,10 +214,10 @@ export default function JobsList() {
                     : <Square className="w-4 h-4" />}
               </button>
               <div>Job Name</div>
-              <div className="text-center">Files</div>
               <div className="text-center">Status</div>
               <div className="text-center" title="Last active user">User</div>
               <div className="text-right">Created</div>
+              <div className="text-right">Updated</div>
               <div />
             </div>
 
@@ -241,7 +241,7 @@ export default function JobsList() {
                   <div key={job.id} className="flex flex-col">
                     {/* Main row */}
                     <div
-                      className={`relative group grid grid-cols-[36px_1fr_100px_120px_40px_180px_48px] gap-3 items-center transition-colors
+                      className={`relative group grid grid-cols-[36px_1fr_120px_40px_160px_160px_48px] gap-3 items-center transition-colors
                         ${isChecked ? "bg-primary/5 border-l-2 border-l-primary" : "hover:bg-secondary/40"}`}
                     >
                     {/* Checkbox */}
@@ -257,38 +257,30 @@ export default function JobsList() {
 
                     {/* Clickable link area */}
                     <Link href={`/jobs/${job.id}`} className="contents outline-none">
+                      {/* Job name cell — with inline PDF icon(s) */}
                       <div className="min-w-0 py-4 flex items-center gap-2">
                         <div className="min-w-0 flex-1">
-                          <div className="text-sm font-medium text-foreground truncate">
-                            {job.name ?? "Untitled Job"}
+                          <div className="text-sm font-medium text-foreground truncate flex items-center gap-1.5">
+                            <span className="truncate">{job.name ?? "Untitled Job"}</span>
+                            {jobFiles.map((f) => (
+                              <button
+                                key={f.id}
+                                onClick={(e) => {
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                  openPdfInNewTab(job.id, f.id, f.originalName).catch(() => {});
+                                }}
+                                title={`Open ${f.originalName} in new tab`}
+                                className="flex-shrink-0 p-0.5 rounded text-muted-foreground/50 hover:text-primary transition-colors"
+                              >
+                                <FileText className="w-3.5 h-3.5" />
+                              </button>
+                            ))}
                           </div>
                           <div className="text-xs font-mono text-muted-foreground/60 truncate mt-0.5">
                             {job.id.split("-")[0]}
                           </div>
                         </div>
-                      </div>
-
-                      <div className="flex flex-col items-center justify-center gap-1 py-4">
-                        {jobFiles.length > 0 ? jobFiles.map((f) => (
-                          <button
-                            key={f.id}
-                            onClick={(e) => {
-                              e.preventDefault();
-                              e.stopPropagation();
-                              openPdfInNewTab(job.id, f.id, f.originalName).catch(() => {});
-                            }}
-                            title={`Open ${f.originalName} in new tab`}
-                            className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium text-muted-foreground border border-border hover:text-primary hover:border-primary/50 transition-colors max-w-[88px]"
-                          >
-                            <ExternalLink className="w-3 h-3 flex-shrink-0" />
-                            <span className="truncate">{f.originalName.replace(/\.pdf$/i, "")}</span>
-                          </button>
-                        )) : (
-                          <span className="flex items-center gap-1.5 text-muted-foreground text-sm font-mono">
-                            <FileText className="w-4 h-4" />
-                            {job.fileCount}
-                          </span>
-                        )}
                       </div>
 
                       <div className="flex justify-center py-4">
@@ -303,12 +295,18 @@ export default function JobsList() {
                         {format(new Date(job.createdAt), "MMM d, yyyy HH:mm")}
                       </div>
 
+                      <div className="text-right text-sm text-muted-foreground py-4">
+                        {job.updatedAt
+                          ? format(new Date(job.updatedAt), "MMM d, yyyy HH:mm")
+                          : <span className="text-muted-foreground/30">—</span>}
+                      </div>
+
                       <div className="flex justify-end items-center pr-2 py-4 text-muted-foreground group-hover:text-primary transition-colors">
-                        <ChevronRight className="w-5 h-5" />
+                        <Eye className="w-5 h-5" />
                       </div>
                     </Link>
 
-                    {/* Single-row delete — overlaps the chevron area on hover */}
+                    {/* Single-row delete — always visible, destructive red */}
                     {!isChecked && (
                       <div className="absolute right-10 top-1/2 -translate-y-1/2 flex items-center gap-1 z-10">
                         {confirmDelete === job.id ? (
@@ -331,7 +329,7 @@ export default function JobsList() {
                           <button
                             onClick={(e) => handleSingleDelete(job.id, e)}
                             title="Delete this job"
-                            className="p-1.5 rounded text-muted-foreground/30 hover:text-destructive hover:bg-destructive/10 transition-all opacity-0 group-hover:opacity-100"
+                            className="p-1.5 rounded text-destructive/60 hover:text-destructive hover:bg-destructive/10 transition-all"
                           >
                             <Trash2 className="w-4 h-4" />
                           </button>
