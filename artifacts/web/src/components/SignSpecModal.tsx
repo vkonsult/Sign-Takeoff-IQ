@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import { Document, Page, pdfjs } from "react-pdf";
 import "react-pdf/dist/Page/AnnotationLayer.css";
 import "react-pdf/dist/Page/TextLayer.css";
@@ -27,8 +27,18 @@ interface SignSpecModalProps {
 export function SignSpecModal({ jobId, fileId, fileName, specPages, onClose }: SignSpecModalProps) {
   const [specIdx, setSpecIdx] = useState(0);
   const [scale, setScale] = useState(1.2);
-  const [loading, setLoading] = useState(true);
+  const [fitScale, setFitScale] = useState(1.2);
   const [error, setError] = useState<string | null>(null);
+  const [isPanning, setIsPanning] = useState(false);
+
+  const viewerRef = useRef<HTMLDivElement>(null);
+  const pdfContentRef = useRef<HTMLDivElement>(null);
+  const panRef = useRef<{
+    startScrollLeft: number;
+    startScrollTop: number;
+    startClientX: number;
+    startClientY: number;
+  } | null>(null);
 
   const { pdfBuffer, blobError } = usePdfBlob(`/api/jobs/${jobId}/files/${fileId}/pdf`);
 
@@ -38,8 +48,7 @@ export function SignSpecModal({ jobId, fileId, fileName, specPages, onClose }: S
 
   const currentPage = specPages[specIdx] ?? 1;
   const totalSpec = specPages.length;
-  // Memoized file object — creates a fresh Uint8Array copy so react-pdf's internal
-  // postMessage transfer never detaches the stored pdfBuffer reference.
+
   const pdfFile = useMemo(
     () => (pdfBuffer ? { data: new Uint8Array(pdfBuffer.slice(0)) } : null),
     [pdfBuffer]
@@ -55,6 +64,60 @@ export function SignSpecModal({ jobId, fileId, fileName, specPages, onClose }: S
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose, totalSpec]);
 
+  // Mouse-wheel zoom
+  useEffect(() => {
+    const el = viewerRef.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      setScale((s) => Math.min(3, Math.max(0.3, s + (e.deltaY < 0 ? 0.15 : -0.15))));
+    };
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel);
+  }, []);
+
+  // Pointer-drag pan
+  const handlePointerDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    e.currentTarget.setPointerCapture(e.pointerId);
+    panRef.current = {
+      startScrollLeft: viewerRef.current?.scrollLeft ?? 0,
+      startScrollTop: viewerRef.current?.scrollTop ?? 0,
+      startClientX: e.clientX,
+      startClientY: e.clientY,
+    };
+    setIsPanning(true);
+  }, []);
+
+  const handlePointerMove = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    if (!panRef.current || !viewerRef.current) return;
+    const dx = e.clientX - panRef.current.startClientX;
+    const dy = e.clientY - panRef.current.startClientY;
+    viewerRef.current.scrollLeft = panRef.current.startScrollLeft - dx;
+    viewerRef.current.scrollTop = panRef.current.startScrollTop - dy;
+  }, []);
+
+  const handlePointerUp = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    panRef.current = null;
+    setIsPanning(false);
+    e.currentTarget.releasePointerCapture(e.pointerId);
+  }, []);
+
+  // Compute fit scale dynamically from the currently rendered PDF content size
+  const computeFitScale = useCallback(() => {
+    if (!viewerRef.current || !pdfContentRef.current) return null;
+    const vw = viewerRef.current.clientWidth - 48;
+    const vh = viewerRef.current.clientHeight - 48;
+    const cw = pdfContentRef.current.offsetWidth;
+    const ch = pdfContentRef.current.offsetHeight;
+    if (cw > 0 && ch > 0) {
+      // The PDF content is rendered at current scale, so natural size = rendered / scale
+      const naturalW = cw / scale;
+      const naturalH = ch / scale;
+      return Math.min(3, Math.max(0.3, Math.min(vw / naturalW, vh > 0 ? vh / naturalH : Infinity)));
+    }
+    return null;
+  }, [scale]);
+
   return (
     <div
       className="fixed inset-0 z-50 flex items-stretch"
@@ -62,7 +125,7 @@ export function SignSpecModal({ jobId, fileId, fileName, specPages, onClose }: S
       onClick={(e) => e.target === e.currentTarget && onClose()}
     >
       <div className="flex flex-col w-full h-full max-w-5xl mx-auto">
-        {/* Header */}
+        {/* Header — always visible */}
         <div className="flex-none flex items-center justify-between px-4 py-3 bg-background border-b border-border">
           <div className="flex items-center gap-3 min-w-0">
             <div className="w-7 h-7 rounded bg-accent/20 flex items-center justify-center flex-shrink-0">
@@ -81,18 +144,30 @@ export function SignSpecModal({ jobId, fileId, fileName, specPages, onClose }: S
           <div className="flex items-center gap-2 flex-shrink-0">
             {/* Zoom */}
             <button
-              onClick={() => setScale((s) => Math.max(0.5, s - 0.2))}
-              className="w-7 h-7 rounded flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors"
+              onClick={() => setScale((s) => Math.max(0.3, s - 0.15))}
+              disabled={scale <= 0.3}
+              className="w-7 h-7 rounded flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-secondary disabled:opacity-30 transition-colors"
               title="Zoom out"
             >
               <ZoomOut className="w-4 h-4" />
             </button>
-            <span className="text-[11px] font-mono text-muted-foreground w-10 text-center">
+            <span className="text-[11px] font-mono text-muted-foreground w-10 text-center select-none">
               {Math.round(scale * 100)}%
             </span>
             <button
-              onClick={() => setScale((s) => Math.min(3, s + 0.2))}
-              className="w-7 h-7 rounded flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors"
+              onClick={() => {
+                const fit = computeFitScale();
+                if (fit !== null) { setFitScale(fit); setScale(fit); }
+              }}
+              title="Fit to page"
+              className="text-[10px] font-display font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded border border-border text-muted-foreground hover:text-foreground hover:border-foreground/40 transition-colors"
+            >
+              Fit
+            </button>
+            <button
+              onClick={() => setScale((s) => Math.min(3, s + 0.15))}
+              disabled={scale >= 3}
+              className="w-7 h-7 rounded flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-secondary disabled:opacity-30 transition-colors"
               title="Zoom in"
             >
               <ZoomIn className="w-4 h-4" />
@@ -108,7 +183,7 @@ export function SignSpecModal({ jobId, fileId, fileName, specPages, onClose }: S
             >
               <ChevronLeft className="w-4 h-4" />
             </button>
-            <span className="text-[11px] font-mono text-muted-foreground text-center">
+            <span className="text-[11px] font-mono text-muted-foreground text-center select-none">
               <span className="text-foreground font-semibold">{specIdx + 1}</span> / {totalSpec}
               <span className="text-muted-foreground/60 ml-1">(PDF pg {currentPage})</span>
             </span>
@@ -149,8 +224,16 @@ export function SignSpecModal({ jobId, fileId, fileName, specPages, onClose }: S
           ))}
         </div>
 
-        {/* PDF Viewer */}
-        <div className="flex-1 overflow-auto flex items-start justify-center p-6 bg-zinc-900">
+        {/* PDF Viewer — pointer-drag pan */}
+        <div
+          ref={viewerRef}
+          className="flex-1 overflow-auto flex items-start justify-center p-6 bg-zinc-900 select-none"
+          style={{ cursor: isPanning ? "grabbing" : "grab" }}
+          onPointerDown={handlePointerDown}
+          onPointerMove={handlePointerMove}
+          onPointerUp={handlePointerUp}
+          onPointerCancel={() => { panRef.current = null; setIsPanning(false); }}
+        >
           {!pdfBuffer && !error && (
             <div className="flex flex-col items-center gap-3 text-muted-foreground pt-20">
               <Loader2 className="w-8 h-8 animate-spin" />
@@ -166,12 +249,11 @@ export function SignSpecModal({ jobId, fileId, fileName, specPages, onClose }: S
           )}
           <Document
             file={pdfFile}
-            onLoadSuccess={() => setLoading(false)}
             onLoadError={(err) => setError(err.message)}
             loading={null}
             error={null}
           >
-            <div className="shadow-2xl">
+            <div ref={pdfContentRef} className="shadow-2xl" style={{ pointerEvents: "none" }}>
               <Page
                 key={currentPage}
                 pageNumber={currentPage}

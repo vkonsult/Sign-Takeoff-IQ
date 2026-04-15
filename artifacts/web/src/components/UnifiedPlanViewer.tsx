@@ -552,8 +552,8 @@ function PageViewer({
     if (!el) return;
     const handleWheel = (e: WheelEvent) => {
       e.preventDefault();
-      const step = 0.1;
-      setScale((s) => Math.min(2.5, Math.max(0.3, s + (e.deltaY < 0 ? step : -step))));
+      const step = 0.15;
+      setScale((s) => Math.min(3, Math.max(0.3, s + (e.deltaY < 0 ? step : -step))));
     };
     el.addEventListener("wheel", handleWheel, { passive: false });
     return () => el.removeEventListener("wheel", handleWheel);
@@ -1000,10 +1000,26 @@ function PageViewer({
           <ZoomOut className="w-3.5 h-3.5" />
         </button>
         <span className="text-[11px] font-mono text-muted-foreground w-10 text-center">{Math.round(scale * 100)}%</span>
-        <button onClick={() => setScale(fitScale)} title="Fit to page width" className="text-[10px] font-display font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded border border-border text-muted-foreground hover:text-foreground hover:border-foreground/40 transition-colors">
+        <button
+          onClick={() => {
+            if (nativeSize && pdfContainerRef.current) {
+              const cw = pdfContainerRef.current.clientWidth - 32;
+              const ch = pdfContainerRef.current.clientHeight - 32;
+              const fitW = cw / nativeSize.w;
+              const fitH = ch > 0 ? ch / nativeSize.h : Infinity;
+              const fit = Math.min(1.5, Math.max(0.3, Math.min(fitW, fitH)));
+              setFitScale(fit);
+              setScale(fit);
+            } else {
+              setScale(fitScale);
+            }
+          }}
+          title="Fit to page"
+          className="text-[10px] font-display font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded border border-border text-muted-foreground hover:text-foreground hover:border-foreground/40 transition-colors"
+        >
           Fit
         </button>
-        <button onClick={() => setScale((s) => Math.min(2.5, s + 0.15))} disabled={scale >= 2.5} className="p-1.5 rounded hover:bg-secondary disabled:opacity-30 transition-colors" title="Zoom in">
+        <button onClick={() => setScale((s) => Math.min(3, s + 0.15))} disabled={scale >= 3} className="p-1.5 rounded hover:bg-secondary disabled:opacity-30 transition-colors" title="Zoom in">
           <ZoomIn className="w-3.5 h-3.5" />
         </button>
         <div className="w-px h-4 bg-border mx-0.5" />
@@ -1202,9 +1218,12 @@ function PageViewer({
                     setMeasuredPageSize({ w: img.offsetWidth, h: img.offsetHeight });
                     if (!hasSetScaleRef.current && pdfContainerRef.current) {
                       const cw = pdfContainerRef.current.clientWidth - 32;
+                      const ch = pdfContainerRef.current.clientHeight - 32;
                       if (cw > 0) {
                         hasSetScaleRef.current = true;
-                        const fit = Math.min(1.2, Math.max(0.3, cw / nw));
+                        const fitW = cw / nw;
+                        const fitH = ch > 0 ? ch / nh : Infinity;
+                        const fit = Math.min(1.5, Math.max(0.3, Math.min(fitW, fitH)));
                         setFitScale(fit);
                         setScale(fit);
                       }

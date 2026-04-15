@@ -1,118 +1,156 @@
-import { useState, useCallback } from "react";
-import { FileText, ExternalLink } from "lucide-react";
+import { useState, useCallback, useEffect, useRef, useMemo } from "react";
+import { FileText, ChevronLeft, ChevronRight, ZoomIn, ZoomOut, Loader2, AlertTriangle } from "lucide-react";
+import { apiFetch } from "@/lib/apiClient";
 import type { ExtractedSign } from "@/types/sign";
 import type { FileInfo } from "@/components/UnifiedPlanViewer";
 
 interface SignSpecsTabProps {
-  /** Non-hidden extracted signs — caller is responsible for filtering hidden signs out. */
   signs: ExtractedSign[];
   files: FileInfo[];
   jobId: string;
 }
 
-function getImageUrl(jobId: string, fileId: string, pageNumber: number): string {
-  return `/api/jobs/${jobId}/files/${fileId}/pages/${pageNumber}/image`;
+interface PageEntry {
+  fileId: string;
+  fileName: string;
+  pageNumber: number;
 }
 
-interface BboxThumbnailProps {
-  src: string;
-  bboxX: number;
-  bboxY: number;
-  bboxW: number;
-  bboxH: number;
-  fullPageHref: string;
-}
+export function SignSpecsTab({ files, jobId }: SignSpecsTabProps) {
+  const pageEntries = useMemo<PageEntry[]>(() => {
+    const entries: PageEntry[] = [];
+    for (const f of files) {
+      const schedPages = f.pageStats?.signSchedulePages ?? [];
+      for (const pg of schedPages) {
+        entries.push({ fileId: f.id, fileName: f.originalName, pageNumber: pg });
+      }
+    }
+    return entries;
+  }, [files]);
 
-const THUMB_W = 96;
-const THUMB_H = 72;
+  const [pageIdx, setPageIdx] = useState(0);
+  const [scale, setScale] = useState(1.0);
+  const [fitScale, setFitScale] = useState(1.0);
+  const [nativeSize, setNativeSize] = useState<{ w: number; h: number } | null>(null);
+  const [imageUrl, setImageUrl] = useState<string | null>(null);
+  const [imageLoading, setImageLoading] = useState(false);
+  const [imageError, setImageError] = useState(false);
+  const [isPanning, setIsPanning] = useState(false);
 
-function BboxThumbnail({ src, bboxX, bboxY, bboxW, bboxH, fullPageHref }: BboxThumbnailProps) {
-  const [naturalSize, setNaturalSize] = useState<{ w: number; h: number } | null>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const prevBlobUrlRef = useRef<string | null>(null);
+  const hasSetScaleRef = useRef(false);
+  const panRef = useRef<{
+    startScrollLeft: number;
+    startScrollTop: number;
+    startClientX: number;
+    startClientY: number;
+  } | null>(null);
 
-  const handleLoad = useCallback((e: React.SyntheticEvent<HTMLImageElement>) => {
-    const img = e.currentTarget;
-    setNaturalSize({ w: img.naturalWidth, h: img.naturalHeight });
+  const currentEntry = pageEntries[pageIdx] ?? null;
+
+  useEffect(() => {
+    if (prevBlobUrlRef.current) {
+      URL.revokeObjectURL(prevBlobUrlRef.current);
+      prevBlobUrlRef.current = null;
+    }
+    setImageUrl(null);
+    setImageError(false);
+    setNativeSize(null);
+    if (!currentEntry) return;
+    setImageLoading(true);
+    let cancelled = false;
+    apiFetch(`/api/jobs/${jobId}/files/${currentEntry.fileId}/pages/${currentEntry.pageNumber}/image`)
+      .then((res) => {
+        if (!res.ok) throw new Error(`${res.status}`);
+        return res.blob();
+      })
+      .then((blob) => {
+        if (cancelled) return;
+        const url = URL.createObjectURL(blob);
+        prevBlobUrlRef.current = url;
+        setImageUrl(url);
+      })
+      .catch(() => { if (!cancelled) setImageError(true); })
+      .finally(() => { if (!cancelled) setImageLoading(false); });
+    return () => { cancelled = true; };
+  }, [currentEntry, jobId]);
+
+  useEffect(() => {
+    return () => {
+      if (prevBlobUrlRef.current) URL.revokeObjectURL(prevBlobUrlRef.current);
+    };
   }, []);
 
-  // Scale image so the bbox width fills the thumbnail container width
-  const displayW = THUMB_W / bboxW;
-  const displayH = naturalSize
-    ? displayW * (naturalSize.h / naturalSize.w)
-    : displayW;
+  useEffect(() => {
+    hasSetScaleRef.current = false;
+    setNativeSize(null);
+  }, [pageIdx]);
 
-  const left = -bboxX * displayW;
-  const top = -bboxY * displayH;
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      setScale((s) => Math.min(3, Math.max(0.3, s + (e.deltaY < 0 ? 0.15 : -0.15))));
+    };
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel);
+  }, []);
 
-  return (
-    <a
-      href={fullPageHref}
-      target="_blank"
-      rel="noopener noreferrer"
-      className="group relative block flex-shrink-0"
-      style={{ width: THUMB_W, height: THUMB_H }}
-      title="Open full page in new tab"
-    >
-      <div
-        className="overflow-hidden rounded border border-border/60 bg-secondary/30"
-        style={{ width: THUMB_W, height: THUMB_H, position: "relative" }}
-      >
-        <img
-          src={src}
-          alt="Sign thumbnail"
-          onLoad={handleLoad}
-          style={{
-            position: "absolute",
-            width: displayW,
-            height: naturalSize ? displayH : "auto",
-            left,
-            top,
-            pointerEvents: "none",
-            userSelect: "none",
-          }}
-        />
-      </div>
-      <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity bg-black/40 rounded">
-        <ExternalLink className="w-4 h-4 text-white" />
-      </div>
-    </a>
-  );
-}
-
-/** Build sign-identifier-keyed groups, preserving natural sign order within each group. */
-function groupBySignId(signs: ExtractedSign[]): Map<string, ExtractedSign[]> {
-  const map = new Map<string, ExtractedSign[]>();
-  for (const sign of signs) {
-    const key = sign.signIdentifier || sign.signType || sign.id;
-    const arr = map.get(key);
-    if (arr) {
-      arr.push(sign);
-    } else {
-      map.set(key, [sign]);
+  const handleImageLoad = useCallback((e: React.SyntheticEvent<HTMLImageElement>) => {
+    const img = e.currentTarget;
+    const nw = img.naturalWidth;
+    const nh = img.naturalHeight;
+    if (nw > 0 && nh > 0) {
+      setNativeSize({ w: nw, h: nh });
+      if (!hasSetScaleRef.current && containerRef.current) {
+        hasSetScaleRef.current = true;
+        const cw = containerRef.current.clientWidth - 32;
+        const ch = containerRef.current.clientHeight - 32;
+        const fit = Math.min(2, Math.max(0.3, Math.min(cw / nw, ch / nh)));
+        setFitScale(fit);
+        setScale(fit);
+      }
     }
-  }
-  return map;
-}
+  }, []);
 
-function Cell({ value, className }: { value: string | number | null | undefined; className?: string }) {
-  return (
-    <td
-      className={`px-3 py-2.5 text-sm text-foreground/80 align-top border-b border-border/40 ${className ?? ""}`}
-      title={typeof value === "string" ? value : undefined}
-    >
-      {value != null && value !== "" ? value : "—"}
-    </td>
-  );
-}
+  const handlePointerDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    e.currentTarget.setPointerCapture(e.pointerId);
+    panRef.current = {
+      startScrollLeft: containerRef.current?.scrollLeft ?? 0,
+      startScrollTop: containerRef.current?.scrollTop ?? 0,
+      startClientX: e.clientX,
+      startClientY: e.clientY,
+    };
+    setIsPanning(true);
+  }, []);
 
-export function SignSpecsTab({ signs, files, jobId }: SignSpecsTabProps) {
-  if (signs.length === 0) {
+  const handlePointerMove = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    if (!panRef.current || !containerRef.current) return;
+    const dx = e.clientX - panRef.current.startClientX;
+    const dy = e.clientY - panRef.current.startClientY;
+    containerRef.current.scrollLeft = panRef.current.startScrollLeft - dx;
+    containerRef.current.scrollTop = panRef.current.startScrollTop - dy;
+  }, []);
+
+  const handlePointerUp = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    panRef.current = null;
+    setIsPanning(false);
+    e.currentTarget.releasePointerCapture(e.pointerId);
+  }, []);
+
+  const canPrev = pageIdx > 0;
+  const canNext = pageIdx < pageEntries.length - 1;
+
+  if (pageEntries.length === 0) {
     return (
       <div className="flex-1 flex flex-col items-center justify-center gap-4 text-center p-12">
         <div className="w-16 h-16 rounded-full bg-secondary/60 flex items-center justify-center">
           <FileText className="w-8 h-8 text-muted-foreground/50" />
         </div>
         <div>
-          <p className="text-base font-display font-semibold text-foreground/70">No sign spec data available</p>
+          <p className="text-base font-display font-semibold text-foreground/70">No sign schedule pages available</p>
           <p className="text-sm text-muted-foreground mt-1">
             Run an extraction first, or check that this job has sign schedule pages.
           </p>
@@ -121,149 +159,145 @@ export function SignSpecsTab({ signs, files, jobId }: SignSpecsTabProps) {
     );
   }
 
-  const fileById = new Map(files.map((f) => [f.id, f]));
-
-  const grouped = groupBySignId(signs);
-  const sortedKeys = [...grouped.keys()].sort((a, b) =>
-    a.localeCompare(b, undefined, { numeric: true })
-  );
+  const imgW = nativeSize ? nativeSize.w * scale : undefined;
+  const imgH = nativeSize ? nativeSize.h * scale : undefined;
 
   return (
-    <div className="flex-1 overflow-auto bg-card border-t border-border">
-      <div className="min-w-[max-content] inline-block align-top w-full">
-        <table className="w-full text-left border-collapse">
-          <thead className="sticky top-0 z-10 bg-secondary/90 backdrop-blur-sm">
-            <tr>
-              <th className="px-3 py-2.5 text-[10px] font-display font-bold uppercase tracking-wider text-muted-foreground border-b border-border w-28">
-                Image
-              </th>
-              <th className="px-3 py-2.5 text-[10px] font-display font-bold uppercase tracking-wider text-muted-foreground border-b border-border">
-                Sign ID
-              </th>
-              <th className="px-3 py-2.5 text-[10px] font-display font-bold uppercase tracking-wider text-muted-foreground border-b border-border">
-                Sign Type
-              </th>
-              <th className="px-3 py-2.5 text-[10px] font-display font-bold uppercase tracking-wider text-muted-foreground border-b border-border w-16 text-center">
-                Qty
-              </th>
-              <th className="px-3 py-2.5 text-[10px] font-display font-bold uppercase tracking-wider text-muted-foreground border-b border-border">
-                Dimensions
-              </th>
-              <th className="px-3 py-2.5 text-[10px] font-display font-bold uppercase tracking-wider text-muted-foreground border-b border-border">
-                Mounting
-              </th>
-              <th className="px-3 py-2.5 text-[10px] font-display font-bold uppercase tracking-wider text-muted-foreground border-b border-border">
-                Materials
-              </th>
-              <th className="px-3 py-2.5 text-[10px] font-display font-bold uppercase tracking-wider text-muted-foreground border-b border-border">
-                Finish / Color
-              </th>
-              <th className="px-3 py-2.5 text-[10px] font-display font-bold uppercase tracking-wider text-muted-foreground border-b border-border">
-                Illumination
-              </th>
-              <th className="px-3 py-2.5 text-[10px] font-display font-bold uppercase tracking-wider text-muted-foreground border-b border-border">
-                Message Content
-              </th>
-              <th className="px-3 py-2.5 text-[10px] font-display font-bold uppercase tracking-wider text-muted-foreground border-b border-border">
-                Sheet
-              </th>
-              <th className="px-3 py-2.5 text-[10px] font-display font-bold uppercase tracking-wider text-muted-foreground border-b border-border">
-                Notes
-              </th>
-            </tr>
-          </thead>
-          <tbody className="bg-background">
-            {sortedKeys.map((groupKey, gIdx) => {
-              const groupSigns = grouped.get(groupKey)!;
-              return groupSigns.map((sign, sIdx) => {
-                const isFirstInGroup = sIdx === 0;
-                const isEven = gIdx % 2 === 0;
+    <div className="flex flex-col flex-1 min-h-0 bg-secondary/30">
+      {/* Toolbar — always visible, never scrolls away */}
+      <div className="flex-none flex items-center gap-2 px-4 py-2 bg-card border-b border-border overflow-x-auto min-w-0">
+        {/* Page navigation */}
+        <button
+          aria-label="Previous page"
+          disabled={!canPrev}
+          onClick={() => setPageIdx((i) => Math.max(0, i - 1))}
+          className="p-1.5 rounded hover:bg-secondary disabled:opacity-30 transition-colors"
+        >
+          <ChevronLeft className="w-4 h-4" />
+        </button>
+        <span className="text-xs font-mono text-muted-foreground min-w-[110px] text-center select-none">
+          Schedule {pageIdx + 1} / {pageEntries.length}
+          {currentEntry && (
+            <span className="text-muted-foreground/50 ml-1">(pg {currentEntry.pageNumber})</span>
+          )}
+        </span>
+        <button
+          aria-label="Next page"
+          disabled={!canNext}
+          onClick={() => setPageIdx((i) => Math.min(pageEntries.length - 1, i + 1))}
+          className="p-1.5 rounded hover:bg-secondary disabled:opacity-30 transition-colors"
+        >
+          <ChevronRight className="w-4 h-4" />
+        </button>
 
-                const hasBbox =
-                  sign.aiBbox === true &&
-                  sign.aiBboxX != null &&
-                  sign.aiBboxY != null &&
-                  sign.aiBboxW != null &&
-                  sign.aiBboxH != null &&
-                  sign.aiBboxW > 0 &&
-                  sign.aiBboxH > 0;
+        <div className="w-px h-4 bg-border mx-0.5" />
 
-                const fileId = sign.jobFileId ?? null;
-                const pageNum = sign.pageNumber ?? null;
-                const file = fileId ? fileById.get(fileId) : undefined;
+        {/* Zoom controls */}
+        <button
+          onClick={() => setScale((s) => Math.max(0.3, s - 0.15))}
+          disabled={scale <= 0.3}
+          className="p-1.5 rounded hover:bg-secondary disabled:opacity-30 transition-colors"
+          title="Zoom out"
+        >
+          <ZoomOut className="w-3.5 h-3.5" />
+        </button>
+        <span className="text-[11px] font-mono text-muted-foreground w-10 text-center select-none">
+          {Math.round(scale * 100)}%
+        </span>
+        <button
+          onClick={() => setScale(fitScale)}
+          title="Fit to page"
+          className="text-[10px] font-display font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded border border-border text-muted-foreground hover:text-foreground hover:border-foreground/40 transition-colors"
+        >
+          Fit
+        </button>
+        <button
+          onClick={() => setScale((s) => Math.min(3, s + 0.15))}
+          disabled={scale >= 3}
+          className="p-1.5 rounded hover:bg-secondary disabled:opacity-30 transition-colors"
+          title="Zoom in"
+        >
+          <ZoomIn className="w-3.5 h-3.5" />
+        </button>
 
-                // Only render an image when bbox data is present — no page thumbnails.
-                // Rows without bbox data show an empty cell (no image).
-                const thumbnailCell = hasBbox && fileId && pageNum != null ? (
-                  <td className="px-3 py-2.5 border-b border-border/40 w-28 align-top">
-                    <BboxThumbnail
-                      src={getImageUrl(jobId, fileId, pageNum)}
-                      bboxX={sign.aiBboxX!}
-                      bboxY={sign.aiBboxY!}
-                      bboxW={sign.aiBboxW!}
-                      bboxH={sign.aiBboxH!}
-                      fullPageHref={getImageUrl(jobId, fileId, pageNum)}
-                    />
-                  </td>
-                ) : (
-                  <td className="px-3 py-2.5 border-b border-border/40 w-28 align-top" />
-                );
+        {/* File name */}
+        {currentEntry && (
+          <>
+            <div className="w-px h-4 bg-border mx-0.5" />
+            <span className="text-[11px] font-mono text-muted-foreground/60 truncate max-w-[200px]" title={currentEntry.fileName}>
+              {currentEntry.fileName}
+            </span>
+          </>
+        )}
+      </div>
 
-                const rowBg = isEven ? "" : "bg-card/30";
-                const groupDivider =
-                  isFirstInGroup && gIdx > 0 ? "border-t-2 border-border/60" : "";
+      {/* Page chips strip */}
+      {pageEntries.length > 1 && (
+        <div className="flex-none flex items-center gap-1.5 px-4 py-1.5 bg-secondary/30 border-b border-border overflow-x-auto">
+          <span className="text-[10px] font-mono text-muted-foreground/60 flex-shrink-0 mr-1">Jump:</span>
+          {pageEntries.map((entry, idx) => (
+            <button
+              key={`${entry.fileId}-${entry.pageNumber}`}
+              onClick={() => setPageIdx(idx)}
+              className={`px-2 py-0.5 rounded text-[10px] font-mono flex-shrink-0 transition-colors ${
+                idx === pageIdx
+                  ? "bg-primary text-primary-foreground font-bold"
+                  : "bg-secondary text-muted-foreground border border-border hover:bg-secondary/80"
+              }`}
+            >
+              pg {entry.pageNumber}
+            </button>
+          ))}
+        </div>
+      )}
 
-                return (
-                  <tr
-                    key={sign.id}
-                    className={`hover:bg-secondary/30 transition-colors ${rowBg} ${groupDivider}`}
-                  >
-                    {thumbnailCell}
-                    <td
-                      className={`px-3 py-2.5 border-b border-border/40 align-top ${groupDivider}`}
-                    >
-                      <span className="font-mono text-sm font-semibold text-foreground">
-                        {sign.signIdentifier || "—"}
-                      </span>
-                      {pageNum != null && (
-                        <div className="text-[10px] font-mono mt-0.5 text-muted-foreground">
-                          pg {pageNum}
-                          {file && (
-                            <span className="ml-1 opacity-60">{file.originalName}</span>
-                          )}
-                        </div>
-                      )}
-                    </td>
-                    <Cell value={sign.signType} />
-                    <td className="px-3 py-2.5 border-b border-border/40 text-center font-mono text-sm align-top">
-                      {sign.quantity ?? 1}
-                    </td>
-                    <Cell value={sign.dimensions} className="font-mono text-xs" />
-                    <Cell value={sign.mountingType} />
-                    <Cell value={sign.materials} />
-                    <Cell value={sign.finishColor} />
-                    <Cell value={sign.illumination} />
-                    <td
-                      className="px-3 py-2.5 text-sm text-foreground/80 align-top border-b border-border/40 max-w-[220px]"
-                      title={sign.messageContent ?? undefined}
-                    >
-                      <div className="truncate max-w-[220px]">
-                        {sign.messageContent || "—"}
-                      </div>
-                    </td>
-                    <Cell value={sign.sheetNumber} className="font-mono text-xs" />
-                    <td
-                      className="px-3 py-2.5 text-sm text-foreground/80 align-top border-b border-border/40 max-w-[200px]"
-                      title={sign.notes ?? undefined}
-                    >
-                      <div className="truncate max-w-[200px]">{sign.notes || "—"}</div>
-                    </td>
-                  </tr>
-                );
-              });
-            })}
-          </tbody>
-        </table>
+      {/* Canvas — scrollable area with pointer-drag pan */}
+      <div
+        ref={containerRef}
+        className="flex-1 overflow-auto bg-zinc-900 select-none"
+        style={{ cursor: isPanning ? "grabbing" : "grab" }}
+        onPointerDown={handlePointerDown}
+        onPointerMove={handlePointerMove}
+        onPointerUp={handlePointerUp}
+        onPointerCancel={() => { panRef.current = null; setIsPanning(false); }}
+      >
+        <div
+          style={{
+            minWidth: "max-content",
+            minHeight: "max-content",
+            display: "flex",
+            justifyContent: "center",
+            alignItems: "flex-start",
+            padding: 16,
+          }}
+        >
+          {imageLoading && !imageUrl && (
+            <div className="flex items-center justify-center h-64">
+              <Loader2 className="w-8 h-8 text-primary animate-spin" />
+            </div>
+          )}
+          {imageError && !imageUrl && (
+            <div className="flex flex-col items-center justify-center h-64 text-destructive gap-2">
+              <AlertTriangle className="w-8 h-8" />
+              <p className="text-sm">Failed to load page image</p>
+            </div>
+          )}
+          {imageUrl && (
+            <img
+              src={imageUrl}
+              alt={`Sign schedule page ${currentEntry?.pageNumber}`}
+              onLoad={handleImageLoad}
+              draggable={false}
+              style={{
+                display: "block",
+                width: imgW,
+                height: imgH,
+                maxWidth: "none",
+                boxShadow: "0 4px 32px rgba(0,0,0,0.5)",
+              }}
+            />
+          )}
+        </div>
       </div>
     </div>
   );
