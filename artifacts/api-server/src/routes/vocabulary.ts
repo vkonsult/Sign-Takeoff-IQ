@@ -4,6 +4,7 @@ import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 import { z } from "zod/v4";
+import { ROOM_LABEL_MAP, BUILDING_TYPE_VOCABULARY } from "../lib/sign-vocabulary";
 
 const router: IRouter = Router();
 
@@ -98,6 +99,19 @@ router.put("/vocabulary", requireRole("SUPER_ADMIN"), (req, res) => {
   }
   writeVocabularyOverrides(result.data);
   res.json({ ok: true });
+});
+
+router.get("/vocabulary/base", requireRole("SUPER_ADMIN"), (_req, res) => {
+  const base: Record<string, Record<string, string>> = {};
+  for (const bt of BUILDING_TYPES) {
+    if (bt === "generic") {
+      base[bt] = { ...ROOM_LABEL_MAP };
+    } else {
+      const typeVocab = BUILDING_TYPE_VOCABULARY[bt as keyof typeof BUILDING_TYPE_VOCABULARY] ?? {};
+      base[bt] = { ...ROOM_LABEL_MAP, ...typeVocab };
+    }
+  }
+  res.json(base);
 });
 
 export default router;

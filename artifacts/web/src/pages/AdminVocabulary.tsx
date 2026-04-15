@@ -6,7 +6,6 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Trash2, Plus, Save, ChevronDown, ChevronRight } from "lucide-react";
-import { cn } from "@/lib/utils";
 
 const BUILDING_TYPES = [
   "school",
@@ -24,30 +23,38 @@ type BuildingType = (typeof BUILDING_TYPES)[number];
 
 type VocabularyOverrides = Record<BuildingType, Record<string, string>>;
 
-const STATIC_TOKENS = new Set([
-  "wrr","womens","women's","women","girls",
-  "mrr","mens","men's","men","boys",
-  "corridor","corr","hallway","hall",
-  "lobby","reception","foyer","entry","entrance","vestibule","narthex",
-  "mech","mechanical","elec","electrical",
-  "stair","stairwell","stairs","elev","elevator","lift",
-  "restroom","toilet","wc","lavatory","bathroom",
-  "office","conference","collab","collaboration","meeting",
-  "classroom","training","storage","stor","closet",
-  "sanctuary","chapel","worship","fellowship","commons","community","multipurpose",
-  "sacristy","vestry","clergy","console",
-  "server","data","telecom","idf","mdf",
-  "janitor","custodial","housekeeping",
-  "break","lounge","kitchen","café","cafe","breakroom",
-]);
-
 interface TermRow {
   token: string;
   signType: string;
+  source: "built-in" | "override" | "custom";
 }
 
-function buildTypeRows(map: Record<string, string>): TermRow[] {
-  return Object.entries(map).map(([token, signType]) => ({ token, signType }));
+function mergeVocab(
+  base: Record<string, string>,
+  overrides: Record<string, string>
+): TermRow[] {
+  const rows: TermRow[] = [];
+  const overrideKeys = new Set(Object.keys(overrides));
+
+  for (const [token, signType] of Object.entries(base)) {
+    if (overrideKeys.has(token)) {
+      const overrideValue = overrides[token];
+      if (overrideValue !== signType) {
+        rows.push({ token, signType: overrideValue, source: "override" });
+      } else {
+        rows.push({ token, signType, source: "built-in" });
+      }
+      overrideKeys.delete(token);
+    } else {
+      rows.push({ token, signType, source: "built-in" });
+    }
+  }
+
+  for (const token of overrideKeys) {
+    rows.push({ token, signType: overrides[token], source: "custom" });
+  }
+
+  return rows;
 }
 
 function rowsToMap(rows: TermRow[]): Record<string, string> {
@@ -62,14 +69,31 @@ function rowsToMap(rows: TermRow[]): Record<string, string> {
 interface SectionProps {
   buildingType: BuildingType;
   rows: TermRow[];
+  baseVocab: Record<string, string>;
   onChange: (rows: TermRow[]) => void;
 }
 
-function VocabSection({ buildingType, rows, onChange }: SectionProps) {
+function computeSource(
+  token: string,
+  signType: string,
+  baseVocab: Record<string, string>
+): TermRow["source"] {
+  const baseValue = baseVocab[token.trim()];
+  if (baseValue === undefined) return "custom";
+  if (baseValue === signType.trim()) return "built-in";
+  return "override";
+}
+
+function VocabSection({ buildingType, rows, baseVocab, onChange }: SectionProps) {
   const [open, setOpen] = useState(true);
 
-  function updateRow(index: number, field: keyof TermRow, value: string) {
-    const next = rows.map((r, i) => (i === index ? { ...r, [field]: value } : r));
+  function updateRow(index: number, field: "token" | "signType", value: string) {
+    const next = rows.map((r, i) => {
+      if (i !== index) return r;
+      const updated = { ...r, [field]: value };
+      updated.source = computeSource(updated.token, updated.signType, baseVocab);
+      return updated;
+    });
     onChange(next);
   }
 
@@ -78,10 +102,12 @@ function VocabSection({ buildingType, rows, onChange }: SectionProps) {
   }
 
   function addRow() {
-    onChange([...rows, { token: "", signType: "" }]);
+    onChange([...rows, { token: "", signType: "", source: "custom" }]);
   }
 
   const label = buildingType.charAt(0).toUpperCase() + buildingType.slice(1);
+  const builtInCount = rows.filter((r) => r.source === "built-in").length;
+  const customCount = rows.filter((r) => r.source !== "built-in").length;
 
   return (
     <div className="border border-border rounded-lg overflow-hidden">
@@ -96,9 +122,16 @@ function VocabSection({ buildingType, rows, onChange }: SectionProps) {
           <ChevronRight className="w-4 h-4 text-muted-foreground flex-shrink-0" />
         )}
         <span className="font-medium text-sm">{label}</span>
-        <Badge variant="secondary" className="ml-auto text-[10px] px-1.5 py-0">
-          {rows.length} {rows.length === 1 ? "term" : "terms"}
-        </Badge>
+        <div className="ml-auto flex items-center gap-1.5">
+          <Badge variant="secondary" className="text-[10px] px-1.5 py-0">
+            {builtInCount} built-in
+          </Badge>
+          {customCount > 0 && (
+            <Badge variant="outline" className="text-[10px] px-1.5 py-0 text-primary border-primary/40">
+              +{customCount} custom
+            </Badge>
+          )}
+        </div>
       </button>
 
       {open && (
@@ -113,53 +146,55 @@ function VocabSection({ buildingType, rows, onChange }: SectionProps) {
                 </tr>
               </thead>
               <tbody>
-                {rows.map((row, i) => {
-                  const isCustomOverride = STATIC_TOKENS.has(row.token.toLowerCase().trim());
-                  return (
-                    <tr key={i} className="border-b border-border/50 last:border-0 hover:bg-secondary/20">
-                      <td className="px-4 py-1.5">
-                        <div className="flex items-center gap-2">
-                          <Input
-                            value={row.token}
-                            onChange={(e) => updateRow(i, "token", e.target.value)}
-                            placeholder="token"
-                            className="h-7 text-xs font-mono"
-                          />
-                          {isCustomOverride && (
-                            <Badge variant="outline" className="text-[9px] px-1 py-0 text-amber-600 border-amber-400/50 flex-shrink-0">
-                              override
-                            </Badge>
-                          )}
-                        </div>
-                      </td>
-                      <td className="px-4 py-1.5">
+                {rows.map((row, i) => (
+                  <tr key={i} className="border-b border-border/50 last:border-0 hover:bg-secondary/20">
+                    <td className="px-4 py-1.5">
+                      <div className="flex items-center gap-2">
                         <Input
-                          value={row.signType}
-                          onChange={(e) => updateRow(i, "signType", e.target.value)}
-                          placeholder="SIGN TYPE"
-                          className="h-7 text-xs"
+                          value={row.token}
+                          onChange={(e) => updateRow(i, "token", e.target.value)}
+                          placeholder="token"
+                          className="h-7 text-xs font-mono"
                         />
-                      </td>
-                      <td className="px-2 py-1.5">
-                        <button
-                          type="button"
-                          onClick={() => removeRow(i)}
-                          className="p-1 rounded text-muted-foreground hover:text-destructive transition-colors"
-                          title="Remove term"
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
-                      </td>
-                    </tr>
-                  );
-                })}
+                        {row.source === "built-in" && (
+                          <Badge variant="secondary" className="text-[9px] px-1 py-0 text-muted-foreground flex-shrink-0">
+                            built-in
+                          </Badge>
+                        )}
+                        {row.source === "override" && (
+                          <Badge variant="outline" className="text-[9px] px-1 py-0 text-amber-600 border-amber-400/50 flex-shrink-0">
+                            override
+                          </Badge>
+                        )}
+                      </div>
+                    </td>
+                    <td className="px-4 py-1.5">
+                      <Input
+                        value={row.signType}
+                        onChange={(e) => updateRow(i, "signType", e.target.value)}
+                        placeholder="SIGN TYPE"
+                        className="h-7 text-xs"
+                      />
+                    </td>
+                    <td className="px-2 py-1.5">
+                      <button
+                        type="button"
+                        onClick={() => removeRow(i)}
+                        className="p-1 rounded text-muted-foreground hover:text-destructive transition-colors"
+                        title="Remove term"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </td>
+                  </tr>
+                ))}
               </tbody>
             </table>
           )}
 
           {rows.length === 0 && (
             <p className="px-4 py-3 text-xs text-muted-foreground italic">
-              No custom terms for this building type. Add one below.
+              No terms for this building type. Add one below.
             </p>
           )}
 
@@ -181,8 +216,8 @@ function VocabSection({ buildingType, rows, onChange }: SectionProps) {
 
 export default function AdminVocabulary() {
   const { toast } = useToast();
-  const [overrides, setOverrides] = useState<VocabularyOverrides | null>(null);
   const [rows, setRows] = useState<Record<BuildingType, TermRow[]> | null>(null);
+  const [baseVocab, setBaseVocab] = useState<Record<BuildingType, Record<string, string>> | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
 
@@ -193,17 +228,24 @@ export default function AdminVocabulary() {
   async function load() {
     setLoading(true);
     try {
-      const res = await apiFetch("/api/vocabulary");
-      if (!res.ok) throw new Error("Failed to load vocabulary");
-      const data = (await res.json()) as VocabularyOverrides;
-      setOverrides(data);
+      const [baseRes, overridesRes] = await Promise.all([
+        apiFetch("/api/vocabulary/base"),
+        apiFetch("/api/vocabulary"),
+      ]);
+      if (!baseRes.ok) throw new Error("Failed to load base vocabulary");
+      if (!overridesRes.ok) throw new Error("Failed to load vocabulary overrides");
+
+      const baseData = (await baseRes.json()) as Record<BuildingType, Record<string, string>>;
+      const overridesData = (await overridesRes.json()) as VocabularyOverrides;
+
+      setBaseVocab(baseData);
       const initialRows = {} as Record<BuildingType, TermRow[]>;
       for (const bt of BUILDING_TYPES) {
-        initialRows[bt] = buildTypeRows(data[bt] ?? {});
+        initialRows[bt] = mergeVocab(baseData[bt] ?? {}, overridesData[bt] ?? {});
       }
       setRows(initialRows);
     } catch {
-      toast({ title: "Error", description: "Could not load vocabulary overrides.", variant: "destructive" });
+      toast({ title: "Error", description: "Could not load vocabulary.", variant: "destructive" });
     } finally {
       setLoading(false);
     }
@@ -226,8 +268,7 @@ export default function AdminVocabulary() {
         const err = (await res.json().catch(() => ({}))) as { error?: string };
         throw new Error(err.error ?? "Save failed");
       }
-      setOverrides(payload);
-      toast({ title: "Saved", description: "Vocabulary overrides updated." });
+      toast({ title: "Saved", description: "Vocabulary updated." });
     } catch (e) {
       toast({
         title: "Error saving",
@@ -246,6 +287,13 @@ export default function AdminVocabulary() {
   const totalTerms = rows
     ? BUILDING_TYPES.reduce((sum, bt) => sum + (rows[bt]?.length ?? 0), 0)
     : 0;
+  const builtInTerms = rows
+    ? BUILDING_TYPES.reduce(
+        (sum, bt) => sum + (rows[bt]?.filter((r) => r.source === "built-in").length ?? 0),
+        0
+      )
+    : 0;
+  const customTerms = totalTerms - builtInTerms;
 
   return (
     <AdminShell section="super">
@@ -254,8 +302,9 @@ export default function AdminVocabulary() {
           <div>
             <h1 className="text-lg font-semibold text-foreground">Vocabulary Editor</h1>
             <p className="text-xs text-muted-foreground mt-0.5">
-              Manage room-label token → sign-type overrides per building type.{" "}
-              <span className="text-amber-600 font-medium">Override</span> badges indicate tokens that also exist in the static vocabulary.
+              View and edit the full sign vocabulary per building type — built-in defaults plus your customizations.{" "}
+              <span className="text-muted-foreground font-medium">Built-in</span> rows come from the static dictionary;{" "}
+              <span className="text-amber-600 font-medium">override</span> rows replace a built-in value.
             </p>
           </div>
           <Button
@@ -279,14 +328,17 @@ export default function AdminVocabulary() {
           {!loading && rows && (
             <div className="space-y-3 max-w-4xl">
               <p className="text-xs text-muted-foreground">
-                {totalTerms} custom {totalTerms === 1 ? "term" : "terms"} across all building types.
-                The static base vocabulary ({new Set(STATIC_TOKENS).size} terms) always applies in addition to these.
+                {totalTerms} {totalTerms === 1 ? "term" : "terms"} across all building types
+                {customTerms > 0
+                  ? ` — ${builtInTerms} built-in, ${customTerms} custom`
+                  : " (all built-in)"}.
               </p>
               {BUILDING_TYPES.map((bt) => (
                 <VocabSection
                   key={bt}
                   buildingType={bt}
                   rows={rows[bt] ?? []}
+                  baseVocab={baseVocab?.[bt] ?? {}}
                   onChange={(newRows) => updateSection(bt, newRows)}
                 />
               ))}
