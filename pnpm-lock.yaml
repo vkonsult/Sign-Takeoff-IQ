@@ -184,9 +184,6 @@ importers:
       '@workspace/integrations-gemini-ai':
         specifier: workspace:*
         version: link:../../lib/integrations-gemini-ai
-      chromadb:
-        specifier: ^3.4.0
-        version: 3.4.0
       cookie-parser:
         specifier: ^1.4.7
         version: 1.4.7

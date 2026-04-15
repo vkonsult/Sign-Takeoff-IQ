@@ -1,6 +1,5 @@
 import app from "./app";
 import { logger } from "./lib/logger";
-import { initializeCollections } from "./lib/chroma";
 
 const rawPort = process.env["PORT"];
 
@@ -23,8 +22,4 @@ app.listen(port, (err) => {
   }
 
   logger.info({ port }, "Server listening");
-
-  initializeCollections().catch((chromaErr) => {
-    logger.warn({ err: chromaErr }, "ChromaDB initialization failed — RAG features unavailable");
-  });
 });
