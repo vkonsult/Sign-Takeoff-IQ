@@ -61,7 +61,7 @@ export async function runPdfProcessor(jobId: string): Promise<void> {
 
   logger.info({ jobId, preservedCount: preservedSigns.length }, "[PDF Processor] Preserved verified/manually-added signs");
 
-  // Delete only AI-extracted, non-verified signs
+  // Delete all auto-extracted signs (both pdf and ai), keep only user-verified / manually-added
   await db
     .delete(extractedSignsTable)
     .where(
@@ -71,6 +71,12 @@ export async function runPdfProcessor(jobId: string): Promise<void> {
         eq(extractedSignsTable.manuallyAdded, false)
       )
     );
+
+  // Reset page classification so the UI shows a clean state while re-processing
+  await db
+    .update(jobFilesTable)
+    .set({ pageStats: null, pageCount: null })
+    .where(eq(jobFilesTable.jobId, jobId));
 
   await db
     .update(jobsTable)
