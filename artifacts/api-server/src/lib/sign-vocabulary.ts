@@ -46,6 +46,16 @@ export const FLOOR_PLAN_EXCLUSION_PHRASES: string[] = [
   "demolition plan",
   "furniture plan",
   "lighting plan",
+  "foundation plan",
+  "foundation level",
+  "finish plan",
+  "f&e plan",
+  "framing plan",
+  "mechanical plan",
+  "power plan",
+  "sanitary plan",
+  "water plan",
+  "protection plan",
 ];
 
 /**
