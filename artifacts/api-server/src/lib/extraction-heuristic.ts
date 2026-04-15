@@ -153,12 +153,14 @@ function extractRoomsFromWords(words: Word[], pageNum: number): ExtractedRoom[] 
 
     const rx = roomWord.cx;
     const ry = roomWord.cy;
-    let unitLabel: string | null = null;
+    let foundUnitWord: Word | null = null;
+    let foundTypeWord: Word | null = null;
 
     // Look for a nearby "UNIT" label (within 40 pts horizontal, 30 pts vertical)
     for (const unitWord of words) {
       if (unitWord.text !== "UNIT") continue;
       if (Math.abs(unitWord.cx - rx) < 40 && Math.abs(unitWord.cy - ry) < 30) {
+        foundUnitWord = unitWord;
         // Found "UNIT" — now find the type label (1A, 2B, …) near the "UNIT" word
         for (const typeWord of words) {
           if (!UNIT_TYPE_RE.test(typeWord.text)) continue;
@@ -166,7 +168,7 @@ function extractRoomsFromWords(words: Word[], pageNum: number): ExtractedRoom[] 
             Math.abs(typeWord.cx - unitWord.cx) < 50 &&
             Math.abs(typeWord.cy - unitWord.cy) < 10
           ) {
-            unitLabel = typeWord.text;
+            foundTypeWord = typeWord;
             break;
           }
         }
@@ -175,7 +177,26 @@ function extractRoomsFromWords(words: Word[], pageNum: number): ExtractedRoom[] 
     }
 
     const buildingId = roomWord.text.endsWith("A") ? "A" : "B";
-    const roomType = unitLabel ? `UNIT ${unitLabel}` : "UNIT";
+    let roomType: string;
+    if (foundUnitWord && foundTypeWord) {
+      // Join in reading order: stacked (dy > dx) → top-to-bottom; side-by-side → left-to-right
+      const udx = Math.abs(foundTypeWord.cx - foundUnitWord.cx);
+      const udy = Math.abs(foundTypeWord.cy - foundUnitWord.cy);
+      let first: Word;
+      let second: Word;
+      if (udy > udx) {
+        [first, second] = foundUnitWord.cy <= foundTypeWord.cy
+          ? [foundUnitWord, foundTypeWord]
+          : [foundTypeWord, foundUnitWord];
+      } else {
+        [first, second] = foundUnitWord.cx <= foundTypeWord.cx
+          ? [foundUnitWord, foundTypeWord]
+          : [foundTypeWord, foundUnitWord];
+      }
+      roomType = `${first.text} ${second.text}`;
+    } else {
+      roomType = "UNIT";
+    }
 
     // Guard: skip if the room-type label itself is code-only (defense-in-depth)
     if (isCodeOnlyLocation(roomType)) continue;
@@ -425,12 +446,24 @@ function extractInstitutionalRoomsFromPhrases(
     let locationLabel: string;
 
     if (bestCompanion) {
-      // The better-matching token wins for sign type; the fuller text is the location label.
-      const anchorLen = anchor.text.length;
-      const companionLen = bestCompanion.text.length;
       finalSignType = bestCompanionSignType ?? anchorSignType;
-      // Fuller text (longer) becomes the location label.
-      locationLabel = companionLen >= anchorLen ? bestCompanion.text : anchor.text;
+      // Join in reading order: stacked (dy > dx) → top-to-bottom; side-by-side → left-to-right
+      const jdx = Math.abs(bestCompanion.cx_pts - anchor.cx_pts);
+      const jdy = Math.abs(bestCompanion.cy_pts - anchor.cy_pts);
+      let first: PhraseRecord;
+      let second: PhraseRecord;
+      if (jdy > jdx) {
+        // Stacked: order by cy_pts (top first — smaller cy = higher on page)
+        [first, second] = anchor.cy_pts <= bestCompanion.cy_pts
+          ? [anchor, bestCompanion]
+          : [bestCompanion, anchor];
+      } else {
+        // Side by side: order by cx_pts (left first)
+        [first, second] = anchor.cx_pts <= bestCompanion.cx_pts
+          ? [anchor, bestCompanion]
+          : [bestCompanion, anchor];
+      }
+      locationLabel = `${first.text} ${second.text}`;
 
       // Mark companion as used too
       const companionKey = `${bestCompanion.text.toLowerCase().trim()}:${Math.round(bestCompanion.cx_pts / 10)}:${Math.round(bestCompanion.cy_pts / 10)}`;
