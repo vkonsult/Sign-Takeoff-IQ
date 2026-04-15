@@ -31,31 +31,58 @@ export const FLOOR_PLAN_INCLUSION_PHRASES: string[] = [
 /**
  * Phrases that veto floor plan classification even when inclusion phrases also match.
  * Applied as a first-check before the inclusion list.
+ *
+ * Rule: Only plans showing a specific building floor level (main, upper, lower,
+ * first, second, third … any numbered floor, basement, ground, mezzanine) are
+ * valid floor plans for sign extraction. All construction/engineering/specialty
+ * plan types are excluded regardless of whether the word "plan" appears in the title.
+ *
+ * NOTE: "attic plan" is intentionally kept as two words — removing "plan" would
+ * veto "ATTIC FLOOR PLAN" (a valid floor level) since exclusions run before inclusions.
  */
 export const FLOOR_PLAN_EXCLUSION_PHRASES: string[] = [
-  "ceiling plan",
+  // Ceiling / overhead
+  "ceiling",
   "reflected ceiling",
   "rcp",
-  "roof plan",
+
+  // Roof / attic structural (keep "attic plan" two words — see note above)
+  "roof",
   "attic plan",
-  "dimensional plan",
+
+  // Construction & structural systems
+  "framing",
+  "structural",
+  "foundation",
+  "demolition",
+
+  // MEP / building systems
+  "electrical",
+  "power",
+  "mechanical",
+  "plumbing",
+  "sanitary",
+  "water",
+  "fire",
+  "safety",
+  "protection",
+  "lighting",
+
+  // Site & civil
+  "site",
+
+  // Interior / finish
+  "furniture",
+  "finish",
+  "f&e",
+  "dimensional",
+
+  // Restroom / accessibility details (not a plan of a full floor)
+  "restroom",
+  "public restroom",
+
+  // Notes / legends
   "general notes",
-  "public restroom plan",
-  "restroom plan",
-  "site plan",
-  "demolition plan",
-  "furniture plan",
-  "lighting plan",
-  "foundation plan",
-  "foundation level",
-  "finish plan",
-  "f&e plan",
-  "framing plan",
-  "mechanical plan",
-  "power plan",
-  "sanitary plan",
-  "water plan",
-  "protection plan",
 ];
 
 /**
