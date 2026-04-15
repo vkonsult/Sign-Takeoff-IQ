@@ -138,6 +138,7 @@ export async function runPdfProcessor(jobId: string): Promise<void> {
         let spatialPageTypes: Map<number, SpatialPageType> | undefined;
         let spatialFloorLevelNames: Map<number, string> | undefined;
         let bookmarkTitles: Record<number, string> | undefined;
+        let outlineSections: Array<{ title: string; pageStart: number; pageEnd: number; type: "floor_plan" | "sign_schedule" | "other" | null }> | undefined;
         // Hoisted so the bookmark-title veto (applied after text extraction) can access it.
         const bookmarkPageMap = new Map<number, { title: string; type: "floor_plan" | "sign_schedule" | "other" | null }>();
         const t_spatial = Date.now();
@@ -153,6 +154,14 @@ export async function runPdfProcessor(jobId: string): Promise<void> {
           // classification is the fallback when no bookmark covers a page.
           try {
             const pdfMeta = await extractPdfMetadata(file.storedPath);
+            if (pdfMeta.outlineSections.length > 0) {
+              outlineSections = pdfMeta.outlineSections.map((s) => ({
+                title: s.title,
+                pageStart: s.pageStart,
+                pageEnd: s.pageEnd,
+                type: (s.type === "both" ? "floor_plan" : s.type) as "floor_plan" | "sign_schedule" | "other" | null,
+              }));
+            }
             for (const section of pdfMeta.outlineSections) {
               for (let p = section.pageStart; p <= section.pageEnd; p++) {
                 if (!bookmarkPageMap.has(p)) {
@@ -364,6 +373,7 @@ export async function runPdfProcessor(jobId: string): Promise<void> {
           ...(pageImagePathsRelative ? { pageImagePaths: pageImagePathsRelative } : {}),
           ...(floorPageLevels ? { floorPageLevels } : {}),
           ...(bookmarkTitles ? { bookmarkTitles } : {}),
+          ...(outlineSections ? { outlineSections } : {}),
         };
 
         await db
