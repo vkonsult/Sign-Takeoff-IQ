@@ -75,7 +75,7 @@ export interface PdfOutlineSection {
   title: string;
   pageStart: number;
   pageEnd: number;
-  type: "floor_plan" | "sign_schedule" | "other" | null;
+  type: "floor_plan" | "sign_schedule" | "both" | "other" | null;
 }
 
 export interface PdfDocumentMetadata {
@@ -754,26 +754,29 @@ export function classifyPageFromPhrases(phrases: PdfPhrase[]): SpatialPageType {
 
   const combined = titleBlockPhrases.map((p) => p.text).join(" ").toLowerCase();
 
-  // Step 1: Apply exclusion veto — if any exclusion phrase matches, this is not a floor plan.
+  // Priority 1: Exclusion veto — always wins. An electrical/mechanical/etc. page
+  // is never a floor plan or a sign schedule.
   const hasExclusion = FLOOR_PLAN_EXCLUSION_PHRASES.some((phrase) =>
     combined.includes(phrase.toLowerCase())
   );
+  if (hasExclusion) return "unknown";
 
-  // Step 2: Check inclusion phrases (from shared vocabulary).
-  // Also apply a catch-all: any "<word> level plan" pattern.
+  // Priority 2+: Check inclusion/sign phrases (no exclusion match at this point).
   const LEVEL_PLAN_RE = /\b\w+ level plan\b/;
-  const hasFpPhrase = !hasExclusion && (
+  const hasFpPhrase =
     FLOOR_PLAN_INCLUSION_PHRASES.some((phrase) => combined.includes(phrase.toLowerCase()))
-    || LEVEL_PLAN_RE.test(combined)
-  );
+    || LEVEL_PLAN_RE.test(combined);
 
   const hasSsPhrase = SIGN_SCHEDULE_PHRASES.some((phrase) =>
     combined.includes(phrase.toLowerCase())
   );
 
+  // Priority 2: Both.
   if (hasFpPhrase && hasSsPhrase) return "both";
-  if (hasFpPhrase) return "floor_plan";
+  // Priority 3: Sign schedule.
   if (hasSsPhrase) return "sign_schedule";
+  // Priority 4: Floor plan.
+  if (hasFpPhrase) return "floor_plan";
   return "unknown";
 }
 
@@ -910,14 +913,12 @@ const NON_ARCH_DISCIPLINE_KEYWORDS: string[] = [
 ];
 
 /**
- * Returns true when the ancestor chain of a bookmark leaf contains a
- * non-architectural discipline keyword.  Only the direct parent (last element
- * of ancestors) and grandparent (second-to-last) are inspected, because
- * higher-level section headings (e.g. "Project Documents") are neutral.
+ * Returns true when any ancestor in the bookmark chain contains a
+ * non-architectural discipline keyword.  The full ancestor chain is inspected
+ * so that leaves nested 3+ levels under a discipline section are also excluded.
  */
 function hasNonArchAncestor(ancestors: string[]): boolean {
-  const relevantAncestors = ancestors.slice(-2);
-  return relevantAncestors.some((ancestor) => {
+  return ancestors.some((ancestor) => {
     const lower = ancestor.toLowerCase();
     return NON_ARCH_DISCIPLINE_KEYWORDS.some((kw) => lower.includes(kw));
   });
@@ -937,19 +938,25 @@ function isSignageLeaf(title: string): boolean {
 function classifyOutlineSection(title: string): PdfOutlineSection["type"] {
   const t = title.toLowerCase();
 
-  // Apply exclusion veto first — if any exclusion phrase matches, this is not a floor plan.
+  // Priority 1: Exclusion veto — always wins. An electrical/mechanical/etc. page
+  // is never a floor plan or a sign schedule.
   const hasExclusion = FLOOR_PLAN_EXCLUSION_PHRASES.some((p) => t.includes(p.toLowerCase()));
+  if (hasExclusion) return "other";
 
-  // Check sign schedule patterns from shared vocabulary.
-  if (SIGN_SCHEDULE_PHRASES.some((p) => t.includes(p.toLowerCase()))) return "sign_schedule";
-
-  // Check floor plan inclusion patterns from shared vocabulary only.
-  // Catch-all: any "<word> level plan" pattern (e.g. "sanctuary level plan").
   const LEVEL_PLAN_RE = /\b\w+ level plan\b/;
-  if (!hasExclusion && (
+  const hasFpPhrase =
     FLOOR_PLAN_INCLUSION_PHRASES.some((p) => t.includes(p.toLowerCase()))
-    || LEVEL_PLAN_RE.test(t)
-  )) return "floor_plan";
+    || LEVEL_PLAN_RE.test(t);
+  const hasSsPhrase = SIGN_SCHEDULE_PHRASES.some((p) => t.includes(p.toLowerCase()));
+
+  // Priority 2: Both floor plan and sign schedule indicators present.
+  if (hasFpPhrase && hasSsPhrase) return "both";
+
+  // Priority 3: Sign schedule.
+  if (hasSsPhrase) return "sign_schedule";
+
+  // Priority 4: Floor plan.
+  if (hasFpPhrase) return "floor_plan";
 
   return "other";
 }

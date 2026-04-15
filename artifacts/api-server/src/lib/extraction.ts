@@ -2784,7 +2784,13 @@ Pages:
       const section = pdfMeta.outlineSections.find(
         (s) => p.pageNum >= s.pageStart && p.pageNum <= s.pageEnd
       );
-      if (section?.type === "floor_plan" && type !== "floor_plan") {
+      if (section?.type === "both" && type !== "both") {
+        logger.debug(
+          { pageNum: p.pageNum, section: section.title, wasType: type },
+          "Outline override: both"
+        );
+        type = "both";
+      } else if (section?.type === "floor_plan" && type !== "floor_plan") {
         logger.debug(
           { pageNum: p.pageNum, section: section.title, wasType: type },
           "Outline override: floor_plan"
