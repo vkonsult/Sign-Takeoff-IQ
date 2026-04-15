@@ -1119,10 +1119,10 @@ export default function JobDetails() {
                   <table className="w-full text-left border-collapse border-spacing-0">
                     <thead>
                       <tr>
-                        <SortableHeader field="code"     label="TEXT"          sortField={sortField} sortDir={sortDir} onSort={handleSort} className="sticky left-0 z-30 shadow-[2px_0_5px_-2px_rgba(0,0,0,0.3)]" />
+                        <SortableHeader field="code"     label="Sign ID"       sortField={sortField} sortDir={sortDir} onSort={handleSort} className="sticky left-0 z-30 shadow-[2px_0_5px_-2px_rgba(0,0,0,0.3)]" />
+                        <SortableHeader field="location"   label="Location"      sortField={sortField} sortDir={sortDir} onSort={handleSort} />
                         <SortableHeader field="signType"   label="Sign Type"     sortField={sortField} sortDir={sortDir} onSort={handleSort} />
                         <SortableHeader field="quantity"   label="Qty"           sortField={sortField} sortDir={sortDir} onSort={handleSort} className="w-16 text-center" />
-                        <SortableHeader field="location"   label="Location"      sortField={sortField} sortDir={sortDir} onSort={handleSort} />
                         <SortableHeader field="dimensions" label="Dimensions"    sortField={sortField} sortDir={sortDir} onSort={handleSort} />
                         <SortableHeader field="mounting"   label="Mounting"      sortField={sortField} sortDir={sortDir} onSort={handleSort} />
                         <SortableHeader field="finish"     label="Finish / Color" sortField={sortField} sortDir={sortDir} onSort={handleSort} />
@@ -1152,9 +1152,9 @@ export default function JobDetails() {
                               {sign.signIdentifier || '—'}
                             </span>
                           </td>
+                          <td className="data-cell truncate max-w-[200px]" title={sign.location || ''}>{sign.location || '—'}</td>
                           <td className="data-cell text-foreground">{sign.signType || '—'}</td>
                           <td className="data-cell text-center font-mono font-medium">{sign.quantity || 1}</td>
-                          <td className="data-cell truncate max-w-[200px]" title={sign.location || ''}>{sign.location || '—'}</td>
                           <td className="data-cell font-mono text-xs">{sign.dimensions || '—'}</td>
                           <td className="data-cell">{sign.mountingType || '—'}</td>
                           <td className="data-cell text-xs">{sign.finishColor || '—'}</td>
@@ -1214,9 +1214,9 @@ export default function JobDetails() {
                               {sign.signIdentifier || '—'}
                             </span>
                           </td>
+                          <td className="data-cell truncate max-w-[200px] text-muted-foreground line-through">{sign.location || '—'}</td>
                           <td className="data-cell text-muted-foreground line-through">{sign.signType || '—'}</td>
                           <td className="data-cell text-center font-mono font-medium text-muted-foreground line-through">{sign.quantity || 1}</td>
-                          <td className="data-cell truncate max-w-[200px] text-muted-foreground line-through">{sign.location || '—'}</td>
                           <td className="data-cell font-mono text-xs text-muted-foreground">{sign.dimensions || '—'}</td>
                           <td className="data-cell text-muted-foreground">{sign.mountingType || '—'}</td>
                           <td className="data-cell text-xs text-muted-foreground">{sign.finishColor || '—'}</td>
@@ -1392,9 +1392,9 @@ function CoordinatesTable({
         <table className="w-full text-left border-collapse border-spacing-0">
           <thead>
             <tr>
-              <SortableHeader field="code" label="TEXT" sortField={coordSortField} sortDir={coordSortDir} onSort={handleCoordSort} className="sticky left-0 z-30 shadow-[2px_0_5px_-2px_rgba(0,0,0,0.3)]" />
-              <th className="data-header">Sign Type</th>
+              <SortableHeader field="code" label="Sign ID" sortField={coordSortField} sortDir={coordSortDir} onSort={handleCoordSort} className="sticky left-0 z-30 shadow-[2px_0_5px_-2px_rgba(0,0,0,0.3)]" />
               <th className="data-header">Location</th>
+              <th className="data-header">Sign Type</th>
               <th className="data-header">Message</th>
               <th className="data-header">Word-match Coords</th>
               <th className="data-header">AI Bbox</th>
@@ -1449,10 +1449,10 @@ function CoordinatesTable({
                     <span className="text-xs font-semibold">{codeVal}</span>
                   </td>
                   <td className="data-cell">
-                    <span className="text-xs">{(sign.signType as string | null) ?? "—"}</span>
+                    <span className="text-xs text-muted-foreground">{(sign.location as string | null) ?? "—"}</span>
                   </td>
                   <td className="data-cell">
-                    <span className="text-xs text-muted-foreground">{(sign.location as string | null) ?? "—"}</span>
+                    <span className="text-xs">{(sign.signType as string | null) ?? "—"}</span>
                   </td>
                   <td className="data-cell max-w-[200px]">
                     <span className="text-xs text-muted-foreground line-clamp-2">{(sign.messageContent as string | null) ?? "—"}</span>
