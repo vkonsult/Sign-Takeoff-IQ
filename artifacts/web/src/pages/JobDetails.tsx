@@ -1644,13 +1644,9 @@ type SpecViewerState = { fileId: string; fileName: string; specPages: number[] }
 
 type OutlineSection = NonNullable<NonNullable<FileWithStats["pageStats"]>["outlineSections"]>[number];
 
-type BboxCoords = { x0: number; y0: number; x1: number; y1: number } | null;
-
 type DetectionRow = {
   pageNo: number;
   label: string;
-  source: "AI region" | "Heuristic" | "Full page";
-  bbox: BboxCoords;
   bookmarkTitle: string | null;
 };
 
@@ -1662,8 +1658,6 @@ function buildDetectionRows(
   const floorPlanPages = stats.floorPlanPages ?? [];
   const signSchedulePages = stats.signSchedulePages ?? [];
   const pageLabels = stats.pageLabels ?? [];
-  const aiRegionBboxes = stats.aiRegionBboxes;
-  const floorPlanBboxes = stats.floorPlanBboxes;
   const outlineSections = stats.outlineSections ?? [];
 
   const getLabel = (pgNo: number): string => {
@@ -1680,43 +1674,23 @@ function buildDetectionRows(
     return null;
   };
 
-  const floorPlanRows: DetectionRow[] = [];
-  const signSpecRows: DetectionRow[] = [];
+  const floorPlanRows: DetectionRow[] = floorPlanPages.map((pgNo) => ({
+    pageNo: pgNo,
+    label: getLabel(pgNo),
+    bookmarkTitle: getBookmarkTitle(pgNo),
+  }));
 
-  for (const pgNo of floorPlanPages) {
-    const key = String(pgNo);
-    const aiEntry = aiRegionBboxes?.[key];
-    const aiBbox = aiEntry?.floorPlan ?? null;
-    const heuristicBbox = floorPlanBboxes?.[key] ?? null;
-    const bbox: BboxCoords = aiBbox ?? heuristicBbox;
-    const source: DetectionRow["source"] = aiBbox
-      ? "AI region"
-      : heuristicBbox
-      ? "Heuristic"
-      : "Full page";
-    floorPlanRows.push({ pageNo: pgNo, label: getLabel(pgNo), source, bbox, bookmarkTitle: getBookmarkTitle(pgNo) });
-  }
-
-  for (const pgNo of signSchedulePages) {
-    const key = String(pgNo);
-    const aiEntry = aiRegionBboxes?.[key];
-    const bbox: BboxCoords = aiEntry?.signSchedule ?? null;
-    const source: DetectionRow["source"] = bbox ? "AI region" : "Full page";
-    signSpecRows.push({ pageNo: pgNo, label: getLabel(pgNo), source, bbox, bookmarkTitle: getBookmarkTitle(pgNo) });
-  }
+  const signSpecRows: DetectionRow[] = signSchedulePages.map((pgNo) => ({
+    pageNo: pgNo,
+    label: getLabel(pgNo),
+    bookmarkTitle: getBookmarkTitle(pgNo),
+  }));
 
   return { floorPlanRows, signSpecRows };
 }
 
-function fmtBbox(bbox: BboxCoords): string {
-  if (!bbox) return "Full page";
-  const r = (n: number) => n.toFixed(2);
-  return `${r(bbox.x0)}, ${r(bbox.y0)}, ${r(bbox.x1)}, ${r(bbox.y1)}`;
-}
-
 function DetectionTable({
   title,
-  regionColHeader,
   rows,
   colorScheme,
   allSigns,
@@ -1725,7 +1699,6 @@ function DetectionTable({
   fileId,
 }: {
   title: string;
-  regionColHeader: string;
   rows: DetectionRow[];
   colorScheme: "primary" | "accent";
   allSigns: Array<{ id: string; pageNumber?: number | null; jobFileId?: string | null; hidden?: boolean }>;
@@ -1738,14 +1711,6 @@ function DetectionTable({
     colorScheme === "primary"
       ? "text-primary/70 bg-primary/5 border-primary/10"
       : "text-accent/70 bg-accent/5 border-accent/10";
-  const badgeCls = (source: DetectionRow["source"]) => {
-    if (source === "AI region")
-      return colorScheme === "primary"
-        ? "bg-primary/10 text-primary/80 border-primary/20"
-        : "bg-accent/10 text-accent border-accent/20";
-    if (source === "Heuristic") return "bg-secondary text-muted-foreground border-border";
-    return "bg-muted text-muted-foreground/60 border-border/40";
-  };
 
   const signsOnPage = (pageNo: number) => {
     const visible = allSigns.filter((s) => s.pageNumber === pageNo && s.jobFileId === fileId);
@@ -1779,8 +1744,6 @@ function DetectionTable({
               <th className="px-2 py-1 font-semibold whitespace-nowrap">Page No</th>
               <th className="px-2 py-1 font-semibold whitespace-nowrap">Label</th>
               <th className="px-2 py-1 font-semibold whitespace-nowrap">Bookmark</th>
-              <th className="px-2 py-1 font-semibold whitespace-nowrap">{regionColHeader}</th>
-              <th className="px-2 py-1 font-semibold whitespace-nowrap">Bounding Box (x0, y0, x1, y1)</th>
               <th className="px-2 py-1 font-semibold whitespace-nowrap">Action</th>
             </tr>
           </thead>
@@ -1798,12 +1761,6 @@ function DetectionTable({
                   <td className="px-2 py-1 text-foreground/70 max-w-[160px] truncate" title={row.bookmarkTitle ?? undefined}>
                     {row.bookmarkTitle ?? "—"}
                   </td>
-                  <td className="px-2 py-1">
-                    <span className={`px-1.5 py-px rounded text-[9px] font-bold uppercase tracking-wider border ${badgeCls(row.source)}`}>
-                      {row.source}
-                    </span>
-                  </td>
-                  <td className="px-2 py-1 text-muted-foreground/70">{fmtBbox(row.bbox)}</td>
                   <td className="px-2 py-1">
                     {all.length > 0 ? (
                       <button
@@ -2088,7 +2045,6 @@ function SheetsPanel({
                           <>
                             <DetectionTable
                               title="Floor Plans Detected"
-                              regionColHeader="Floor Plan Region Detected"
                               rows={floorPlanRows}
                               colorScheme="primary"
                               allSigns={allSigns}
@@ -2098,7 +2054,6 @@ function SheetsPanel({
                             />
                             <DetectionTable
                               title="Sign Specs / Schedules Detected"
-                              regionColHeader="Sign Spec Region Detected"
                               rows={signSpecRows}
                               colorScheme="accent"
                               allSigns={allSigns}

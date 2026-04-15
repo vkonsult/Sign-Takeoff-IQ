@@ -23,13 +23,11 @@ import { renderFloorPlanPages } from "./pdf-render";
 import { logger } from "./logger";
 import {
   extractPagePhrases,
-  detectFloorPlanBbox,
   matchLocationToCoords,
   classifyPageFromPhrases,
   extractFloorLevelName,
   extractPdfMetadata,
   type PdfPhrase,
-  type FloorPlanBbox,
   type SpatialPageType,
 } from "./pdf-words";
 
@@ -393,7 +391,7 @@ export async function runPdfProcessor(jobId: string): Promise<void> {
     const t_wordmatch = Date.now();
     const filePathById = new Map<string, string>(filesToProcess.map((f) => [f.id, f.storedPath]));
 
-    type PageCache = { phrases: PdfPhrase[]; bbox: FloorPlanBbox | null };
+    type PageCache = { phrases: PdfPhrase[] };
     const pageCache = new Map<string, PageCache>();
 
     async function getPageData(fileStoredPath: string, fileId: string, page: number): Promise<PageCache> {
@@ -402,12 +400,11 @@ export async function runPdfProcessor(jobId: string): Promise<void> {
       if (cached) return cached;
       try {
         const pageWords = await extractPagePhrases(fileStoredPath, fileId, page);
-        const bbox = detectFloorPlanBbox(pageWords.phrases);
-        const entry: PageCache = { phrases: pageWords.phrases, bbox };
+        const entry: PageCache = { phrases: pageWords.phrases };
         pageCache.set(key, entry);
         return entry;
       } catch {
-        const entry: PageCache = { phrases: [], bbox: null };
+        const entry: PageCache = { phrases: [] };
         pageCache.set(key, entry);
         return entry;
       }
@@ -427,7 +424,7 @@ export async function runPdfProcessor(jobId: string): Promise<void> {
       try {
         const pageData = await getPageData(storedPath, sign.jobFileId, sign.pageNumber);
         const excl = new Set<string>();
-        const match = matchLocationToCoords(pageData.phrases, pageData.bbox, sign.location, sign.signIdentifier, excl);
+        const match = matchLocationToCoords(pageData.phrases, sign.location, sign.signIdentifier, excl);
         if (match) {
           updatedSigns.push({ id: sign.id, xPos: match.xPos, yPos: match.yPos, placementSource: "word_match" });
         }

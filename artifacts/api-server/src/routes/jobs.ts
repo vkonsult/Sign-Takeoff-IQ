@@ -14,7 +14,7 @@ import { processJob, deduplicateSignRows } from "../lib/process-job";
 import { extractSignsFromPdfImage, extractSignsFromPdf, visualLocateDoors } from "../lib/extraction";
 import { ai } from "@workspace/integrations-gemini-ai";
 import { AI_CALL_REGISTRY, type AiCallType, runProjectInfoExtraction, runSignScheduleTextExtraction, runFloorPlanTextExtraction, runBboxDetection, runVisionFallback, runTitleBlockVision } from "../lib/ai-processor";
-import { extractPagePhrases, detectFloorPlanBbox, matchLocationToCoords, type SpatialPageType } from "../lib/pdf-words";
+import { extractPagePhrases, matchLocationToCoords, type SpatialPageType } from "../lib/pdf-words";
 import fs from "fs/promises";
 import fsSync from "fs";
 import { z } from "zod/v4";
@@ -931,18 +931,8 @@ router.get("/jobs/:jobId/files/:fileId/pages/:pageNum/words", async (req, res) =
       }
     }
 
-    // Use stored bbox if available (authoritative — computed at extraction time).
-    // Fall back to live recomputation for jobs that pre-date this change.
-    let floorPlanBbox: { x0: number; y0: number; x1: number; y1: number } | null = null;
-    const storedBbox = ps?.floorPlanBboxes?.[String(pageNumInt)];
-    if (storedBbox) {
-      floorPlanBbox = storedBbox;
-    } else if (pageType !== "sign_schedule") {
-      floorPlanBbox = detectFloorPlanBbox(result.phrases);
-    }
-
     res.setHeader("Cache-Control", "private, max-age=300");
-    res.json({ ...result, floorPlanBbox, pageType });
+    res.json({ ...result, pageType });
   } catch (err) {
     req.log.error({ err, fileId, pageNum }, "Failed to extract page words");
     res.status(500).json({ error: "Failed to extract page words" });
@@ -1585,7 +1575,7 @@ async function assignMissingCoordinates(jobId: string, files: DbFile[]): Promise
 
   const filePathById = new Map<string, string>(files.map((f) => [f.id, f.storedPath]));
 
-  type PageCache = { phrases: import("../lib/pdf-words").PdfPhrase[]; bbox: import("../lib/pdf-words").FloorPlanBbox | null };
+  type PageCache = { phrases: import("../lib/pdf-words").PdfPhrase[] };
   const pageCache = new Map<string, PageCache>();
 
   async function getPageData(fileStoredPath: string, fileId: string, page: number): Promise<PageCache> {
@@ -1594,12 +1584,11 @@ async function assignMissingCoordinates(jobId: string, files: DbFile[]): Promise
     if (cached) return cached;
     try {
       const pageWords = await extractPagePhrases(fileStoredPath, fileId, page);
-      const bbox = detectFloorPlanBbox(pageWords.phrases);
-      const entry: PageCache = { phrases: pageWords.phrases, bbox };
+      const entry: PageCache = { phrases: pageWords.phrases };
       pageCache.set(key, entry);
       return entry;
     } catch {
-      const entry: PageCache = { phrases: [], bbox: null };
+      const entry: PageCache = { phrases: [] };
       pageCache.set(key, entry);
       return entry;
     }
@@ -1612,7 +1601,7 @@ async function assignMissingCoordinates(jobId: string, files: DbFile[]): Promise
     try {
       const pageData = await getPageData(storedPath, sign.jobFileId, sign.pageNumber);
       const excl = new Set<string>();
-      const match = matchLocationToCoords(pageData.phrases, pageData.bbox, sign.location, sign.signIdentifier, excl);
+      const match = matchLocationToCoords(pageData.phrases, sign.location, sign.signIdentifier, excl);
       if (match) {
         await db.update(extractedSignsTable)
           .set({ xPos: match.xPos, yPos: match.yPos, placementSource: "word_match" })

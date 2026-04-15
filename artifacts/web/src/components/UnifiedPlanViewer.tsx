@@ -50,10 +50,6 @@ export interface FileInfo {
     otherPages: number[];
     pageLabels?: (string | null)[];
     pageImagePaths?: Record<string, string> | null;
-    aiRegionBboxes?: Record<string, {
-      floorPlan: { x0: number; y0: number; x1: number; y1: number } | null;
-      signSchedule: { x0: number; y0: number; x1: number; y1: number } | null;
-    }> | null;
     outlineSections?: Array<{
       title: string;
       pageStart: number;
@@ -590,7 +586,6 @@ function PageViewer({
     pageWidth: number;
     pageHeight: number;
     phrases: PdfPhrase[];
-    floorPlanBbox?: { x0: number; y0: number; x1: number; y1: number } | null;
     pageType?: string | null;
   };
   const [serverPhrases, setServerPhrases] = useState<ServerPhraseData | null>(null);
@@ -607,17 +602,6 @@ function PageViewer({
     return () => { cancelled = true; };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [file.id, pageNumber, jobId]);
-
-  // ── AI region overlays ─────────────────────────────────────────────────────
-  const aiPageRegion = file.pageStats?.aiRegionBboxes?.[String(pageNumber)] ?? null;
-
-  // effectiveFloorPlanBbox: AI stored bbox (from aiPageRegion or serverPhrases.floorPlanBbox)
-  // used to clip markers to the drawing area.
-  const effectiveFloorPlanBbox = useMemo(() => {
-    if (aiPageRegion?.floorPlan) return aiPageRegion.floorPlan;
-    if (serverPhrases?.floorPlanBbox) return serverPhrases.floorPlanBbox;
-    return null;
-  }, [aiPageRegion, serverPhrases]);
 
   // ── Page classification ────────────────────────────────────────────────────
   const isSignSchedulePage = file.pageStats?.signSchedulePages?.includes(pageNumber) ?? false;
@@ -640,7 +624,6 @@ function PageViewer({
 
   // ── Modes ──────────────────────────────────────────────────────────────────
   const [showOverlay, setShowOverlay] = useState(true);
-  const [showBoundaries, setShowBoundaries] = useState(mode === "modal");
   const [debugMode, setDebugMode] = useState(false);
   const [drawMode, setDrawMode] = useState(false);
   const [addMode, setAddMode] = useState(false);
@@ -1120,16 +1103,6 @@ function PageViewer({
             </>
           )}
 
-          {/* Boundaries toggle — both modes */}
-          <button
-            onClick={() => setShowBoundaries((v) => !v)}
-            className="flex items-center gap-1 text-[10px] font-display font-semibold uppercase tracking-wide px-2 py-1 rounded transition-colors border"
-            style={showBoundaries ? { background: "#3b82f620", color: "#3b82f6", borderColor: "#3b82f655" } : { background: "transparent", color: "var(--muted-foreground)", borderColor: "var(--border)" }}
-            title={showBoundaries ? "Hide AI region boundaries" : "Show AI region boundaries"}
-          >
-            ⬡ Bounds
-          </button>
-
           {/* Add Marker — modal only */}
           {mode === "modal" && pageReady && (
             <button
@@ -1253,27 +1226,6 @@ function PageViewer({
               {/* SVG marker overlay */}
               {showOverlay && renderedW && renderedH && (textMarkers.length > 0 || (debugMode && serverPhrases)) && (
                 <svg style={{ position: "absolute", top: 0, left: 0, width: renderedW, height: renderedH, overflow: "visible", pointerEvents: "none", zIndex: 5 }} viewBox={`0 0 ${renderedW} ${renderedH}`}>
-                  <defs>
-                    {(() => {
-                      const fp = effectiveFloorPlanBbox;
-                      const clipX = fp ? fp.x0 * renderedW : 0;
-                      const clipY = fp ? fp.y0 * renderedH : 0;
-                      const clipW = fp ? (fp.x1 - fp.x0) * renderedW : renderedW;
-                      const clipH = fp ? (fp.y1 - fp.y0) * renderedH : renderedH;
-                      return (
-                        <clipPath id="floorPlanClip">
-                          <rect x={clipX} y={clipY} width={clipW} height={clipH} />
-                        </clipPath>
-                      );
-                    })()}
-                  </defs>
-
-                  {showBoundaries && aiPageRegion?.floorPlan && (
-                    <rect x={aiPageRegion.floorPlan.x0 * renderedW} y={aiPageRegion.floorPlan.y0 * renderedH} width={(aiPageRegion.floorPlan.x1 - aiPageRegion.floorPlan.x0) * renderedW} height={(aiPageRegion.floorPlan.y1 - aiPageRegion.floorPlan.y0) * renderedH} fill="none" stroke="#3B82F6" strokeWidth={1.5} strokeDasharray="6 4" opacity={0.5} />
-                  )}
-                  {showBoundaries && aiPageRegion?.signSchedule && (
-                    <rect x={aiPageRegion.signSchedule.x0 * renderedW} y={aiPageRegion.signSchedule.y0 * renderedH} width={(aiPageRegion.signSchedule.x1 - aiPageRegion.signSchedule.x0) * renderedW} height={(aiPageRegion.signSchedule.y1 - aiPageRegion.signSchedule.y0) * renderedH} fill="none" stroke="#F59E0B" strokeWidth={1.5} strokeDasharray="6 4" opacity={0.5} />
-                  )}
 
                   {debugMode && serverPhrases && serverPhrases.phrases.map((p, i) => {
                     const px0 = p.x0 * renderedW; const py0 = p.y0 * renderedH;
@@ -1311,7 +1263,7 @@ function PageViewer({
                     })
                   )}
 
-                  <g clipPath={effectiveFloorPlanBbox ? "url(#floorPlanClip)" : undefined}>
+                  <g>
                     {textMarkers.map((m) => {
                       const isDraggingThis = dragState?.isDragging && dragState.signId === m.signId;
                       const cx = isDraggingThis ? dragState!.currentX * renderedW : m.x * renderedW;

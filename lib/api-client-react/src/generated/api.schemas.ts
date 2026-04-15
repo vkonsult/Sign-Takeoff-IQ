@@ -83,13 +83,6 @@ export interface PageStats {
   outlineSections?: PdfOutlineSection[] | null;
   /** Map of page number (as string key) to absolute file path of pre-rendered PNG image */
   pageImagePaths?: Record<string, string> | null;
-  /** Heuristic-detected floor plan bounding boxes per page (string page number key) */
-  floorPlanBboxes?: Record<string, { x0: number; y0: number; x1: number; y1: number }> | null;
-  /** Gemini AI-detected region bboxes per page (floor plan drawing area + sign schedule table) */
-  aiRegionBboxes?: Record<string, {
-    floorPlan: { x0: number; y0: number; x1: number; y1: number } | null;
-    signSchedule: { x0: number; y0: number; x1: number; y1: number } | null;
-  }> | null;
 }
 
 export interface JobFile {

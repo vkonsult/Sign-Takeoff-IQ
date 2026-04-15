@@ -477,16 +477,14 @@ export interface MatchedCoords {
 }
 
 /**
- * Given the page's word phrases and the floor plan bbox, finds the phrase whose
- * text best matches the sign's location / signIdentifier using token-overlap and
- * room-number matching.  Returns the phrase centre normalised to [0, 1].
+ * Given the page's word phrases, finds the phrase whose text best matches the
+ * sign's location / signIdentifier using token-overlap and room-number matching.
+ * Returns the phrase centre normalised to [0, 1].
  *
- * Only considers phrases whose centre falls inside floorPlanBbox (with small tolerance).
  * Returns null when no confident match is found (score < 0.5).
  */
 export function matchLocationToCoords(
   phrases: PdfPhrase[],
-  floorPlanBbox: FloorPlanBbox | null,
   location: string | null | undefined,
   signIdentifier: string | null | undefined,
   excludeCoords?: Set<string>,
@@ -494,24 +492,7 @@ export function matchLocationToCoords(
   const query = [location, signIdentifier].filter(Boolean).join(" ").trim();
   if (!query) return null;
 
-  // Require a valid floor plan bbox — if the page has no detected drawing region,
-  // return null so xPos/yPos stay null (no guessing on schedule/title-block pages).
-  if (!floorPlanBbox) return null;
-
-  // Filter phrases to those inside the floor plan area
-  const BBOX_TOLERANCE = 0.02;
-  const drawingPhrases = phrases.filter((p) => {
-    const cx = (p.x0 + p.x1) / 2;
-    const cy = (p.y0 + p.y1) / 2;
-    return (
-      cx >= floorPlanBbox.x0 - BBOX_TOLERANCE &&
-      cx <= floorPlanBbox.x1 + BBOX_TOLERANCE &&
-      cy >= floorPlanBbox.y0 - BBOX_TOLERANCE &&
-      cy <= floorPlanBbox.y1 + BBOX_TOLERANCE
-    );
-  });
-
-  if (drawingPhrases.length === 0) return null;
+  if (phrases.length === 0) return null;
 
   // Score each phrase, skipping any whose centre is already claimed by another sign.
   // Uses a proximity threshold so sub-pixel aliasing at different precisions is handled.
@@ -522,7 +503,7 @@ export function matchLocationToCoords(
 
   let best: { score: number; cx: number; cy: number } | null = null;
 
-  for (const p of drawingPhrases) {
+  for (const p of phrases) {
     const cx = (p.x0 + p.x1) / 2;
     const cy = (p.y0 + p.y1) / 2;
 
@@ -559,150 +540,6 @@ export function matchLocationToCoords(
   return { xPos: best.cx, yPos: best.cy };
 }
 
-export interface FloorPlanBbox {
-  x0: number; // 0–1 normalised left edge
-  y0: number; // 0–1 normalised top edge
-  x1: number; // 0–1 normalised right edge
-  y1: number; // 0–1 normalised bottom edge
-}
-
-/**
- * Detect the floor plan drawing region on a page by identifying "table-like"
- * vertical strips — x-bands whose phrases have dense, uniformly-spaced rows.
- * These strips correspond to sign-schedule columns or title blocks.  The floor
- * plan bbox is the page region that excludes those strips and any dense text zones.
- *
- * Uses two complementary strategies and merges their results:
- *   A) Fixed narrow-band analysis: divide page into 50 x-bands (0.02 wide each)
- *      and flag each as "table-like" based on phrase density + y-gap uniformity.
- *   B) Sliding-window clustering: groups cx values into wider strips (≤ 0.12 wide)
- *      and flags strips with dense uniform row spacing.
- *
- * Returns null when the heuristic cannot find a clear drawing region
- * (e.g. the page is entirely schedule tables).
- */
-export function detectFloorPlanBbox(phrases: PdfPhrase[]): FloorPlanBbox | null {
-  if (phrases.length === 0) return null;
-
-  const tableXRanges: Array<{ lo: number; hi: number }> = [];
-
-  // ── Strategy A: fixed narrow bands (50 bands × 0.02 wide) ─────────────────
-  // Uses tight thresholds to avoid flagging floor-plan room label columns:
-  //   - count ≥ 8  → can't fire on 3-5 scattered room labels
-  //   - meanGap ≤ 0.05 → schedule-table rows are 0.02-0.04 apart;
-  //                       floor-plan room labels are 0.05-0.15 apart
-  const N_BANDS = 50;
-  const bandPhrases: PdfPhrase[][] = Array.from({ length: N_BANDS }, () => []);
-  for (const p of phrases) {
-    const cx = (p.x0 + p.x1) / 2;
-    const bi = Math.min(N_BANDS - 1, Math.max(0, Math.floor(cx * N_BANDS)));
-    bandPhrases[bi]!.push(p);
-  }
-  for (let bi = 0; bi < N_BANDS; bi++) {
-    const bp = bandPhrases[bi]!;
-    if (bp.length < 8) continue;           // require dense population
-    const cys = bp.map((p) => (p.y0 + p.y1) / 2).sort((a, b) => a - b);
-    const gaps: number[] = [];
-    for (let g = 1; g < cys.length; g++) gaps.push(cys[g]! - cys[g - 1]!);
-    if (!gaps.length) continue;
-    const meanGap = gaps.reduce((s, v) => s + v, 0) / gaps.length;
-    if (meanGap <= 0 || meanGap > 0.05) continue;  // must be densely packed rows
-    const variance = gaps.reduce((s, v) => s + (v - meanGap) ** 2, 0) / gaps.length;
-    if (Math.sqrt(variance) / meanGap < 0.55) {
-      tableXRanges.push({ lo: bi / N_BANDS, hi: (bi + 1) / N_BANDS });
-    }
-  }
-
-  // ── Strategy B: sliding-window clustering (width ≤ 0.12) ──────────────────
-  const STRIP_WIDTH = 0.12;
-  const MIN_ITEMS_IN_STRIP = 6;
-  const sorted = [...phrases.map((p) => (p.x0 + p.x1) / 2)].sort((a, b) => a - b);
-
-  let winStart = 0;
-  for (let i = 1; i <= sorted.length; i++) {
-    const spanEnd = i < sorted.length ? sorted[i]! : sorted[sorted.length - 1]! + 1;
-    const spanStart = sorted[winStart]!;
-    if (spanEnd - spanStart > STRIP_WIDTH || i === sorted.length) {
-      const count = i - winStart;
-      if (count >= MIN_ITEMS_IN_STRIP) {
-        const stripPhrases = phrases.filter((p) => {
-          const cx = (p.x0 + p.x1) / 2;
-          return cx >= spanStart - 0.01 && cx <= spanStart + STRIP_WIDTH + 0.01;
-        });
-        const cys = stripPhrases.map((p) => (p.y0 + p.y1) / 2).sort((a, b) => a - b);
-        if (cys.length >= MIN_ITEMS_IN_STRIP) {
-          const gaps: number[] = [];
-          for (let g = 1; g < cys.length; g++) gaps.push(cys[g]! - cys[g - 1]!);
-          if (gaps.length > 0) {
-            const meanGap = gaps.reduce((s, v) => s + v, 0) / gaps.length;
-            const stdGap = Math.sqrt(
-              gaps.reduce((s, v) => s + (v - meanGap) ** 2, 0) / gaps.length
-            );
-            if (meanGap <= 0.10 && stdGap < meanGap * 0.55) {
-              tableXRanges.push({
-                lo: Math.min(...stripPhrases.map((p) => p.x0)),
-                hi: Math.max(...stripPhrases.map((p) => p.x1)),
-              });
-            }
-          }
-        }
-      }
-      winStart = i;
-    }
-  }
-
-  // ── Step 2: merge all detected table x-ranges (tolerance 0.03) ────────────
-  const merged = tableXRanges
-    .sort((a, b) => a.lo - b.lo)
-    .reduce<Array<{ lo: number; hi: number }>>((acc, r) => {
-      if (acc.length === 0) return [r];
-      const last = acc[acc.length - 1]!;
-      if (r.lo <= last.hi + 0.03) {
-        last.hi = Math.max(last.hi, r.hi);
-        return acc;
-      }
-      acc.push({ ...r });
-      return acc;
-    }, []);
-
-  // ── Step 3: find the largest x-gap between excluded zones ─────────────────
-  let drawX0 = 0;
-  let drawX1 = 1;
-
-  if (merged.length > 0) {
-    const gaps: Array<{ lo: number; hi: number }> = [];
-    gaps.push({ lo: 0, hi: merged[0]!.lo });
-    for (let i = 1; i < merged.length; i++) {
-      gaps.push({ lo: merged[i - 1]!.hi, hi: merged[i]!.lo });
-    }
-    gaps.push({ lo: merged[merged.length - 1]!.hi, hi: 1 });
-
-    const largest = gaps.reduce((best, g) =>
-      g.hi - g.lo > best.hi - best.lo ? g : best
-    );
-    // Only trust the gap when it is at least 0.2 wide (otherwise the whole page
-    // is a schedule and there's no discernible drawing region)
-    if (largest.hi - largest.lo >= 0.2) {
-      drawX0 = largest.lo;
-      drawX1 = largest.hi;
-    } else {
-      return null;
-    }
-  }
-
-  // ── Step 4: determine y-extent from phrases in the floor plan x-range ──────
-  const drawPhrases = phrases.filter((p) => {
-    const cx = (p.x0 + p.x1) / 2;
-    return cx >= drawX0 && cx <= drawX1;
-  });
-
-  if (drawPhrases.length === 0) return null;
-
-  const y0 = Math.min(...drawPhrases.map((p) => p.y0));
-  const y1 = Math.max(...drawPhrases.map((p) => p.y1));
-
-  return { x0: drawX0, y0, x1: drawX1, y1 };
-}
 
 // ── Spatial page-type classification ─────────────────────────────────────────
 // Title phrases that unambiguously identify a floor plan when found in the
