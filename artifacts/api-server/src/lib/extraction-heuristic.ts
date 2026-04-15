@@ -217,7 +217,11 @@ function extractRoomsFromWords(words: Word[], pageNum: number): ExtractedRoom[] 
     if (usedIds.has(key)) continue;
 
     const buildingId = svcWord.text.startsWith("A") ? "A" : "B";
-    const roomType = SERVICE_LABEL_MAP[svcWord.text] ?? "SERVICE";
+    const roomType = SERVICE_LABEL_MAP[svcWord.text];
+
+    // Skip codes with no explicit mapping — they are likely drawing callout
+    // reference symbols (e.g. A503, A504) rather than room identifiers.
+    if (!roomType) continue;
 
     // Guard: skip if the room-type label itself is code-only (defense-in-depth)
     if (isCodeOnlyLocation(roomType)) continue;
