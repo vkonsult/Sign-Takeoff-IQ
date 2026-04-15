@@ -1784,11 +1784,27 @@ router.patch("/jobs/:jobId/files/:fileId/rejected-pages", async (req: Request, r
     const { pageNo } = parsed.data;
     const existing = currentStats.rejectedPageNumbers ?? [];
     const isCurrentlyRejected = existing.includes(pageNo);
+
+    // Rejection is one-way: add to rejected list; un-reject just removes from the list
+    // (signs are permanently deleted and must be restored by reprocessing).
     const updatedRejectedPageNumbers = isCurrentlyRejected
       ? existing.filter((p) => p !== pageNo)
       : [...existing, pageNo];
 
     const updatedStats = { ...currentStats, rejectedPageNumbers: updatedRejectedPageNumbers };
+
+    // When newly rejecting: permanently delete all extracted signs for this page.
+    if (!isCurrentlyRejected) {
+      await db
+        .delete(extractedSignsTable)
+        .where(
+          and(
+            eq(extractedSignsTable.jobId, jobId),
+            eq(extractedSignsTable.jobFileId, fileId),
+            eq(extractedSignsTable.pageNumber, pageNo),
+          ),
+        );
+    }
 
     await db
       .update(jobFilesTable)

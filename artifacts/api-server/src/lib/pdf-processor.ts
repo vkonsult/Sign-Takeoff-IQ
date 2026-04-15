@@ -154,6 +154,9 @@ export async function runPdfProcessor(jobId: string): Promise<void> {
       try {
         logger.info({ jobId, file: file.originalName }, "[PDF Processor] Processing file");
 
+        // Read any previously rejected page numbers so they are preserved across re-runs.
+        const existingRejectedPages: number[] = (file.pageStats as { rejectedPageNumbers?: number[] } | null)?.rejectedPageNumbers ?? [];
+
         // ── Spatial pre-pass ──────────────────────────────────────────────
         let spatialPageTypes: Map<number, SpatialPageType> | undefined;
         let spatialFloorLevelNames: Map<number, string> | undefined;
@@ -513,11 +516,17 @@ export async function runPdfProcessor(jobId: string): Promise<void> {
           ? Object.fromEntries(spatialFloorLevelNames)
           : undefined;
 
+        // Exclude any previously-rejected pages from all classification lists so they
+        // are never sent for AI extraction or heuristic sign detection on re-runs.
+        const rejectedSet = new Set(existingRejectedPages);
+        const filterRejected = (pages: number[]) => pages.filter((p) => !rejectedSet.has(p));
+
         const pageStats = {
-          floorPlanPages: finalFloorPlanPages,
-          signSchedulePages: finalSignSchedulePages,
-          bothPages: finalBothPages,
-          otherPages,
+          floorPlanPages: filterRejected(finalFloorPlanPages),
+          signSchedulePages: filterRejected(finalSignSchedulePages),
+          bothPages: filterRejected(finalBothPages),
+          otherPages: filterRejected(otherPages),
+          ...(existingRejectedPages.length > 0 ? { rejectedPageNumbers: existingRejectedPages } : {}),
           ...(pageImagePathsRelative ? { pageImagePaths: pageImagePathsRelative } : {}),
           ...(floorPageLevels ? { floorPageLevels } : {}),
           ...(bookmarkTitles ? { bookmarkTitles } : {}),

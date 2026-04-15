@@ -571,6 +571,7 @@ export default function JobDetails() {
   };
 
   const toggleRejectedPage = async (fileId: string, pageNo: number) => {
+    // Optimistically add the page to rejectedPageNumbers immediately.
     queryClient.setQueryData(getGetJobQueryKey(jobId), (old: typeof data) => {
       if (!old) return old;
       type FileWithPageStats = (typeof old.files)[number] & { pageStats?: { floorPlanPages: number[]; signSchedulePages: number[]; otherPages: number[]; rejectedPageNumbers?: number[] } | null };
@@ -592,6 +593,9 @@ export default function JobDetails() {
         body: JSON.stringify({ pageNo }),
       });
       if (!res.ok) {
+        queryClient.invalidateQueries({ queryKey: getGetJobQueryKey(jobId) });
+      } else {
+        // Signs for this page were deleted on the server — refresh the signs list.
         queryClient.invalidateQueries({ queryKey: getGetJobQueryKey(jobId) });
       }
     } catch {
@@ -1859,102 +1863,72 @@ function DetectionTable({
   title,
   rows,
   colorScheme,
-  allSigns,
-  hiddenSigns,
-  toggleHidden,
-  fileId,
   rejectedPageNumbers,
   toggleRejectedPage,
 }: {
   title: string;
   rows: DetectionRow[];
   colorScheme: "primary" | "accent";
-  allSigns: Array<{ id: string; pageNumber?: number | null; jobFileId?: string | null; hidden?: boolean }>;
-  hiddenSigns: Array<{ id: string; pageNumber?: number | null; jobFileId?: string | null; hidden?: boolean }>;
-  toggleHidden: (signId: string, currentlyHidden: boolean) => void;
-  fileId: string;
   rejectedPageNumbers: number[];
   toggleRejectedPage: (pageNo: number) => void;
 }) {
-  if (rows.length === 0) return null;
   const headCls =
     colorScheme === "primary"
       ? "text-primary/70 bg-primary/5 border-primary/10"
       : "text-accent/70 bg-accent/5 border-accent/10";
 
-  const signsOnPage = (pageNo: number) => {
-    const visible = allSigns.filter((s) => s.pageNumber === pageNo && s.jobFileId === fileId);
-    const hidden = hiddenSigns.filter((s) => s.pageNumber === pageNo && s.jobFileId === fileId);
-    return { visible, hidden, all: [...visible, ...hidden] };
-  };
+  // Rejected pages are excluded entirely from the display.
+  const visibleRows = rows.filter((r) => !rejectedPageNumbers.includes(r.pageNo));
+  const rejectedCount = rows.length - visibleRows.length;
 
-  const isPageRejected = (pageNo: number) => {
-    const { all, hidden } = signsOnPage(pageNo);
-    if (all.length > 0) return hidden.length === all.length;
-    return rejectedPageNumbers.includes(pageNo);
-  };
-
-  const handleRejectToggle = (pageNo: number) => {
-    const { visible, hidden, all } = signsOnPage(pageNo);
-    if (all.length > 0) {
-      if (isPageRejected(pageNo)) {
-        hidden.forEach((s) => toggleHidden(s.id, true));
-      } else {
-        visible.forEach((s) => toggleHidden(s.id, false));
-      }
-    } else {
-      toggleRejectedPage(pageNo);
-    }
-  };
+  if (visibleRows.length === 0 && rejectedCount === 0) return null;
 
   return (
     <div className="mt-3">
       <p className={`text-[10px] font-display font-semibold uppercase tracking-wider mb-1 ${colorScheme === "primary" ? "text-primary/70" : "text-accent/70"}`}>
         {title}
       </p>
-      <div className="overflow-x-auto rounded border border-border/60">
-        <table className="w-full text-left border-collapse text-[10px] font-mono">
-          <thead>
-            <tr className={`border-b border-border/60 ${headCls}`}>
-              <th className="px-2 py-1 font-semibold whitespace-nowrap">Page No</th>
-              <th className="px-2 py-1 font-semibold whitespace-nowrap">Label</th>
-              <th className="px-2 py-1 font-semibold whitespace-nowrap">Bookmark</th>
-              <th className="px-2 py-1 font-semibold whitespace-nowrap">Action</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((row, i) => {
-              const rejected = isPageRejected(row.pageNo);
-              return (
+      {visibleRows.length > 0 && (
+        <div className="overflow-x-auto rounded border border-border/60">
+          <table className="w-full text-left border-collapse text-[10px] font-mono">
+            <thead>
+              <tr className={`border-b border-border/60 ${headCls}`}>
+                <th className="px-2 py-1 font-semibold whitespace-nowrap">Page No</th>
+                <th className="px-2 py-1 font-semibold whitespace-nowrap">Label</th>
+                <th className="px-2 py-1 font-semibold whitespace-nowrap">Bookmark</th>
+                <th className="px-2 py-1 font-semibold whitespace-nowrap">Action</th>
+              </tr>
+            </thead>
+            <tbody>
+              {visibleRows.map((row, i) => (
                 <tr
                   key={`${row.pageNo}-${i}`}
-                  className={`border-b border-border/30 last:border-0 transition-opacity ${
-                    rejected ? "opacity-40" : ""
-                  } ${i % 2 === 0 ? "bg-background" : "bg-card/40"}`}
+                  className={`border-b border-border/30 last:border-0 ${i % 2 === 0 ? "bg-background" : "bg-card/40"}`}
                 >
-                  <td className={`px-2 py-1 ${rejected ? "line-through text-muted-foreground/60" : "text-muted-foreground"}`}>{row.pageNo}</td>
-                  <td className={`px-2 py-1 ${rejected ? "line-through text-foreground/40" : "text-foreground/80"}`}>{row.label}</td>
-                  <td className={`px-2 py-1 max-w-[160px] truncate ${rejected ? "line-through text-foreground/30" : "text-foreground/70"}`} title={row.bookmarkTitle ?? undefined}>
+                  <td className="px-2 py-1 text-muted-foreground">{row.pageNo}</td>
+                  <td className="px-2 py-1 text-foreground/80">{row.label}</td>
+                  <td className="px-2 py-1 max-w-[160px] truncate text-foreground/70" title={row.bookmarkTitle ?? undefined}>
                     {row.bookmarkTitle ?? "—"}
                   </td>
                   <td className="px-2 py-1">
                     <button
-                      onClick={() => handleRejectToggle(row.pageNo)}
-                      className={`px-2 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider border transition-colors ${
-                        rejected
-                          ? "bg-muted text-muted-foreground border-border/60 hover:bg-secondary"
-                          : "bg-destructive/10 text-destructive border-destructive/30 hover:bg-destructive/20"
-                      }`}
+                      onClick={() => toggleRejectedPage(row.pageNo)}
+                      className="px-2 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider border transition-colors bg-destructive/10 text-destructive border-destructive/30 hover:bg-destructive/20"
                     >
-                      {rejected ? "Rejected" : "Reject"}
+                      Reject
                     </button>
                   </td>
                 </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      {rejectedCount > 0 && (
+        <p className="mt-1 text-[9px] text-muted-foreground/50 italic">
+          {rejectedCount} page{rejectedCount > 1 ? "s" : ""} excluded from extraction
+        </p>
+      )}
     </div>
   );
 }
@@ -2239,10 +2213,6 @@ function SheetsPanel({
                               title="Floor Plans Detected"
                               rows={floorPlanRows}
                               colorScheme="primary"
-                              allSigns={allSigns}
-                              hiddenSigns={hiddenSigns}
-                              toggleHidden={toggleHidden}
-                              fileId={f.id}
                               rejectedPageNumbers={rejectedPageNumbers}
                               toggleRejectedPage={(pageNo) => toggleRejectedPage(f.id, pageNo)}
                             />
@@ -2250,10 +2220,6 @@ function SheetsPanel({
                               title="Sign Specs / Schedules Detected"
                               rows={signSpecRows}
                               colorScheme="accent"
-                              allSigns={allSigns}
-                              hiddenSigns={hiddenSigns}
-                              toggleHidden={toggleHidden}
-                              fileId={f.id}
                               rejectedPageNumbers={rejectedPageNumbers}
                               toggleRejectedPage={(pageNo) => toggleRejectedPage(f.id, pageNo)}
                             />
