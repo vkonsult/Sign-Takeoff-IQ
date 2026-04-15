@@ -70,8 +70,13 @@ export interface ParseResult {
 /** Sign type code: 1–2 digits followed by 0–2 letters, e.g. "1A", "2B", "3", "10A" */
 const SIGN_TYPE_CODE_RE = /^(\d{1,2}[A-Za-z]{0,2})$/;
 
-/** Room number: pure digits, or letter+digits, or digit+letter, e.g. "101", "A-101", "101A" */
-const ROOM_NUMBER_RE = /^([A-Za-z]{0,2}-?\d{2,4}[A-Za-z]?|[A-Za-z]\d{2,3}[A-Za-z]?)$/;
+/**
+ * Room number: pure digits, letter-prefixed codes, or digit-first codes.
+ * Examples: "101", "A-101", "101A", "C300", "A306", "1C", "2B"
+ * Third alternative (`\d{1,4}[A-Za-z]{1,2}`) explicitly matches single-digit-then-letter
+ * codes like "1C" or "2B" while Case 2 of parseRoomHeading guards against sign-row overlap.
+ */
+const ROOM_NUMBER_RE = /^([A-Za-z]{0,2}-?\d{2,4}[A-Za-z]?|[A-Za-z]\d{2,3}[A-Za-z]?|\d{1,4}[A-Za-z]{1,2})$/;
 
 /** Integer quantity */
 const QUANTITY_RE = /^(\d{1,3})$/;
@@ -176,18 +181,48 @@ function isKeynoteLegendHeader(text: string): boolean {
   return upper.includes("KEYNOTE") || upper.includes("SIGN KEYNOTES");
 }
 
+/**
+ * Known location keyword prefixes that can begin a room heading line.
+ * When the first token is one of these and the second token is a room code,
+ * the full line becomes the roomName and the code becomes the roomNumber.
+ */
+const LOCATION_KEYWORD_PREFIXES = new Set(["UNIT", "SUITE", "ROOM", "APT", "STE", "RM"]);
+
 /** Returns true if a line is just a room heading (room number alone or room number + name). */
 function parseRoomHeading(line: TextLine): { roomNumber: string; roomName: string } | null {
   const items = line.filter((it) => it.text.trim().length > 0);
   if (items.length === 0) return null;
   const first = items[0]!.text.trim();
 
-  // Must start with a room number pattern
+  // Case 1: line starts with a known location keyword (e.g. "UNIT 1C", "SUITE 2B").
+  // The full verbatim line becomes roomName; the code portion becomes roomNumber.
+  if (LOCATION_KEYWORD_PREFIXES.has(first.toUpperCase()) && items.length >= 2) {
+    const second = items[1]!.text.trim();
+    const third = items[2]?.text.trim() ?? "";
+    // Reject if this looks like a sign row (keyword sign-code qty …)
+    if (SIGN_TYPE_CODE_RE.test(second) && QUANTITY_RE.test(third)) return null;
+    // Second token must look like a room code: contain at least one digit and be
+    // composed only of alphanumeric chars, hyphens, or dots (not a plain word).
+    const isRoomCodeLike = /[0-9]/.test(second) && /^[A-Za-z0-9\-.]+$/.test(second);
+    if (!isRoomCodeLike) return null;
+    // The code portion is the second token; full line is the room name
+    const verbatimLine = lineText(items);
+    return { roomNumber: second, roomName: verbatimLine };
+  }
+
+  // Case 2: line starts with a room number pattern (original logic)
   if (!ROOM_NUMBER_RE.test(first) && !/^\d{1,4}$/.test(first)) return null;
 
-  // If the line only has a few tokens and the rest looks like a room name, it's a heading
-  // Reject if the second token looks like a sign type code followed by a quantity
-  // (that would be a sign row, not a room heading)
+  // If the line only has a few tokens and the rest looks like a room name, it's a heading.
+  // Two sign-row rejection guards to prevent sign rows being parsed as headings:
+
+  // Guard A: first=sign_code, second=qty  →  "1A 2 ENTRY SIGN TEXT" is a sign row
+  if (items.length >= 2) {
+    const second = items[1]?.text.trim() ?? "";
+    if (SIGN_TYPE_CODE_RE.test(first) && QUANTITY_RE.test(second)) return null;
+  }
+
+  // Guard B: first=room_number, second=sign_code, third=qty  →  sign row under a heading
   if (items.length >= 3) {
     const second = items[1]?.text.trim() ?? "";
     const third = items[2]?.text.trim() ?? "";

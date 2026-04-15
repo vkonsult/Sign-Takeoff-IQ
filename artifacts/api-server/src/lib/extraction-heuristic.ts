@@ -41,24 +41,35 @@ interface PhraseRecord {
 
 /**
  * Returns true if the phrase looks like a floor-plan room code.
- * Matches:
- *   - Pure digits: "101", "1042", "23"
- *   - Alphanumeric (letter prefix + digits): "A101", "X101", "A10", "B23"
- * These are NOT noise — they are sign identifiers that sit beneath room labels.
+ * Accepts any compact alphanumeric identifier (up to ~20 chars) that:
+ *   - Contains at least one digit
+ *   - Contains only letters, digits, hyphens, dots, or spaces
+ *   - Is not a dimension string (no foot/inch marks)
+ *   - Is not a pure fraction (digit/digit)
+ *
+ * Covers: 101, A101, C300, A306, BS2-3, AS1-3, 1.2A, B-101, S2-3, etc.
  */
 function isRoomCode(text: string): boolean {
   const t = text.trim();
-  // Pure digit codes: 2–4 digits
-  if (/^\d{2,4}$/.test(t)) return true;
-  // Letter-prefixed codes: 1 letter + 1–4 digits (e.g. A101, X101, A10, B23)
-  if (/^[A-Za-z]\d{1,4}$/.test(t)) return true;
-  return false;
+  if (t.length === 0 || t.length > 20) return false;
+  // Must contain at least one digit
+  if (!/[0-9]/.test(t)) return false;
+  // Must only contain letters, digits, hyphens, dots, or spaces
+  if (!/^[A-Za-z0-9\-.\s]+$/.test(t)) return false;
+  // Reject dimension strings (foot/inch marks after digits)
+  if (/[0-9]['"]/.test(t)) return false;
+  // Reject pure fractions (digit/digit)
+  if (/[0-9]\/[0-9]/.test(t)) return false;
+  return true;
 }
 
 /**
  * Noise-filter: returns true if the phrase should be skipped for anchor/companion matching.
- * Skips: purely numeric (handled separately as room codes), drawing-reference codes like A123,
- * dimension strings, or phrases shorter than 2 characters.
+ * Only rejects definitively non-room content:
+ *   - Strings shorter than 2 characters
+ *   - Dimension strings containing foot/inch marks (e.g. 6'-8", 4")
+ *   - Fractional dimensions (digit/digit, e.g. 1/4, 3/8)
+ *   - Strings with zero alphanumeric characters
  *
  * IMPORTANT: slash-separated room labels like "UTL/JAN/RISER" must NOT be
  * filtered here — they are legitimate compound room labels.  Only filter
@@ -67,16 +78,12 @@ function isRoomCode(text: string): boolean {
 function isNoisyPhrase(text: string): boolean {
   const t = text.trim();
   if (t.length < 2) return true;
-  // Purely numeric — skip here; room codes are handled via isRoomCode() separately
-  if (/^[0-9]+$/.test(t)) return true;
-  // Drawing reference code: single uppercase letter + 2-3 digits (e.g. A123)
-  if (/^[A-Z][0-9]{2,3}$/.test(t)) return true;
   // Dimension strings: foot/inch marks after digits (e.g. 6'-8", 4")
   if (/[0-9]['"]/.test(t)) return true;
   // Fractional dimension: digit/digit (e.g. 1/4, 3/8, 1/2)
   if (/[0-9]\/[0-9]/.test(t)) return true;
-  // Bare number with optional units (e.g. "12.5 sf", "100")
-  if (/^[0-9]+(\.?[0-9]*)?(\s*[a-z]{0,3})?$/i.test(t) && /[0-9]/.test(t)) return true;
+  // Strings with zero alphanumeric characters (pure symbols like "#@!")
+  if (!/[A-Za-z0-9]/.test(t)) return true;
   return false;
 }
 
@@ -109,11 +116,12 @@ function lookupRoomLabelMap(text: string, labelMap: Record<string, string>): str
 
 /**
  * Return true if the phrase is a useful companion (not a match in ROOM_LABEL_MAP itself
- * but contains enough alphabetic characters to be a room name label).
+ * but contains at least one alphabetic character or is a room code identifier).
+ * Threshold is ≥1 alpha so that two-letter prefix codes like BS2-3 and AS1-3 qualify.
  */
 function isValidCompanion(text: string): boolean {
   const alphaCount = (text.match(/[a-zA-Z]/g) || []).length;
-  return alphaCount >= 3;
+  return alphaCount >= 1 || isRoomCode(text);
 }
 
 /**
