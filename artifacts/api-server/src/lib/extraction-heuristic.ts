@@ -38,14 +38,7 @@ function classifySign(roomId: string, roomType: string, labelMap: Record<string,
   const rid = roomId.toUpperCase();
 
   if (rt.includes("UNIT")) {
-    const ut = rt.replace("UNIT ", "").trim();
-    const beds: Record<string, string> = {
-      "1A": "1-BED", "1B": "1-BED",
-      "2A": "2-BED", "2B": "2-BED",
-      "3A": "3-BED", "3B": "3-BED",
-    };
-    const bedsLabel = beds[ut] ?? "";
-    return { signType: `${bedsLabel} UNIT SIGN`.trim(), notes: "Suite ID Sign" };
+    return { signType: "UNIT SIGN", notes: "Suite ID Sign" };
   }
 
   // Stairwell: check roomId prefix pattern before label map lookup
@@ -606,7 +599,7 @@ export async function extractSignsHeuristic(
       signType,
       signIdentifier: room.roomId,
       quantity: 1,
-      location: `${room.roomType} — Building ${room.buildingId}`,
+      location: room.roomType,
       dimensions: null,
       mountingType: null,
       finishColor: null,
