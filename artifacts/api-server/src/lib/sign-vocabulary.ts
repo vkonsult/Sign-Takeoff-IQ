@@ -135,6 +135,45 @@ export const CANONICAL_LEVEL_NAMES = [
 ] as const;
 
 /**
+ * Canonical building types supported by the vocabulary system.
+ */
+export type CanonicalBuildingType =
+  | "school"
+  | "hotel"
+  | "apartment"
+  | "office"
+  | "church"
+  | "lab"
+  | "library"
+  | "sports";
+
+/**
+ * Known 3-character room abbreviations that should be kept during floor plan
+ * text candidate filtering (even though most 3-char tokens are dropped as noise).
+ */
+// All entries are stored lowercase so token lookups using `.toLowerCase()` always hit.
+export const KNOWN_ROOM_ABBREVIATIONS: Set<string> = new Set(
+  [
+    // Restroom codes
+    "wrr", "mrr", "unr",
+    // IT / telecom
+    "idf", "mdf",
+    // Spa / recreation
+    "spa",
+    // Common service
+    "wc", "rr",
+    // Vertical circulation
+    "dn", "up",
+    // Mechanical / electrical
+    "ahu", "vav",
+    // Storage / service
+    "sto", "utl", "jan",
+    // Other common 3-char codes found on plans
+    "phr", "med", "adm", "art", "gym", "lab", "lib",
+  ].map((s) => s.toLowerCase())
+);
+
+/**
  * Maps lower-cased room label tokens to sign type strings.
  * Every token that could appear on a floor plan as either the room code
  * or the room name must be listed.
@@ -232,3 +271,333 @@ export const ROOM_LABEL_MAP: Record<string, string> = {
   cafe: "BREAK ROOM SIGN",
   breakroom: "BREAK ROOM SIGN",
 };
+
+/**
+ * Per-building-type room label vocabulary.
+ * Keys are lower-cased tokens that appear on floor plans for that building type.
+ * Values are the sign type string to assign.
+ *
+ * These maps are merged with the generic ROOM_LABEL_MAP by getRoomLabelMap().
+ */
+export const BUILDING_TYPE_VOCABULARY: Record<CanonicalBuildingType, Record<string, string>> = {
+
+  school: {
+    // Academic spaces
+    classroom:      "CLASSROOM SIGN",
+    "art":          "CLASSROOM SIGN",
+    "art room":     "CLASSROOM SIGN",
+    music:          "CLASSROOM SIGN",
+    band:           "CLASSROOM SIGN",
+    choir:          "CLASSROOM SIGN",
+    music:          "CLASSROOM SIGN",
+    drama:          "CLASSROOM SIGN",
+    science:        "CLASSROOM SIGN",
+    lab:            "CLASSROOM SIGN",
+    laboratory:     "CLASSROOM SIGN",
+    "science lab":  "CLASSROOM SIGN",
+    "computer lab": "CLASSROOM SIGN",
+    makerspace:     "CLASSROOM SIGN",
+    "pre-k":        "CLASSROOM SIGN",
+    prek:           "CLASSROOM SIGN",
+    kindergarten:   "CLASSROOM SIGN",
+    "seminar":      "CLASSROOM SIGN",
+    "lecture hall": "CLASSROOM SIGN",
+    // Administration
+    principal:      "OFFICE SIGN",
+    counselor:      "OFFICE SIGN",
+    "nurse":        "OFFICE SIGN",
+    "nurse's":      "OFFICE SIGN",
+    administration: "OFFICE SIGN",
+    admin:          "OFFICE SIGN",
+    faculty:        "OFFICE SIGN",
+    "staff lounge": "BREAK ROOM SIGN",
+    // Library / media
+    library:        "LIBRARY SIGN",
+    "media center": "LIBRARY SIGN",
+    "media room":   "LIBRARY SIGN",
+    // Dining / assembly
+    cafeteria:      "CAFETERIA SIGN",
+    cafetorium:     "CAFETERIA SIGN",
+    "dining":       "CAFETERIA SIGN",
+    auditorium:     "AUDITORIUM SIGN",
+    gymnasium:      "GYMNASIUM SIGN",
+    gym:            "GYMNASIUM SIGN",
+    // PE / athletics
+    locker:         "LOCKER ROOM SIGN",
+    "weight room":  "GYMNASIUM SIGN",
+    // Support
+    "textbook":     "STORAGE SIGN",
+  },
+
+  hotel: {
+    // Guest rooms
+    "guest room":   "GUEST ROOM SIGN",
+    guestroom:      "GUEST ROOM SIGN",
+    suite:          "SUITE SIGN",
+    penthouse:      "SUITE SIGN",
+    // Events
+    ballroom:       "BALLROOM SIGN",
+    banquet:        "BANQUET ROOM SIGN",
+    "event room":   "BANQUET ROOM SIGN",
+    // Fitness / recreation
+    fitness:        "FITNESS ROOM SIGN",
+    spa:            "SPA SIGN",
+    pool:           "POOL SIGN",
+    natatorium:     "POOL SIGN",
+    // Guest services
+    concierge:      "LOBBY SIGN",
+    "front desk":   "LOBBY SIGN",
+    "check-in":     "LOBBY SIGN",
+    valet:          "LOBBY SIGN",
+    // Back-of-house
+    housekeeping:   "JANITOR ROOM SIGN",
+    linen:          "STORAGE SIGN",
+    laundry:        "STORAGE SIGN",
+    "business center": "OFFICE SIGN",
+    // Food & beverage
+    restaurant:     "BREAK ROOM SIGN",
+    bar:            "BREAK ROOM SIGN",
+    "lounge":       "BREAK ROOM SIGN",
+  },
+
+  apartment: {
+    // Residential units
+    unit:           "ROOM ID SIGN",
+    studio:         "ROOM ID SIGN",
+    // Leasing / management
+    leasing:        "OFFICE SIGN",
+    "leasing office": "OFFICE SIGN",
+    management:     "OFFICE SIGN",
+    // Amenity spaces
+    amenity:        "MULTIPURPOSE ROOM SIGN",
+    clubhouse:      "MULTIPURPOSE ROOM SIGN",
+    "fitness room": "FITNESS ROOM SIGN",
+    fitness:        "FITNESS ROOM SIGN",
+    rooftop:        "MULTIPURPOSE ROOM SIGN",
+    "dog wash":     "MULTIPURPOSE ROOM SIGN",
+    // Service rooms
+    "mail room":    "ROOM ID SIGN",
+    mailroom:       "ROOM ID SIGN",
+    "package room": "ROOM ID SIGN",
+    packageroom:    "ROOM ID SIGN",
+    "trash room":   "STORAGE SIGN",
+    trashroom:      "STORAGE SIGN",
+    "bike room":    "STORAGE SIGN",
+    bikeroom:       "STORAGE SIGN",
+    "laundry":      "STORAGE SIGN",
+    parking:        "ROOM ID SIGN",
+    garage:         "ROOM ID SIGN",
+  },
+
+  office: {
+    // Open / private work
+    "open office":    "OFFICE SIGN",
+    "private office": "OFFICE SIGN",
+    workroom:         "OFFICE SIGN",
+    // Meeting / collaboration
+    boardroom:        "CONFERENCE ROOM SIGN",
+    "war room":       "CONFERENCE ROOM SIGN",
+    "focus room":     "CONFERENCE ROOM SIGN",
+    "phone room":     "OFFICE SIGN",
+    // Wellness
+    "wellness room":  "OFFICE SIGN",
+    "mother's room":  "OFFICE SIGN",
+    "mothers room":   "OFFICE SIGN",
+    lactation:        "OFFICE SIGN",
+    // Support
+    "copy room":      "ROOM ID SIGN",
+    "print room":     "ROOM ID SIGN",
+    "supply room":    "STORAGE SIGN",
+    supply:           "STORAGE SIGN",
+    reception:        "LOBBY SIGN",
+    // Food
+    pantry:           "BREAK ROOM SIGN",
+    "coffee bar":     "BREAK ROOM SIGN",
+  },
+
+  church: {
+    // Worship
+    sanctuary:        "SANCTUARY SIGN",
+    chapel:           "SANCTUARY SIGN",
+    worship:          "SANCTUARY SIGN",
+    auditorium:       "AUDITORIUM SIGN",
+    "cry room":       "ROOM ID SIGN",
+    "nursing room":   "ROOM ID SIGN",
+    "prayer room":    "ROOM ID SIGN",
+    prayer:           "ROOM ID SIGN",
+    "baptistry":      "ROOM ID SIGN",
+    baptistery:       "ROOM ID SIGN",
+    "choir loft":     "ROOM ID SIGN",
+    "choir room":     "CLASSROOM SIGN",
+    // Entry / circulation
+    narthex:          "LOBBY SIGN",
+    vestibule:        "LOBBY SIGN",
+    atrium:           "LOBBY SIGN",
+    foyer:            "LOBBY SIGN",
+    // Fellowship / education
+    fellowship:       "MULTIPURPOSE ROOM SIGN",
+    "fellowship hall": "MULTIPURPOSE ROOM SIGN",
+    "sunday school":  "CLASSROOM SIGN",
+    "children's church": "CLASSROOM SIGN",
+    nursery:          "ROOM ID SIGN",
+    // Clergy / admin
+    sacristy:         "CLERGY ROOM SIGN",
+    vestry:           "CLERGY ROOM SIGN",
+    clergy:           "CLERGY ROOM SIGN",
+    "pastor's office": "OFFICE SIGN",
+    "pastor":         "OFFICE SIGN",
+    "minister":       "OFFICE SIGN",
+  },
+
+  lab: {
+    // Lab spaces
+    "wet lab":        "ROOM ID SIGN",
+    "dry lab":        "ROOM ID SIGN",
+    "clean room":     "ROOM ID SIGN",
+    cleanroom:        "ROOM ID SIGN",
+    vivarium:         "ROOM ID SIGN",
+    autoclave:        "ROOM ID SIGN",
+    "cold room":      "ROOM ID SIGN",
+    darkroom:         "ROOM ID SIGN",
+    specimen:         "STORAGE SIGN",
+    "instrument room": "ROOM ID SIGN",
+    "instrument":     "ROOM ID SIGN",
+    // Safety
+    "fume hood":      "ROOM ID SIGN",
+    "safety shower":  "ROOM ID SIGN",
+    "eyewash":        "ROOM ID SIGN",
+    "chemical storage": "STORAGE SIGN",
+    // Support
+    "write-up":       "OFFICE SIGN",
+    "write up":       "OFFICE SIGN",
+    conference:       "CONFERENCE ROOM SIGN",
+    // Shared
+    lab:              "CLASSROOM SIGN",
+    laboratory:       "CLASSROOM SIGN",
+  },
+
+  library: {
+    // Collections
+    stacks:           "ROOM ID SIGN",
+    "reading room":   "ROOM ID SIGN",
+    reference:        "ROOM ID SIGN",
+    periodicals:      "ROOM ID SIGN",
+    archive:          "STORAGE SIGN",
+    microfilm:        "ROOM ID SIGN",
+    // Programs & services
+    circulation:      "LOBBY SIGN",
+    "children's room": "CLASSROOM SIGN",
+    "young adult":    "CLASSROOM SIGN",
+    "quiet study":    "ROOM ID SIGN",
+    "group study":    "CONFERENCE ROOM SIGN",
+    "program room":   "MULTIPURPOSE ROOM SIGN",
+    "community room": "MULTIPURPOSE ROOM SIGN",
+    // Staff
+    "staff workroom": "OFFICE SIGN",
+    workroom:         "OFFICE SIGN",
+  },
+
+  sports: {
+    // Arenas & courts
+    arena:            "ROOM ID SIGN",
+    natatorium:       "POOL SIGN",
+    pool:             "POOL SIGN",
+    court:            "GYMNASIUM SIGN",
+    gymnasium:        "GYMNASIUM SIGN",
+    gym:              "GYMNASIUM SIGN",
+    "field house":    "GYMNASIUM SIGN",
+    fieldhouse:       "GYMNASIUM SIGN",
+    "dance studio":   "CLASSROOM SIGN",
+    "yoga":           "CLASSROOM SIGN",
+    "spin room":      "FITNESS ROOM SIGN",
+    "cycling":        "FITNESS ROOM SIGN",
+    // Athletics support
+    "weight room":    "GYMNASIUM SIGN",
+    "training room":  "ROOM ID SIGN",
+    "athletic trainer": "ROOM ID SIGN",
+    "equipment room": "STORAGE SIGN",
+    equipment:        "STORAGE SIGN",
+    "locker room":    "LOCKER ROOM SIGN",
+    locker:           "LOCKER ROOM SIGN",
+    // Spectator / operations
+    concession:       "ROOM ID SIGN",
+    "press box":      "ROOM ID SIGN",
+    "ticket":         "LOBBY SIGN",
+    "broadcast":      "ROOM ID SIGN",
+  },
+};
+
+/**
+ * Keyword lists used to detect building type from a project name or title block text.
+ * Each array entry is a lowercase keyword substring.
+ */
+const BUILDING_TYPE_KEYWORDS: Record<CanonicalBuildingType, string[]> = {
+  school: [
+    "school", "elementary", "middle school", "high school", "college",
+    "university", "academy", "institute", "campus", "learning center",
+    "stem center", "educational",
+  ],
+  hotel: [
+    "hotel", "inn", "suites", "resort", "motel", "lodge",
+    "hospitality", "marriott", "hilton", "hyatt", "sheraton", "westin",
+  ],
+  apartment: [
+    "apartment", "apartments", "flats", "residences", "residential",
+    "multifamily", "multi-family", "condominiums", "condos", "lofts",
+    "townhomes", "housing",
+  ],
+  office: [
+    "tower", "plaza", "center", "office", "headquarters", "hq",
+    "corporate", "commercial", "business park", "tech park",
+  ],
+  church: [
+    "church", "chapel", "worship", "cathedral", "mosque", "synagogue",
+    "temple", "parish", "congregation", "ministry", "faith",
+    "baptist", "methodist", "lutheran", "presbyterian", "catholic",
+  ],
+  lab: [
+    "laboratory", "labs", "research", "sciences", "biotech",
+    "pharmaceutical", "clinical", "medical research",
+  ],
+  library: [
+    "library", "libraries", "archives", "reading",
+  ],
+  sports: [
+    "arena", "stadium", "gymnasium", "athletic", "recreation center",
+    "sports", "aquatic", "natatorium", "field house", "fitness center",
+  ],
+};
+
+/**
+ * Detect a canonical building type from a free-text string (project name,
+ * title block content, etc.) using pure keyword matching.
+ *
+ * Returns the first matching canonical type, or null when no match is found.
+ * Matching is case-insensitive and uses substring search.
+ */
+export function detectBuildingType(text: string): CanonicalBuildingType | null {
+  if (!text) return null;
+  const lower = text.toLowerCase();
+  for (const [type, keywords] of Object.entries(BUILDING_TYPE_KEYWORDS) as [CanonicalBuildingType, string[]][]) {
+    for (const kw of keywords) {
+      if (lower.includes(kw)) return type;
+    }
+  }
+  return null;
+}
+
+/**
+ * Return a merged room-label map that combines the generic ROOM_LABEL_MAP with
+ * the vocabulary specific to the given building type (if any).
+ *
+ * The building-type-specific entries take precedence over generic entries when
+ * there is a key collision, allowing type-specific sign types to win.
+ *
+ * When buildingType is null/undefined the generic map is returned as-is.
+ */
+export function getRoomLabelMap(buildingType?: CanonicalBuildingType | string | null): Record<string, string> {
+  if (!buildingType) return ROOM_LABEL_MAP;
+  const typeVocab = BUILDING_TYPE_VOCABULARY[buildingType as CanonicalBuildingType];
+  if (!typeVocab) return ROOM_LABEL_MAP;
+  return { ...ROOM_LABEL_MAP, ...typeVocab };
+}

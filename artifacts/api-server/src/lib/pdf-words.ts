@@ -4,6 +4,9 @@ import {
   FLOOR_PLAN_EXCLUSION_PHRASES,
   SIGN_SCHEDULE_PHRASES,
   CANONICAL_LEVEL_NAMES as CANONICAL_LEVEL_NAMES_FROM_VOCAB,
+  KNOWN_ROOM_ABBREVIATIONS,
+  detectBuildingType,
+  type CanonicalBuildingType,
 } from "./sign-vocabulary";
 
 export interface PdfPhrase {
@@ -984,4 +987,177 @@ export async function extractPdfMetadata(
   const result: PdfDocumentMetadata = { pageLabels, outlineSections };
   metadataCache.set(pdfPath, result);
   return result;
+}
+
+// ── Building-type detection from title block ──────────────────────────────────
+
+/**
+ * Scan the title-block region of a page's phrase list for project-name text
+ * and map it to a canonical building type.
+ *
+ * The title block is defined as the same zone used by `isInTitleBlockZone`:
+ *   - Bottom-right quadrant (cx > 0.60 AND cy > 0.60), OR
+ *   - Bottom strip (cy > 0.80), OR
+ *   - Right-side vertical strip (cx > 0.75)
+ *
+ * Returns the detected CanonicalBuildingType, or null when no match is found.
+ */
+export function extractTitleBlockBuildingType(phrases: PdfPhrase[]): CanonicalBuildingType | null {
+  if (phrases.length === 0) return null;
+  const titleBlockPhrases = phrases.filter(isInTitleBlockZone);
+  const searchText = (titleBlockPhrases.length > 0 ? titleBlockPhrases : phrases)
+    .map((p) => p.text)
+    .join(" ");
+  return detectBuildingType(searchText);
+}
+
+// ── Floor plan all-text candidate extractor ───────────────────────────────────
+
+/**
+ * A candidate room label extracted from a floor plan page.
+ * Coordinates are normalized to [0, 1] with origin at top-left.
+ */
+export interface RoomCandidate {
+  text: string;
+  x: number;   // normalized centre x
+  y: number;   // normalized centre y
+  page: number;
+}
+
+/**
+ * Extract all meaningful text tokens from a floor plan page and return them
+ * as room label candidates with their spatial coordinates.
+ *
+ * Filtering rules:
+ *   1. Drop 1–2 character tokens (pure noise).
+ *   2. Drop bare 3-digit room number codes (e.g. "101", "204") — they are
+ *      position references, not label text.
+ *   3. Keep 4+ character tokens.
+ *   4. Keep 3-character tokens only when they match `knownAbbreviations`
+ *      (defaults to the module-level KNOWN_ROOM_ABBREVIATIONS set).
+ *   5. Drop tokens that consist entirely of digits/punctuation.
+ *   6. Exclude phrases from the title-block zone (same zone as classification)
+ *      so that drawing title text is not offered as room candidates.
+ *   7. Adjacent short tokens within a proximity threshold are grouped into a
+ *      single multi-word candidate (e.g. "ART" "ROOM" → "ART ROOM").
+ *
+ * @param pw                 PageWords from extractPagePhrases
+ * @param pageNum            1-indexed page number (stored in results)
+ * @param knownAbbreviations Optional override for the abbreviation set
+ */
+export function extractFloorPlanTextCandidates(
+  pw: PageWords,
+  pageNum: number,
+  knownAbbreviations: Set<string> = KNOWN_ROOM_ABBREVIATIONS,
+): RoomCandidate[] {
+  const { pageWidth, pageHeight, phrases } = pw;
+
+  // Exclude title-block phrases so drawing title text is not proposed as rooms.
+  const drawingPhrases = phrases.filter((p) => !isInTitleBlockZone(p));
+
+  // ── Per-phrase filtering ──────────────────────────────────────────────────
+  function isValidCandidate(text: string): boolean {
+    const t = text.trim();
+    if (!t) return false;
+    // Drop pure numeric / punctuation
+    if (/^[0-9\s\-_/().,'"]+$/.test(t)) return false;
+    // Drop dimension strings
+    if (/['"\/]/.test(t) && /[0-9]/.test(t)) return false;
+    // Drop drawing reference codes: single uppercase letter + 2-3 digits (e.g. A123, E4)
+    if (/^[A-Z][0-9]{1,3}$/.test(t)) return false;
+
+    const len = t.length;
+    if (len <= 2) return false;
+    if (len === 3) {
+      // Keep only known 3-char abbreviations
+      return knownAbbreviations.has(t.toLowerCase());
+    }
+    // 4+ chars: keep unless it's a bare 3-digit room number embedded in a longer string
+    // that is purely numeric (already caught above).
+    return true;
+  }
+
+  // ── Build candidate list (flat, one per phrase) ───────────────────────────
+  interface FlatCandidate {
+    text: string;
+    cx: number;   // centre x in pts
+    cy: number;   // centre y in pts
+    nx: number;   // normalised x
+    ny: number;   // normalised y
+  }
+
+  const flat: FlatCandidate[] = [];
+
+  for (const p of drawingPhrases) {
+    const text = p.text.trim();
+    if (!isValidCandidate(text)) continue;
+
+    const nx = (p.x0 + p.x1) / 2;
+    const ny = (p.y0 + p.y1) / 2;
+    flat.push({
+      text,
+      cx: nx * pageWidth,
+      cy: ny * pageHeight,
+      nx,
+      ny,
+    });
+  }
+
+  // ── Group adjacent short tokens into multi-word labels ────────────────────
+  // Two candidates are "adjacent" when:
+  //   - Their vertical centres are within 20 pts of each other (same visual line)
+  //   - Their horizontal gap is within 60 pts
+  // When such a pair is found and BOTH tokens are short (< 8 chars), merge them.
+  // This handles "ART" + "ROOM" → "ART ROOM" without merging unrelated labels
+  // that happen to be on the same baseline.
+  const PROXIMITY_X = 60;  // pts
+  const PROXIMITY_Y = 20;  // pts
+  const SHORT_TOKEN_LEN = 8;
+
+  const used = new Set<number>();
+  const grouped: FlatCandidate[] = [];
+
+  for (let i = 0; i < flat.length; i++) {
+    if (used.has(i)) continue;
+    const a = flat[i]!;
+
+    // Attempt to find a mergeable neighbour to the right of a
+    if (a.text.length < SHORT_TOKEN_LEN) {
+      for (let j = i + 1; j < flat.length; j++) {
+        if (used.has(j)) continue;
+        const b = flat[j]!;
+        if (b.text.length >= SHORT_TOKEN_LEN) continue; // both must be short
+        const dy = Math.abs(a.cy - b.cy);
+        const dx = b.cx - a.cx; // positive = b is to the right of a
+        if (dy <= PROXIMITY_Y && dx > 0 && dx <= PROXIMITY_X) {
+          // Merge a + b
+          const mergedText = `${a.text} ${b.text}`;
+          const mergedNx = (a.nx + b.nx) / 2;
+          const mergedNy = (a.ny + b.ny) / 2;
+          grouped.push({
+            text: mergedText,
+            cx: (a.cx + b.cx) / 2,
+            cy: (a.cy + b.cy) / 2,
+            nx: mergedNx,
+            ny: mergedNy,
+          });
+          used.add(i);
+          used.add(j);
+          break;
+        }
+      }
+    }
+    if (!used.has(i)) {
+      grouped.push(a);
+      used.add(i);
+    }
+  }
+
+  // ── Convert to RoomCandidate output ───────────────────────────────────────
+  return grouped.map((c) => ({
+    text: c.text,
+    x: c.nx,
+    y: c.ny,
+    page: pageNum,
+  }));
 }

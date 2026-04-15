@@ -15,7 +15,7 @@
  */
 
 import { extractPagePhrases, getPdfPageCount, classifyPageFromPhrases, type PdfPhrase } from "./pdf-words";
-import { ROOM_LABEL_MAP } from "./sign-vocabulary";
+import { getRoomLabelMap, type CanonicalBuildingType } from "./sign-vocabulary";
 import { logger } from "./logger";
 
 // ── Regex patterns (ported from Python) ──────────────────────────────────────
@@ -48,7 +48,7 @@ interface SignClassification {
   notes: string;
 }
 
-function classifySign(roomId: string, roomType: string): SignClassification {
+function classifySign(roomId: string, roomType: string, labelMap: Record<string, string>): SignClassification {
   const rt = roomType.toUpperCase();
   const rid = roomId.toUpperCase();
 
@@ -63,21 +63,28 @@ function classifySign(roomId: string, roomType: string): SignClassification {
     return { signType: `${bedsLabel} UNIT SIGN`.trim(), notes: "Suite ID Sign" };
   }
 
-  // Stairwell: check roomId prefix pattern before ROOM_LABEL_MAP lookup
+  // Stairwell: check roomId prefix pattern before label map lookup
   // (legacy A401-style IDs like "AS1-4" → STAIR come via SERVICE_LABEL_MAP → roomType)
   if (/^[AB]S/.test(rid)) {
     return { signType: "STAIRWELL SIGN", notes: "Egress Sign" };
   }
 
-  // Use ROOM_LABEL_MAP for all other sign type classification.
+  // Use building-type-aware label map for all other sign type classification.
   // Check each token of the room type string against the map.
   const tokens = rt.toLowerCase().split(/\s+/);
   for (const token of tokens) {
-    const signType = ROOM_LABEL_MAP[token];
+    const signType = labelMap[token];
     if (signType) return { signType, notes: "Room ID Sign" };
   }
 
-  // Legacy special cases not covered by ROOM_LABEL_MAP tokens.
+  // Multi-word label lookup (join consecutive token pairs to match e.g. "art room")
+  for (let i = 0; i < tokens.length - 1; i++) {
+    const pair = `${tokens[i]} ${tokens[i + 1]}`;
+    const signType = labelMap[pair];
+    if (signType) return { signType, notes: "Room ID Sign" };
+  }
+
+  // Legacy special cases not covered by label map tokens.
   if (rt.includes("ELEV EQUIP"))  return { signType: "ELEV EQUIPMENT SIGN",  notes: "Elevator ID Sign" };
   if (rt.includes("TENANT STOR")) return { signType: "TENANT STORAGE SIGN",  notes: "Room ID Sign" };
 
@@ -252,15 +259,22 @@ function isNoisyPhrase(text: string): boolean {
 }
 
 /**
- * Look up sign type from ROOM_LABEL_MAP by checking each token in the phrase.
+ * Look up sign type from the provided label map by checking each token in the phrase.
+ * Also checks multi-word (two-token) combinations for compound labels like "art room".
  * Returns the sign type string, or null if no token matches.
  */
-function lookupRoomLabelMap(text: string): string | null {
+function lookupRoomLabelMap(text: string, labelMap: Record<string, string>): string | null {
   const tokens = text.toLowerCase().trim().split(/\s+/);
+  // Single-token lookup
   for (const token of tokens) {
     const clean = token.replace(/[^a-z']/g, "");
-    if (ROOM_LABEL_MAP[clean]) return ROOM_LABEL_MAP[clean]!;
-    if (ROOM_LABEL_MAP[token]) return ROOM_LABEL_MAP[token]!;
+    if (labelMap[clean]) return labelMap[clean]!;
+    if (labelMap[token]) return labelMap[token]!;
+  }
+  // Multi-word (two-token) lookup
+  for (let i = 0; i < tokens.length - 1; i++) {
+    const pair = `${tokens[i]!.replace(/[^a-z']/g, "")} ${tokens[i + 1]!.replace(/[^a-z']/g, "")}`;
+    if (labelMap[pair]) return labelMap[pair]!;
   }
   return null;
 }
@@ -291,7 +305,7 @@ const TITLE_PROXIMITY_THRESHOLD = 0.09;
  * 2. Apply drawing-area filter: exclude hits that are spatially close to the
  *    detected floor plan title words (titlePhrases).  Falls back to a blanket
  *    zone exclusion when no title phrase coordinates are available.
- * 3. For each phrase whose token(s) match ROOM_LABEL_MAP (anchor), search for a
+ * 3. For each phrase whose token(s) match the label map (anchor), search for a
  *    companion phrase within the proximity window.
  * 4. Combine anchor + companion into one sign row, or emit anchor alone.
  *
@@ -300,11 +314,13 @@ const TITLE_PROXIMITY_THRESHOLD = 0.09;
  *                      proximity-based: only hits within TITLE_PROXIMITY_THRESHOLD
  *                      of a title phrase are dropped.  When empty, falls back to
  *                      the legacy blanket zone exclusion.
+ * @param labelMap      Building-type-aware room label map from getRoomLabelMap().
  */
 function extractInstitutionalRoomsFromPhrases(
   pw: { pageWidth: number; pageHeight: number; phrases: Array<{ text: string; x0: number; y0: number; x1: number; y1: number }> },
   pageNum: number,
   titlePhrases?: PdfPhrase[],
+  labelMap: Record<string, string> = getRoomLabelMap(),
 ): HeuristicSignInsert[] {
   const { pageWidth, pageHeight, phrases } = pw;
 
@@ -361,8 +377,8 @@ function extractInstitutionalRoomsFromPhrases(
   for (let i = 0; i < usable.length; i++) {
     const anchor = usable[i]!;
 
-    // Step A: check if this phrase is an anchor (matches ROOM_LABEL_MAP).
-    const anchorSignType = lookupRoomLabelMap(anchor.text);
+    // Step A: check if this phrase is an anchor (matches label map).
+    const anchorSignType = lookupRoomLabelMap(anchor.text, labelMap);
     if (!anchorSignType) continue;
 
     const dedupeKey = `${anchor.text.toLowerCase().trim()}:${Math.round(anchor.cx_pts / 10)}:${Math.round(anchor.cy_pts / 10)}`;
@@ -384,7 +400,7 @@ function extractInstitutionalRoomsFromPhrases(
       if (!isStacked && !isSideBySide) continue;
 
       // Check companion quality
-      const companionSignType = lookupRoomLabelMap(candidate.text);
+      const companionSignType = lookupRoomLabelMap(candidate.text, labelMap);
       if (companionSignType || isValidCompanion(candidate.text)) {
         bestCompanion = candidate;
         bestCompanionSignType = companionSignType;
@@ -476,13 +492,21 @@ export interface HeuristicSignInsert {
  * @param fileId           Opaque string used as the pdfjs phrase-cache key (use job-file DB UUID)
  * @param floorPlanPages   Optional set of page numbers classified as floor plans;
  *                         when provided, institutional room-pair extraction is run on those pages.
+ * @param buildingType     Optional canonical building type for building-type-aware vocabulary.
+ *                         When provided, `getRoomLabelMap(buildingType)` is used instead of the
+ *                         generic map, improving classification for institutional / hospitality /
+ *                         educational buildings.
  */
 export async function extractSignsHeuristic(
   filePath: string,
   fileId: string,
   floorPlanPages?: Set<number>,
+  buildingType?: CanonicalBuildingType | string | null,
 ): Promise<{ rows: HeuristicSignInsert[]; pageCount: number }> {
   const pageCount = await getPdfPageCount(filePath);
+
+  // Build the label map once for the entire extraction run.
+  const labelMap = getRoomLabelMap(buildingType);
 
   const allRooms: ExtractedRoom[] = [];
   const institutionalRows: HeuristicSignInsert[] = [];
@@ -499,7 +523,7 @@ export async function extractSignsHeuristic(
         // Retrieve title-phrase coordinates so the extractor can do proximity-based
         // exclusion rather than a blanket zone filter.
         const { titlePhrases } = classifyPageFromPhrases(pw.phrases);
-        const instRows = extractInstitutionalRoomsFromPhrases(pw, pageNum, titlePhrases);
+        const instRows = extractInstitutionalRoomsFromPhrases(pw, pageNum, titlePhrases, labelMap);
         institutionalRows.push(...instRows);
       }
 
@@ -520,7 +544,7 @@ export async function extractSignsHeuristic(
   );
 
   const rows: HeuristicSignInsert[] = allRooms.map((room) => {
-    const { signType, notes } = classifySign(room.roomId, room.roomType);
+    const { signType, notes } = classifySign(room.roomId, room.roomType, labelMap);
     return {
       sheetNumber: null,
       detailReference: null,

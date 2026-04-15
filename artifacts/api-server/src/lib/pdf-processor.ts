@@ -26,6 +26,7 @@ import {
   matchLocationToCoords,
   classifyPageFromPhrases,
   extractFloorLevelName,
+  extractTitleBlockBuildingType,
   extractPdfMetadata,
   type PdfPhrase,
   type SpatialPageType,
@@ -127,6 +128,10 @@ export async function runPdfProcessor(jobId: string): Promise<void> {
   const allSpatialFloorLevelNames = new Map<string, Map<number, string>>();
   const fileFloorPlanPages = new Map<string, Set<number>>();
 
+  // Building type is detected from the title block of the first/cover page
+  // and shared across all files in this job.  Set once; never overwritten.
+  let detectedBuildingType: string | null = null;
+
   const t_extraction = Date.now();
 
   await Promise.all(
@@ -223,6 +228,21 @@ export async function runPdfProcessor(jobId: string): Promise<void> {
           fileFloorPlanPages.set(file.id, fpSet);
           allSpatialPageTypes.set(file.id, spatialPageTypes);
           allSpatialFloorLevelNames.set(file.id, spatialFloorLevelNames);
+
+          // ── Building-type detection from title block (PDF text only) ──────
+          // Scan the first page's title-block region for project name keywords
+          // and map them to a canonical building type.  The phrase cache is
+          // already warm from the spatial pre-pass loop above so this is cheap.
+          try {
+            const firstPagePhrases = await extractPagePhrases(file.storedPath, file.id, 1);
+            const detected = extractTitleBlockBuildingType(firstPagePhrases.phrases);
+            if (detected && !detectedBuildingType) {
+              detectedBuildingType = detected;
+              logger.info({ jobId, fileId: file.id, buildingType: detected }, "[PDF Processor] Building type detected from title block");
+            }
+          } catch {
+            // non-fatal
+          }
 
           pipelineSteps.push({
             step: `spatial_prepass_${file.id}`,
@@ -340,7 +360,7 @@ export async function runPdfProcessor(jobId: string): Promise<void> {
         try {
           const t_heuristic = Date.now();
           const fpPagesForHeuristic = fileFloorPlanPages.get(file.id);
-          const { rows: heuristicRows } = await extractSignsHeuristic(file.storedPath, file.id, fpPagesForHeuristic);
+          const { rows: heuristicRows } = await extractSignsHeuristic(file.storedPath, file.id, fpPagesForHeuristic, detectedBuildingType);
           if (heuristicRows.length > 0) {
             const insertRows = heuristicRows.map((row) => ({
               ...row,
@@ -479,8 +499,16 @@ export async function runPdfProcessor(jobId: string): Promise<void> {
 
   await db
     .update(jobsTable)
-    .set({ status: "completed", processingLog: pipelineSteps, updatedAt: new Date() })
+    .set({
+      status: "completed",
+      processingLog: pipelineSteps,
+      updatedAt: new Date(),
+      ...(detectedBuildingType ? { buildingType: detectedBuildingType } : {}),
+    })
     .where(eq(jobsTable.id, jobId));
 
-  logger.info({ jobId, preservedSigns: preservedSigns.length, failed: failedCount }, "[PDF Processor] Processing complete");
+  logger.info(
+    { jobId, preservedSigns: preservedSigns.length, failed: failedCount, buildingType: detectedBuildingType },
+    "[PDF Processor] Processing complete"
+  );
 }

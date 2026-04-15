@@ -1,7 +1,15 @@
 import fs from "fs/promises";
 import { z } from "zod";
 import { logger } from "./logger";
-import { extractPdfMetadata, buildPageTextsFromPhraseCache, getPdfPageCount } from "./pdf-words";
+import {
+  extractPdfMetadata,
+  buildPageTextsFromPhraseCache,
+  getPdfPageCount,
+  extractPagePhrases,
+  extractTitleBlockBuildingType,
+  extractFloorPlanTextCandidates,
+  type RoomCandidate,
+} from "./pdf-words";
 import type { PdfOutlineSection } from "./pdf-words";
 import {
   FLOOR_PLAN_INCLUSION_PHRASES,
@@ -427,12 +435,54 @@ function buildTrainingContext(trainingSigns: VerifiedSignSummary[]): string {
   return `\n\n${blocks.join("\n\n")}\n`;
 }
 
-function buildFloorPlanADAPrompt(projectContext?: ProjectInfo, signScheduleContext?: string, verifiedSigns?: VerifiedSignSummary[], trainingContext?: VerifiedSignSummary[], specTypeContext?: string): string {
+/**
+ * Build a compact candidates context block from pre-filtered floor plan text tokens.
+ * Each candidate is a `{ text, x, y, page }` object extracted deterministically
+ * from the PDF text layer — no AI involvement.  Providing this list focuses the
+ * AI on classification rather than room discovery, reducing hallucination.
+ */
+function buildCandidatesContext(candidates: Array<{ text: string; x: number; y: number; page: number }>): string {
+  if (!candidates || candidates.length === 0) return "";
+  // Group by page for readability
+  const byPage = new Map<number, typeof candidates>();
+  for (const c of candidates) {
+    if (!byPage.has(c.page)) byPage.set(c.page, []);
+    byPage.get(c.page)!.push(c);
+  }
+  const lines: string[] = [];
+  for (const [page, items] of [...byPage.entries()].sort((a, b) => a[0] - b[0])) {
+    lines.push(`Page ${page}:`);
+    for (const item of items) {
+      lines.push(`  "${item.text}" @ (${item.x.toFixed(3)}, ${item.y.toFixed(3)})`);
+    }
+  }
+  return `\n\nPRE-IDENTIFIED ROOM LABEL CANDIDATES (extracted deterministically from the PDF text layer — no AI):
+These are the actual text tokens found on the floor plan pages, filtered to remove noise.
+For each candidate, confirm whether it is a real room label and assign the correct sign type.
+You may also output signs for code-required locations (egress, ADA) not in this list.
+---
+${lines.join("\n")}
+---
+`;
+}
+
+function buildFloorPlanADAPrompt(
+  projectContext?: ProjectInfo,
+  signScheduleContext?: string,
+  verifiedSigns?: VerifiedSignSummary[],
+  trainingContext?: VerifiedSignSummary[],
+  specTypeContext?: string,
+  buildingType?: string | null,
+  roomCandidates?: Array<{ text: string; x: number; y: number; page: number }>,
+): string {
   const locationLine = projectContext?.address || projectContext?.city || projectContext?.state
     ? `\nPROJECT LOCATION: ${[projectContext.address, projectContext.city, projectContext.state, projectContext.zip].filter(Boolean).join(", ")}`
     : "";
   const occupancyLine = projectContext?.occupancy_type
     ? `\nBUILDING OCCUPANCY: ${projectContext.occupancy_type}`
+    : "";
+  const buildingTypeLine = buildingType
+    ? `\nDETECTED BUILDING TYPE: ${buildingType.toUpperCase()} — apply vocabulary and sign types specific to this building category`
     : "";
   const stateRules = getStateSpecificRules(projectContext?.state ?? null);
   const scheduleCtx = signScheduleContext
@@ -441,19 +491,28 @@ function buildFloorPlanADAPrompt(projectContext?: ProjectInfo, signScheduleConte
   const specCtx = specTypeContext
     ? `\n\nPROJECT SIGN TYPE CATALOG FROM SPECIFICATION (for reference only — use these definitions to correctly identify and describe sign types; do NOT generate separate output rows for the spec definitions themselves):\n---\n${specTypeContext.slice(0, 12000)}\n---\n`
     : "";
+  const candidatesCtx = roomCandidates && roomCandidates.length > 0
+    ? buildCandidatesContext(roomCandidates)
+    : "";
   const verifiedCtx = verifiedSigns && verifiedSigns.length > 0 ? buildVerifiedContext(verifiedSigns) : "";
   const trainingCtx = trainingContext && trainingContext.length > 0 ? buildTrainingContext(trainingContext) : "";
 
+  const taskDescription = candidatesCtx
+    ? `Your primary task is to CONFIRM, CLASSIFY, and ASSIGN SIGNS to the pre-identified room label candidates listed below (extracted deterministically from the PDF text layer). For each candidate, determine whether it is a real room label and assign the complete required signage. You may additionally output signs for code-required locations (egress exits, stairwells, electrical rooms, fire extinguishers, etc.) that are NOT in the candidate list, but do NOT invent arbitrary rooms beyond what the candidates and mandatory code locations together indicate.`
+    : `Your task is to identify ALL spaces and rooms visible in these plans and determine the COMPLETE REQUIRED SIGNAGE for each space based on the rules below.`;
+
   return `You are an expert sign contractor, ADA compliance specialist, and fire/life-safety code consultant performing a comprehensive sign takeoff from architectural floor plans.
 
-The text below contains text extracted from floor plan sheets of a building. Your task is to identify ALL spaces and rooms visible in these plans and determine the COMPLETE REQUIRED SIGNAGE for each space based on:
+The text below contains text extracted from floor plan sheets of a building. ${taskDescription}
+
+Signage requirements are based on:
 1. ADA Standards for Accessible Design (Section 703 — Signs)
 2. IBC (International Building Code) egress and life-safety signage
 3. NFPA 101 Life Safety Code signage requirements
 4. NFPA 10, 13, 14, 72, 80, 96, and 170 fire protection sign requirements
 5. OSHA 1910.145 and 1910.303 safety signage requirements
 6. Standard building sign practice for each space type
-${locationLine}${occupancyLine}${stateRules}
+${locationLine}${occupancyLine}${buildingTypeLine}${stateRules}
 
 REQUIRED SIGN RULES — apply ALL that apply to each identified space or location:
 
@@ -673,7 +732,7 @@ LEGEND / SYMBOL KEY EXCLUSION (important):
 - Only extract sign entries from actual room labels, space designations, and code requirements applicable to the real spaces shown in the floor plan — not from the legend.
 
 FLOOR PLAN PAGES (with page markers):
-${scheduleCtx}${specCtx}${trainingCtx}${verifiedCtx}---
+${scheduleCtx}${specCtx}${candidatesCtx}${trainingCtx}${verifiedCtx}---
 `;
 }
 
@@ -2889,7 +2948,34 @@ Pages:
     // Pre-build the prompt once (it's the same for all batches) then fire all
     // batches concurrently.  For a 5-page PDF with 5 batches this cuts latency
     // from 5 × T to T (limited by the slowest batch, not the sum).
-    const floorPlanPromptPrefix = buildFloorPlanADAPrompt(projectContext, signScheduleContext, verifiedSigns, trainingContext, specTypeContext);
+
+    // ── Building-type detection + pre-filtered room candidates ──────────────
+    // Detect building type from the first page's title block (no AI) and
+    // collect room label candidates from all floor plan pages.  The phrase cache
+    // is warm from the text-extraction pass above, so these calls are cheap.
+    let detectedBuildingType: string | null = null;
+    const allRoomCandidates: RoomCandidate[] = [];
+    try {
+      const firstPagePhrases = await extractPagePhrases(filePath, fileId, 1);
+      detectedBuildingType = extractTitleBlockBuildingType(firstPagePhrases.phrases);
+    } catch { /* non-fatal */ }
+    for (const fpPage of floorPlanPages.slice(0, 20)) { // cap at 20 pages to bound work
+      try {
+        const pw = await extractPagePhrases(filePath, fileId, fpPage.pageNum);
+        const candidates = extractFloorPlanTextCandidates(pw, fpPage.pageNum);
+        allRoomCandidates.push(...candidates);
+      } catch { /* non-fatal */ }
+    }
+
+    const floorPlanPromptPrefix = buildFloorPlanADAPrompt(
+      projectContext,
+      signScheduleContext,
+      verifiedSigns,
+      trainingContext,
+      specTypeContext,
+      detectedBuildingType,
+      allRoomCandidates.length > 0 ? allRoomCandidates : undefined,
+    );
 
     const batchResults = await Promise.all(
       batches.map(async (batch, batchIdx) => {
