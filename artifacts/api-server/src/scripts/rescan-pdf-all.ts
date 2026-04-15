@@ -9,6 +9,7 @@
 
 import { db, jobsTable } from "@workspace/db";
 import { runPdfProcessor } from "../lib/pdf-processor";
+import { logger } from "../lib/logger";
 
 async function rescanAll() {
   const jobs = await db.query.jobsTable.findMany({ columns: { id: true, name: true } });
@@ -19,14 +20,19 @@ async function rescanAll() {
     console.log(`\n━━━ Rescanning: ${job.name} (${job.id}) ━━━`);
     try {
       await runPdfProcessor(job.id);
-      console.log(`  ✓ Done`);
+      console.log(`  ✓ Done: ${job.name}`);
     } catch (err) {
-      console.error(`  ✗ Failed: ${err}`);
+      console.error(`  ✗ Failed: ${job.name}: ${err}`);
     }
   }
 
   console.log("\n✓ All jobs rescanned.");
-  process.exit(0);
+
+  // Flush pino async transport before exiting so all log lines reach stdout
+  // and any in-flight DB writes tied to the logger pipeline complete.
+  await logger.flush();
+  // Small grace period for the event loop to drain remaining I/O
+  await new Promise((r) => setTimeout(r, 1500));
 }
 
 rescanAll().catch((err) => {

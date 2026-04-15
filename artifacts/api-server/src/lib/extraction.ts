@@ -714,74 +714,19 @@ function scoreForLegendPage(text: string): number {
 // prevent score inflation from repeated room labels.
 const FLOOR_PLAN_KEYWORDS = FLOOR_PLAN_INCLUSION_PHRASES;
 
-const SIGN_SCHEDULE_KEYWORDS = [
-  // Standard sign schedule terminology
-  "sign schedule", "sign type", "signage schedule", "sign legend",
-  "sign list", "sign index", "sign matrix", "sign catalog",
-  "interior sign", "exterior sign", "room identification",
-  "sign number", "sign id", "s-01", "s-1.", "s1.", "sign qty",
-  "sign quantity", "sign detail", "sign location",
-  // Architect sign specification / sign program patterns
-  "sign spec", "signage spec", "sign specification", "signage specification",
-  "sign program", "signage program", "signage criteria", "sign criteria",
-  "sign standards", "signage standards",
-  "procure for",          // "PROCURE FOR CS2026" — procurement-tagged schedules
-  "permanent sign",       // "ALL SIGNAGE ON THIS SCHEDULE IS PERMANENT"
-  "all signage",
-  "verify code",          // "VERIFY CODE REQUIREMENTS" — architect spec note
-  "sign no.", "sign no ", // "Sign No." column header in architect schedules
-  "ada sign",             // ADA sign callouts in specs
-  "room sign", "door sign",
-  "building sign", "tenant sign",
-  "directional sign", "wayfinding sign",
-  "sign drawing", "sign detail",
-  "signage drawing",
-  // Sign type code patterns used by architects (SP-1, SN-01, SI-A, etc.)
-  " sp-", " sn-", " si-", " se-", " sd-",
-  "type a ", "type b ", "type c ", "type d ", // "Sign Type A", "Type B sign"
-  // Additional sign schedule column headers
-  "message", "copy", "substrate", "face material",
-  "sign program", "exterior signage", "interior signage",
-  "tenant identification", "suite number",
-  // CSI specification section patterns (Section 10 14 00 SIGNAGE and similar)
-  "section 10 14",        // CSI division 10 signage spec
-  "10 14 00",             // exact CSI section number
-  "photopolymer",         // AAB/ADA sign substrate used in spec sections
-  "aab-compliant",        // Massachusetts Architectural Access Board
-  "aab compliant",
-  "above finished floor", // mounting height description in specs
-  "above finish floor",
-  "latch side",           // ADA mounting rule in specs
-  "interior room signage",
-  "interior exit discharge",
-  "interior wayfinding",
-  "interior informational",
-  "areas of rescue assistance",
-  "egress plan",
-  "assistive listening",
-  "glass backer",         // column header in multi-floor schedule tables
-  "signage text",         // column header in multi-floor schedule tables
-  "typical sign types",   // diagram label in multi-floor schedule sheets
-];
-
 function scoreForFloorPlan(text: string): number {
   const lower = text.toLowerCase();
-  // Count 1 per unique keyword matched (cap at 1 per keyword) to prevent
-  // score inflation from repeated words like "sanctuary ×20" on a church plan.
   return FLOOR_PLAN_KEYWORDS.reduce((score, kw) => {
-    const matched = new RegExp(kw.replace(/\./g, "\\."), "i").test(lower) ? 1 : 0;
-    return score + matched;
+    return score + (lower.includes(kw) ? 1 : 0);
   }, 0);
 }
 
 function scoreForSignSchedule(text: string): number {
   const lower = text.toLowerCase();
-  return SIGN_SCHEDULE_KEYWORDS.reduce((score, kw) => {
-    const count = (lower.match(new RegExp(kw, "g")) || []).length;
-    return score + count;
+  return SIGN_SCHEDULE_PHRASES.reduce((score, kw) => {
+    return score + (lower.includes(kw) ? 1 : 0);
   }, 0);
 }
-
 type PageType = "floor_plan" | "sign_schedule" | "other" | "both";
 type TitleBlockType = "floor_plan" | "sign_schedule" | "other" | "unknown" | "both";
 
@@ -825,9 +770,10 @@ const FLOOR_PLAN_DRAWING_NUMBER_PATTERNS: RegExp[] = [
 ];
 
 // Drawing number patterns that indicate a sign schedule / signage sheet.
+// NOTE: /\bSP-\d+/i was removed — "SP" is used for Site Plan, Specifications, and
+// Photometric plans in most architectural packages; too ambiguous to be reliable.
 const SIGN_SCHEDULE_DRAWING_NUMBER_PATTERNS: RegExp[] = [
   /\bA1[012]\.\d{1,3}\b/i,  // A10.x, A11.x, A12.x — signage sheets
-  /\bSP-\d+/i,              // Sign plan prefix
   /\bSN-\d+/i,              // Signage numbering prefix
 ];
 
@@ -916,13 +862,16 @@ function detectTitleBlock(text: string): TitleBlockType {
 
   // Gather presence flags up front (reused across all steps).
   const hasFpNumber = FLOOR_PLAN_DRAWING_NUMBER_PATTERNS.some((p) => p.test(text));
-  // Apply shared exclusion veto: if any exclusion phrase matches, floor-plan title is vetoed.
+  // Exclusion veto — applies to BOTH floor plan AND sign schedule detection.
+  // An electrical/structural/photometric/etc. page is never a floor plan or a
+  // sign schedule, regardless of what other keywords appear in the title block.
   const hasExclusion = FLOOR_PLAN_EXCLUSION_PHRASES.some((kw) => upper.includes(kw.toUpperCase()));
   const hasFpTitle = !hasExclusion && FLOOR_PLAN_TITLE_KEYWORDS.some((kw) => upper.includes(kw.toUpperCase()));
   const hasOtherNumber = OTHER_DRAWING_NUMBER_PATTERNS.some((p) => p.test(text));
   const hasAnyNumber = hasFpNumber || hasOtherNumber;
-  const hasSignScheduleTitle = SIGN_SCHEDULE_TITLE_KEYWORDS.some((kw) => upper.includes(kw.toUpperCase()));
-  const hasSignScheduleNumber = SIGN_SCHEDULE_DRAWING_NUMBER_PATTERNS.some((p) => p.test(text));
+  // Sign schedule flags — suppressed when the exclusion veto fires.
+  const hasSignScheduleTitle = !hasExclusion && SIGN_SCHEDULE_TITLE_KEYWORDS.some((kw) => upper.includes(kw.toUpperCase()));
+  const hasSignScheduleNumber = !hasExclusion && SIGN_SCHEDULE_DRAWING_NUMBER_PATTERNS.some((p) => p.test(text));
 
   // ── 0. Detect "both" — page has BOTH a floor-plan signal AND a sign-schedule signal ──
   // This catches combined architectural sheets where the floor plan drawing occupies
@@ -934,17 +883,13 @@ function detectTitleBlock(text: string): TitleBlockType {
   }
 
   // ── 1. Sign schedule title keywords (standalone, very specific) ─────────────
-  for (const kw of SIGN_SCHEDULE_TITLE_KEYWORDS) {
-    if (upper.includes(kw.toUpperCase())) {
-      return "sign_schedule";
-    }
+  if (hasSignScheduleTitle) {
+    return "sign_schedule";
   }
 
   // ── 2. Sign schedule drawing number patterns ─────────────────────────────────
-  for (const pattern of SIGN_SCHEDULE_DRAWING_NUMBER_PATTERNS) {
-    if (pattern.test(text)) {
-      return "sign_schedule";
-    }
+  if (hasSignScheduleNumber) {
+    return "sign_schedule";
   }
 
   // ── 3. Floor plan: requires BOTH a floor-plan drawing number AND title ───────

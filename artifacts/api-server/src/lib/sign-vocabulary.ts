@@ -83,6 +83,22 @@ export const FLOOR_PLAN_EXCLUSION_PHRASES: string[] = [
 
   // Notes / legends
   "general notes",
+  "abbreviation",
+
+  // Cover / index pages — drawing indexes, title sheets, cover sheets
+  "cover sheet",
+  "cover page",
+  "sheet index",
+  "title sheet",
+
+  // Life-safety / code-compliance drawings (used primarily as bookmark-title veto;
+  // "occupancy" is intentionally excluded — "occupancy load" appears in floor plan
+  // title blocks and must not veto valid floor plans)
+  "egress",
+
+  // Specialty engineering drawings
+  "photometric",
+  "sprinkler",
 ];
 
 /**
@@ -98,7 +114,10 @@ export const SIGN_SCHEDULE_PHRASES: string[] = [
   "sign list",
   "sign detail",
   "signage plan",
-  "signs",
+  // NOTE: "signs" removed — too broad as a substring match; catches cover sheets,
+  // drawing indexes, and any page with the word "signs" anywhere in the title block.
+  // "signage" is specific enough: it rarely appears in non-sign-related drawing titles.
+  "signage",
   "signage criteria",
   "sign criteria",
 ];

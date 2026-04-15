@@ -17,6 +17,7 @@ import {
 
 import { extractTextFromPdf, isSpecFile } from "./extraction";
 import { extractSignsHeuristic } from "./extraction-heuristic";
+import { FLOOR_PLAN_EXCLUSION_PHRASES } from "./sign-vocabulary";
 import { saveParsedResult, getFilePageImagesDir, PAGES_DIR } from "./storage";
 import { renderFloorPlanPages } from "./pdf-render";
 import { logger } from "./logger";
@@ -139,6 +140,8 @@ export async function runPdfProcessor(jobId: string): Promise<void> {
         let spatialPageTypes: Map<number, SpatialPageType> | undefined;
         let spatialFloorLevelNames: Map<number, string> | undefined;
         let bookmarkTitles: Record<number, string> | undefined;
+        // Hoisted so the bookmark-title veto (applied after text extraction) can access it.
+        const bookmarkPageMap = new Map<number, { title: string; type: "floor_plan" | "sign_schedule" | "other" | null }>();
         const t_spatial = Date.now();
         try {
           const { getPdfPageCount } = await import("./pdf-words");
@@ -150,7 +153,6 @@ export async function runPdfProcessor(jobId: string): Promise<void> {
           // Load PDF outline to build a pageNum→bookmark map (title + classified type).
           // Bookmark classification is the primary signal; phrase-based
           // classification is the fallback when no bookmark covers a page.
-          const bookmarkPageMap = new Map<number, { title: string; type: "floor_plan" | "sign_schedule" | "other" | null }>();
           try {
             const pdfMeta = await extractPdfMetadata(file.storedPath);
             for (const section of pdfMeta.outlineSections) {
@@ -256,7 +258,42 @@ export async function runPdfProcessor(jobId: string): Promise<void> {
         }
 
         const finalFloorPlanPages = spatialFp.length > 0 ? spatialFp : floorPlanPages;
-        const finalSignSchedulePages = spatialSs.length > 0 ? spatialSs : signSchedulePages;
+
+        // Merge spatial and text-extraction sign-schedule results, then apply vetoes:
+        //  1. Bookmark-title veto: bookmark containing exclusion keywords → not a sign schedule.
+        //  2. Text-phrase veto (unbookmarked spatial pages only): if spatial detection flagged
+        //     a page that text extraction DID NOT flag, and the page text contains exclusion
+        //     phrases but zero sign-schedule phrases, reject it (likely a grid/table layout
+        //     like an electrical panel schedule that mimics a sign schedule visually).
+        const rawSs = spatialSs.length > 0 ? spatialSs : signSchedulePages;
+        const signSchedulePageSet = new Set(signSchedulePages);
+        const finalSignSchedulePages = (await Promise.all(
+          rawSs.map(async (pg) => {
+            // Veto 1: bookmark title contains exclusion keyword
+            const bm = bookmarkPageMap.get(pg);
+            if (bm) {
+              const t = bm.title.toLowerCase();
+              if (FLOOR_PLAN_EXCLUSION_PHRASES.some((p) => t.includes(p))) return null;
+            }
+
+            // Veto 2: unbookmarked page that spatial detected but text extraction missed
+            if (!bm && spatialSs.length > 0 && !signSchedulePageSet.has(pg)) {
+              try {
+                const { extractPagePhrases } = await import("./pdf-words");
+                const { phrases } = await extractPagePhrases(file.storedPath, file.id, pg);
+                const pageText = phrases.map((p) => p.text).join(" ").toLowerCase();
+                const hasSsPhrases = SIGN_SCHEDULE_PHRASES.some((p) => pageText.includes(p));
+                const hasExclusion = FLOOR_PLAN_EXCLUSION_PHRASES.some((p) => pageText.includes(p));
+                if (!hasSsPhrases && hasExclusion) return null;
+              } catch {
+                // phrase extraction failed — keep the spatial result
+              }
+            }
+
+            return pg;
+          })
+        )).filter((pg): pg is number => pg !== null);
+
         const finalBothPages = spatialBoth.length > 0 ? spatialBoth : bothPages;
 
         recordStep(`text_extraction_${file.id}`,
