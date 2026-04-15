@@ -1,6 +1,6 @@
 import { type ReactNode } from "react";
 import { Link, useLocation } from "wouter";
-import { Shield, Building2, Users, ChevronLeft, LogOut, Settings } from "lucide-react";
+import { Shield, Building2, Users, ChevronLeft, LogOut, Settings, BookText } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useClerk, useUser } from "@clerk/react";
 import { useUserRole } from "@/hooks/use-user-role";
@@ -22,6 +22,7 @@ export function AdminShell({ children, section }: AdminShellProps) {
     { href: "/admin", label: "Dashboard", icon: Shield },
     { href: "/admin/organizations", label: "Organizations", icon: Building2 },
     { href: "/admin/users", label: "All Users", icon: Users },
+    { href: "/admin/vocabulary", label: "Vocabulary", icon: BookText },
   ];
 
   const tenantNavItems = [

@@ -16,6 +16,7 @@ import NotFound from "@/pages/not-found";
 import AdminDashboard from "@/pages/AdminDashboard";
 import AdminOrgs from "@/pages/AdminOrgs";
 import AdminUsers from "@/pages/AdminUsers";
+import AdminVocabulary from "@/pages/AdminVocabulary";
 import OnboardingPage from "@/pages/OnboardingPage";
 import SettingsCompany from "@/pages/SettingsCompany";
 import SettingsUsers from "@/pages/SettingsUsers";
@@ -324,6 +325,9 @@ function Router() {
       </Route>
       <Route path="/admin/users">
         {() => <SuperAdminRoute component={AdminUsers} />}
+      </Route>
+      <Route path="/admin/vocabulary">
+        {() => <SuperAdminRoute component={AdminVocabulary} />}
       </Route>
       <Route component={NotFound} />
     </Switch>

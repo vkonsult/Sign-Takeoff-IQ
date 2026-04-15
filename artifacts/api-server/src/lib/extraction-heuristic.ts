@@ -18,6 +18,9 @@ import { extractPagePhrases, getPdfPageCount, classifyPageFromPhrases, type PdfP
 import { getRoomLabelMap, type CanonicalBuildingType } from "./sign-vocabulary";
 import { logger } from "./logger";
 
+// Module-level effective map — updated at the start of each extraction run
+// so that vocabulary-overrides.json changes are picked up without a server restart.
+
 // ── Regex patterns (ported from Python) ──────────────────────────────────────
 // Residential room numbers: 423A, 400B, etc.
 const ROOM_NUM_RE = /^[0-9]{3}[AB]$/;
@@ -503,6 +506,7 @@ export async function extractSignsHeuristic(
   floorPlanPages?: Set<number>,
   buildingType?: CanonicalBuildingType | string | null,
 ): Promise<{ rows: HeuristicSignInsert[]; pageCount: number }> {
+
   const pageCount = await getPdfPageCount(filePath);
 
   // Build the label map once for the entire extraction run.

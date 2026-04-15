@@ -289,7 +289,6 @@ export const BUILDING_TYPE_VOCABULARY: Record<CanonicalBuildingType, Record<stri
     music:          "CLASSROOM SIGN",
     band:           "CLASSROOM SIGN",
     choir:          "CLASSROOM SIGN",
-    music:          "CLASSROOM SIGN",
     drama:          "CLASSROOM SIGN",
     science:        "CLASSROOM SIGN",
     lab:            "CLASSROOM SIGN",
@@ -587,17 +586,41 @@ export function detectBuildingType(text: string): CanonicalBuildingType | null {
 }
 
 /**
- * Return a merged room-label map that combines the generic ROOM_LABEL_MAP with
- * the vocabulary specific to the given building type (if any).
+ * Return a merged room-label map combining (in order of precedence):
+ *   1. Generic ROOM_LABEL_MAP (base)
+ *   2. Building-type-specific vocabulary from BUILDING_TYPE_VOCABULARY (wins over base)
+ *   3. JSON overrides from vocabulary-overrides.json (wins over everything)
  *
- * The building-type-specific entries take precedence over generic entries when
- * there is a key collision, allowing type-specific sign types to win.
+ * Reading the JSON file on each call ensures vocabulary changes are picked up
+ * on the next extraction run without restarting the server.
  *
- * When buildingType is null/undefined the generic map is returned as-is.
+ * When buildingType is null/undefined, generic map + JSON "generic" overrides are returned.
  */
 export function getRoomLabelMap(buildingType?: CanonicalBuildingType | string | null): Record<string, string> {
-  if (!buildingType) return ROOM_LABEL_MAP;
-  const typeVocab = BUILDING_TYPE_VOCABULARY[buildingType as CanonicalBuildingType];
-  if (!typeVocab) return ROOM_LABEL_MAP;
-  return { ...ROOM_LABEL_MAP, ...typeVocab };
+  const typeVocab = buildingType
+    ? (BUILDING_TYPE_VOCABULARY[buildingType as CanonicalBuildingType] ?? {})
+    : {};
+
+  let jsonOverrides: Record<string, string> = {};
+  try {
+    // Dynamic requires so this module stays side-effect-free at import time.
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const _fs = require("fs") as typeof import("fs");
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const _path = require("path") as typeof import("path");
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { fileURLToPath } = require("url") as typeof import("url");
+    const filePath = _path.resolve(
+      _path.dirname(fileURLToPath(import.meta.url)),
+      "../data/vocabulary-overrides.json"
+    );
+    const allOverrides = JSON.parse(_fs.readFileSync(filePath, "utf-8")) as Record<string, Record<string, string>>;
+    const genericOverrides = allOverrides["generic"] ?? {};
+    const typeSpecificOverrides = buildingType && allOverrides[buildingType] ? allOverrides[buildingType]! : {};
+    jsonOverrides = { ...genericOverrides, ...typeSpecificOverrides };
+  } catch {
+    // File missing or malformed — proceed with static vocab only.
+  }
+
+  return { ...ROOM_LABEL_MAP, ...typeVocab, ...jsonOverrides };
 }
