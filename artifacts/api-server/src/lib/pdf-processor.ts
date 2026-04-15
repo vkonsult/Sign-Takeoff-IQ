@@ -346,7 +346,7 @@ export async function runPdfProcessor(jobId: string): Promise<void> {
         // ── PNG pre-render for floor plan pages ───────────────────────────
         let pageImagePathsRelative: Record<string, string> | null = null;
         let pageImagePathsAbsolute: Record<string, string> | null = null;
-        const pngPageNums = Array.from(new Set([...finalFloorPlanPages, ...finalBothPages])).sort((a, b) => a - b);
+        const pngPageNums = Array.from(new Set([...finalFloorPlanPages, ...finalSignSchedulePages, ...finalBothPages])).sort((a, b) => a - b);
         if (pngPageNums.length > 0) {
           try {
             const t_render = Date.now();
