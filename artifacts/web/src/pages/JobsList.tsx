@@ -217,7 +217,7 @@ export default function JobsList() {
               <div className="text-center">Status</div>
               <div className="text-center" title="Last active user">User</div>
               <div className="text-right">Created</div>
-              <div className="text-right">Updated</div>
+              <div className="text-right pr-8">Updated</div>
               <div />
             </div>
 
@@ -295,7 +295,7 @@ export default function JobsList() {
                         {format(new Date(job.createdAt), "MMM d, yyyy HH:mm")}
                       </div>
 
-                      <div className="text-right text-sm text-muted-foreground py-4">
+                      <div className="text-right text-sm text-muted-foreground py-4 pr-8">
                         {job.updatedAt
                           ? format(new Date(job.updatedAt), "MMM d, yyyy HH:mm")
                           : <span className="text-muted-foreground/30">—</span>}
