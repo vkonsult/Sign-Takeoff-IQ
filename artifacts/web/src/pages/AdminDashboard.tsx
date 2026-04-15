@@ -1,10 +1,18 @@
+import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { AdminShell } from "@/components/layout/AdminShell";
 import { apiFetch } from "@/lib/apiClient";
 import { Link } from "wouter";
-import { Building2, Users, FolderOpen, ArrowRight, TrendingUp } from "lucide-react";
+import { Building2, Users, FolderOpen, ArrowRight, TrendingUp, RefreshCw, CheckCircle2, XCircle } from "lucide-react";
 
 type Stats = { organizations: number; users: number; jobs: number };
+type RescanResult = {
+  message: string;
+  total: number;
+  succeeded: number;
+  failed: number;
+  results: Array<{ jobId: string; name: string; status: "succeeded" | "failed"; error?: string }>;
+};
 
 export default function AdminDashboard() {
   const statsQuery = useQuery({
@@ -17,6 +25,33 @@ export default function AdminDashboard() {
   });
 
   const stats = statsQuery.data;
+
+  const [rescanState, setRescanState] = useState<
+    "idle" | "running" | "done" | "error"
+  >("idle");
+  const [rescanResult, setRescanResult] = useState<RescanResult | null>(null);
+  const [rescanError, setRescanError] = useState<string | null>(null);
+
+  async function handleRescanAll() {
+    if (rescanState === "running") return;
+    setRescanState("running");
+    setRescanResult(null);
+    setRescanError(null);
+    try {
+      const res = await apiFetch("/api/admin/rescan-all", { method: "POST" });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error((body as { error?: string }).error ?? `HTTP ${res.status}`);
+      }
+      const data = (await res.json()) as RescanResult;
+      setRescanResult(data);
+      setRescanState("done");
+      statsQuery.refetch();
+    } catch (err) {
+      setRescanError(err instanceof Error ? err.message : String(err));
+      setRescanState("error");
+    }
+  }
 
   const cards = [
     {
@@ -92,7 +127,7 @@ export default function AdminDashboard() {
         </div>
 
         {/* Quick links */}
-        <div className="bg-card border border-border rounded-xl p-5">
+        <div className="bg-card border border-border rounded-xl p-5 mb-5">
           <h2 className="text-sm font-semibold text-foreground mb-4">Quick Actions</h2>
           <div className="grid grid-cols-2 gap-3">
             <Link href="/admin/organizations"
@@ -114,6 +149,55 @@ export default function AdminDashboard() {
               <ArrowRight className="w-3.5 h-3.5 text-muted-foreground ml-auto opacity-0 group-hover:opacity-100 transition-opacity" />
             </Link>
           </div>
+        </div>
+
+        {/* Rescan All Jobs */}
+        <div className="bg-card border border-border rounded-xl p-5">
+          <h2 className="text-sm font-semibold text-foreground mb-1">Data Operations</h2>
+          <p className="text-xs text-muted-foreground mb-4">
+            Re-run the PDF extraction pipeline across all jobs. Auto-extracted signs and page metadata are reset; user-verified and manually added signs are preserved. PNGs on disk are reused.
+          </p>
+
+          <div className="flex items-center gap-3 flex-wrap">
+            <button
+              onClick={handleRescanAll}
+              disabled={rescanState === "running"}
+              className="flex items-center gap-2 px-4 py-2 rounded-lg bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 disabled:opacity-60 disabled:cursor-not-allowed transition-colors"
+            >
+              <RefreshCw className={`w-4 h-4 ${rescanState === "running" ? "animate-spin" : ""}`} />
+              {rescanState === "running" ? "Rescanning…" : "Rescan All Jobs"}
+            </button>
+
+            {rescanState === "done" && rescanResult && (
+              <div className="flex items-center gap-2 text-sm">
+                <CheckCircle2 className="w-4 h-4 text-green-400 shrink-0" />
+                <span className="text-foreground">{rescanResult.message}</span>
+              </div>
+            )}
+
+            {rescanState === "error" && rescanError && (
+              <div className="flex items-center gap-2 text-sm">
+                <XCircle className="w-4 h-4 text-red-400 shrink-0" />
+                <span className="text-red-400">{rescanError}</span>
+              </div>
+            )}
+          </div>
+
+          {rescanState === "done" && rescanResult && rescanResult.failed > 0 && (
+            <div className="mt-4 rounded-lg border border-border bg-secondary/30 p-3">
+              <p className="text-xs font-medium text-foreground mb-2">Failed jobs:</p>
+              <ul className="space-y-1">
+                {rescanResult.results
+                  .filter((r) => r.status === "failed")
+                  .map((r) => (
+                    <li key={r.jobId} className="text-xs text-muted-foreground">
+                      <span className="text-red-400 font-medium">{r.name}</span>
+                      {r.error && <span className="ml-2 opacity-70">— {r.error}</span>}
+                    </li>
+                  ))}
+              </ul>
+            </div>
+          )}
         </div>
       </div>
     </AdminShell>

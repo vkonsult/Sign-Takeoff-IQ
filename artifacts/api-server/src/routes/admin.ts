@@ -4,8 +4,11 @@ import {
   organizationsTable,
   organizationMembershipsTable,
   jobsTable,
+  jobFilesTable,
+  extractedSignsTable,
 } from "@workspace/db";
 import { desc, eq, and, count, max } from "drizzle-orm";
+import { runPdfProcessor } from "../lib/pdf-processor";
 import { requireRole } from "../middlewares/authMiddleware";
 import { createClerkClient } from "@clerk/express";
 import { z } from "zod/v4";
@@ -542,6 +545,84 @@ router.delete("/admin/users/:membershipId", requireRole("ADMIN"), async (req, re
   } catch (err) {
     req.log.error({ err, membershipId }, "Failed to remove member");
     res.status(500).json({ error: "Failed to remove member" });
+  }
+});
+
+// POST /admin/rescan-all — clear auto-extracted data and re-run the PDF processor for all jobs (SUPER_ADMIN)
+router.post("/admin/rescan-all", requireRole("SUPER_ADMIN"), async (req, res) => {
+  try {
+    const jobs = await db
+      .select({ id: jobsTable.id, name: jobsTable.name })
+      .from(jobsTable)
+      .orderBy(jobsTable.createdAt);
+
+    if (jobs.length === 0) {
+      res.json({ message: "No jobs found", total: 0, succeeded: 0, failed: 0, results: [] });
+      return;
+    }
+
+    req.log.info({ jobCount: jobs.length }, "[Rescan All] Starting bulk rescan");
+
+    // Bulk pre-reset: clear all auto-extracted signs across every job
+    await db
+      .delete(extractedSignsTable)
+      .where(
+        and(
+          eq(extractedSignsTable.userVerified, false),
+          eq(extractedSignsTable.manuallyAdded, false),
+        ),
+      );
+
+    // Bulk reset page_stats and page_count on all job files
+    await db
+      .update(jobFilesTable)
+      .set({ pageStats: null, pageCount: null });
+
+    // Mark all jobs as processing
+    await db
+      .update(jobsTable)
+      .set({ status: "processing", updatedAt: new Date() });
+
+    req.log.info({ jobCount: jobs.length }, "[Rescan All] Pre-reset complete — starting sequential processing");
+
+    // Process each job sequentially
+    const results: Array<{ jobId: string; name: string; status: "succeeded" | "failed"; error?: string }> = [];
+    for (const job of jobs) {
+      try {
+        await runPdfProcessor(job.id);
+        results.push({ jobId: job.id, name: job.name, status: "succeeded" });
+        req.log.info({ jobId: job.id, name: job.name }, "[Rescan All] Job succeeded");
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        results.push({ jobId: job.id, name: job.name, status: "failed", error: errMsg });
+        req.log.error({ jobId: job.id, name: job.name, err }, "[Rescan All] Job failed");
+        // Ensure the job is not left stuck in 'processing' if runPdfProcessor threw
+        try {
+          await db
+            .update(jobsTable)
+            .set({ status: "failed", error: errMsg, updatedAt: new Date() })
+            .where(eq(jobsTable.id, job.id));
+        } catch (updateErr) {
+          req.log.error({ updateErr, jobId: job.id }, "[Rescan All] Failed to mark job as failed after error");
+        }
+      }
+    }
+
+    const succeeded = results.filter((r) => r.status === "succeeded").length;
+    const failed = results.filter((r) => r.status === "failed").length;
+
+    req.log.info({ total: jobs.length, succeeded, failed }, "[Rescan All] Bulk rescan complete");
+
+    res.json({
+      message: `Rescan complete: ${succeeded} succeeded, ${failed} failed`,
+      total: jobs.length,
+      succeeded,
+      failed,
+      results,
+    });
+  } catch (err) {
+    req.log.error({ err }, "[Rescan All] Bulk rescan failed");
+    res.status(500).json({ error: "Rescan failed", detail: err instanceof Error ? err.message : String(err) });
   }
 });
 
