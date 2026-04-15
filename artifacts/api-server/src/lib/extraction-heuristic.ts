@@ -15,7 +15,7 @@
  */
 
 import { extractPagePhrases, getPdfPageCount, classifyPageFromPhrases, type PdfPhrase } from "./pdf-words";
-import { getRoomLabelMap, type CanonicalBuildingType } from "./sign-vocabulary";
+import { getRoomLabelMap, isCodeOnlyLocation, type CanonicalBuildingType } from "./sign-vocabulary";
 import { logger } from "./logger";
 
 // Module-level effective map — updated at the start of each extraction run
@@ -196,6 +196,9 @@ function extractRoomsFromWords(words: Word[], pageNum: number): ExtractedRoom[] 
     const buildingId = roomWord.text.endsWith("A") ? "A" : "B";
     const roomType = unitLabel ? `UNIT ${unitLabel}` : "UNIT";
 
+    // Guard: skip if the room-type label itself is code-only (defense-in-depth)
+    if (isCodeOnlyLocation(roomType)) continue;
+
     usedIds.add(key);
     rooms.push({
       roomId: roomWord.text,
@@ -215,6 +218,9 @@ function extractRoomsFromWords(words: Word[], pageNum: number): ExtractedRoom[] 
 
     const buildingId = svcWord.text.startsWith("A") ? "A" : "B";
     const roomType = SERVICE_LABEL_MAP[svcWord.text] ?? "SERVICE";
+
+    // Guard: skip if the room-type label itself is code-only (defense-in-depth)
+    if (isCodeOnlyLocation(roomType)) continue;
 
     usedIds.add(key);
     rooms.push({
@@ -430,6 +436,10 @@ function extractInstitutionalRoomsFromPhrases(
       finalSignType = anchorSignType;
       locationLabel = anchor.text;
     }
+
+    // Guard: discard entries whose location label contains no real room-name word.
+    // This prevents bare drawing-reference codes like "A103" from becoming sign entries.
+    if (isCodeOnlyLocation(locationLabel)) continue;
 
     usedKeys.add(dedupeKey);
 

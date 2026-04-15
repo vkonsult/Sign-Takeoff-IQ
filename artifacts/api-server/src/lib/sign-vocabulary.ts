@@ -8,6 +8,54 @@
  */
 
 /**
+ * Returns `true` when a location string contains NO real room-name word, meaning
+ * every token is a code-pattern token:
+ *   - pure digits          ("309", "1234")
+ *   - letter+digit combos  ("A103", "G12", "B205", "AE-4")
+ *   - short all-caps ≤4 chars with no vowels ("GHK", "SVC")
+ *
+ * Returns `false` (valid) when at least one token qualifies as a real word, defined
+ * as ALL of the following:
+ *   1. Length ≥ 3
+ *   2. Contains at least one vowel (A E I O U, case-insensitive)
+ *   3. Does NOT match any of the code patterns above
+ *
+ * Separator characters (spaces, dashes, em-dashes, slashes, commas) are stripped
+ * before tokenising so that compound labels like "A103 — LOBBY" split cleanly.
+ */
+export function isCodeOnlyLocation(location: string): boolean {
+  if (!location || !location.trim()) return true;
+
+  // Split on whitespace and common separator characters (including em-dash U+2014)
+  const tokens = location.trim().split(/[\s\u2014\-\/,]+/).filter((t) => t.length > 0);
+  if (tokens.length === 0) return true;
+
+  for (const token of tokens) {
+    // Skip pure digits: "309", "1234"
+    if (/^\d+$/.test(token)) continue;
+
+    // Skip letter+digit combos: "A103", "G12", "B205", "AE-4", "AS1-4"
+    if (/^[A-Za-z]{1,3}\d[\d\-]*$/.test(token)) continue;
+
+    // Skip short all-caps with no vowels (≤4 chars): "GHK", "SVC"
+    if (token.length <= 4 && /^[A-Z]+$/.test(token) && !/[AEIOU]/.test(token)) continue;
+
+    // This token passed all code-pattern checks; now apply the positive real-word test:
+    // must be ≥3 chars AND contain at least one vowel.
+    if (token.length >= 3 && /[AEIOUaeiou]/.test(token)) {
+      // At least one real room-name word found → location is valid
+      return false;
+    }
+
+    // Token is neither a code pattern nor a qualifying real word (e.g. 1-2 char
+    // abbreviation without vowels) — treat it as noise and continue scanning.
+  }
+
+  // No real room-name word found → location is code-only
+  return true;
+}
+
+/**
  * Phrases that positively identify a floor plan page.
  * Matching uses substring/includes so "FIRST FLOOR PLAN - OVERALL" triggers on "first floor".
  */

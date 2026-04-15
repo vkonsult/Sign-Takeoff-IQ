@@ -17,7 +17,7 @@ import {
 
 import { extractTextFromPdf, isSpecFile } from "./extraction";
 import { extractSignsHeuristic } from "./extraction-heuristic";
-import { FLOOR_PLAN_EXCLUSION_PHRASES } from "./sign-vocabulary";
+import { FLOOR_PLAN_EXCLUSION_PHRASES, isCodeOnlyLocation } from "./sign-vocabulary";
 import { saveParsedResult, getFilePageImagesDir, PAGES_DIR } from "./storage";
 import { renderFloorPlanPages } from "./pdf-render";
 import { logger } from "./logger";
@@ -445,6 +445,8 @@ export async function runPdfProcessor(jobId: string): Promise<void> {
     for (const sign of preservedSigns) {
       if (sign.xPos != null && sign.yPos != null) continue; // already placed
       if (!sign.jobFileId || !sign.pageNumber) continue;
+      // Skip code-only locations — they have no real room label to match on the floor plan
+      if (sign.location && isCodeOnlyLocation(sign.location)) continue;
       const storedPath = filePathById.get(sign.jobFileId);
       if (!storedPath) continue;
 
