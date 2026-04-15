@@ -1741,5 +1741,66 @@ router.get("/jobs/:jobId/schedule-crops/:fileId/:fileName", async (req: Request,
   }
 });
 
+// ── PATCH /jobs/:jobId/files/:fileId/rejected-pages ───────────────────────────
+// Toggles a page number in the file's rejectedPageNumbers list (stored in pageStats).
+const ToggleRejectedPageSchema = z.object({
+  pageNo: z.number().int().positive(),
+});
+
+router.patch("/jobs/:jobId/files/:fileId/rejected-pages", async (req: Request, res: Response) => {
+  const { jobId, fileId } = req.params;
+  if (!jobId || !fileId) {
+    res.status(400).json({ error: "Job ID and file ID required" });
+    return;
+  }
+
+  const parsed = ToggleRejectedPageSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: "Invalid request body", details: parsed.error.issues });
+    return;
+  }
+
+  try {
+    const _job = await getJobWithOrgCheck(req, res, jobId);
+    if (!_job) return;
+
+    const [file] = await db
+      .select()
+      .from(jobFilesTable)
+      .where(and(eq(jobFilesTable.id, fileId), eq(jobFilesTable.jobId, jobId)))
+      .limit(1);
+
+    if (!file) {
+      res.status(404).json({ error: "File not found" });
+      return;
+    }
+
+    const currentStats = file.pageStats ?? {
+      floorPlanPages: [],
+      signSchedulePages: [],
+      otherPages: [],
+    };
+
+    const { pageNo } = parsed.data;
+    const existing = currentStats.rejectedPageNumbers ?? [];
+    const isCurrentlyRejected = existing.includes(pageNo);
+    const updatedRejectedPageNumbers = isCurrentlyRejected
+      ? existing.filter((p) => p !== pageNo)
+      : [...existing, pageNo];
+
+    const updatedStats = { ...currentStats, rejectedPageNumbers: updatedRejectedPageNumbers };
+
+    await db
+      .update(jobFilesTable)
+      .set({ pageStats: updatedStats })
+      .where(eq(jobFilesTable.id, fileId));
+
+    res.json({ pageStats: updatedStats, rejected: !isCurrentlyRejected });
+  } catch (err) {
+    req.log.error({ err, jobId, fileId }, "Failed to toggle rejected page");
+    res.status(500).json({ error: "Failed to toggle rejected page" });
+  }
+});
+
 export default router;
 

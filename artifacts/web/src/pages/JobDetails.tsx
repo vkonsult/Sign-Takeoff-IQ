@@ -570,6 +570,35 @@ export default function JobDetails() {
     }
   };
 
+  const toggleRejectedPage = async (fileId: string, pageNo: number) => {
+    queryClient.setQueryData(getGetJobQueryKey(jobId), (old: typeof data) => {
+      if (!old) return old;
+      type FileWithPageStats = (typeof old.files)[number] & { pageStats?: { floorPlanPages: number[]; signSchedulePages: number[]; otherPages: number[]; rejectedPageNumbers?: number[] } | null };
+      const files = (old.files as FileWithPageStats[]).map((f) => {
+        if (f.id !== fileId) return f;
+        const stats = f.pageStats ?? { floorPlanPages: [], signSchedulePages: [], otherPages: [] };
+        const existing = stats.rejectedPageNumbers ?? [];
+        const updatedRejectedPageNumbers = existing.includes(pageNo)
+          ? existing.filter((p) => p !== pageNo)
+          : [...existing, pageNo];
+        return { ...f, pageStats: { ...stats, rejectedPageNumbers: updatedRejectedPageNumbers } };
+      });
+      return { ...old, files: files as typeof old.files };
+    });
+    try {
+      const res = await apiFetch(`/api/jobs/${jobId}/files/${fileId}/rejected-pages`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pageNo }),
+      });
+      if (!res.ok) {
+        queryClient.invalidateQueries({ queryKey: getGetJobQueryKey(jobId) });
+      }
+    } catch {
+      queryClient.invalidateQueries({ queryKey: getGetJobQueryKey(jobId) });
+    }
+  };
+
   const handleSignSaved = (updatedSign: SignMarker) => {
     queryClient.setQueryData(getGetJobQueryKey(jobId), (old: typeof data) => {
       if (!old) return old;
@@ -1089,6 +1118,8 @@ export default function JobDetails() {
                   allSigns={extractedSigns}
                   hiddenSigns={hiddenSigns}
                   toggleHidden={toggleHidden}
+                  jobId={jobId}
+                  toggleRejectedPage={toggleRejectedPage}
                 />
               ) : activeTab === "timeline" ? (
                 <div className="flex-1 overflow-auto p-8">
@@ -1832,6 +1863,8 @@ function DetectionTable({
   hiddenSigns,
   toggleHidden,
   fileId,
+  rejectedPageNumbers,
+  toggleRejectedPage,
 }: {
   title: string;
   rows: DetectionRow[];
@@ -1840,6 +1873,8 @@ function DetectionTable({
   hiddenSigns: Array<{ id: string; pageNumber?: number | null; jobFileId?: string | null; hidden?: boolean }>;
   toggleHidden: (signId: string, currentlyHidden: boolean) => void;
   fileId: string;
+  rejectedPageNumbers: number[];
+  toggleRejectedPage: (pageNo: number) => void;
 }) {
   if (rows.length === 0) return null;
   const headCls =
@@ -1855,15 +1890,20 @@ function DetectionTable({
 
   const isPageRejected = (pageNo: number) => {
     const { all, hidden } = signsOnPage(pageNo);
-    return all.length > 0 && hidden.length === all.length;
+    if (all.length > 0) return hidden.length === all.length;
+    return rejectedPageNumbers.includes(pageNo);
   };
 
   const handleRejectToggle = (pageNo: number) => {
-    const { visible, hidden } = signsOnPage(pageNo);
-    if (isPageRejected(pageNo)) {
-      hidden.forEach((s) => toggleHidden(s.id, true));
+    const { visible, hidden, all } = signsOnPage(pageNo);
+    if (all.length > 0) {
+      if (isPageRejected(pageNo)) {
+        hidden.forEach((s) => toggleHidden(s.id, true));
+      } else {
+        visible.forEach((s) => toggleHidden(s.id, false));
+      }
     } else {
-      visible.forEach((s) => toggleHidden(s.id, false));
+      toggleRejectedPage(pageNo);
     }
   };
 
@@ -1885,32 +1925,29 @@ function DetectionTable({
           <tbody>
             {rows.map((row, i) => {
               const rejected = isPageRejected(row.pageNo);
-              const { all } = signsOnPage(row.pageNo);
               return (
                 <tr
                   key={`${row.pageNo}-${i}`}
-                  className={`border-b border-border/30 last:border-0 ${i % 2 === 0 ? "bg-background" : "bg-card/40"}`}
+                  className={`border-b border-border/30 last:border-0 transition-opacity ${
+                    rejected ? "opacity-40" : ""
+                  } ${i % 2 === 0 ? "bg-background" : "bg-card/40"}`}
                 >
-                  <td className="px-2 py-1 text-muted-foreground">{row.pageNo}</td>
-                  <td className="px-2 py-1 text-foreground/80">{row.label}</td>
-                  <td className="px-2 py-1 text-foreground/70 max-w-[160px] truncate" title={row.bookmarkTitle ?? undefined}>
+                  <td className={`px-2 py-1 ${rejected ? "line-through text-muted-foreground/60" : "text-muted-foreground"}`}>{row.pageNo}</td>
+                  <td className={`px-2 py-1 ${rejected ? "line-through text-foreground/40" : "text-foreground/80"}`}>{row.label}</td>
+                  <td className={`px-2 py-1 max-w-[160px] truncate ${rejected ? "line-through text-foreground/30" : "text-foreground/70"}`} title={row.bookmarkTitle ?? undefined}>
                     {row.bookmarkTitle ?? "—"}
                   </td>
                   <td className="px-2 py-1">
-                    {all.length > 0 ? (
-                      <button
-                        onClick={() => handleRejectToggle(row.pageNo)}
-                        className={`px-2 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider border transition-colors ${
-                          rejected
-                            ? "bg-muted text-muted-foreground border-border/60 hover:bg-secondary"
-                            : "bg-destructive/10 text-destructive border-destructive/30 hover:bg-destructive/20"
-                        }`}
-                      >
-                        {rejected ? "Rejected" : "Reject"}
-                      </button>
-                    ) : (
-                      <span className="text-muted-foreground/30">—</span>
-                    )}
+                    <button
+                      onClick={() => handleRejectToggle(row.pageNo)}
+                      className={`px-2 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider border transition-colors ${
+                        rejected
+                          ? "bg-muted text-muted-foreground border-border/60 hover:bg-secondary"
+                          : "bg-destructive/10 text-destructive border-destructive/30 hover:bg-destructive/20"
+                      }`}
+                    >
+                      {rejected ? "Rejected" : "Reject"}
+                    </button>
                   </td>
                 </tr>
               );
@@ -1986,12 +2023,16 @@ function SheetsPanel({
   allSigns,
   hiddenSigns,
   toggleHidden,
+  jobId,
+  toggleRejectedPage,
 }: {
   files: FileWithStats[];
   onOpenSpec: (v: SpecViewerState) => void;
   allSigns: Array<{ id: string; pageNumber?: number | null; jobFileId?: string | null; hidden?: boolean }>;
   hiddenSigns: Array<{ id: string; pageNumber?: number | null; jobFileId?: string | null; hidden?: boolean }>;
   toggleHidden: (signId: string, currentlyHidden: boolean) => void;
+  jobId: string;
+  toggleRejectedPage: (fileId: string, pageNo: number) => void;
 }) {
   const [open, setOpen] = useState(true);
 
@@ -2191,6 +2232,7 @@ function SheetsPanel({
                       {/* Detection tables */}
                       {(() => {
                         const { floorPlanRows, signSpecRows } = buildDetectionRows(stats);
+                        const rejectedPageNumbers = (stats as RawPageStats).rejectedPageNumbers ?? [];
                         return (
                           <>
                             <DetectionTable
@@ -2201,6 +2243,8 @@ function SheetsPanel({
                               hiddenSigns={hiddenSigns}
                               toggleHidden={toggleHidden}
                               fileId={f.id}
+                              rejectedPageNumbers={rejectedPageNumbers}
+                              toggleRejectedPage={(pageNo) => toggleRejectedPage(f.id, pageNo)}
                             />
                             <DetectionTable
                               title="Sign Specs / Schedules Detected"
@@ -2210,6 +2254,8 @@ function SheetsPanel({
                               hiddenSigns={hiddenSigns}
                               toggleHidden={toggleHidden}
                               fileId={f.id}
+                              rejectedPageNumbers={rejectedPageNumbers}
+                              toggleRejectedPage={(pageNo) => toggleRejectedPage(f.id, pageNo)}
                             />
                           </>
                         );
