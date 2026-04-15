@@ -148,25 +148,15 @@ function getSignColor(signType: string | null | undefined): string {
 }
 
 // ── computeMarkerOffset ───────────────────────────────────────────────────────
-// Given the phrase center, nudge the marker away from that phrase so it
-// doesn't overlap the text. The offset is proportional (~2.5% in the
-// direction away from the nearest page edge).
+// Always place the marker below the matched text so the room label remains
+// fully readable above the pin. A fixed downward nudge (~3% of page height)
+// is used so the dot clears a typical text label.
 
 function computeMarkerOffset(
-  phraseCenter: { x: number; y: number },
-  nudgeDist = 0.025,
+  _phraseCenter: { x: number; y: number },
+  nudgeDist = 0.03,
 ): { dx: number; dy: number } {
-  const cx = phraseCenter.x;
-  const cy = phraseCenter.y;
-  const distLeft = cx;
-  const distRight = 1 - cx;
-  const distTop = cy;
-  const distBottom = 1 - cy;
-  const minDist = Math.min(distLeft, distRight, distTop, distBottom);
-  if (minDist === distTop) return { dx: 0, dy: -nudgeDist };
-  if (minDist === distBottom) return { dx: 0, dy: nudgeDist };
-  if (minDist === distLeft) return { dx: -nudgeDist, dy: 0 };
-  return { dx: nudgeDist, dy: 0 };
+  return { dx: 0, dy: nudgeDist };
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
