@@ -493,33 +493,33 @@ export async function extractSignsHeuristic(
   // Build the label map once for the entire extraction run.
   const labelMap = getRoomLabelMap(buildingType);
 
-  const allRooms: ExtractedRoom[] = [];
-  const institutionalRows: HeuristicSignInsert[] = [];
+  const pageResults = await Promise.all(
+    Array.from({ length: pageCount }, (_, i) => i + 1).map(async (pageNum) => {
+      try {
+        const pw = await extractPagePhrases(filePath, fileId, pageNum);
+        const words = phrasesToWords(pw);
+        const rooms = extractRoomsFromWords(words, pageNum);
 
-  for (let pageNum = 1; pageNum <= pageCount; pageNum++) {
-    try {
-      const pw = await extractPagePhrases(filePath, fileId, pageNum);
-      const words = phrasesToWords(pw);
-      const rooms = extractRoomsFromWords(words, pageNum);
-      allRooms.push(...rooms);
+        let instRows: HeuristicSignInsert[] = [];
+        if (floorPlanPages && floorPlanPages.has(pageNum)) {
+          const { titlePhrases } = classifyPageFromPhrases(pw.phrases);
+          instRows = extractInstitutionalRoomsFromPhrases(pw, pageNum, titlePhrases, labelMap);
+        }
 
-      // Institutional/church room-pair extraction for floor plan pages
-      if (floorPlanPages && floorPlanPages.has(pageNum)) {
-        // Retrieve title-phrase coordinates so the extractor can do proximity-based
-        // exclusion rather than a blanket zone filter.
-        const { titlePhrases } = classifyPageFromPhrases(pw.phrases);
-        const instRows = extractInstitutionalRoomsFromPhrases(pw, pageNum, titlePhrases, labelMap);
-        institutionalRows.push(...instRows);
+        logger.debug(
+          { filePath: filePath.split("/").pop(), pageNum, wordsFound: words.length, roomsFound: rooms.length, institutionalFound: instRows.length },
+          "Heuristic page scan complete"
+        );
+        return { rooms, instRows };
+      } catch (err) {
+        logger.warn({ err, filePath: filePath.split("/").pop(), pageNum }, "Heuristic: page extraction failed, skipping");
+        return { rooms: [] as ExtractedRoom[], instRows: [] as HeuristicSignInsert[] };
       }
+    })
+  );
 
-      logger.debug(
-        { filePath: filePath.split("/").pop(), pageNum, wordsFound: words.length, roomsFound: rooms.length, institutionalFound: institutionalRows.length },
-        "Heuristic page scan complete"
-      );
-    } catch (err) {
-      logger.warn({ err, filePath: filePath.split("/").pop(), pageNum }, "Heuristic: page extraction failed, skipping");
-    }
-  }
+  const allRooms: ExtractedRoom[] = pageResults.flatMap((r) => r.rooms);
+  const institutionalRows: HeuristicSignInsert[] = pageResults.flatMap((r) => r.instRows);
 
   // Sort: building A before B, then by room ID
   allRooms.sort((a, b) =>

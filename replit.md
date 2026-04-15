@@ -36,7 +36,17 @@ artifacts/
 │       ├── app.ts          # Express app setup, middleware
 │       ├── index.ts        # Server entry point
 │       ├── routes/         # Route handlers (health, upload, jobs)
-│       └── lib/            # storage.ts, extraction.ts, export.ts
+│       └── lib/
+│           ├── extraction.ts              # Main AI extraction orchestration (~2475 lines)
+│           ├── extraction-classification.ts  # Page-type classification module (split from extraction.ts)
+│           ├── extraction-heuristic.ts    # Residential/institutional heuristic extractor
+│           ├── pdf-processor.ts           # Multi-file job processing pipeline
+│           ├── pdf-words.ts               # pdfjs phrase/word extraction + caching
+│           ├── pdf-render.ts              # Page-to-PNG rendering
+│           ├── sign-vocabulary.ts         # Canonical keyword lists + building-type maps
+│           ├── signage-schedule-parser.ts # Structured sign-schedule table parser
+│           ├── storage.ts                 # File storage helpers
+│           └── export.ts                  # XLSX export
 └── web/                    # React + Vite frontend
     └── src/
         ├── App.tsx          # Router + QueryClient setup

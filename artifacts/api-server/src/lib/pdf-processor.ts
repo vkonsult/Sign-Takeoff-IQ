@@ -20,7 +20,7 @@ import {
 
 import { extractTextFromPdf, isSpecFile } from "./extraction";
 import { extractSignsHeuristic } from "./extraction-heuristic";
-import { FLOOR_PLAN_EXCLUSION_PHRASES, isCodeOnlyLocation } from "./sign-vocabulary";
+import { FLOOR_PLAN_EXCLUSION_PHRASES, SIGN_SCHEDULE_PHRASES, isCodeOnlyLocation } from "./sign-vocabulary";
 import { saveParsedResult, getFilePageImagesDir, PAGES_DIR } from "./storage";
 import { renderFloorPlanPages } from "./pdf-render";
 import { logger } from "./logger";

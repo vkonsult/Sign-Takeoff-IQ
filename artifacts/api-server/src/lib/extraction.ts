@@ -11,12 +11,8 @@ import {
   type RoomCandidate,
 } from "./pdf-words";
 import type { PdfOutlineSection } from "./pdf-words";
-import {
-  FLOOR_PLAN_INCLUSION_PHRASES,
-  FLOOR_PLAN_EXCLUSION_PHRASES,
-  SIGN_SCHEDULE_PHRASES,
-  CANONICAL_LEVEL_NAMES,
-} from "./sign-vocabulary";
+import { CANONICAL_LEVEL_NAMES } from "./sign-vocabulary";
+import { classifyPage, type PageType, type TitleBlockType, type ScoredPage } from "./extraction-classification";
 
 // ── Shared vocabulary–derived prompt fragments ────────────────────────────────
 // Built once at module load from the canonical level names list so prompts
@@ -660,453 +656,6 @@ LEGEND / SYMBOL KEY EXCLUSION (important):
 FLOOR PLAN PAGES (with page markers):
 ${scheduleCtx}${specCtx}${candidatesCtx}${trainingCtx}${verifiedCtx}---
 `;
-}
-
-// ─── PAGE SCORING ────────────────────────────────────────────────────────────
-
-// Keywords that strongly indicate a page is a legend/symbol-key page.
-// These pages define symbols but do NOT represent actual sign locations.
-// A match overrides floor-plan classification so the page is skipped.
-const LEGEND_PAGE_KEYWORDS = [
-  "life safety legend",
-  "signage legend",
-  "symbol legend",
-  "symbol key",
-  "drawing legend",
-  "legend:",
-  "symbols and abbreviations",
-  "general notes legend",
-  "fire protection legend",
-  "door hardware legend",
-  "room finish legend",
-  "abbreviation legend",
-];
-
-function scoreForLegendPage(text: string): number {
-  const lower = text.toLowerCase();
-  return LEGEND_PAGE_KEYWORDS.reduce((score, kw) => {
-    const hits = (lower.match(new RegExp(kw.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g")) || []).length;
-    // Weight each keyword more heavily so a single match is sufficient to override
-    return score + hits * 3;
-  }, 0);
-}
-
-// Only terms that genuinely discriminate a floor plan drawing page from
-// elevations, sections, details, specs, etc.  Generic room-name words
-// (stair, elevator, lobby, sanctuary, classroom …) deliberately omitted
-// because they appear throughout any multi-page architectural document.
-// scoreForFloorPlan counts 1 per unique match (not per occurrence) to
-// prevent score inflation from repeated room labels.
-const FLOOR_PLAN_KEYWORDS = FLOOR_PLAN_INCLUSION_PHRASES;
-
-function scoreForFloorPlan(text: string): number {
-  const lower = text.toLowerCase();
-  return FLOOR_PLAN_KEYWORDS.reduce((score, kw) => {
-    return score + (lower.includes(kw) ? 1 : 0);
-  }, 0);
-}
-
-function scoreForSignSchedule(text: string): number {
-  const lower = text.toLowerCase();
-  return SIGN_SCHEDULE_PHRASES.reduce((score, kw) => {
-    return score + (lower.includes(kw) ? 1 : 0);
-  }, 0);
-}
-type PageType = "floor_plan" | "sign_schedule" | "other" | "both";
-type TitleBlockType = "floor_plan" | "sign_schedule" | "other" | "unknown" | "both";
-
-interface ScoredPage {
-  pageNum: number;
-  text: string;
-  floorPlanScore: number;
-  signScheduleScore: number;
-  type: PageType;
-  titleBlockType: TitleBlockType;
-}
-
-// ─── TITLE BLOCK CLASSIFIER ──────────────────────────────────────────────────
-
-// Drawing number prefix patterns that indicate a non-floor-plan, non-sign sheet.
-// These prefixes appear in the title block of every architectural drawing.
-const OTHER_DRAWING_NUMBER_PATTERNS: RegExp[] = [
-  /\bG-\d{3}/i,         // General: cover sheets, notes, sheet index
-  /\bS-\d{3}/i,         // Structural
-  /\bM-\d{3}/i,         // Mechanical
-  /\bP-\d{3}/i,         // Plumbing
-  /\bE-\d{3}/i,         // Electrical
-  /\bC-\d{3}/i,         // Civil
-  /\bL-\d{3}/i,         // Landscape
-  /\bFP-\d{3}/i,        // Fire Protection
-  /\bFPL?-\d{3}/i,      // Fire Protection (alt)
-  // Architectural A2.x–A9.x (excluding sign numbers A10-A12)
-  /\bA[2-9]\.\d{1,3}\b/i,
-];
-
-// Drawing number patterns that indicate a floor plan sheet.
-// This single broader pattern replaces the two narrow A0.x / A1.x patterns.
-// It matches all common real-world variants:
-//   A1.1, A0.2   — dot-notation (classic AIA)
-//   A-111        — dash + no spaces
-//   A - 111      — dash with spaces (church/school plans)
-//   A111, A123   — no separator
-//   A1-1         — dash sub-number
-const FLOOR_PLAN_DRAWING_NUMBER_PATTERNS: RegExp[] = [
-  /\bA\s*[-.]?\s*\d{1,4}(?:[-./]\d{1,4})?\b/i,
-];
-
-// Drawing number patterns that indicate a sign schedule / signage sheet.
-// NOTE: /\bSP-\d+/i was removed — "SP" is used for Site Plan, Specifications, and
-// Photometric plans in most architectural packages; too ambiguous to be reliable.
-const SIGN_SCHEDULE_DRAWING_NUMBER_PATTERNS: RegExp[] = [
-  /\bA1[012]\.\d{1,3}\b/i,  // A10.x, A11.x, A12.x — signage sheets
-  /\bSN-\d+/i,              // Signage numbering prefix
-];
-
-// High-confidence title phrases that unambiguously identify a non-floor-plan,
-// non-sign-schedule sheet.  These are specific enough that a false match on a
-// real floor plan page is extremely unlikely, so they are trusted standalone
-// (no drawing-number requirement).
-const OTHER_TITLE_KEYWORDS_STANDALONE: string[] = [
-  "cover sheet",
-  "title sheet",
-  "title page",
-  "vicinity map",
-  "area map",
-  "exterior elevation",
-  "interior elevation",
-  "building elevation",
-  "building section",
-  "wall section",
-  "stair section",
-  "roof plan",
-  "demolition plan",
-  "framing plan",
-  "foundation plan",
-  "sheet index",
-  "drawing index",
-];
-
-// Broader title phrases that indicate "other" but can also appear on floor plan
-// sheets as call-outs or notes.  These are only trusted when the page also
-// carries ANY recognizable drawing number (floor-plan, other, or sign prefix),
-// which anchors the match to the actual title block rather than incidental text.
-const OTHER_TITLE_KEYWORDS_NUMBER_REQUIRED: string[] = [
-  "site plan",
-  "reflected ceiling plan",
-  "door schedule",
-  "window schedule",
-  "finish schedule",
-  "room finish schedule",
-  "general notes",
-  "abbreviations",
-  "landscape plan",
-  "grading plan",
-  "utility plan",
-  "electrical plan",
-  "mechanical plan",
-  "plumbing plan",
-  "fire protection plan",
-  "structural plan",
-  "civil plan",
-  "detail sheet",
-  "keynote legend",
-];
-
-// Title keywords that clearly mark a page as a floor plan.
-// Imported from sign-vocabulary.ts — single source of truth.
-const FLOOR_PLAN_TITLE_KEYWORDS = FLOOR_PLAN_INCLUSION_PHRASES;
-
-// Title keywords that clearly mark a page as a sign schedule.
-// Imported from sign-vocabulary.ts — single source of truth.
-const SIGN_SCHEDULE_TITLE_KEYWORDS = SIGN_SCHEDULE_PHRASES;
-
-/**
- * Attempt to classify a page using the drawing title block.
- *
- * The title block in architectural drawings is found in the bottom-right corner
- * and typically contains:
- *   - A drawing number (e.g. "A1.1", "G-001", "S-201")
- *   - A drawing title (e.g. "FIRST FLOOR PLAN", "COVER SHEET")
- *
- * Classification rules (evaluated in order):
- *
- * 1. Sign schedule title keyword (standalone) → "sign_schedule"
- * 2. Sign schedule drawing number → "sign_schedule"
- * 3. Floor plan title keyword + floor plan drawing number → "floor_plan"
- * 4. High-confidence "other" title keyword (standalone) → "other"
- * 5. Any "other" drawing number (G-x, S-x, A2-A9, etc.) → "other"
- * 6. Floor plan drawing number + number-required "other" title keyword → "other"
- *    (e.g. A0.1 SITE PLAN — A0.x matches FP number but "SITE PLAN" overrides)
- * 7. Floor plan drawing number alone (no matching title) → "unknown"
- * 8. No recognisable title-block signal → "unknown"
- *
- * Returning "unknown" causes the caller to fall through to keyword heuristics.
- */
-function detectTitleBlock(text: string): TitleBlockType {
-  const upper = text.toUpperCase();
-
-  // Gather presence flags up front (reused across all steps).
-  const hasFpNumber = FLOOR_PLAN_DRAWING_NUMBER_PATTERNS.some((p) => p.test(text));
-
-  // Proximity-aware exclusion veto for floor-plan title classification.
-  //
-  // Problem: exclusion phrases like "electrical", "fire", "roof" appear throughout
-  // a floor plan's body text (in notes, room labels, and annotations) far away from
-  // the page's own drawing title ("A3.1 Lower Level Plan"). A blanket whole-page
-  // exclusion incorrectly vetoes these real floor plans.
-  //
-  // Solution: only veto when a PLAN-TYPE MODIFIER exclusion phrase appears within
-  // ±40 characters of a floor-plan title keyword. The modifier list is intentionally
-  // narrow — only terms that directly precede "plan" to make it a non-floor-plan
-  // sheet type (e.g. "Reflected Ceiling Plan", "Mechanical Plan"). Terms that appear
-  // incidentally in body notes ("roof", "fire", "water", "protection") are excluded
-  // from this proximity check; they continue to gate the fallback text-score path.
-  const PLAN_TYPE_MODIFIERS = [
-    "ceiling", "reflected ceiling",
-    "framing",
-    "structural",
-    "mechanical",
-    "electrical",
-    "plumbing",
-    "foundation",
-    "demolition",
-    "sanitary",
-  ] as const;
-  const EXCLUSION_PROXIMITY = 40;
-  const hasFpTitleAny = FLOOR_PLAN_TITLE_KEYWORDS.some((kw) => upper.includes(kw.toUpperCase()));
-
-  // Sign-schedule qualifier phrases: when a floor plan title keyword appears
-  // immediately AFTER one of these (within 60 chars), it is a section heading
-  // inside a sign schedule — NOT an independent floor plan title.
-  // e.g. "Signage Schedule - Lower Level" → "lower level" is schedule-qualified.
-  const SS_QUALIFIER_PROXIMITY = 60;
-  const SS_QUALIFIERS = SIGN_SCHEDULE_PHRASES.map((s) => s.toUpperCase());
-
-  // Returns true when at least one occurrence of titleKw in `upper` satisfies:
-  //  1. NO plan-type modifier within ±EXCLUSION_PROXIMITY chars, AND
-  //  2. NOT immediately preceded by a sign-schedule phrase within SS_QUALIFIER_PROXIMITY.
-  // Condition 2 prevents "Signage Schedule - Lower Level" from being counted as
-  // an independent floor-plan title while still allowing a genuine floor-plan
-  // sheet that also has an embedded sign schedule table to pass.
-  function hasCleanOccurrence(titleKw: string): boolean {
-    const kwU = titleKw.toUpperCase();
-    let searchFrom = 0;
-    while (true) {
-      const pos = upper.indexOf(kwU, searchFrom);
-      if (pos === -1) break;
-      const win = upper.slice(Math.max(0, pos - EXCLUSION_PROXIMITY), pos + kwU.length + EXCLUSION_PROXIMITY);
-      const hasPlanTypeMod = PLAN_TYPE_MODIFIERS.some((mod) => win.includes(mod.toUpperCase()));
-      if (!hasPlanTypeMod) {
-        const before = upper.slice(Math.max(0, pos - SS_QUALIFIER_PROXIMITY), pos);
-        const isScheduleCtx = SS_QUALIFIERS.some((q) => before.includes(q));
-        if (!isScheduleCtx) return true; // clean AND not a schedule section heading
-      }
-      searchFrom = pos + 1;
-    }
-    return false;
-  }
-
-  // hasExclusionNearTitle is true only when every occurrence of every matched
-  // fp-title keyword is tainted by a nearby plan-type modifier — i.e. there is
-  // NO clean occurrence anywhere on the page.  If even one clean occurrence
-  // exists (likely the actual drawing title) we do not veto.
-  const hasExclusionNearTitle = hasFpTitleAny &&
-    !FLOOR_PLAN_TITLE_KEYWORDS.some((kw) => upper.includes(kw.toUpperCase()) && hasCleanOccurrence(kw));
-
-  // Whole-page exclusion flag — used to veto the weaker sign-schedule drawing
-  // number match and the fallback text-score path (where no drawing number
-  // anchor is available).  NOT applied to sign schedule title keywords: a direct
-  // title keyword match ("Signage Schedule", "signage", etc.) is authoritative
-  // regardless of body-text exclusion phrases.
-  const hasExclusion = FLOOR_PLAN_EXCLUSION_PHRASES.some((kw) => upper.includes(kw.toUpperCase()));
-
-  // hasFpTitle: fp title keyword present AND no plan-type modifier appears
-  // immediately adjacent to it (proximity-aware, narrow modifier set).
-  const hasFpTitle = hasFpTitleAny && !hasExclusionNearTitle;
-  const hasOtherNumber = OTHER_DRAWING_NUMBER_PATTERNS.some((p) => p.test(text));
-  const hasAnyNumber = hasFpNumber || hasOtherNumber;
-  // Sign schedule title is authoritative — NOT gated by the exclusion veto.
-  // Sign schedule drawing number is weaker evidence and retains the veto.
-  const hasSignScheduleTitle = SIGN_SCHEDULE_TITLE_KEYWORDS.some((kw) => upper.includes(kw.toUpperCase()));
-  const hasSignScheduleNumber = !hasExclusion && SIGN_SCHEDULE_DRAWING_NUMBER_PATTERNS.some((p) => p.test(text));
-
-  // ── 0. Detect "both" — page has BOTH a floor-plan signal AND a sign-schedule signal ──
-  // This catches combined architectural sheets where the floor plan drawing occupies
-  // one half of the page and a sign schedule table runs alongside it.
-  // We require an unambiguous floor-plan signal (drawing number + title keyword)
-  // AND at least one sign-schedule signal (title keyword or drawing number).
-  if (hasFpNumber && hasFpTitle && (hasSignScheduleTitle || hasSignScheduleNumber)) {
-    return "both";
-  }
-
-  // ── 1. Sign schedule title keywords (standalone, very specific) ─────────────
-  if (hasSignScheduleTitle) {
-    return "sign_schedule";
-  }
-
-  // ── 2. Sign schedule drawing number patterns ─────────────────────────────────
-  if (hasSignScheduleNumber) {
-    return "sign_schedule";
-  }
-
-  // ── 3. Floor plan: requires BOTH a floor-plan drawing number AND title ───────
-  // Requiring both signals greatly reduces false positives from pages that
-  // contain "FLOOR PLAN" only in a note or call-out, not in the title block.
-  if (hasFpNumber && hasFpTitle) {
-    return "floor_plan";
-  }
-
-  // ── 4. High-confidence "other" title keywords (standalone) ──────────────────
-  // These phrases are specific enough that they won't appear incidentally on
-  // floor plan sheets; trust them without requiring a drawing number.
-  for (const kw of OTHER_TITLE_KEYWORDS_STANDALONE) {
-    if (upper.includes(kw.toUpperCase())) {
-      return "other";
-    }
-  }
-
-  // ── 5. Any "other" drawing number → confidently not a floor plan ─────────────
-  // Structural/MEP/civil/general drawing numbers (G-x, S-x, M-x, etc.) and
-  // A2.x–A9.x all indicate the sheet is not a floor plan or sign schedule.
-  // EXCEPTION: if the page also carries a floor plan title keyword (e.g., the
-  // A3.x drawing number appears as a cross-reference on a page whose own title
-  // is "A3.1 Lower Level Plan"), defer to the title and do not veto here.
-  if (hasOtherNumber && !hasFpTitle) {
-    return "other";
-  }
-
-  // ── 6. Floor plan drawing number + number-required "other" title keyword ─────
-  // Handles edge cases like "A0.1 SITE PLAN" where a floor-plan-number sheet
-  // has a title that clearly identifies it as a non-floor-plan drawing.
-  // These keywords are only trusted when a drawing number is present on the page,
-  // because on their own they commonly appear in notes on floor plan sheets.
-  if (hasAnyNumber) {
-    for (const kw of OTHER_TITLE_KEYWORDS_NUMBER_REQUIRED) {
-      if (upper.includes(kw.toUpperCase())) {
-        return "other";
-      }
-    }
-  }
-
-  // ── 7. Floor plan drawing number alone (no matching title) → unknown ─────────
-  if (hasFpNumber) {
-    return "unknown";
-  }
-
-  return "unknown";
-}
-
-// Keywords in a filename that strongly suggest this is a floor plan PDF.
-// IMPORTANT: keep these specific — generic terms like " plan " or "level "
-// match far too broadly (e.g. "Church Plan All Pages.pdf", "Project Plan.pdf").
-const FLOOR_PLAN_FILENAME_SIGNALS = [
-  "floor plan", "floor-plan", "floorplan",
-  "construction plan", "construction-plan",
-  "reflected ceiling", "rcp",
-  "floor level", "ground floor", "first floor", "second floor", "third floor",
-  "mezzanine", "basement",
-  "architectural plan", "arch plan",
-  "site plan", "roof plan",
-];
-
-const SIGN_SCHEDULE_FILENAME_SIGNALS = [
-  "sign schedule", "sign-schedule", "signage schedule",
-  "signage-schedule", "sign list", "sign index",
-  "sign program", "signage program",
-  // Spec / specification documents (e.g. "Specs_Signage.pdf", "10-14-00.pdf", "signage-spec.pdf")
-  "specs_signage", "spec_signage", "signage_spec", "signage-spec",
-  "specification", "10-14-00", "10-14", "10_14_00", "10_14", "101400",
-];
-
-function filenameClassificationBoost(filename: string): { floorPlan: number; signSchedule: number } {
-  const lower = filename.toLowerCase();
-  const fpMatch = FLOOR_PLAN_FILENAME_SIGNALS.some((sig) => lower.includes(sig));
-  const ssMatch = SIGN_SCHEDULE_FILENAME_SIGNALS.some((sig) => lower.includes(sig));
-  return {
-    floorPlan: fpMatch ? 10 : 0,
-    signSchedule: ssMatch ? 10 : 0,
-  };
-}
-
-function classifyPage(pageNum: number, text: string): ScoredPage {
-  // ── Title block pre-check ────────────────────────────────────────────────────
-  // Read the drawing number and title from the title block (bottom-right corner
-  // of every architectural sheet). If the title block clearly identifies the
-  // page type, return immediately — no keyword scoring, no AI call.
-  const titleBlockType = detectTitleBlock(text);
-  if (titleBlockType === "other") {
-    return { pageNum, text, floorPlanScore: 0, signScheduleScore: 0, type: "other", titleBlockType };
-  }
-  if (titleBlockType === "both") {
-    // Title block confirmed both floor plan AND sign schedule on this page.
-    // Still apply the legend-page guard.
-    const legendScore = scoreForLegendPage(text);
-    const textFloorPlanScore = scoreForFloorPlan(text);
-    const textSignScheduleScore = scoreForSignSchedule(text);
-    if (legendScore >= 3 && textFloorPlanScore < 10) {
-      return { pageNum, text, floorPlanScore: textFloorPlanScore, signScheduleScore: textSignScheduleScore, type: "other", titleBlockType };
-    }
-    return { pageNum, text, floorPlanScore: textFloorPlanScore, signScheduleScore: textSignScheduleScore, type: "both", titleBlockType };
-  }
-  if (titleBlockType === "sign_schedule") {
-    // Still apply the legend-page guard: a legend page that happens to contain
-    // sign-schedule title keywords should not be extracted.
-    const legendScore = scoreForLegendPage(text);
-    const textFloorPlanScore = scoreForFloorPlan(text);
-    if (legendScore >= 3 && textFloorPlanScore < 10) {
-      return { pageNum, text, floorPlanScore: textFloorPlanScore, signScheduleScore: 0, type: "other", titleBlockType };
-    }
-    return { pageNum, text, floorPlanScore: 0, signScheduleScore: 0, type: "sign_schedule", titleBlockType };
-  }
-  if (titleBlockType === "floor_plan") {
-    // Still apply the legend-page guard.
-    const legendScore = scoreForLegendPage(text);
-    const textFloorPlanScore = scoreForFloorPlan(text);
-    if (legendScore >= 3 && textFloorPlanScore < 10) {
-      return { pageNum, text, floorPlanScore: textFloorPlanScore, signScheduleScore: 0, type: "other", titleBlockType };
-    }
-    return { pageNum, text, floorPlanScore: 0, signScheduleScore: 0, type: "floor_plan", titleBlockType };
-  }
-
-  // titleBlockType === "unknown" — fall through to text-only heuristic scoring.
-  // Filename is intentionally NOT used here: a document-level label (e.g.
-  // "Church Plan All Pages.pdf") says nothing about which individual pages are
-  // floor plans vs. elevations vs. specs, so applying it per-page causes
-  // widespread false positives.
-  const textFloorPlanScore = scoreForFloorPlan(text);
-  const textSignScheduleScore = scoreForSignSchedule(text);
-
-  // Legend/symbol-key pages are classified as "other" and excluded from
-  // sign extraction. A single strong legend keyword (score ≥ 3) overrides
-  // floor-plan classification unless the floor-plan text score is very high
-  // (≥ 10), indicating substantial real room content alongside a small legend box.
-  const legendScore = scoreForLegendPage(text);
-  if (legendScore >= 3 && textFloorPlanScore < 10) {
-    return { pageNum, text, floorPlanScore: textFloorPlanScore, signScheduleScore: textSignScheduleScore, type: "other", titleBlockType };
-  }
-
-  // ── Heuristic "both" detection ─────────────────────────────────────────────
-  // When both text scores are strong AND neither overwhelmingly dominates,
-  // the page likely contains both a floor plan drawing and a sign schedule table.
-  if (textFloorPlanScore >= 8 && textSignScheduleScore >= 8) {
-    const ratio = textFloorPlanScore / textSignScheduleScore;
-    if (ratio >= 0.35 && ratio <= 2.85) {
-      return { pageNum, text, floorPlanScore: textFloorPlanScore, signScheduleScore: textSignScheduleScore, type: "both", titleBlockType };
-    }
-  }
-
-  let type: PageType = "other";
-  if (textFloorPlanScore >= 4 && textFloorPlanScore >= textSignScheduleScore) {
-    type = "floor_plan";
-  } else if (textSignScheduleScore >= 4 && textSignScheduleScore > textFloorPlanScore) {
-    type = "sign_schedule";
-  } else if (textFloorPlanScore >= 4) {
-    type = "floor_plan";
-  } else if (textSignScheduleScore >= 4) {
-    type = "sign_schedule";
-  }
-
-  return { pageNum, text, floorPlanScore: textFloorPlanScore, signScheduleScore: textSignScheduleScore, type, titleBlockType };
 }
 
 // ─── PDF TEXT EXTRACTION ──────────────────────────────────────────────────────
@@ -1761,6 +1310,9 @@ function parseImageExtractionResponse(raw: string, source: string): ExtractedSig
 const MAX_INLINE_PDF_BYTES = 19 * 1024 * 1024; // 19 MB — leaves headroom for base64 overhead
 // Max pages per image-extraction batch (keeps each batch under 20 MB for most plans)
 const IMAGE_BATCH_PAGES = 25;
+// Max pages per bbox-scan batch — kept small so the JSON response stays under the
+// 65536 output-token cap; a 4-page batch already hits the limit for dense plans.
+const SCAN_BATCH_PAGES = 2;
 
 // ─── VERIFICATION-MODE VISUAL PASS ────────────────────────────────────────────
 // Instead of asking Gemini to independently discover all signs (hallucination-
@@ -1908,25 +1460,65 @@ const ScanResponseSchema = z.object({
   callouts: z.array(GeminiCalloutSchema).default([]),
 });
 
+/**
+ * Recover individual callout objects from a truncated JSON string.
+ * Used when Gemini hits the output token limit mid-response.
+ */
+function extractPartialCallouts(text: string, label: string): GeminiCallout[] {
+  const results: GeminiCallout[] = [];
+  let searchFrom = 0;
+  while (true) {
+    const start = text.indexOf("{", searchFrom);
+    if (start === -1) break;
+    let depth = 0;
+    let end = -1;
+    for (let i = start; i < text.length; i++) {
+      if (text[i] === "{") depth++;
+      else if (text[i] === "}") {
+        depth--;
+        if (depth === 0) { end = i; break; }
+      }
+    }
+    if (end === -1) break; // Incomplete object — stop
+    try {
+      const obj = JSON.parse(text.slice(start, end + 1));
+      const r = GeminiCalloutSchema.safeParse(obj);
+      if (r.success && r.data.confidence >= 0.75) {
+        results.push({ page_number: r.data.page_number as number, bbox_x: r.data.bbox_x, bbox_y: r.data.bbox_y, bbox_w: r.data.bbox_w, bbox_h: r.data.bbox_h, label_text: r.data.label_text ?? null, sign_type: r.data.sign_type ?? null, confidence: r.data.confidence });
+      }
+    } catch { /* skip malformed */ }
+    searchFrom = end + 1;
+  }
+  if (results.length > 0) {
+    logger.info({ label, callouts: results.length }, "Partial scan recovery: extracted callouts from truncated response");
+  } else {
+    logger.error({ label }, "Partial scan recovery: no complete callout objects found in truncated response");
+  }
+  return results;
+}
+
 function parseScanResponse(raw: string, label: string): GeminiCallout[] {
   let cleaned = raw.trim();
-  const fenceMatch = cleaned.match(/```(?:json)?\n?([\s\S]*?)```/);
+  // Handle both closed and unclosed code fences (unclosed = truncated by token limit)
+  const fenceMatch = cleaned.match(/```(?:json)?\s*\n?([\s\S]*?)(?:```|$)/);
   if (fenceMatch) cleaned = fenceMatch[1]!.trim();
 
   let parsed: unknown;
   try {
     parsed = JSON.parse(cleaned);
   } catch {
-    logger.warn({ label, raw: cleaned.slice(0, 500) }, "Scan response not valid JSON — trying to extract JSON object");
+    // Try extracting a complete JSON object (handles minor trailing garbage)
     const objMatch = cleaned.match(/\{[\s\S]*\}/);
-    if (!objMatch) {
+    if (objMatch) {
+      try {
+        parsed = JSON.parse(objMatch[0]);
+      } catch {
+        // Response was truncated mid-JSON — recover whatever complete objects exist
+        logger.warn({ label }, "Scan response truncated — attempting partial callout recovery");
+        return extractPartialCallouts(cleaned, label);
+      }
+    } else {
       logger.error({ label }, "Could not extract JSON from scan response");
-      return [];
-    }
-    try {
-      parsed = JSON.parse(objMatch[0]);
-    } catch {
-      logger.error({ label }, "Failed to parse extracted JSON from scan response");
       return [];
     }
   }
@@ -1985,8 +1577,8 @@ export async function extractSignCalloutsPng(
   let totalIn = 0;
   let totalOut = 0;
 
-  for (let batchStart = 0; batchStart < availablePages.length; batchStart += IMAGE_BATCH_PAGES) {
-    const batchPages = availablePages.slice(batchStart, batchStart + IMAGE_BATCH_PAGES);
+  for (let batchStart = 0; batchStart < availablePages.length; batchStart += SCAN_BATCH_PAGES) {
+    const batchPages = availablePages.slice(batchStart, batchStart + SCAN_BATCH_PAGES);
     const inlineParts: GeminiInlinePart[] = [];
 
     for (const pageNum of batchPages) {
@@ -2027,450 +1619,6 @@ export async function extractSignCalloutsPng(
   return { callouts: allCallouts, inputTokens: totalIn, outputTokens: totalOut, skipped: false };
 }
 
-// ── Legacy verification (kept for reference, no longer called by pipeline) ──
-
-function buildVerificationPrompt(textSignsByPage: Map<number, TextContextSign[]>): string {
-  const pages = Array.from(textSignsByPage.entries()).sort(([a], [b]) => a - b);
-  const signListLines: string[] = [];
-
-  for (const [pageNum, signs] of pages) {
-    if (signs.length === 0) continue;
-    signListLines.push(`\n--- PAGE ${pageNum} ---`);
-    for (const s of signs) {
-      const parts: string[] = [];
-      if (s.sign_identifier) parts.push(`ID: "${s.sign_identifier}"`);
-      if (s.sign_type) parts.push(`Type: ${s.sign_type}`);
-      if (s.location) parts.push(`Location: "${s.location}"`);
-      signListLines.push(`  • ${parts.join(" | ")}`);
-    }
-  }
-
-  const totalSigns = Array.from(textSignsByPage.values()).reduce((n, v) => n + v.length, 0);
-
-  return `You are verifying architectural floor plan signs found by a text-extraction pass.
-
-TEXT EXTRACTION FOUND ${totalSigns} SIGN(S) ACROSS ${pages.length} PAGE(S):
-${signListLines.join("\n")}
-
-TASK 1 — VERIFY (required for every sign listed above):
-For each sign, look at the corresponding page image and determine:
-• CONFIRMED  — You can clearly see a sign callout, identifier, or room label at/near this location
-• UNCERTAIN  — Something is probably there but you cannot read it clearly
-• NOT_FOUND  — You genuinely cannot see any evidence of this sign on the image
-
-TASK 2 — DISCOVER (optional, high-confidence only):
-Are there any clearly visible sign callouts in the images that are NOT in the list above?
-Only include discoveries where you are ≥ 0.80 confident it is a real, placed sign callout (not a legend definition or symbol key entry). If uncertain, omit it. False positives are worse than missed signs.
-
-Return ONLY valid JSON in exactly this format — no markdown fences, no extra text:
-{
-  "verifications": [
-    {"sign_identifier": "B101", "location": "LOBBY", "page_number": 1, "status": "CONFIRMED", "confidence": 0.95},
-    {"sign_identifier": "B102", "location": "TENANT STOR", "page_number": 1, "status": "CONFIRMED", "confidence": 0.90}
-  ],
-  "discoveries": [
-    {"sheet_number": "A1", "sign_identifier": "EX-1", "sign_type": "Exit", "location": "Stair A", "page_number": 1, "confidence": 0.85}
-  ]
-}`;
-}
-
-function parseVerificationResponse(raw: string, label: string): { verifications: VerificationItem[]; discoveries: ExtractedSignRow[] } {
-  let cleaned = raw.trim();
-  const fenceMatch = cleaned.match(/```(?:json)?\n?([\s\S]*?)```/);
-  if (fenceMatch) cleaned = fenceMatch[1]!.trim();
-
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(cleaned);
-  } catch {
-    logger.warn({ label, raw: cleaned.slice(0, 500) }, "Verification response not valid JSON — trying to extract JSON object");
-    const objMatch = cleaned.match(/\{[\s\S]*\}/);
-    if (!objMatch) {
-      logger.error({ label }, "Could not extract JSON from verification response");
-      return { verifications: [], discoveries: [] };
-    }
-    try {
-      parsed = JSON.parse(objMatch[0]);
-    } catch {
-      logger.error({ label }, "Failed to parse extracted JSON from verification response");
-      return { verifications: [], discoveries: [] };
-    }
-  }
-
-  const result = VerificationResponseSchema.safeParse(parsed);
-  if (!result.success) {
-    logger.warn({ label, errors: result.error.flatten() }, "Verification schema validation failed — using defaults");
-    return { verifications: [], discoveries: [] };
-  }
-
-  const verifications: VerificationItem[] = result.data.verifications.map((v) => ({
-    sign_identifier: v.sign_identifier,
-    location: v.location,
-    page_number: v.page_number as number | null,
-    status: v.status,
-    confidence: v.confidence,
-  }));
-
-  const discoveries: ExtractedSignRow[] = result.data.discoveries
-    .filter((d) => (d.confidence ?? 0) >= 0.80)
-    .map((d) => ({
-      sheet_number: d.sheet_number ?? null,
-      detail_reference: d.detail_reference ?? null,
-      sign_type: d.sign_type ?? null,
-      sign_identifier: d.sign_identifier ?? null,
-      quantity: null,
-      location: d.location ?? null,
-      dimensions: null,
-      mounting_type: null,
-      finish_color: null,
-      illumination: null,
-      materials: null,
-      message_content: d.message_content ?? null,
-      notes: "Discovered by visual verification pass",
-      page_number: d.page_number as number | null,
-      x_pos: null,
-      y_pos: null,
-      confidence_score: Math.min(0.85, d.confidence ?? 0.80),
-      review_flag: true, // visual-only discoveries always need review
-    }));
-
-  logger.info({ label, verifications: verifications.length, confirmed: verifications.filter(v => v.status === "CONFIRMED").length, discoveries: discoveries.length }, "Verification response parsed");
-  return { verifications, discoveries };
-}
-
-export async function extractSignsFromPdfImageVerify(
-  filePath: string,
-  ai: GeminiAI,
-  textSignsByPage: Map<number, TextContextSign[]>,
-  relevantPages?: Set<number>,
-  pageImagePaths?: Record<string, string>
-): Promise<VerifyResult> {
-  if (textSignsByPage.size === 0) {
-    return { verifications: [], discoveries: [], inputTokens: 0, outputTokens: 0, skipped: true, skipReason: "No text signs to verify" };
-  }
-
-  // If relevantPages is explicitly provided but empty, skip entirely — sending other/unknown
-  // pages to Gemini is disallowed when the caller has page classification data.
-  if (relevantPages !== undefined && relevantPages.size === 0) {
-    logger.info({ filePath: filePath.split("/").pop() }, "Visual verification skipped — no relevant pages (floor_plan/sign_schedule/both) found");
-    return { verifications: [], discoveries: [], inputTokens: 0, outputTokens: 0, skipped: true, skipReason: "No relevant pages for verification" };
-  }
-
-  const fileName = filePath.split("/").pop() ?? "file.pdf";
-
-  // ── PNG fast-path: when pre-rendered images are available for all relevant pages,
-  // send them directly to Gemini as image/png inline data (skips pdf-lib entirely).
-  if (pageImagePaths && relevantPages && relevantPages.size > 0) {
-    const relevantSorted = Array.from(relevantPages).sort((a, b) => a - b);
-    const allCovered = relevantSorted.every((p) => pageImagePaths[String(p)]);
-    if (allCovered) {
-      logger.info({ fileName, pages: relevantSorted.length }, "Visual verification: PNG fast-path");
-
-      const allVerifications: VerificationItem[] = [];
-      const allDiscoveries: ExtractedSignRow[] = [];
-      let totalIn = 0;
-      let totalOut = 0;
-
-      // Batch PNGs: send IMAGE_BATCH_PAGES images per Gemini call
-      for (let batchStart = 0; batchStart < relevantSorted.length; batchStart += IMAGE_BATCH_PAGES) {
-        const batchPages = relevantSorted.slice(batchStart, batchStart + IMAGE_BATCH_PAGES);
-
-        // Build per-batch sign map (page numbers stay original since each image = one page)
-        const batchMap = new Map<number, TextContextSign[]>();
-        for (const pageNum of batchPages) {
-          const signs = textSignsByPage.get(pageNum);
-          if (signs && signs.length > 0) batchMap.set(pageNum, signs);
-        }
-        if (batchMap.size === 0) continue;
-
-        const inlineParts: GeminiInlinePart[] = [];
-        for (const pageNum of batchPages) {
-          try {
-            const buf = await fs.readFile(pageImagePaths[String(pageNum)]!);
-            inlineParts.push({ inlineData: { mimeType: "image/png", data: buf.toString("base64") } });
-          } catch (err) {
-            logger.warn({ err, pageNum }, "PNG fast-path: could not read page image — skipping page");
-          }
-        }
-        if (inlineParts.length === 0) continue;
-
-        const batchPrompt = buildVerificationPrompt(batchMap);
-        const firstPage = batchPages[0]!;
-        const lastPage = batchPages[batchPages.length - 1]!;
-        const label = `verify-${fileName}-p${firstPage}-${lastPage}-png`;
-
-        try {
-          const { text, inputTokens, outputTokens } = await callGeminiMultimodal(batchPrompt, inlineParts, ai, label);
-          const { verifications, discoveries } = parseVerificationResponse(text, label);
-          allVerifications.push(...verifications);
-          allDiscoveries.push(...discoveries);
-          totalIn += inputTokens;
-          totalOut += outputTokens;
-        } catch (err) {
-          logger.warn({ err, label }, "PNG fast-path batch call failed — skipping batch");
-        }
-      }
-
-      logger.info({ verifications: allVerifications.length, discoveries: allDiscoveries.length, inputTokens: totalIn, outputTokens: totalOut }, "Visual verification complete (PNG fast-path)");
-      return { verifications: allVerifications, discoveries: allDiscoveries, inputTokens: totalIn, outputTokens: totalOut, skipped: false };
-    }
-    // Not all pages are covered by PNGs — fall through to PDF path
-    logger.info({ fileName }, "Visual verification: PNG coverage incomplete — using PDF fallback");
-  }
-
-  let fileBuffer: Buffer;
-  try {
-    fileBuffer = await fs.readFile(filePath);
-  } catch (err) {
-    logger.error({ err, filePath }, "Verification: could not read PDF file");
-    return { verifications: [], discoveries: [], inputTokens: 0, outputTokens: 0, skipped: true, skipReason: "Could not read PDF file" };
-  }
-
-  if (fileBuffer.length <= MAX_INLINE_PDF_BYTES) {
-    // Single-pass path: filter to relevant pages if provided
-    if (relevantPages && relevantPages.size > 0) {
-      let { PDFDocument } = await import("pdf-lib");
-      let srcDoc: import("pdf-lib").PDFDocument;
-      try {
-        srcDoc = await PDFDocument.load(fileBuffer, { ignoreEncryption: true });
-      } catch (err) {
-        logger.error({ err, fileName }, "Verification: pdf-lib failed to load PDF for page filtering");
-        return { verifications: [], discoveries: [], inputTokens: 0, outputTokens: 0, skipped: true, skipReason: "PDF could not be parsed" };
-      }
-      const totalPages = srcDoc.getPageCount();
-      // Build sorted list of 0-based indices for relevant pages (1-indexed relevantPages)
-      const relevantIndices = Array.from(relevantPages)
-        .map((p) => p - 1)
-        .filter((i) => i >= 0 && i < totalPages)
-        .sort((a, b) => a - b);
-      logger.info({ relevant: relevantIndices.length, total: totalPages }, "Visual verification: filtering to relevant pages only");
-      if (relevantIndices.length === 0) {
-        logger.info({ fileName }, "Visual verification skipped — no relevant pages within PDF bounds");
-        return { verifications: [], discoveries: [], inputTokens: 0, outputTokens: 0, skipped: true, skipReason: "No relevant pages within PDF bounds" };
-      }
-      // Map from filtered page index (0-based in filtered doc) → original page number (1-indexed)
-      const pageIndexToOriginal = new Map<number, number>(relevantIndices.map((origIdx, filtIdx) => [filtIdx, origIdx + 1]));
-      // Build a signs-by-page map using filtered page numbers (1, 2, 3…) so the
-      // prompt matches what Gemini sees in the filtered PDF.
-      const filteredSignsByPage = new Map<number, TextContextSign[]>();
-      relevantIndices.forEach((origIdx, filtIdx) => {
-        const signs = textSignsByPage.get(origIdx + 1);
-        if (signs && signs.length > 0) filteredSignsByPage.set(filtIdx + 1, signs);
-      });
-      const prompt = buildVerificationPrompt(filteredSignsByPage);
-      let filteredBytes: Uint8Array;
-      try {
-        const filteredDoc = await PDFDocument.create();
-        const copiedPages = await filteredDoc.copyPages(srcDoc, relevantIndices);
-        for (const page of copiedPages) filteredDoc.addPage(page);
-        filteredBytes = await filteredDoc.save();
-      } catch (err) {
-        logger.error({ err, fileName }, "Verification: failed to create filtered PDF — skipping (will not send unfiltered pages)");
-        return { verifications: [], discoveries: [], inputTokens: 0, outputTokens: 0, skipped: true, skipReason: "Filtered PDF construction failed" };
-      }
-      const pdfBase64 = Buffer.from(filteredBytes).toString("base64");
-      const label = `verify-${fileName}`;
-      logger.info({ fileName, sizeBytes: filteredBytes.length, totalSigns: Array.from(textSignsByPage.values()).reduce((n, v) => n + v.length, 0) }, "Visual verification: single-pass (filtered)");
-      try {
-        const { text, inputTokens, outputTokens } = await callGeminiMultimodal(prompt, pdfBase64, ai, label);
-        const { verifications, discoveries } = parseVerificationResponse(text, label);
-        // Remap page numbers (verifications + discoveries) from filtered-doc space back to original
-        if (pageIndexToOriginal.size > 0) {
-          for (const v of verifications) {
-            if (v.page_number != null) {
-              const orig = pageIndexToOriginal.get(v.page_number - 1);
-              if (orig != null) v.page_number = orig;
-            }
-          }
-          for (const d of discoveries) {
-            if (d.page_number != null) {
-              const orig = pageIndexToOriginal.get(d.page_number - 1);
-              if (orig != null) d.page_number = orig;
-            }
-          }
-        }
-        logger.info({ verifications: verifications.length, discoveries: discoveries.length, inputTokens, outputTokens }, "Visual verification complete (single-pass filtered)");
-        return { verifications, discoveries, inputTokens, outputTokens, skipped: false };
-      } catch (err) {
-        logger.error({ err, fileName }, "Visual verification call failed");
-        return { verifications: [], discoveries: [], inputTokens: 0, outputTokens: 0, skipped: true, skipReason: "Gemini call failed" };
-      }
-    }
-
-    // No relevantPages filter — send full PDF with original page numbering
-    const prompt = buildVerificationPrompt(textSignsByPage);
-    const pdfBase64 = fileBuffer.toString("base64");
-    const label = `verify-${fileName}`;
-    logger.info({ fileName, sizeBytes: fileBuffer.length, totalSigns: Array.from(textSignsByPage.values()).reduce((n, v) => n + v.length, 0) }, "Visual verification: single-pass");
-    try {
-      const { text, inputTokens, outputTokens } = await callGeminiMultimodal(prompt, pdfBase64, ai, label);
-      const { verifications, discoveries } = parseVerificationResponse(text, label);
-      logger.info({ verifications: verifications.length, discoveries: discoveries.length, inputTokens, outputTokens }, "Visual verification complete (single-pass)");
-      return { verifications, discoveries, inputTokens, outputTokens, skipped: false };
-    } catch (err) {
-      logger.error({ err, fileName }, "Visual verification call failed");
-      return { verifications: [], discoveries: [], inputTokens: 0, outputTokens: 0, skipped: true, skipReason: "Gemini call failed" };
-    }
-  }
-
-  // Large PDF: batch by pages, filter text signs for each batch
-  logger.info({ fileName, sizeBytes: fileBuffer.length }, "Visual verification: PDF too large — splitting into batches");
-  let { PDFDocument } = await import("pdf-lib");
-  let srcDoc: import("pdf-lib").PDFDocument;
-  try {
-    srcDoc = await PDFDocument.load(fileBuffer, { ignoreEncryption: true });
-  } catch (err) {
-    logger.error({ err, fileName }, "Verification: pdf-lib failed to load PDF");
-    return { verifications: [], discoveries: [], inputTokens: 0, outputTokens: 0, skipped: true, skipReason: "PDF could not be parsed" };
-  }
-
-  const totalPages = srcDoc.getPageCount();
-  const allVerifications: VerificationItem[] = [];
-  const allDiscoveries: ExtractedSignRow[] = [];
-  let totalIn = 0;
-  let totalOut = 0;
-
-  // Batched path: if relevantPages provided, iterate only those pages grouped into batches
-  if (relevantPages && relevantPages.size > 0) {
-    const relevantIndices = Array.from(relevantPages)
-      .map((p) => p - 1)
-      .filter((i) => i >= 0 && i < totalPages)
-      .sort((a, b) => a - b);
-    logger.info({ relevant: relevantIndices.length, total: totalPages }, "Visual verification: filtering to relevant pages only");
-    if (relevantIndices.length === 0) {
-      logger.info({ fileName }, "Visual verification skipped — no relevant pages within PDF bounds");
-      return { verifications: [], discoveries: [], inputTokens: 0, outputTokens: 0, skipped: true, skipReason: "No relevant pages within PDF bounds" };
-    }
-
-    for (let batchStart = 0; batchStart < relevantIndices.length; batchStart += IMAGE_BATCH_PAGES) {
-      const batchIndices = relevantIndices.slice(batchStart, batchStart + IMAGE_BATCH_PAGES);
-      // Map filtered-doc index (0-based) → original 1-indexed page number
-      const pageIndexToOriginal = new Map<number, number>(batchIndices.map((origIdx, filtIdx) => [filtIdx, origIdx + 1]));
-
-      // Build sub-map keyed by FILTERED page numbers (1, 2, 3…) so the prompt
-      // matches what Gemini sees in the batch PDF's page numbering.
-      const batchMap = new Map<number, TextContextSign[]>();
-      batchIndices.forEach((origIdx, filtIdx) => {
-        const signs = textSignsByPage.get(origIdx + 1);
-        if (signs && signs.length > 0) batchMap.set(filtIdx + 1, signs);
-      });
-      if (batchMap.size === 0) continue;
-
-      let batchPdfBytes: Uint8Array;
-      try {
-        const batchDoc = await PDFDocument.create();
-        const copiedPages = await batchDoc.copyPages(srcDoc, batchIndices);
-        for (const page of copiedPages) batchDoc.addPage(page);
-        batchPdfBytes = await batchDoc.save();
-      } catch (err) {
-        logger.warn({ err, batchIndices }, "Verification: failed to create batch PDF — skipping batch");
-        continue;
-      }
-
-      if (batchPdfBytes.length > MAX_INLINE_PDF_BYTES) {
-        logger.warn({ batchIndices }, "Verification: batch too large — skipping");
-        continue;
-      }
-
-      const batchPrompt = buildVerificationPrompt(batchMap);
-      const pdfBase64 = Buffer.from(batchPdfBytes).toString("base64");
-      const firstOrig = batchIndices[0] + 1;
-      const lastOrig = batchIndices[batchIndices.length - 1] + 1;
-      const label = `verify-${fileName}-p${firstOrig}-${lastOrig}`;
-
-      try {
-        const { text, inputTokens, outputTokens } = await callGeminiMultimodal(batchPrompt, pdfBase64, ai, label);
-        const { verifications, discoveries } = parseVerificationResponse(text, label);
-        // Remap page numbers (verifications + discoveries) from batch-doc space back to original
-        for (const v of verifications) {
-          if (v.page_number != null) {
-            const orig = pageIndexToOriginal.get(v.page_number - 1);
-            if (orig != null) v.page_number = orig;
-          }
-        }
-        for (const d of discoveries) {
-          if (d.page_number != null) {
-            const orig = pageIndexToOriginal.get(d.page_number - 1);
-            if (orig != null) d.page_number = orig;
-          }
-        }
-        allVerifications.push(...verifications);
-        allDiscoveries.push(...discoveries);
-        totalIn += inputTokens;
-        totalOut += outputTokens;
-      } catch (err) {
-        logger.warn({ err, label }, "Verification batch call failed — skipping batch");
-      }
-    }
-
-    return { verifications: allVerifications, discoveries: allDiscoveries, inputTokens: totalIn, outputTokens: totalOut, skipped: false };
-  }
-
-  // No relevantPages filter — original batched logic over all pages
-  for (let startPage = 0; startPage < totalPages; startPage += IMAGE_BATCH_PAGES) {
-    const endPage = Math.min(startPage + IMAGE_BATCH_PAGES, totalPages);
-    const pageIndices = Array.from({ length: endPage - startPage }, (_, i) => startPage + i);
-
-    // Build sub-map keyed by BATCH-local page numbers (1, 2, 3…) to match the
-    // batch PDF's page numbering, and maintain a remap back to original.
-    const batchPageToOriginal = new Map<number, number>(); // batch-local 1-indexed → original 1-indexed
-    const batchMap = new Map<number, TextContextSign[]>();
-    pageIndices.forEach((origIdx, batchIdx) => {
-      const origPage = origIdx + 1;
-      const batchPage = batchIdx + 1;
-      batchPageToOriginal.set(batchPage, origPage);
-      const signs = textSignsByPage.get(origPage);
-      if (signs && signs.length > 0) batchMap.set(batchPage, signs);
-    });
-    if (batchMap.size === 0) continue; // no signs on these pages — skip visual call
-
-    let batchPdfBytes: Uint8Array;
-    try {
-      const batchDoc = await PDFDocument.create();
-      const copiedPages = await batchDoc.copyPages(srcDoc, pageIndices);
-      for (const page of copiedPages) batchDoc.addPage(page);
-      batchPdfBytes = await batchDoc.save();
-    } catch (err) {
-      logger.warn({ err, startPage, endPage }, "Verification: failed to create batch PDF — skipping batch");
-      continue;
-    }
-
-    if (batchPdfBytes.length > MAX_INLINE_PDF_BYTES) {
-      logger.warn({ startPage, endPage }, "Verification: batch too large — skipping");
-      continue;
-    }
-
-    const batchPrompt = buildVerificationPrompt(batchMap);
-    const pdfBase64 = Buffer.from(batchPdfBytes).toString("base64");
-    const label = `verify-${fileName}-p${startPage + 1}-${endPage}`;
-
-    try {
-      const { text, inputTokens, outputTokens } = await callGeminiMultimodal(batchPrompt, pdfBase64, ai, label);
-      const { verifications, discoveries } = parseVerificationResponse(text, label);
-      // Remap batch-local page numbers back to original full-doc page numbers
-      for (const v of verifications) {
-        if (v.page_number != null) {
-          const orig = batchPageToOriginal.get(v.page_number);
-          if (orig != null) v.page_number = orig;
-        }
-      }
-      for (const d of discoveries) {
-        if (d.page_number != null) {
-          const orig = batchPageToOriginal.get(d.page_number);
-          if (orig != null) d.page_number = orig;
-        }
-      }
-      allVerifications.push(...verifications);
-      allDiscoveries.push(...discoveries);
-      totalIn += inputTokens;
-      totalOut += outputTokens;
-    } catch (err) {
-      logger.warn({ err, label }, "Verification batch call failed — skipping batch");
-    }
-  }
-
-  return { verifications: allVerifications, discoveries: allDiscoveries, inputTokens: totalIn, outputTokens: totalOut, skipped: false };
-}
 
 export async function extractSignsFromPdfImage(
   filePath: string,
@@ -2765,7 +1913,7 @@ Pages:
         // Gemini extraction passes — no heuristic or outline fallback applies.
         type = "other";
         logger.debug({ pageNum: p.pageNum }, "Spatial hard-exclude: unknown page forced to other");
-      } else if (spatialType && spatialType !== "unknown") {
+      } else if (spatialType) {
         logger.debug(
           { pageNum: p.pageNum, spatial: spatialType, heuristic: p.type },
           "Spatial override applied"
@@ -2789,7 +1937,7 @@ Pages:
       const section = pdfMeta.outlineSections.find(
         (s) => p.pageNum >= s.pageStart && p.pageNum <= s.pageEnd
       );
-      if (section?.type === "both" && type !== "both") {
+      if (section?.type === "both") {
         logger.debug(
           { pageNum: p.pageNum, section: section.title, wasType: type },
           "Outline override: both"
