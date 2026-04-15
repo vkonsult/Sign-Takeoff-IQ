@@ -208,9 +208,18 @@ interface PhraseRecord {
 }
 
 /**
- * Noise-filter: returns true if the phrase should be skipped.
- * Skips: purely numeric, drawing-reference codes like A123, dimension strings,
- * or phrases shorter than 2 characters.
+ * Returns true if the phrase looks like a floor-plan room code:
+ * 2–4 consecutive digits (e.g. "101", "1042", "23").
+ * These are NOT noise — they are sign identifiers that sit beneath room labels.
+ */
+function isRoomCode(text: string): boolean {
+  return /^\d{2,4}$/.test(text.trim());
+}
+
+/**
+ * Noise-filter: returns true if the phrase should be skipped for anchor/companion matching.
+ * Skips: purely numeric (handled separately as room codes), drawing-reference codes like A123,
+ * dimension strings, or phrases shorter than 2 characters.
  *
  * IMPORTANT: slash-separated room labels like "UTL/JAN/RISER" must NOT be
  * filtered here — they are legitimate compound room labels.  Only filter
@@ -219,7 +228,7 @@ interface PhraseRecord {
 function isNoisyPhrase(text: string): boolean {
   const t = text.trim();
   if (t.length < 2) return true;
-  // Purely numeric
+  // Purely numeric — skip here; room codes are handled via isRoomCode() separately
   if (/^[0-9]+$/.test(t)) return true;
   // Drawing reference code: single uppercase letter + 2-3 digits (e.g. A123)
   if (/^[A-Z][0-9]{2,3}$/.test(t)) return true;
@@ -348,8 +357,31 @@ function extractInstitutionalRoomsFromPhrases(
 
   const drawingArea = records.filter((r) => !isInTitleZone(r));
 
-  // Apply noise filter.
+  // Collect numeric room-code phrases separately (2–4 digits).
+  // These are filtered from `usable` by isNoisyPhrase but are valid sign identifiers.
+  const roomCodePhrases = drawingArea.filter((r) => isRoomCode(r.text));
+
+  // Apply noise filter for anchor/companion matching.
   const usable = drawingArea.filter((r) => !isNoisyPhrase(r.text));
+
+  /**
+   * For a given anchor, find the closest numeric room code within the
+   * proximity window (≤80 pts horizontal, ≤60 pts vertical).
+   * Returns the code string or null if none found nearby.
+   */
+  function findNearbyRoomCode(anchor: PhraseRecord): string | null {
+    let best: { code: string; dist: number } | null = null;
+    for (const rc of roomCodePhrases) {
+      const dx = Math.abs(rc.cx_pts - anchor.cx_pts);
+      const dy = Math.abs(rc.cy_pts - anchor.cy_pts);
+      if (dx > 80 || dy > 60) continue;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      if (best === null || dist < best.dist) {
+        best = { code: rc.text, dist };
+      }
+    }
+    return best?.code ?? null;
+  }
 
   const rows: HeuristicSignInsert[] = [];
   const usedKeys = new Set<string>(); // deduplicate by normalized text + grid-rounded position
@@ -412,13 +444,18 @@ function extractInstitutionalRoomsFromPhrases(
     // This prevents bare drawing-reference codes like "A103" from becoming sign entries.
     if (isCodeOnlyLocation(locationLabel)) continue;
 
+    // Step D: find the numeric room code sitting near this anchor (e.g. "101" under "OFFICE").
+    // If found, use it as the sign identifier; fall back to a cleaned slug of the label.
+    const nearbyCode = findNearbyRoomCode(anchor);
+    const signIdentifier = nearbyCode ?? anchor.text.toUpperCase().replace(/\s+/g, "_").slice(0, 40);
+
     usedKeys.add(dedupeKey);
 
     rows.push({
       sheetNumber: null,
       detailReference: null,
       signType: finalSignType,
-      signIdentifier: anchor.text.toUpperCase().replace(/\s+/g, "_").slice(0, 40),
+      signIdentifier,
       quantity: 1,
       location: locationLabel,
       dimensions: null,
