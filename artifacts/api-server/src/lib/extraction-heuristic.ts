@@ -257,36 +257,49 @@ interface PhraseRecord {
  * Noise-filter: returns true if the phrase should be skipped.
  * Skips: purely numeric, drawing-reference codes like A123, dimension strings,
  * or phrases shorter than 2 characters.
+ *
+ * IMPORTANT: slash-separated room labels like "UTL/JAN/RISER" must NOT be
+ * filtered here — they are legitimate compound room labels.  Only filter
+ * slashes when they are part of a dimension-style fraction (digit/digit).
  */
 function isNoisyPhrase(text: string): boolean {
   const t = text.trim();
   if (t.length < 2) return true;
   // Purely numeric
   if (/^[0-9]+$/.test(t)) return true;
-  // Drawing reference code: single uppercase letter + 2-3 digits
+  // Drawing reference code: single uppercase letter + 2-3 digits (e.g. A123)
   if (/^[A-Z][0-9]{2,3}$/.test(t)) return true;
-  // Dimension string: contains ', ", /, or only digits+units like "6'-8""
-  if (/['"/]/.test(t)) return true;
+  // Dimension strings: foot/inch marks after digits (e.g. 6'-8", 4")
+  if (/[0-9]['"]/.test(t)) return true;
+  // Fractional dimension: digit/digit (e.g. 1/4, 3/8, 1/2)
+  if (/[0-9]\/[0-9]/.test(t)) return true;
+  // Bare number with optional units (e.g. "12.5 sf", "100")
   if (/^[0-9]+(\.?[0-9]*)?(\s*[a-z]{0,3})?$/i.test(t) && /[0-9]/.test(t)) return true;
   return false;
 }
 
 /**
  * Look up sign type from the provided label map by checking each token in the phrase.
- * Also checks multi-word (two-token) combinations for compound labels like "art room".
- * Returns the sign type string, or null if no token matches.
+ * Splits on both whitespace AND slash so that compound room labels like
+ * "UTL/JAN/RISER" or "STOR/MECH" are decomposed and each part is looked up.
+ * Also checks consecutive whitespace-token pairs for multi-word labels ("art room").
+ * Returns the first matching sign type string, or null if no token matches.
  */
 function lookupRoomLabelMap(text: string, labelMap: Record<string, string>): string | null {
-  const tokens = text.toLowerCase().trim().split(/\s+/);
-  // Single-token lookup
+  // Split on whitespace AND slash to handle compound labels like "UTL/JAN/RISER"
+  const tokens = text.toLowerCase().trim().split(/[\s/]+/);
+
+  // Single-token lookup (handles both whitespace-split and slash-split tokens)
   for (const token of tokens) {
     const clean = token.replace(/[^a-z']/g, "");
-    if (labelMap[clean]) return labelMap[clean]!;
-    if (labelMap[token]) return labelMap[token]!;
+    if (clean && labelMap[clean]) return labelMap[clean]!;
+    if (token && labelMap[token]) return labelMap[token]!;
   }
-  // Multi-word (two-token) lookup
-  for (let i = 0; i < tokens.length - 1; i++) {
-    const pair = `${tokens[i]!.replace(/[^a-z']/g, "")} ${tokens[i + 1]!.replace(/[^a-z']/g, "")}`;
+
+  // Multi-word (two-token) lookup — only for whitespace-adjacent tokens
+  const wsTokens = text.toLowerCase().trim().split(/\s+/);
+  for (let i = 0; i < wsTokens.length - 1; i++) {
+    const pair = `${wsTokens[i]!.replace(/[^a-z']/g, "")} ${wsTokens[i + 1]!.replace(/[^a-z']/g, "")}`;
     if (labelMap[pair]) return labelMap[pair]!;
   }
   return null;

@@ -311,6 +311,7 @@ export const ROOM_LABEL_MAP: Record<string, string> = {
   janitor: "JANITOR ROOM SIGN",
   custodial: "JANITOR ROOM SIGN",
   housekeeping: "JANITOR ROOM SIGN",
+  jan: "JANITOR ROOM SIGN",       // abbreviation common on floor plans (e.g. UTL/JAN/RISER)
 
   break: "BREAK ROOM SIGN",
   lounge: "BREAK ROOM SIGN",
@@ -318,6 +319,32 @@ export const ROOM_LABEL_MAP: Record<string, string> = {
   "café": "BREAK ROOM SIGN",
   cafe: "BREAK ROOM SIGN",
   breakroom: "BREAK ROOM SIGN",
+
+  // Utility / mechanical abbreviated labels (common on church, school, institutional plans)
+  utl: "UTILITY ROOM SIGN",
+  utility: "UTILITY ROOM SIGN",
+  riser: "MECHANICAL ROOM SIGN",  // pipe/mechanical riser shaft
+
+  // Outdoor / transition areas
+  patio: "OUTDOOR AREA SIGN",
+  terrace: "OUTDOOR AREA SIGN",
+  courtyard: "OUTDOOR AREA SIGN",
+  atrium: "LOBBY SIGN",
+
+  // Performance / assembly spaces
+  stage: "AUDITORIUM SIGN",
+  platform: "ROOM ID SIGN",
+  balcony: "ROOM ID SIGN",
+  auditorium: "AUDITORIUM SIGN",
+  amphitheater: "AUDITORIUM SIGN",
+  amphitheatre: "AUDITORIUM SIGN",
+
+  // Additional circulation / access
+  "coat room": "ROOM ID SIGN",
+  coatroom: "ROOM ID SIGN",
+  cloakroom: "ROOM ID SIGN",
+  "green room": "ROOM ID SIGN",
+  greenroom: "ROOM ID SIGN",
 };
 
 /**
