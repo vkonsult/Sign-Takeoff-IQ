@@ -7,13 +7,15 @@ import {
   jobFilesTable,
   extractedSignsTable,
   activityLogsTable,
+  signTypeSpecsTable,
+  signageScheduleEntriesTable,
 } from "@workspace/db";
 import { buildExcelExport } from "../lib/export";
 import { getJobExportPath, PAGES_DIR } from "../lib/storage";
 import { processJob, deduplicateSignRows } from "../lib/process-job";
 import { extractSignsFromPdfImage, extractSignsFromPdf, visualLocateDoors } from "../lib/extraction";
 import { ai } from "@workspace/integrations-gemini-ai";
-import { AI_CALL_REGISTRY, type AiCallType, runProjectInfoExtraction, runSignScheduleTextExtraction, runFloorPlanTextExtraction, runBboxDetection, runVisionFallback, runTitleBlockVision } from "../lib/ai-processor";
+import { AI_CALL_REGISTRY, type AiCallType, runProjectInfoExtraction, runFloorPlanTextExtraction, runBboxDetection, runVisionFallback, runTitleBlockVision, runSignScheduleEnrich } from "../lib/ai-processor";
 import { extractPagePhrases, matchLocationToCoords, type SpatialPageType } from "../lib/pdf-words";
 import fs from "fs/promises";
 import fsSync from "fs";
@@ -1277,7 +1279,7 @@ router.get("/jobs/:jobId/ai-calls", async (req, res) => {
 
 // ── AI Scan Endpoint ─────────────────────────────────────────────────────────
 const aiScanSchema = z.object({
-  callTypes: z.array(z.enum(["project_info", "sign_schedule_text", "floor_plan_text", "vision_fallback", "bbox_detection", "title_block_vision"])),
+  callTypes: z.array(z.enum(["sign_schedule_enrich", "project_info", "floor_plan_text", "vision_fallback", "bbox_detection", "title_block_vision"])),
 });
 
 router.post("/jobs/:jobId/ai-scan", async (req, res) => {
@@ -1361,14 +1363,6 @@ router.post("/jobs/:jobId/ai-scan", async (req, res) => {
             }
             results[`${callType}_${file.id}`] = { info, inputTokens, outputTokens, updatedFields: Object.keys(jobUpdate) };
 
-          } else if (callType === "sign_schedule_text") {
-            const spatialMap = buildSpatialMap("sign_schedule");
-            const { rows, inputTokens, outputTokens } = await runSignScheduleTextExtraction(file, projectContext, spatialMap.size > 0 ? spatialMap : undefined);
-            const { newCount, updateCount } = await mergeAiSignRows(rows, jobId, file.id, existingSignKeys, existingSigns, files);
-            totalNewSigns += newCount;
-            totalUpdatedSigns += updateCount;
-            results[`${callType}_${file.id}`] = { rowsExtracted: rows.length, newSigns: newCount, updatedSigns: updateCount, inputTokens, outputTokens };
-
           } else if (callType === "floor_plan_text") {
             const spatialMap = buildSpatialMap("floor_plan");
             const { rows, inputTokens, outputTokens } = await runFloorPlanTextExtraction(file, projectContext, spatialMap.size > 0 ? spatialMap : undefined);
@@ -1410,6 +1404,16 @@ router.post("/jobs/:jobId/ai-scan", async (req, res) => {
               await db.update(jobFilesTable).set({ pageStats: updatedStats }).where(eq(jobFilesTable.id, file.id));
             }
             results[`${callType}_${file.id}`] = { levelsFound: levelMap.size, levels: Object.fromEntries(levelMap) };
+          } else if (callType === "sign_schedule_enrich") {
+            // Job-level operation — only run once (skip subsequent files in this job)
+            if (file === files[0]) {
+              const enrichResult = await runSignScheduleEnrich(jobId);
+              results[`${callType}_job`] = {
+                enrichedCount: enrichResult.enrichedCount,
+                skippedCount: enrichResult.skippedCount,
+                specs: enrichResult.specResults,
+              };
+            }
           }
         } catch (callErr) {
           req.log.error({ callErr, callType, fileId: file.id }, "AI scan call failed");
@@ -1613,4 +1617,89 @@ async function assignMissingCoordinates(jobId: string, files: DbFile[]): Promise
   }
 }
 
+// ── GET /jobs/:jobId/schedule-entries ─────────────────────────────────────────
+// Returns schedule entries with joined sign type spec data for the given job.
+router.get("/jobs/:jobId/schedule-entries", async (req: Request, res: Response) => {
+  const { jobId } = req.params;
+
+  try {
+    const job = await getJobWithOrgCheck(req, res, jobId);
+    if (!job) return;
+
+    const entries = await db
+      .select({
+        id: signageScheduleEntriesTable.id,
+        jobId: signageScheduleEntriesTable.jobId,
+        signTypeSpecId: signageScheduleEntriesTable.signTypeSpecId,
+        pairedSignId: signageScheduleEntriesTable.pairedSignId,
+        sourceTableName: signageScheduleEntriesTable.sourceTableName,
+        pageNumber: signageScheduleEntriesTable.pageNumber,
+        roomNumber: signageScheduleEntriesTable.roomNumber,
+        roomName: signageScheduleEntriesTable.roomName,
+        signTypeCode: signageScheduleEntriesTable.signTypeCode,
+        quantity: signageScheduleEntriesTable.quantity,
+        signageText: signageScheduleEntriesTable.signageText,
+        glassBacker: signageScheduleEntriesTable.glassBacker,
+        rawComments: signageScheduleEntriesTable.rawComments,
+        expandedComments: signageScheduleEntriesTable.expandedComments,
+        dimensions: signageScheduleEntriesTable.dimensions,
+        material: signageScheduleEntriesTable.material,
+        features: signageScheduleEntriesTable.features,
+        specDimensions: signTypeSpecsTable.dimensions,
+        specMaterial: signTypeSpecsTable.material,
+        specFeatures: signTypeSpecsTable.features,
+        specKeynoteMap: signTypeSpecsTable.keynoteMap,
+        specHasDrawing: signTypeSpecsTable.hasDrawing,
+        specCropImageUrl: signTypeSpecsTable.cropImageUrl,
+        specGeminiEnriched: signTypeSpecsTable.geminiEnriched,
+        specGeminiNotes: signTypeSpecsTable.geminiNotes,
+      })
+      .from(signageScheduleEntriesTable)
+      .leftJoin(signTypeSpecsTable, eq(signageScheduleEntriesTable.signTypeSpecId, signTypeSpecsTable.id))
+      .where(eq(signageScheduleEntriesTable.jobId, jobId))
+      .orderBy(signageScheduleEntriesTable.pageNumber, signageScheduleEntriesTable.roomNumber);
+
+    const specs = await db
+      .select()
+      .from(signTypeSpecsTable)
+      .where(eq(signTypeSpecsTable.jobId, jobId))
+      .orderBy(signTypeSpecsTable.typeCode);
+
+    res.json({ entries, specs });
+  } catch (err) {
+    res.status(500).json({ error: "Failed to fetch schedule entries" });
+  }
+});
+
+// ── GET /jobs/:jobId/schedule-crops/:fileId/:fileName ─────────────────────────
+// Serves pre-rendered crop PNG images for sign type diagrams.
+router.get("/jobs/:jobId/schedule-crops/:fileId/:fileName", async (req: Request, res: Response) => {
+  const { jobId, fileId, fileName } = req.params;
+  const job = await getJobWithOrgCheck(req, res, jobId);
+  if (!job) return;
+
+  // Verify fileId belongs to this job (prevents IDOR across jobs)
+  const [fileRow] = await db
+    .select({ id: jobFilesTable.id })
+    .from(jobFilesTable)
+    .where(and(eq(jobFilesTable.id, fileId), eq(jobFilesTable.jobId, jobId)))
+    .limit(1);
+  if (!fileRow) { res.status(404).json({ error: "File not found for this job" }); return; }
+
+  const safeName = path.basename(fileName);
+  const filePath = path.join(PAGES_DIR, fileId, "crops", safeName);
+
+  try {
+    const { createReadStream } = await import("fs");
+    const stream = createReadStream(filePath);
+    stream.on("error", () => res.status(404).json({ error: "Crop image not found" }));
+    res.setHeader("Content-Type", "image/png");
+    res.setHeader("Cache-Control", "public, max-age=86400");
+    stream.pipe(res);
+  } catch {
+    res.status(404).json({ error: "Crop image not found" });
+  }
+});
+
 export default router;
+

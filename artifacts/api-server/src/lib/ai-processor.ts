@@ -8,7 +8,6 @@ import fs from "fs/promises";
 import { ai } from "@workspace/integrations-gemini-ai";
 import {
   extractProjectInfo,
-  extractSignScheduleOnly,
   extractFloorPlanOnly,
   extractSignCalloutsPng,
   type ProjectInfo,
@@ -20,12 +19,16 @@ import { getFilePageImagesDir, PAGES_DIR } from "./storage";
 import { renderFloorPlanPages } from "./pdf-render";
 import { extractPagePhrases, classifyPageFromPhrases, CANONICAL_LEVEL_NAMES } from "./pdf-words";
 import path from "path";
+import { db } from "@workspace/db";
+import { eq } from "drizzle-orm";
+import { signTypeSpecsTable, jobFilesTable } from "@workspace/db";
+import { enrichWithGemini } from "./signage-schedule-parser";
 
 // ── AI Call Type ──────────────────────────────────────────────────────────────
 
 export type AiCallType =
+  | "sign_schedule_enrich"
   | "project_info"
-  | "sign_schedule_text"
   | "floor_plan_text"
   | "vision_fallback"
   | "bbox_detection"
@@ -41,6 +44,23 @@ export interface AiCallDescriptor {
 }
 
 export const AI_CALL_REGISTRY: AiCallDescriptor[] = [
+  {
+    type: "sign_schedule_enrich",
+    name: "Sign Schedule Diagram Enrichment",
+    description: "Scans sign type diagram regions extracted from sign schedule pages. Sends each cropped diagram image to Gemini Vision to extract material specs, finish notes, mounting details, and any other written annotations not captured by the text parser. Results are saved to the sign type spec records.",
+    prompt: `You are examining a cropped diagram from an architectural sign schedule. This image shows the design, dimensions, and specification notes for a single sign type.
+
+Extract as much detail as possible:
+- Material composition (substrate, face, backer)
+- Finish and color specifications
+- Mounting method and hardware
+- Illumination or electrical requirements
+- Any ADA or code compliance notes
+- Fabrication or installation notes
+
+Return a JSON object with keys: material, finish, mounting, illumination, ada_notes, fabrication_notes, other_notes.
+Use null for any field you cannot determine from the image.`,
+  },
   {
     type: "project_info",
     name: "Project Info Extraction",
@@ -58,18 +78,6 @@ Extract the following details:
 
 Return ONLY a single JSON object (not an array).
 If no project information is found: {"project_name":null,"address":null,"city":null,"state":null,"zip":null,"occupancy_type":null,"ahj":null}`,
-  },
-  {
-    type: "sign_schedule_text",
-    name: "Sign Schedule Text Extraction",
-    description: "Sends text from sign schedule pages to Gemini for structured sign data extraction. Extracts sign type, identifier, quantity, location, dimensions, mounting, finish, materials, message copy, and notes.",
-    prompt: `You are an expert sign industry estimator and takeoff specialist. Your task is to extract all sign-related information from sign schedule or specification pages.
-
-For each unique sign or sign entry identified, extract these fields (use null if unavailable):
-- sheet_number, detail_reference, sign_type, sign_identifier, quantity, location, dimensions, mounting_type, finish_color, illumination, materials, message_content, notes, page_number, confidence_score (0.0–1.0), review_flag (true if confidence_score < 0.6)
-
-Return ONLY a valid JSON array. No markdown, no code blocks, no explanation.
-If the document contains NO sign-related information, return an empty JSON array: []`,
   },
   {
     type: "floor_plan_text",
@@ -175,27 +183,6 @@ export interface SignExtractionResult {
   inputTokens: number;
   outputTokens: number;
   pageCount: number;
-}
-
-export async function runSignScheduleTextExtraction(
-  file: { storedPath: string; id: string },
-  projectContext?: ProjectInfo,
-  spatialPageTypes?: Map<number, import("./pdf-words").SpatialPageType>,
-): Promise<SignExtractionResult> {
-  // Isolated: runs ONLY the sign schedule Gemini pass — no floor plan pass, no fallback
-  const result = await extractSignScheduleOnly(
-    file.storedPath,
-    file.id,
-    ai,
-    projectContext,
-    spatialPageTypes,
-  );
-  return {
-    rows: result.rows,
-    inputTokens: result.inputTokens,
-    outputTokens: result.outputTokens,
-    pageCount: result.pageCount,
-  };
 }
 
 export async function runFloorPlanTextExtraction(
@@ -365,4 +352,106 @@ export async function runVisionFallback(
   }
   const scanResult = await extractSignCalloutsPng(file.originalName, ai, absImagePaths, relevantPages);
   return { scanResult, pageImagePaths };
+}
+
+export interface SignScheduleEnrichResult {
+  enrichedCount: number;
+  skippedCount: number;
+  specResults: Array<{ typeCode: string; status: "enriched" | "skipped" | "error"; cropImageUrl?: string }>;
+}
+
+/**
+ * Runs Gemini Vision enrichment on sign type diagram regions for a job.
+ * Groups specs by source file (using sign_schedule page classifications stored
+ * in jobFilesTable.pageStats) and runs enrichWithGemini per file group.
+ */
+export async function runSignScheduleEnrich(jobId: string): Promise<SignScheduleEnrichResult> {
+  const specs = await db
+    .select()
+    .from(signTypeSpecsTable)
+    .where(eq(signTypeSpecsTable.jobId, jobId));
+
+  const specsWithDrawing = specs.filter((s) => s.hasDrawing && s.cropBox);
+  if (specsWithDrawing.length === 0) {
+    return { enrichedCount: 0, skippedCount: specs.length, specResults: [] };
+  }
+
+  const jobFiles = await db
+    .select()
+    .from(jobFilesTable)
+    .where(eq(jobFilesTable.jobId, jobId));
+
+  const fileById = new Map(jobFiles.map((f) => [f.id, f]));
+
+  // Group specs by the source file they were parsed from (stored in sourceFileId)
+  const specsByFile = new Map<string, typeof specsWithDrawing>();
+  for (const spec of specsWithDrawing) {
+    const file = spec.sourceFileId ? fileById.get(spec.sourceFileId) : undefined;
+    const pdfPath = file?.storedPath ?? jobFiles[0]?.storedPath;
+    if (!pdfPath) continue;
+    const group = specsByFile.get(pdfPath) ?? [];
+    group.push(spec);
+    specsByFile.set(pdfPath, group);
+  }
+
+  const specResults: SignScheduleEnrichResult["specResults"] = [];
+  let enrichedCount = 0;
+
+  for (const [pdfPath, fileSpecs] of specsByFile) {
+    const jobFile = jobFiles.find((f) => f.storedPath === pdfPath);
+    const cropDir = jobFile ? path.join(PAGES_DIR, jobFile.id, "crops") : null;
+
+    try {
+      const parserSpecs = fileSpecs.map((s) => ({
+        typeCode: s.typeCode,
+        dimensions: s.dimensions,
+        material: s.material,
+        features: (s.features as string[] | null) ?? [],
+        keynoteMap: (s.keynoteMap as Record<string, string> | null) ?? {},
+        cropBox: s.cropBox as { x: number; y: number; w: number; h: number; pageNum: number } | null,
+        hasDrawing: s.hasDrawing,
+      }));
+
+      const enriched = await enrichWithGemini(
+        parserSpecs,
+        pdfPath,
+        ai,
+        cropDir
+          ? async (typeCode, pngBuffer) => {
+              const fsMod = await import("fs/promises");
+              await fsMod.mkdir(cropDir, { recursive: true });
+              const fileName = `crop-${typeCode}.png`;
+              await fsMod.writeFile(path.join(cropDir, fileName), pngBuffer);
+              return `/api/jobs/${jobId}/schedule-crops/${jobFile!.id}/${fileName}`;
+            }
+          : undefined,
+      );
+
+      for (const [typeCode, result] of enriched) {
+        const spec = fileSpecs.find((s) => s.typeCode === typeCode);
+        if (!spec) continue;
+        await db.update(signTypeSpecsTable).set({
+          geminiNotes: result.notes as Record<string, unknown>,
+          cropImageUrl: result.cropImageUrl ?? null,
+          geminiEnriched: true,
+        }).where(eq(signTypeSpecsTable.id, spec.id));
+        specResults.push({ typeCode, status: "enriched", cropImageUrl: result.cropImageUrl ?? undefined });
+        enrichedCount++;
+      }
+
+      // Mark non-enriched specs from this file as skipped
+      for (const spec of fileSpecs) {
+        if (!enriched.has(spec.typeCode)) {
+          specResults.push({ typeCode: spec.typeCode, status: "skipped" });
+        }
+      }
+    } catch (err) {
+      logger.warn({ err, pdfPath, jobId }, "runSignScheduleEnrich: enrichment failed for file group");
+      for (const spec of fileSpecs) {
+        specResults.push({ typeCode: spec.typeCode, status: "error" });
+      }
+    }
+  }
+
+  return { enrichedCount, skippedCount: specs.length - enrichedCount, specResults };
 }

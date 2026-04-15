@@ -6,12 +6,15 @@
  */
 
 import path from "path";
+import fs from "fs/promises";
 import { eq, and } from "drizzle-orm";
 import { db } from "@workspace/db";
 import {
   jobsTable,
   jobFilesTable,
   extractedSignsTable,
+  signTypeSpecsTable,
+  signageScheduleEntriesTable,
   type ProcessingStep,
 } from "@workspace/db";
 
@@ -23,6 +26,7 @@ import { renderFloorPlanPages } from "./pdf-render";
 import { logger } from "./logger";
 import {
   extractPagePhrases,
+  extractRawPageItems,
   matchLocationToCoords,
   classifyPageFromPhrases,
   extractFloorLevelName,
@@ -31,6 +35,12 @@ import {
   type PdfPhrase,
   type SpatialPageType,
 } from "./pdf-words";
+import {
+  extractSignageData,
+  enrichWithGemini,
+  type SignTypeSpec,
+  type ScheduleEntry,
+} from "./signage-schedule-parser";
 
 export async function runPdfProcessor(jobId: string): Promise<void> {
   const pipelineSteps: ProcessingStep[] = [];
@@ -127,6 +137,10 @@ export async function runPdfProcessor(jobId: string): Promise<void> {
   const allSpatialPageTypes = new Map<string, Map<number, SpatialPageType>>();
   const allSpatialFloorLevelNames = new Map<string, Map<number, string>>();
   const fileFloorPlanPages = new Map<string, Set<number>>();
+
+  // Accumulate schedule parser results across all files for batch DB insertion
+  const allScheduleSpecs: Array<SignTypeSpec & { fileId: string; fileStoredPath: string }> = [];
+  const allScheduleEntries: Array<ScheduleEntry & { fileId: string }> = [];
 
   // Building type is detected from the title block of the first/cover page
   // and shared across all files in this job.  Set once; never overwritten.
@@ -380,6 +394,61 @@ export async function runPdfProcessor(jobId: string): Promise<void> {
           logger.warn({ err, fileId: file.id }, "[PDF Processor] Heuristic extraction failed — non-fatal");
         }
 
+        // ── Signage schedule spatial parsing (no AI) ──────────────────────
+        // Parse pages classified as sign_schedule using the deterministic spatial parser.
+        {
+          const schedulePageNums = [...new Set([...finalSignSchedulePages, ...finalBothPages])].sort((a, b) => a - b);
+          if (schedulePageNums.length > 0) {
+            try {
+              const t_schedule = Date.now();
+              const mergedSpecs = new Map<string, SignTypeSpec & { fileId: string; fileStoredPath: string }>();
+              const fileEntries: Array<ScheduleEntry & { fileId: string }> = [];
+
+              for (const pageNum of schedulePageNums) {
+                try {
+                  // Use raw (unmerged) pdfjs text items for the spatial schedule parser
+                  // to preserve individual table-cell boundaries (phrase merging collapses cells)
+                  const { items: rawItems, pageWidth, pageHeight } = await extractRawPageItems(file.storedPath, pageNum);
+                  const result = extractSignageData(rawItems, pageNum, pageWidth, pageHeight);
+
+                  // Merge specs: same typeCode → same spec (later pages override if same code appears)
+                  for (const spec of result.specs) {
+                    const key = spec.typeCode.toUpperCase();
+                    const existing = mergedSpecs.get(key);
+                    if (!existing) {
+                      mergedSpecs.set(key, { ...spec, fileId: file.id, fileStoredPath: file.storedPath });
+                    } else {
+                      // Merge: update dimensions/material from new spec if available
+                      if (spec.dimensions && !existing.dimensions) existing.dimensions = spec.dimensions;
+                      if (spec.material && !existing.material) existing.material = spec.material;
+                      if (spec.features.length > 0 && existing.features.length === 0) existing.features = spec.features;
+                      if (spec.hasDrawing) { existing.hasDrawing = true; existing.cropBox = spec.cropBox; }
+                      if (Object.keys(spec.keynoteMap).length > 0) existing.keynoteMap = { ...existing.keynoteMap, ...spec.keynoteMap };
+                    }
+                  }
+
+                  for (const entry of result.entries) {
+                    fileEntries.push({ ...entry, fileId: file.id });
+                  }
+                } catch (pageErr) {
+                  logger.warn({ pageErr, fileId: file.id, pageNum }, "[PDF Processor] Schedule parse failed for page — non-fatal");
+                }
+              }
+
+              if (fileEntries.length > 0 || mergedSpecs.size > 0) {
+                allScheduleSpecs.push(...mergedSpecs.values());
+                allScheduleEntries.push(...fileEntries);
+                logger.info(
+                  { jobId, fileId: file.id, specs: mergedSpecs.size, entries: fileEntries.length, durationMs: Date.now() - t_schedule },
+                  "[PDF Processor] Schedule spatial parse complete"
+                );
+              }
+            } catch (err) {
+              logger.warn({ err, fileId: file.id }, "[PDF Processor] Schedule parsing failed — non-fatal");
+            }
+          }
+        }
+
         // ── Persist file metadata ─────────────────────────────────────────
         const floorPageLevels = spatialFloorLevelNames && spatialFloorLevelNames.size > 0
           ? Object.fromEntries(spatialFloorLevelNames)
@@ -414,6 +483,161 @@ export async function runPdfProcessor(jobId: string): Promise<void> {
     succeeded: parsedResults.filter((r) => !("error" in r)).length,
     failed: parsedResults.filter((r) => "error" in r).length,
   });
+
+  // ── Persist schedule parser results (sign_type_specs + signage_schedule_entries) ──
+  // Always clear previous schedule rows first (re-run support, prevents stale data
+  // if no schedule pages are found in a subsequent run).
+  await db.delete(signageScheduleEntriesTable).where(eq(signageScheduleEntriesTable.jobId, jobId));
+  await db.delete(signTypeSpecsTable).where(eq(signTypeSpecsTable.jobId, jobId));
+
+  if (allScheduleSpecs.length > 0 || allScheduleEntries.length > 0) {
+    try {
+      const t_schedule_persist = Date.now();
+
+      // Deduplicate specs job-wide by typeCode (last-file wins for conflicts)
+      const deduplicatedSpecsMap = new Map<string, typeof allScheduleSpecs[0]>();
+      for (const spec of allScheduleSpecs) {
+        const key = spec.typeCode.toUpperCase();
+        const existing = deduplicatedSpecsMap.get(key);
+        if (!existing) {
+          deduplicatedSpecsMap.set(key, spec);
+        } else {
+          // Merge: enrich existing with any new information
+          if (spec.dimensions && !existing.dimensions) existing.dimensions = spec.dimensions;
+          if (spec.material && !existing.material) existing.material = spec.material;
+          if (spec.features.length > 0 && existing.features.length === 0) existing.features = spec.features;
+          if (spec.hasDrawing) { existing.hasDrawing = true; existing.cropBox = spec.cropBox; existing.fileStoredPath = spec.fileStoredPath; }
+          if (Object.keys(spec.keynoteMap).length > 0) existing.keynoteMap = { ...existing.keynoteMap, ...spec.keynoteMap };
+        }
+      }
+      const deduplicatedSpecs = [...deduplicatedSpecsMap.values()];
+
+      // Insert sign type specs
+      const specIdMap = new Map<string, string>(); // typeCode → DB id
+      if (deduplicatedSpecs.length > 0) {
+        const specRows = deduplicatedSpecs.map((spec) => ({
+          jobId,
+          sourceFileId: spec.fileId,
+          typeCode: spec.typeCode,
+          dimensions: spec.dimensions ?? null,
+          material: spec.material ?? null,
+          features: spec.features.length > 0 ? spec.features : null,
+          keynoteMap: Object.keys(spec.keynoteMap).length > 0 ? spec.keynoteMap : null,
+          cropBox: spec.cropBox ?? null,
+          hasDrawing: spec.hasDrawing,
+          geminiEnriched: false,
+        }));
+        const inserted = await db.insert(signTypeSpecsTable).values(specRows).returning({ id: signTypeSpecsTable.id, typeCode: signTypeSpecsTable.typeCode });
+        for (const row of inserted) {
+          specIdMap.set(row.typeCode, row.id);
+        }
+      }
+
+      // Build pairedSignId lookup: job + sign type code → extracted_signs row id
+      // Match by signIdentifier (the sign type code column) across this job.
+      const extractedSignsForJob = await db
+        .select({ id: extractedSignsTable.id, signIdentifier: extractedSignsTable.signIdentifier })
+        .from(extractedSignsTable)
+        .where(eq(extractedSignsTable.jobId, jobId));
+      const pairedSignMap = new Map<string, string>(); // signIdentifier.upper → extractedSign.id
+      for (const sign of extractedSignsForJob) {
+        if (sign.signIdentifier) {
+          pairedSignMap.set(sign.signIdentifier.toUpperCase().trim(), sign.id);
+        }
+      }
+
+      // Insert schedule entries
+      if (allScheduleEntries.length > 0) {
+        const entryRows = allScheduleEntries.map((entry) => ({
+          jobId,
+          signTypeSpecId: specIdMap.get(entry.signTypeCode) ?? specIdMap.get(entry.signTypeCode.toUpperCase()) ?? null,
+          pairedSignId: pairedSignMap.get(entry.signTypeCode.toUpperCase().trim()) ?? null,
+          sourceTableName: entry.sourceTableName || null,
+          pageNumber: entry.pageNumber,
+          roomNumber: entry.roomNumber ?? null,
+          roomName: entry.roomName ?? null,
+          signTypeCode: entry.signTypeCode,
+          quantity: entry.quantity ?? null,
+          signageText: entry.signageText ?? null,
+          glassBacker: entry.glassBacker ?? null,
+          rawComments: entry.rawComments ?? null,
+          expandedComments: entry.expandedComments ?? null,
+          dimensions: entry.dimensions ?? null,
+          material: entry.material ?? null,
+          features: entry.features.length > 0 ? entry.features : null,
+        }));
+        const CHUNK = 200;
+        for (let i = 0; i < entryRows.length; i += CHUNK) {
+          await db.insert(signageScheduleEntriesTable).values(entryRows.slice(i, i + CHUNK));
+        }
+      }
+
+      logger.info(
+        { jobId, specs: allScheduleSpecs.length, entries: allScheduleEntries.length, durationMs: Date.now() - t_schedule_persist },
+        "[PDF Processor] Schedule data persisted"
+      );
+
+      // Fire Gemini enrichment as non-blocking background task
+      if (deduplicatedSpecs.some((s) => s.hasDrawing)) {
+        const specsWithDrawing = deduplicatedSpecs.filter((s) => s.hasDrawing && s.cropBox);
+
+        setImmediate(async () => {
+          try {
+            const { ai } = await import("@workspace/integrations-gemini-ai");
+
+            // Group deduplicated specs by source file path (correct multi-file support)
+            const specsByFilePath = new Map<string, Array<typeof specsWithDrawing[0]>>();
+            for (const spec of specsWithDrawing) {
+              const grp = specsByFilePath.get(spec.fileStoredPath) ?? [];
+              grp.push(spec);
+              specsByFilePath.set(spec.fileStoredPath, grp);
+            }
+
+            let totalEnriched = 0;
+            for (const [filePath, fileSpecs] of specsByFilePath) {
+              const sourceFile = filesToProcess.find((f) => f.storedPath === filePath);
+              if (!sourceFile) continue;
+              const cropDir = path.join(PAGES_DIR, sourceFile.id, "crops");
+
+              try {
+                const enriched = await enrichWithGemini(
+                  fileSpecs,
+                  filePath,
+                  ai,
+                  async (typeCode, pngBuffer) => {
+                    await fs.mkdir(cropDir, { recursive: true });
+                    const fileName = `crop-${typeCode}.png`;
+                    await fs.writeFile(path.join(cropDir, fileName), pngBuffer);
+                    return `/api/jobs/${jobId}/schedule-crops/${sourceFile.id}/${fileName}`;
+                  },
+                );
+
+                for (const [typeCode, result] of enriched) {
+                  const specId = specIdMap.get(typeCode);
+                  if (specId) {
+                    await db.update(signTypeSpecsTable).set({
+                      geminiNotes: result.notes as Record<string, unknown>,
+                      cropImageUrl: result.cropImageUrl ?? null,
+                      geminiEnriched: true,
+                    }).where(eq(signTypeSpecsTable.id, specId));
+                  }
+                }
+                totalEnriched += enriched.size;
+              } catch (fileErr) {
+                logger.warn({ fileErr, filePath, jobId }, "[PDF Processor] Gemini enrichment failed for file — non-fatal");
+              }
+            }
+
+            logger.info({ jobId, enriched: totalEnriched }, "[PDF Processor] Background Gemini enrichment complete");
+          } catch (err) {
+            logger.warn({ err, jobId }, "[PDF Processor] Background Gemini enrichment failed — non-fatal");
+          }
+        });
+      }
+    } catch (err) {
+      logger.warn({ err, jobId }, "[PDF Processor] Schedule data persistence failed — non-fatal");
+    }
+  }
 
   // ── Word-match coordinate assignment for preserved signs ──────────────────
   // Re-run coordinate matching for preserved signs that may have lost their positions.

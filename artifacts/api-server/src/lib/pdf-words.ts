@@ -53,6 +53,7 @@ interface PdfjsViewport {
 interface PdfjsPage {
   getViewport(opts: { scale: number }): PdfjsViewport;
   getTextContent(): Promise<PdfjsTextContent>;
+  render(opts: { canvasContext: unknown; viewport: PdfjsViewport }): { promise: Promise<void> };
 }
 
 interface PdfjsDocument {
@@ -116,7 +117,7 @@ const phraseCache = new Map<string, PageWords>();
 const PDFJS_DOC_CACHE_MAX = 20;
 const pdfjsDocCache = new Map<string, Promise<PdfjsDocument>>();
 
-async function getOrOpenPdfjsDoc(pdfPath: string): Promise<PdfjsDocument> {
+export async function getOrOpenPdfjsDoc(pdfPath: string): Promise<PdfjsDocument> {
   const existing = pdfjsDocCache.get(pdfPath);
   if (existing) return existing;
 
@@ -190,6 +191,54 @@ function isTextItem(item: PdfjsTextItem | Record<string, unknown>): item is Pdfj
     Array.isArray((item as PdfjsTextItem).transform) &&
     typeof (item as PdfjsTextItem).width === "number"
   );
+}
+
+// ── Raw text-item extractor (no phrase merging) ───────────────────────────
+
+/**
+ * Returns every visible pdfjs TextItem from a page converted to viewport
+ * point-space WITHOUT any merging or normalisation.
+ *
+ * Used by the sign-schedule spatial parser which needs individual text cells
+ * (table columns) to remain separate so that table-column alignment is
+ * preserved.  Phrase merging would collapse adjacent cells in the same row.
+ */
+export async function extractRawPageItems(
+  pdfPath: string,
+  pageNum: number,
+): Promise<{ items: Array<{ text: string; x: number; y: number; w: number; h: number }>; pageWidth: number; pageHeight: number }> {
+  const doc = await getOrOpenPdfjsDoc(pdfPath);
+  const page = await doc.getPage(pageNum);
+  const viewport = page.getViewport({ scale: 1.0 });
+  const pageW = viewport.width;
+  const pageH = viewport.height;
+  const content = await page.getTextContent();
+
+  const items = content.items
+    .filter(isTextItem)
+    .filter((it) => it.str.trim().length > 0)
+    .map((item) => {
+      const [a, b, c, d, tx, ty] = item.transform;
+      const iw = item.width || 8;
+      const ih = Math.abs(item.height) || 8;
+      const scaleX = Math.sqrt(a * a + b * b) || 1;
+      const scaleY = Math.sqrt(c * c + d * d) || 1;
+      const ux = a / scaleX; const uy = b / scaleX;
+      const vx2 = c / scaleY; const vy2 = d / scaleY;
+      const corners: [number, number][] = [
+        viewport.convertToViewportPoint(tx, ty),
+        viewport.convertToViewportPoint(tx + ux * iw, ty + uy * iw),
+        viewport.convertToViewportPoint(tx + vx2 * ih, ty + vy2 * ih),
+        viewport.convertToViewportPoint(tx + ux * iw + vx2 * ih, ty + uy * iw + vy2 * ih),
+      ];
+      const x0 = Math.min(...corners.map((p) => p[0]));
+      const x1 = Math.max(...corners.map((p) => p[0]));
+      const y0 = Math.min(...corners.map((p) => p[1]));
+      const y1 = Math.max(...corners.map((p) => p[1]));
+      return { text: item.str.trim(), x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
+    });
+
+  return { items, pageWidth: pageW, pageHeight: pageH };
 }
 
 // ── Core extractor ────────────────────────────────────────────────────────

@@ -65,82 +65,8 @@ export interface ExtractedSignRow {
 }
 
 // ─── PROMPTS ────────────────────────────────────────────────────────────────
-
-const SIGN_SCHEDULE_PROMPT = `You are an expert sign industry estimator and takeoff specialist. Your task is to extract all sign-related information from architectural or sign plan documents.
-
-The text below is extracted from a PDF, with each page delimited by "--- PAGE N ---". Use these page markers to determine which PDF page each sign appears on.
-
-For each unique sign or sign entry identified, extract the following fields. Use null if a field is not available:
-
-- sheet_number: The plan sheet number where this sign appears (e.g. "A-101", "S-1", "E-101")
-- detail_reference: Any detail or callout reference number/letter (e.g. "1/A-5", "SN-01", "TYPE A")
-- sign_type: The type or category of sign (e.g. "Building ID", "Wayfinding", "Regulatory", "Exit", "Room ID", "Parking", "Monument", "Pylon", "Cabinet", "Channel Letter", "Dimensional Letter", "ADA", "Informational", "Directional")
-- sign_identifier: The sign code, number, or label that uniquely identifies it in the schedule (e.g. "S-01", "EX-1", "P1", "Sign Type A")
-- quantity: Number of signs of this type (integer). Default to 1 if a specific sign is referenced but no quantity given.
-- location: For the location field, use only the room identifier exactly as it appears printed on the plan — for example UNIT 2A 406B or ELEC A404. Do not add descriptive phrases, door positions, or narrative text. The location value must match the printed label verbatim so it can be found in the plan's text layer. In educational and school facilities, single-word room names without a number are valid location identifiers — for example MUSIC, ART ROOM, PRE-K, CLASSROOM 101, LIBRARY, CAFETERIA, SCIENCE LAB, GYMNASIUM, ADMINISTRATION. Treat any such label as a complete, valid location.
-- dimensions: Physical size of the sign (e.g. '24" x 36"', "4'0\" x 8'0\"", "18 x 24 inches")
-- mounting_type: How the sign is attached (e.g. "Wall Mounted", "Post Mounted", "Suspended", "Floor Standing", "Flush Mount", "Projecting", "Cabinet Mount", "Direct Applied")
-- finish_color: Surface finish, paint color, or material finish (e.g. "Brushed Aluminum", "Matte Black", "PMS 485 Red", "White with Blue Copy", "Clear Anodized")
-- illumination: Lighting information (e.g. "Non-Illuminated", "Internally Illuminated", "Externally Illuminated", "LED Backlit", "Halo Lit", "Face Lit", "Neon", "LED Module")
-- materials: Construction materials (e.g. "Aluminum", "Acrylic", "HDU", "Aluminum with Acrylic Face", "Vinyl on Aluminum", "PVC", "Stainless Steel", "Bronze", "Powder Coated Steel")
-- message_content: The actual text, copy, or content of the sign (e.g. "ENTRANCE", "EXIT", "RESTROOMS", "Suite 100 - Company Name", "NO PARKING")
-- notes: Any special instructions, specifications, or notes relevant to this sign (e.g. "ADA compliant", "UL Listed", "Landlord approval required", "Match existing signage")
-- page_number: The PDF page number (integer, 1-indexed) where this sign callout, schedule row, or reference appears. Use the "--- PAGE N ---" markers to determine this.
-
-After extracting all fields, compute:
-- confidence_score: A number from 0.0 to 1.0 indicating how confident you are in the extraction.
-  * 1.0 = All key fields present (sign_type, sign_identifier, quantity, location, dimensions)
-  * 0.8 = Most key fields present, minor details missing
-  * 0.6 = Some key fields missing (e.g. no dimensions or mounting type)
-  * 0.4 = Only basic info available (sign type and location but little else)
-  * 0.2 = Very little data, mostly inferred
-- review_flag: true if confidence_score < 0.6 OR if sign_type is null OR if location is null, otherwise false
-
-IMPORTANT RULES:
-- Include every sign mentioned, even if partially described
-- If you find a sign schedule table, extract each row as a separate entry
-- Do NOT merge different sign types into one entry
-- If quantity appears in a schedule, use that exact number
-- Return ONLY a valid JSON array. No markdown, no code blocks, no explanation.
-- Each array element must have all the fields listed above (including page_number).
-- If the document contains NO sign-related information, return an empty JSON array: []
-- NEVER explain why there are no signs. ONLY output the JSON array (even if it is empty).
-
-DEDUPLICATION RULES:
-- Each physical door or room produces exactly ONE entry per sign type. Do NOT output the same room + sign type combination twice, even if the room label appears in both a schedule table and as a callout on a floor plan page.
-- Do NOT add signs based on building code requirements alone. Only output signs that have a visible sign symbol, callout bubble, schedule row, or label present on the plan itself.
-- A single location (e.g., "Electrical Room 101A") may correctly have MULTIPLE entries with DIFFERENT sign types (Room ID + Electrical Hazard + Evacuation Map). These are valid distinct entries and must all be kept — do NOT collapse them.
-- If the same room label appears in both a structured schedule pass and a visual scan of the floor plan, output it ONCE. Prefer the entry with the most complete data (detail_reference, dimensions, mounting_type populated).
-- Do NOT output a sign entry solely because it is code-required for that occupancy type if no actual sign symbol or annotation is visible in the document.
-
-SIGN SCHEDULE / SPECIFICATION PAGES:
-When you encounter a structured sign schedule table (even if split across multiple columns), extract every row. If the table has separate columns per floor/level (e.g. "${LEVEL_NAMES_PIPE}"), treat each column independently and include the floor/level name in the location.
-
-MULTI-COLUMN / MULTI-FLOOR SCHEDULE TABLES:
-When a page contains parallel floor-level columns (e.g. ${CANONICAL_LEVEL_NAMES.map((n) => `"Signage Schedule - ${n.replace(/\b\w/g, (c) => c.toUpperCase())}"`).join(", ")} side by side):
-- Process each column independently from left to right.
-- Within each column, room sections appear as room-number + room-name headings (e.g. "101" followed by "PORCH", or "201 STAIR / ELEVATOR LOBBY"). Use the most recent room section heading as the location for all sign rows beneath it until the next room heading.
-- Sign rows follow the pattern: [Sign Type Code] [Quantity] [Signage Text] [Glass Backer: Yes/No] [Comments].
-- Map the sign type code (e.g. "2A", "2D", "3A", "4A") to the sign_identifier field.
-- Map the signage text to the message_content field.
-- If the Glass Backer column is "Yes", append "glass backer" to the materials field.
-- If there are comment letter codes (A, B, G, etc.), append them to the notes field as "Comment: A" etc.
-- A "Typical Sign Types" diagram column may appear on the far right with dimension callouts (e.g. "6 1/2\"", "8 1/4\"", "11\"", "7 1/2\""). Associate these dimensions with the corresponding sign type codes shown in the diagram (e.g. type 1A = "6 1/2\" x 8 1/4\"") and use them to populate the dimensions field for rows with that type code.
-- Include the floor/level name in the location, e.g. "101 PORCH — ${CANONICAL_LEVEL_NAMES[0]?.replace(/\b\w/g, (c) => c.toUpperCase()) ?? "Lower Level"}", "201 STAIR / ELEVATOR LOBBY — ${CANONICAL_LEVEL_NAMES[1]?.replace(/\b\w/g, (c) => c.toUpperCase()) ?? "Main Level"}".
-
-CSI SPECIFICATION SECTION PAGES (e.g. Section 10 14 00 SIGNAGE):
-When the document is a CSI-format specification section listing sign type definitions (e.g. "Types 1A and 1B Interior Room Signage", "Type 3A Interior Wayfinding Signage"):
-- Extract each defined sign type as a separate entry.
-- Use the type code (e.g. "1A", "1B", "2A", "3A", "4D", "9B") as sign_identifier.
-- Use the category name (e.g. "Interior Room Sign", "Interior Exit Discharge Sign", "Interior Wayfinding Sign", "Exterior Door ID Sign") as sign_type.
-- Capture the substrate/material (e.g. "Photopolymer", "Cast Aluminum", "Painted Aluminum", "Acrylic", "Reflective vinyl on stainless steel") in the materials field.
-- Capture mounting height and location rules (e.g. "60 inches AFF to centerline, latch side of door", "directly above fire extinguisher cabinet") in the mounting_type field.
-- Capture compliance codes and special requirements (e.g. "AAB-compliant", "ADA compliant", "524 CMR 35.00", "UL Listed", "mechanically fastened, flush mounted") in the notes field.
-- Set quantity to 1 — this is a type definition, not a per-location count.
-- Set location to null — location comes from the signage schedule, not the spec.
-- Set confidence_score to 0.7 (dimensions are referenced to the schedule, so key fields are missing) and review_flag to true.
-- Do NOT extract procedural spec content (Part 1 General administrative sections, submittals, warranty, quality assurance, delivery, environmental conditions — only extract sections that define actual sign types under 1.1 SUMMARY or equivalent).
-`;
+// Note: SIGN_SCHEDULE_PROMPT was removed. Sign schedule pages are now processed
+// by the deterministic spatial parser in signage-schedule-parser.ts.
 
 
 // ─── PROJECT INFO PROMPT ──────────────────────────────────────────────────────
@@ -2896,34 +2822,12 @@ Pages:
   let totalInputTokens = 0;
   let totalOutputTokens = 0;
 
-  // ── PASS 1: Sign Schedule / Specification Pages ───────────────────────────
-  // Extract all signs explicitly listed in sign schedules / specs.  These are
-  // the architect's definitive list of sign types, quantities, and locations.
-  // Pass 2 (floor plans) handles code-required signs not in the schedule.
-  const signScheduleBlock = buildPageBlock(pages, "sign_schedule", 300000, 8000);
-  let signScheduleContext: string | undefined;
-
-  if (signScheduleBlock.trim().length > 50) {
-    signScheduleContext = signScheduleBlock; // also passed as reference context to Pass 2
-    logger.info({ filePath: filePath.split("/").pop() }, "Running sign schedule extraction pass");
-    // Inject spec type definitions (from a companion spec file) at the top of the
-    // schedule prompt so Gemini can map type codes → materials/mounting/notes.
-    const schedulePromptPrefix = specTypeContext
-      ? SIGN_SCHEDULE_PROMPT + specTypeContext + "\n\nSIGN SCHEDULE / FLOOR PLAN PAGES:\n"
-      : SIGN_SCHEDULE_PROMPT;
-    const { text: scheduleText, inputTokens: si, outputTokens: so } = await callGemini(
-      schedulePromptPrefix + signScheduleBlock,
-      ai,
-      "sign-schedule"
-    );
-    totalInputTokens += si;
-    totalOutputTokens += so;
-    const scheduleRows = parseGeminiResponse(scheduleText, "sign-schedule");
-    logger.info({ count: scheduleRows.length }, "Sign schedule pass complete");
-    allRows.push(...scheduleRows);
-  } else {
-    logger.info({ filePath: filePath.split("/").pop() }, "No sign schedule pages found — skipping schedule pass");
-  }
+  // ── PASS 1: Sign Schedule pages are now handled by the spatial parser ────────
+  // The deterministic spatial parser (signage-schedule-parser.ts) processes all
+  // sign_schedule pages during initial PDF processing.  No Gemini call is made
+  // here — keeping signScheduleContext undefined so Pass 2 proceeds without it.
+  const signScheduleContext: string | undefined = undefined;
+  logger.info({ filePath: filePath.split("/").pop() }, "Pass 1 skipped — sign schedule pages handled by spatial parser");
 
   // ── PASS 2: Floor Plan Pages — ADA-Required Signs ──────────────────────────
   // Split floor plan pages into batches of ~240K chars to stay under rate limits
@@ -3024,17 +2928,15 @@ Pages:
     logger.info({ filePath: filePath.split("/").pop() }, "No results from targeted passes — running general extraction fallback");
 
     const generalBlock = buildPageBlock(
-      pages
-        .filter((p) => p.type === "floor_plan" || p.type === "sign_schedule" || p.type === "both")
-        .map((p) => ({ ...p, type: "sign_schedule" as PageType })),
-      "sign_schedule",
+      pages.filter((p) => p.type === "floor_plan" || p.type === "both"),
+      "floor_plan",
       300000,
       6000
     );
 
     if (generalBlock.trim().length > 50) {
       const { text: fallbackText, inputTokens: gi, outputTokens: go } = await callGemini(
-        SIGN_SCHEDULE_PROMPT + generalBlock,
+        buildFloorPlanADAPrompt(projectContext) + generalBlock,
         ai,
         "general-fallback"
       );
@@ -3337,45 +3239,8 @@ export async function visualLocateDoors(
 // ── Isolated per-call-type extraction functions ────────────────────────────────
 // These run exactly ONE bounded Gemini pass. They do NOT call extractSignsFromPdf
 // and do NOT trigger any other AI pass, making them safe for on-demand /ai-scan use.
-
-/**
- * Sign schedule only — extracts sign data from sign schedule / specification pages.
- * Runs exactly one Gemini call (SIGN_SCHEDULE_PROMPT) against sign_schedule-classified pages.
- */
-export async function extractSignScheduleOnly(
-  filePath: string,
-  fileId: string,
-  ai: GeminiAI,
-  projectContext?: ProjectInfo,
-  spatialPageTypes?: Map<number, import("./pdf-words").SpatialPageType>,
-): Promise<{ rows: ExtractedSignRow[]; inputTokens: number; outputTokens: number; pageCount: number }> {
-  const { pages: rawPages, numPages } = await extractTextFromPdf(filePath, fileId);
-
-  // Apply spatial overrides (no Gemini for classification)
-  const pages = rawPages.map((p) => {
-    const spatialType = spatialPageTypes?.get(p.pageNum);
-    if (!spatialType || spatialType === "unknown") {
-      return spatialType === "unknown" ? { ...p, type: "other" as const } : p;
-    }
-    return { ...p, type: spatialType as PageType };
-  });
-
-  const signScheduleBlock = buildPageBlock(pages, "sign_schedule", 300000, 8000);
-  if (signScheduleBlock.trim().length <= 50) {
-    logger.info({ filePath: filePath.split("/").pop() }, "extractSignScheduleOnly: no sign schedule pages found");
-    return { rows: [], inputTokens: 0, outputTokens: 0, pageCount: numPages };
-  }
-
-  logger.info({ filePath: filePath.split("/").pop() }, "extractSignScheduleOnly: running sign schedule Gemini pass");
-  const { text, inputTokens, outputTokens } = await callGemini(
-    SIGN_SCHEDULE_PROMPT + signScheduleBlock,
-    ai,
-    "sign-schedule-only"
-  );
-  const rows = parseGeminiResponse(text, "sign-schedule-only");
-  logger.info({ count: rows.length }, "extractSignScheduleOnly: complete");
-  return { rows, inputTokens, outputTokens, pageCount: numPages };
-}
+// Note: extractSignScheduleOnly was removed — sign schedule pages are now handled
+// exclusively by the deterministic spatial parser in signage-schedule-parser.ts.
 
 /**
  * Floor plan only — extracts ADA/code-required signs from floor plan pages.

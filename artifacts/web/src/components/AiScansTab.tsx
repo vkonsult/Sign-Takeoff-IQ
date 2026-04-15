@@ -23,8 +23,8 @@ interface CallState {
 }
 
 const CALL_TYPE_ICONS: Record<string, React.ReactNode> = {
+  sign_schedule_enrich: <Eye className="w-4 h-4 text-emerald-400" />,
   project_info: <Info className="w-4 h-4 text-blue-400" />,
-  sign_schedule_text: <Cpu className="w-4 h-4 text-violet-400" />,
   floor_plan_text: <Cpu className="w-4 h-4 text-violet-400" />,
   vision_fallback: <Eye className="w-4 h-4 text-orange-400" />,
   bbox_detection: <Eye className="w-4 h-4 text-orange-400" />,
@@ -48,9 +48,7 @@ export function AiScansTab({
 
   const [callStates, setCallStates] = useState<Record<string, CallState>>({});
   const [runAllState, setRunAllState] = useState<"idle" | "running" | "done">("idle");
-  const [selectedTypes, setSelectedTypes] = useState<Set<string>>(
-    new Set(["sign_schedule_text", "floor_plan_text"])
-  );
+  const [selectedTypes, setSelectedTypes] = useState<Set<string>>(new Set());
   const [expandedPrompts, setExpandedPrompts] = useState<Set<string>>(new Set());
 
   useEffect(() => {
@@ -58,8 +56,13 @@ export function AiScansTab({
     apiFetch(`/api/jobs/${jobId}/ai-calls`)
       .then((res) => res.json())
       .then((data: { callTypes: AiCallDescriptor[] }) => {
-        setCallRegistry(data.callTypes ?? []);
+        const registry = data.callTypes ?? [];
+        setCallRegistry(registry);
         setRegistryError(null);
+        // Sync default selection from live registry (all enabled by default)
+        setSelectedTypes((prev) =>
+          prev.size === 0 ? new Set(registry.map((c: AiCallDescriptor) => c.type)) : prev
+        );
       })
       .catch((err) => {
         setRegistryError(String(err));
