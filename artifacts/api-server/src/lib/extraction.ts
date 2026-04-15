@@ -862,11 +862,66 @@ function detectTitleBlock(text: string): TitleBlockType {
 
   // Gather presence flags up front (reused across all steps).
   const hasFpNumber = FLOOR_PLAN_DRAWING_NUMBER_PATTERNS.some((p) => p.test(text));
-  // Exclusion veto — applies to BOTH floor plan AND sign schedule detection.
-  // An electrical/structural/photometric/etc. page is never a floor plan or a
-  // sign schedule, regardless of what other keywords appear in the title block.
+
+  // Proximity-aware exclusion veto for floor-plan title classification.
+  //
+  // Problem: exclusion phrases like "electrical", "fire", "roof" appear throughout
+  // a floor plan's body text (in notes, room labels, and annotations) far away from
+  // the page's own drawing title ("A3.1 Lower Level Plan"). A blanket whole-page
+  // exclusion incorrectly vetoes these real floor plans.
+  //
+  // Solution: only veto when a PLAN-TYPE MODIFIER exclusion phrase appears within
+  // ±40 characters of a floor-plan title keyword. The modifier list is intentionally
+  // narrow — only terms that directly precede "plan" to make it a non-floor-plan
+  // sheet type (e.g. "Reflected Ceiling Plan", "Mechanical Plan"). Terms that appear
+  // incidentally in body notes ("roof", "fire", "water", "protection") are excluded
+  // from this proximity check; they continue to gate the fallback text-score path.
+  const PLAN_TYPE_MODIFIERS = [
+    "ceiling", "reflected ceiling",
+    "framing",
+    "structural",
+    "mechanical",
+    "electrical",
+    "plumbing",
+    "foundation",
+    "demolition",
+    "sanitary",
+  ] as const;
+  const EXCLUSION_PROXIMITY = 40;
+  const hasFpTitleAny = FLOOR_PLAN_TITLE_KEYWORDS.some((kw) => upper.includes(kw.toUpperCase()));
+
+  // Returns true when at least one occurrence of titleKw in `upper` has NO
+  // plan-type modifier within ±EXCLUSION_PROXIMITY chars.  A single "clean"
+  // occurrence is enough to confirm the page has a genuine floor-plan title —
+  // even if the same keyword also appears in a note like
+  // "UPPER LEVEL ROOFING AND COPPER BOX CEILING TO REMAIN" elsewhere on the page.
+  function hasCleanOccurrence(titleKw: string): boolean {
+    const kwU = titleKw.toUpperCase();
+    let searchFrom = 0;
+    while (true) {
+      const pos = upper.indexOf(kwU, searchFrom);
+      if (pos === -1) break;
+      const win = upper.slice(Math.max(0, pos - EXCLUSION_PROXIMITY), pos + kwU.length + EXCLUSION_PROXIMITY);
+      if (!PLAN_TYPE_MODIFIERS.some((mod) => win.includes(mod.toUpperCase()))) return true;
+      searchFrom = pos + 1;
+    }
+    return false;
+  }
+
+  // hasExclusionNearTitle is true only when every occurrence of every matched
+  // fp-title keyword is tainted by a nearby plan-type modifier — i.e. there is
+  // NO clean occurrence anywhere on the page.  If even one clean occurrence
+  // exists (likely the actual drawing title) we do not veto.
+  const hasExclusionNearTitle = hasFpTitleAny &&
+    !FLOOR_PLAN_TITLE_KEYWORDS.some((kw) => upper.includes(kw.toUpperCase()) && hasCleanOccurrence(kw));
+
+  // Whole-page exclusion flag — still used to veto sign schedule detection and
+  // the fallback text-score path (where no drawing number anchor is available).
   const hasExclusion = FLOOR_PLAN_EXCLUSION_PHRASES.some((kw) => upper.includes(kw.toUpperCase()));
-  const hasFpTitle = !hasExclusion && FLOOR_PLAN_TITLE_KEYWORDS.some((kw) => upper.includes(kw.toUpperCase()));
+
+  // hasFpTitle: fp title keyword present AND no plan-type modifier appears
+  // immediately adjacent to it (proximity-aware, narrow modifier set).
+  const hasFpTitle = hasFpTitleAny && !hasExclusionNearTitle;
   const hasOtherNumber = OTHER_DRAWING_NUMBER_PATTERNS.some((p) => p.test(text));
   const hasAnyNumber = hasFpNumber || hasOtherNumber;
   // Sign schedule flags — suppressed when the exclusion veto fires.
@@ -911,7 +966,10 @@ function detectTitleBlock(text: string): TitleBlockType {
   // ── 5. Any "other" drawing number → confidently not a floor plan ─────────────
   // Structural/MEP/civil/general drawing numbers (G-x, S-x, M-x, etc.) and
   // A2.x–A9.x all indicate the sheet is not a floor plan or sign schedule.
-  if (hasOtherNumber) {
+  // EXCEPTION: if the page also carries a floor plan title keyword (e.g., the
+  // A3.x drawing number appears as a cross-reference on a page whose own title
+  // is "A3.1 Lower Level Plan"), defer to the title and do not veto here.
+  if (hasOtherNumber && !hasFpTitle) {
     return "other";
   }
 
