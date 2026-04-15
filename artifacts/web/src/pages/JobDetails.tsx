@@ -920,7 +920,7 @@ export default function JobDetails() {
                 <div className="flex items-center px-4 gap-0">
                   <button
                     onClick={() => setActiveTab("table")}
-                    className={`flex items-center gap-1.5 px-4 py-2.5 text-[11px] font-display font-semibold uppercase tracking-wide border-b-2 transition-all ${
+                    className={`flex items-center gap-1.5 px-3 py-2 text-[10px] font-display font-semibold uppercase tracking-wider border-b-2 transition-all ${
                       activeTab === "table"
                         ? "border-primary text-primary"
                         : "border-transparent text-muted-foreground hover:text-foreground"
@@ -931,7 +931,7 @@ export default function JobDetails() {
                   </button>
                   <button
                     onClick={() => setActiveTab("sheets")}
-                    className={`flex items-center gap-1.5 px-4 py-2.5 text-[11px] font-display font-semibold uppercase tracking-wide border-b-2 transition-all ${
+                    className={`flex items-center gap-1.5 px-3 py-2 text-[10px] font-display font-semibold uppercase tracking-wider border-b-2 transition-all ${
                       activeTab === "sheets"
                         ? "border-primary text-primary"
                         : "border-transparent text-muted-foreground hover:text-foreground"
@@ -942,7 +942,7 @@ export default function JobDetails() {
                   </button>
                   <button
                     onClick={() => setActiveTab("summary")}
-                    className={`flex items-center gap-1.5 px-4 py-2.5 text-[11px] font-display font-semibold uppercase tracking-wide border-b-2 transition-all ${
+                    className={`flex items-center gap-1.5 px-3 py-2 text-[10px] font-display font-semibold uppercase tracking-wider border-b-2 transition-all ${
                       activeTab === "summary"
                         ? "border-primary text-primary"
                         : "border-transparent text-muted-foreground hover:text-foreground"
@@ -953,7 +953,7 @@ export default function JobDetails() {
                   </button>
                   <button
                     onClick={() => setActiveTab("floorplans")}
-                    className={`flex items-center gap-1.5 px-4 py-2.5 text-[11px] font-display font-semibold uppercase tracking-wide border-b-2 transition-all ${
+                    className={`flex items-center gap-1.5 px-3 py-2 text-[10px] font-display font-semibold uppercase tracking-wider border-b-2 transition-all ${
                       activeTab === "floorplans"
                         ? "border-primary text-primary"
                         : "border-transparent text-muted-foreground hover:text-foreground"
@@ -964,18 +964,18 @@ export default function JobDetails() {
                   </button>
                   <button
                     onClick={() => setActiveTab("specs")}
-                    className={`flex items-center gap-1.5 px-4 py-2.5 text-[11px] font-display font-semibold uppercase tracking-wide border-b-2 transition-all ${
+                    className={`flex items-center gap-1.5 px-3 py-2 text-[10px] font-display font-semibold uppercase tracking-wider border-b-2 transition-all ${
                       activeTab === "specs"
                         ? "border-primary text-primary"
                         : "border-transparent text-muted-foreground hover:text-foreground"
                     }`}
                   >
                     <FileText className="w-3.5 h-3.5" />
-                    Sign Specs &amp; Schedules
+                    Sign Specs
                   </button>
                   <button
                     onClick={() => setActiveTab("timeline")}
-                    className={`flex items-center gap-1.5 px-4 py-2.5 text-[11px] font-display font-semibold uppercase tracking-wide border-b-2 transition-all ${
+                    className={`flex items-center gap-1.5 px-3 py-2 text-[10px] font-display font-semibold uppercase tracking-wider border-b-2 transition-all ${
                       activeTab === "timeline"
                         ? "border-primary text-primary"
                         : "border-transparent text-muted-foreground hover:text-foreground"
@@ -987,7 +987,7 @@ export default function JobDetails() {
                   {(isCompleted || isFailed) && (
                     <button
                       onClick={() => setActiveTab("coords")}
-                      className={`flex items-center gap-1.5 px-4 py-2.5 text-[11px] font-display font-semibold uppercase tracking-wide border-b-2 transition-all ${
+                      className={`flex items-center gap-1.5 px-3 py-2 text-[10px] font-display font-semibold uppercase tracking-wider border-b-2 transition-all ${
                         activeTab === "coords"
                           ? "border-primary text-primary"
                           : "border-transparent text-muted-foreground hover:text-foreground"
@@ -1000,7 +1000,7 @@ export default function JobDetails() {
                   {(isCompleted || isFailed) && (
                     <button
                       onClick={() => setActiveTab("ai_scans")}
-                      className={`flex items-center gap-1.5 px-4 py-2.5 text-[11px] font-display font-semibold uppercase tracking-wide border-b-2 transition-all ${
+                      className={`flex items-center gap-1.5 px-3 py-2 text-[10px] font-display font-semibold uppercase tracking-wider border-b-2 transition-all ${
                         activeTab === "ai_scans"
                           ? "border-violet-500 text-violet-400"
                           : "border-transparent text-muted-foreground hover:text-foreground"
@@ -1674,13 +1674,18 @@ function buildDetectionRows(
     return null;
   };
 
+  const bothPages: number[] = (stats as Record<string, unknown>).bothPages as number[] ?? [];
+
   const floorPlanRows: DetectionRow[] = floorPlanPages.map((pgNo) => ({
     pageNo: pgNo,
     label: getLabel(pgNo),
     bookmarkTitle: getBookmarkTitle(pgNo),
   }));
 
-  const signSpecRows: DetectionRow[] = signSchedulePages.map((pgNo) => ({
+  // Sign spec rows include both pure sign-schedule pages AND "both" pages
+  // (combined floor-plan + sign-schedule sheets). Deduplicated and sorted.
+  const allSpecPageNums = [...new Set([...signSchedulePages, ...bothPages])].sort((a, b) => a - b);
+  const signSpecRows: DetectionRow[] = allSpecPageNums.map((pgNo) => ({
     pageNo: pgNo,
     label: getLabel(pgNo),
     bookmarkTitle: getBookmarkTitle(pgNo),
@@ -1864,11 +1869,26 @@ function SheetsPanel({
   if (!hasStats) return null;
 
   const totalPages = files.reduce((sum, f) => sum + (f.pageCount ?? 0), 0);
-  const totalSignSchedule = files.reduce((sum, f) => sum + (f.pageStats?.signSchedulePages?.length ?? 0), 0);
+  const totalSignSchedule = files.reduce((sum, f) => {
+    const ss = f.pageStats?.signSchedulePages?.length ?? 0;
+    const both = (f.pageStats as Record<string, unknown>)?.bothPages instanceof Array
+      ? ((f.pageStats as Record<string, unknown>).bothPages as number[]).length : 0;
+    return sum + ss + both;
+  }, 0);
   const totalFloorPlan = files.reduce((sum, f) => sum + (f.pageStats?.floorPlanPages?.length ?? 0), 0);
 
-  // Find the first file that has sign schedule pages (for the quick "Review" button)
-  const firstSpecFile = files.find((f) => (f.pageStats?.signSchedulePages?.length ?? 0) > 0);
+  // Find the first file that has sign spec pages (sign schedule OR both)
+  const firstSpecFile = files.find(
+    (f) => (f.pageStats?.signSchedulePages?.length ?? 0) > 0 ||
+      (((f.pageStats as Record<string, unknown>)?.bothPages as number[] | undefined)?.length ?? 0) > 0
+  );
+
+  // Build the combined spec page list for a given file's pageStats
+  const getSpecPages = (stats: NonNullable<typeof firstSpecFile>["pageStats"]): number[] => {
+    const ss = stats?.signSchedulePages ?? [];
+    const both = (stats as Record<string, unknown>)?.bothPages as number[] | undefined ?? [];
+    return [...new Set([...ss, ...both])].sort((a, b) => a - b);
+  };
 
   return (
     <div className="flex-none border-t border-border/60 bg-background">
@@ -1892,13 +1912,13 @@ function SheetsPanel({
             </span>
           </button>
           <div className="flex items-center gap-2">
-            {firstSpecFile && firstSpecFile.pageStats?.signSchedulePages && (
+            {firstSpecFile && (
               <button
                 onClick={() =>
                   onOpenSpec({
                     fileId: firstSpecFile.id,
                     fileName: firstSpecFile.originalName,
-                    specPages: firstSpecFile.pageStats!.signSchedulePages!,
+                    specPages: getSpecPages(firstSpecFile.pageStats),
                   })
                 }
                 className="flex-shrink-0 px-3 py-1 rounded text-[10px] font-display font-bold uppercase tracking-wider border bg-accent/10 text-accent border-accent/40 hover:bg-accent/20 transition-colors"
@@ -1939,13 +1959,13 @@ function SheetsPanel({
                         <ExternalLink className="w-3 h-3" />
                         PDF
                       </button>
-                      {ssCount > 0 && (
+                      {(ssCount > 0 || bothCount > 0) && (
                         <button
                           onClick={() =>
                             onOpenSpec({
                               fileId: f.id,
                               fileName: f.originalName,
-                              specPages: stats!.signSchedulePages!,
+                              specPages: getSpecPages(stats),
                             })
                           }
                           className="px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider bg-accent/10 text-accent border border-accent/30 hover:bg-accent/20 transition-colors"

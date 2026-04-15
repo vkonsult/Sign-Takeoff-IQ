@@ -21,7 +21,9 @@ export function SignSpecsTab({ files, jobId }: SignSpecsTabProps) {
     const entries: PageEntry[] = [];
     for (const f of files) {
       const schedPages = f.pageStats?.signSchedulePages ?? [];
-      for (const pg of schedPages) {
+      const bothPages: number[] = (f.pageStats as Record<string, unknown>)?.bothPages as number[] | undefined ?? [];
+      const allPages = [...new Set([...schedPages, ...bothPages])].sort((a, b) => a - b);
+      for (const pg of allPages) {
         entries.push({ fileId: f.id, fileName: f.originalName, pageNumber: pg });
       }
     }

@@ -949,11 +949,19 @@ function detectTitleBlock(text: string): TitleBlockType {
   const EXCLUSION_PROXIMITY = 40;
   const hasFpTitleAny = FLOOR_PLAN_TITLE_KEYWORDS.some((kw) => upper.includes(kw.toUpperCase()));
 
-  // Returns true when at least one occurrence of titleKw in `upper` has NO
-  // plan-type modifier within ±EXCLUSION_PROXIMITY chars.  A single "clean"
-  // occurrence is enough to confirm the page has a genuine floor-plan title —
-  // even if the same keyword also appears in a note like
-  // "UPPER LEVEL ROOFING AND COPPER BOX CEILING TO REMAIN" elsewhere on the page.
+  // Sign-schedule qualifier phrases: when a floor plan title keyword appears
+  // immediately AFTER one of these (within 60 chars), it is a section heading
+  // inside a sign schedule — NOT an independent floor plan title.
+  // e.g. "Signage Schedule - Lower Level" → "lower level" is schedule-qualified.
+  const SS_QUALIFIER_PROXIMITY = 60;
+  const SS_QUALIFIERS = SIGN_SCHEDULE_PHRASES.map((s) => s.toUpperCase());
+
+  // Returns true when at least one occurrence of titleKw in `upper` satisfies:
+  //  1. NO plan-type modifier within ±EXCLUSION_PROXIMITY chars, AND
+  //  2. NOT immediately preceded by a sign-schedule phrase within SS_QUALIFIER_PROXIMITY.
+  // Condition 2 prevents "Signage Schedule - Lower Level" from being counted as
+  // an independent floor-plan title while still allowing a genuine floor-plan
+  // sheet that also has an embedded sign schedule table to pass.
   function hasCleanOccurrence(titleKw: string): boolean {
     const kwU = titleKw.toUpperCase();
     let searchFrom = 0;
@@ -961,7 +969,12 @@ function detectTitleBlock(text: string): TitleBlockType {
       const pos = upper.indexOf(kwU, searchFrom);
       if (pos === -1) break;
       const win = upper.slice(Math.max(0, pos - EXCLUSION_PROXIMITY), pos + kwU.length + EXCLUSION_PROXIMITY);
-      if (!PLAN_TYPE_MODIFIERS.some((mod) => win.includes(mod.toUpperCase()))) return true;
+      const hasPlanTypeMod = PLAN_TYPE_MODIFIERS.some((mod) => win.includes(mod.toUpperCase()));
+      if (!hasPlanTypeMod) {
+        const before = upper.slice(Math.max(0, pos - SS_QUALIFIER_PROXIMITY), pos);
+        const isScheduleCtx = SS_QUALIFIERS.some((q) => before.includes(q));
+        if (!isScheduleCtx) return true; // clean AND not a schedule section heading
+      }
       searchFrom = pos + 1;
     }
     return false;

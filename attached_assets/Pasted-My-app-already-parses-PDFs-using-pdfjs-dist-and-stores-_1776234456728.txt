@@ -1,0 +1,205 @@
+My app already parses PDFs using pdfjs-dist and stores per-page data in cache.
+Do NOT re-parse the PDF. Do NOT add pdfjs-dist or any new PDF library.
+
+I need you to add a signage sheet parser module that reads from the existing 
+page cache and extracts structured signage data from it.
+
+---
+
+## WHAT'S ALREADY IN MY CACHE PER PAGE
+
+The cache contains pdfjs-dist extracted data per page, which includes:
+- Text items with their x, y, width, height, str (the text string)
+- Each item has a transform matrix: [scaleX, skewX, skewY, scaleY, x, y]
+- The x and y come from transform[4] and transform[5]
+- Items are NOT pre-sorted — they come in PDF stream order
+
+---
+
+## WHAT TO BUILD
+
+A function: extractSignageData(pageCache) that:
+
+### 1. SORT & CLUSTER text items spatially
+  Sort all text items by y descending then x ascending
+  (PDF y=0 is bottom of page, so descending y = top to bottom visually)
+
+  Group items into lines by y-proximity (items within 3pt of same y = same line)
+  Group lines into blocks by x-proximity and y-gap 
+  (gap > 15pt between lines = new block)
+
+### 2. FIND SCHEDULE TABLES
+  Scan blocks for text containing "Signage Schedule"
+  → That block is a table header
+
+  For each table header found:
+    - Note its y position (y_start) and x position (x_col)
+    - Collect all items below y_start and within x range (x_col - 50) to (x_col + 400)
+    - Stop collecting when next table header found OR y drops below page bottom
+
+  Parse collected items into rows:
+    Each room section starts with a standalone number (room number pattern: /^\d{2,3}[A-Z]?$/)
+    followed by room name on same or next line
+    Then sign rows: sign_type (e.g. 1A, 2B) + quantity (single digit) + text + Yes/No + optional letter codes
+
+  Return:
+    {
+      tableName: "Signage Schedule - Lower Level",
+      bbox: { x1, y1, x2, y2 },
+      rows: [
+        {
+          roomNumber: "106",
+          roomName: "CHILDREN'S LIBRARIAN",
+          signType: "1A",
+          quantity: 2,
+          signageText: "CHILDREN'S LIBRARIAN",
+          glassBacker: "No",
+          comments: ""
+        }
+      ]
+    }
+
+### 3. FIND SIGN TYPE LEGEND
+  Scan blocks for text containing "SIGN TYPE LEGEND"
+  
+  For each legend found (may be INTERIOR and/or EXTERIOR):
+    Collect items within 300pt below it, same x-column range
+    
+    Each legend row pattern: 
+      [TypeCode] [Dimension] [Material and features...]
+      e.g. "1A", "7.5" x 6.5"", "PHOTOPOLYMER, RAISED CHARACTERS & BRAILLE"
+    
+    Parse dimension string: split on "x" → height + width
+    Parse features: split material string on comma
+    
+  Also find "SIGN KEYNOTES LEGEND" block:
+    Parse letter + description pairs (A → text, B → text...)
+
+  Return:
+    {
+      interior: [
+        {
+          signType: "1A",
+          height: "7.5",
+          width: "6.5",
+          unit: "inch",
+          material: "PHOTOPOLYMER",
+          features: ["RAISED CHARACTERS", "BRAILLE"]
+        }
+      ],
+      exterior: [...],
+      keynotes: { "A": "...", "B": "..." }
+    }
+
+### 4. FIND SIGN TYPE DIAGRAM REGIONS
+  Scan all text items for pattern matching: /^SIGN TYPE [0-9]+[A-Z]+$/
+  
+  For each match:
+    Record center point: cx = item.x, cy = item.y
+    
+    Count other text items within 120pt radius of this center:
+      - If count > 5 AND some items contain inch marks (") or foot marks (')
+        → hasDrawing = true  (real diagram with dimensions)
+      - Otherwise
+        → hasDrawing = false (text label only)
+    
+    Collect all text items within that 120pt radius as diagramTextItems
+    
+  Return:
+    {
+      "1A": {
+        signType: "1A",
+        centerX: 1450,
+        centerY: 300,
+        cropBox: [1330, 180, 1570, 420],   // centerX/Y ± 120, clamped to page
+        hasDrawing: true,
+        diagramTextItems: [...]             // raw text items in region
+      }
+    }
+
+### 5. MERGE INTO FINAL OUTPUT
+  For each row across all tables:
+    - Look up signType in legend → attach dimensions + material + features
+    - Look up signType in diagrams → attach cropBox + hasDrawing
+    - Expand comment codes using keynotes 
+      (e.g. comments "A, G" → keynotes["A"] + keynotes["G"])
+    - Set status: "pending"
+
+  Return final array:
+    [
+      {
+        sourceTable: "Signage Schedule - Lower Level",
+        roomNumber: "106",
+        roomName: "CHILDREN'S LIBRARIAN",
+        signType: "1A",
+        quantity: 2,
+        signageText: "CHILDREN'S LIBRARIAN",
+        glassBacker: "No",
+        comments: "A",
+        commentDetails: "PICTOGRAM TO INCLUDE UNIVERSAL SYMBOL OF ACCESSIBILITY",
+        dimensions: "7.5 x 6.5 in",
+        material: "PHOTOPOLYMER",
+        features: ["RAISED CHARACTERS", "BRAILLE"],
+        hasDrawing: true,
+        cropBox: [1330, 180, 1570, 420],
+        cropImageUrl: null,   // filled later by Gemini step
+        geminiNotes: null,    // filled later by Gemini step
+        status: "pending"
+      }
+    ]
+
+---
+
+## GEMINI STEP (called separately, after extraction)
+
+Only for rows where hasDrawing = true:
+
+  1. Use the existing page render/canvas from pdfjs-dist to extract 
+     the cropBox region as a base64 PNG:
+     
+     // Use the already-rendered pdfjs canvas if available in cache
+     // OR re-render just the crop region:
+     const viewport = page.getViewport({ scale: 2.0 });
+     // crop canvas to cropBox coords scaled by 2.0
+     // export as base64 PNG
+
+  2. Send to Gemini with this prompt:
+     """
+     Analyze this cropped architectural sign diagram. 
+     Return JSON only, no explanation:
+     {
+       "sign_type": "<label visible e.g. 1A>",
+       "height": "<H value with unit or null>",
+       "width": "<W value with unit or null>",
+       "mounting_height": "<AFF value if shown or null>",
+       "has_braille_note": <true|false>,
+       "has_pictogram": <true|false>,
+       "extra_notes": "<any other visible annotations or null>",
+       "confidence": "<high|medium|low>"
+     }
+     """
+
+  3. Attach response to the matching row as geminiNotes
+  4. Save crop PNG URL as cropImageUrl
+
+  Process Gemini calls with max 3 concurrent requests to avoid rate limits.
+
+---
+
+## WHAT NOT TO DO
+- Do NOT re-parse the PDF
+- Do NOT install pdfjs-dist again
+- Do NOT assume page layout is fixed
+- Do NOT hardcode x/y positions
+- Do NOT send full page images to Gemini
+- Do NOT block the UI during Gemini calls — process async and update rows 
+  as results come in
+
+---
+
+## HOW TO PLUG INTO EXISTING APP
+- Export extractSignageData(pageCache) as a standalone module
+- It takes the existing cache object for one page and returns the merged array
+- The Gemini step is a separate async function: enrichWithGemini(rows, pageCache)
+- Both functions should be callable independently so the table shows 
+  immediately after extraction, then Gemini results stream in per row
