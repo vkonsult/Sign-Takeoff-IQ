@@ -504,6 +504,7 @@ export default function JobDetails() {
   const [showHidden, setShowHidden] = useState(false);
   const [sortField, setSortField] = useState<string | null>(null);
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
+  const [summaryFilter, setSummaryFilter] = useState<null | "flagged">(null);
   const [activeTab, setActiveTab] = useState<"table" | "sheets" | "summary" | "floorplans" | "specs" | "timeline" | "coords" | "ai_scans">("table");
   const [showAiHighlight, setShowAiHighlight] = useState(false);
 
@@ -660,8 +661,12 @@ export default function JobDetails() {
     return "3_text";
   }
 
+  const filteredSigns = summaryFilter === "flagged"
+    ? extractedSigns.filter((s) => (s as Record<string, unknown>).reviewFlag === true)
+    : extractedSigns;
+
   const sortedSigns = sortField
-    ? [...extractedSigns].sort((a, b) => {
+    ? [...filteredSigns].sort((a, b) => {
         let av: string | number = "";
         let bv: string | number = "";
         const ar = a as Record<string, unknown>;
@@ -695,7 +700,7 @@ export default function JobDetails() {
           : String(av).localeCompare(String(bv));
         return sortDir === "asc" ? cmp : -cmp;
       })
-    : extractedSigns;
+    : filteredSigns;
   const isProcessing = job.status === "processing" || extractMutation.isPending;
   const isCompleted = job.status === "completed";
   const isPending = job.status === "pending";
@@ -907,7 +912,9 @@ export default function JobDetails() {
                 <SummaryCard 
                   title="Total Signs Extracted" 
                   value={totalSigns} 
-                  icon={<ListFilter className="w-4 h-4 text-muted-foreground" />} 
+                  icon={<ListFilter className="w-4 h-4 text-muted-foreground" />}
+                  onClick={() => setSummaryFilter(null)}
+                  isActive={summaryFilter === null}
                 />
                 <SummaryCard 
                   title="High Confidence" 
@@ -920,6 +927,8 @@ export default function JobDetails() {
                   value={flaggedCount} 
                   icon={<AlertTriangle className="w-4 h-4 text-primary" />} 
                   accent="primary"
+                  onClick={() => setSummaryFilter("flagged")}
+                  isActive={summaryFilter === "flagged"}
                 />
                 <CostCard 
                   inputTokens={(data as Record<string, unknown> & { processingCost?: { inputTokens?: number } }).processingCost?.inputTokens ?? (job.inputTokens ?? 0)}
@@ -1563,9 +1572,18 @@ function ConfidenceBadge({ score }: { score: number }) {
   );
 }
 
-function SummaryCard({ title, value, icon, accent }: { title: string, value: number, icon: React.ReactNode, accent?: 'primary' | 'accent' }) {
+function SummaryCard({ title, value, icon, accent, onClick, isActive }: { title: string, value: number, icon: React.ReactNode, accent?: 'primary' | 'accent', onClick?: () => void, isActive?: boolean }) {
+  const clickable = typeof onClick === "function";
   return (
-    <div className="bg-card border border-border px-3 py-2 rounded-lg relative overflow-hidden group hover:border-border/80 transition-colors">
+    <div
+      onClick={onClick}
+      className={`bg-card border px-3 py-2 rounded-lg relative overflow-hidden group transition-colors
+        ${clickable ? "cursor-pointer select-none" : ""}
+        ${isActive && accent === "primary" ? "border-primary/60 bg-primary/5 ring-1 ring-primary/30" : ""}
+        ${isActive && !accent ? "border-foreground/40 bg-secondary/60 ring-1 ring-foreground/20" : ""}
+        ${!isActive ? "border-border hover:border-border/80" : ""}
+      `}
+    >
       <div className="flex justify-between items-center relative z-10">
         <div>
           <p className="text-[10px] font-display font-medium text-muted-foreground uppercase tracking-wider mb-0.5">{title}</p>
