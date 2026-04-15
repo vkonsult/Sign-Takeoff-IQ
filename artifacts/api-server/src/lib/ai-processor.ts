@@ -236,7 +236,7 @@ export async function runBboxDetection(
   for (let pageNum = 1; pageNum <= numPages; pageNum++) {
     try {
       const pageWords = await extractPagePhrases(file.storedPath, file.id, pageNum);
-      const spatialType = classifyPageFromPhrases(pageWords.phrases);
+      const { type: spatialType } = classifyPageFromPhrases(pageWords.phrases);
       if (spatialType === "floor_plan" || spatialType === "sign_schedule" || spatialType === "both") {
         relevantPages.add(pageNum);
       }

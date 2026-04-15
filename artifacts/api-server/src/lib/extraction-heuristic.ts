@@ -14,7 +14,7 @@
  *   when we scale by pageWidth/pageHeight.
  */
 
-import { extractPagePhrases, getPdfPageCount } from "./pdf-words";
+import { extractPagePhrases, getPdfPageCount, classifyPageFromPhrases, type PdfPhrase } from "./pdf-words";
 import { ROOM_LABEL_MAP } from "./sign-vocabulary";
 import { logger } from "./logger";
 
@@ -275,19 +275,36 @@ function isValidCompanion(text: string): boolean {
 }
 
 /**
+ * Proximity threshold (normalised page units) for title-word exclusion.
+ * A hit whose centroid is within this radius of any detected title-phrase
+ * centroid is excluded as being part of the title block.
+ * ~9 % of page dimensions is roughly 65 pts on a typical A1 sheet.
+ */
+const TITLE_PROXIMITY_THRESHOLD = 0.09;
+
+/**
  * Extract institutional/church room sign pairs from floor plan pages using
  * spatial proximity matching.
  *
  * Strategy:
  * 1. Work at the phrase level (not individual words) to preserve multi-word labels.
- * 2. Apply drawing-area filter: exclude title block region.
+ * 2. Apply drawing-area filter: exclude hits that are spatially close to the
+ *    detected floor plan title words (titlePhrases).  Falls back to a blanket
+ *    zone exclusion when no title phrase coordinates are available.
  * 3. For each phrase whose token(s) match ROOM_LABEL_MAP (anchor), search for a
  *    companion phrase within the proximity window.
  * 4. Combine anchor + companion into one sign row, or emit anchor alone.
+ *
+ * @param titlePhrases  Phrases from the title-block zone that matched during
+ *                      classification.  When provided (non-empty), exclusion is
+ *                      proximity-based: only hits within TITLE_PROXIMITY_THRESHOLD
+ *                      of a title phrase are dropped.  When empty, falls back to
+ *                      the legacy blanket zone exclusion.
  */
 function extractInstitutionalRoomsFromPhrases(
   pw: { pageWidth: number; pageHeight: number; phrases: Array<{ text: string; x0: number; y0: number; x1: number; y1: number }> },
   pageNum: number,
+  titlePhrases?: PdfPhrase[],
 ): HeuristicSignInsert[] {
   const { pageWidth, pageHeight, phrases } = pw;
 
@@ -300,13 +317,40 @@ function extractInstitutionalRoomsFromPhrases(
     ny: (p.y0 + p.y1) / 2,
   }));
 
-  // Apply drawing-area filter: exclude title block region.
-  // cy_centre < 0.85 AND NOT (cx_centre > 0.65 AND cy_centre > 0.65)
-  const drawingArea = records.filter((r) => {
-    const cy_norm = r.ny;
-    const cx_norm = r.nx;
-    return cy_norm < 0.85 && !(cx_norm > 0.65 && cy_norm > 0.65);
-  });
+  // Pre-compute title-word centroids (normalised) for proximity checks.
+  const titleCentroids: Array<{ nx: number; ny: number }> =
+    (titlePhrases ?? []).map((p) => ({
+      nx: (p.x0 + p.x1) / 2,
+      ny: (p.y0 + p.y1) / 2,
+    }));
+
+  /**
+   * Returns true if a record should be excluded from the drawing area.
+   *
+   * When title centroid coordinates are available: exclude only if the record's
+   * centroid is within TITLE_PROXIMITY_THRESHOLD of any title centroid.
+   *
+   * Fallback (no title centroids): apply the legacy blanket zone filter —
+   * exclude the bottom strip (ny >= 0.85) OR the bottom-right quadrant
+   * (nx > 0.65 AND ny > 0.65).  This is identical to the original filter
+   * (cy_norm < 0.85 AND NOT (cx_norm > 0.65 AND cy_norm > 0.65)) and
+   * does NOT add any right-strip blanket exclusion.
+   */
+  function isInTitleZone(r: PhraseRecord): boolean {
+    if (titleCentroids.length > 0) {
+      return titleCentroids.some(
+        (tc) =>
+          Math.sqrt((r.nx - tc.nx) ** 2 + (r.ny - tc.ny) ** 2) <
+          TITLE_PROXIMITY_THRESHOLD,
+      );
+    }
+    // Fallback: exact legacy blanket zone — bottom strip (ny >= 0.85) OR
+    // bottom-right quadrant (nx > 0.65 AND ny > 0.65).
+    // Matches the original filter: cy_norm < 0.85 AND NOT (cx_norm > 0.65 AND cy_norm > 0.65).
+    return r.ny >= 0.85 || (r.nx > 0.65 && r.ny > 0.65);
+  }
+
+  const drawingArea = records.filter((r) => !isInTitleZone(r));
 
   // Apply noise filter.
   const usable = drawingArea.filter((r) => !isNoisyPhrase(r.text));
@@ -452,7 +496,10 @@ export async function extractSignsHeuristic(
 
       // Institutional/church room-pair extraction for floor plan pages
       if (floorPlanPages && floorPlanPages.has(pageNum)) {
-        const instRows = extractInstitutionalRoomsFromPhrases(pw, pageNum);
+        // Retrieve title-phrase coordinates so the extractor can do proximity-based
+        // exclusion rather than a blanket zone filter.
+        const { titlePhrases } = classifyPageFromPhrases(pw.phrases);
+        const instRows = extractInstitutionalRoomsFromPhrases(pw, pageNum, titlePhrases);
         institutionalRows.push(...instRows);
       }
 

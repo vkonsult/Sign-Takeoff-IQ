@@ -552,53 +552,62 @@ export function matchLocationToCoords(
 
 export type SpatialPageType = "floor_plan" | "sign_schedule" | "both" | "unknown";
 
+export interface ClassifyPageResult {
+  type: SpatialPageType;
+  /**
+   * The subset of phrases that fall inside the title-block candidate region
+   * and whose text matched a floor plan or sign schedule phrase.  Empty when
+   * the page type is "unknown".  Used by the heuristic extractor to perform
+   * proximity-based hit exclusion instead of a blanket zone filter.
+   */
+  titlePhrases: PdfPhrase[];
+}
+
 /**
- * Classify a PDF page using only the spatial content of the bottom-right
- * title-block quadrant.  Accepts the phrase list already extracted by
- * `extractPagePhrases`.
- *
- * Strategy:
- *   1. Filter to the bottom-right quadrant (x > 0.60 AND y > 0.60) — this is
- *      the standard title-block region in architectural drawings.
- *   2. Also include the bottom strip (y > 0.80) to catch wide title blocks that
- *      may start further left than 0.60.
- *   3. Concatenate the filtered phrase text into a single string (lowercased).
- *   4. Match against floor plan and sign schedule title phrase lists using
- *      substring matching (so "FIRST FLOOR PLAN - OVERALL" matches "floor plan").
- *
- * Because we read only the title block region, finding a floor plan or sign
- * schedule phrase there is treated as unambiguous — no drawing number required.
- *
- * Returns:
- *   "floor_plan"   — title block contains a floor plan phrase
- *   "sign_schedule"— title block contains a sign schedule phrase
- *   "both"         — title block contains both types of phrase
- *   "unknown"      — no recognisable phrase found in the title block region
+ * Returns true when a phrase centre falls within the title-block candidate zone:
+ *   - Bottom-right quadrant (cx > 0.60 AND cy > 0.60), OR
+ *   - Bottom strip (cy > 0.80), OR
+ *   - Full right-side vertical strip (cx > 0.75, any cy) — catches tall title
+ *     blocks that occupy the rightmost ~25 % of the page width at any height.
  */
-export function classifyPageFromPhrases(phrases: PdfPhrase[]): SpatialPageType {
-  if (phrases.length === 0) return "unknown";
+function isInTitleBlockZone(p: PdfPhrase): boolean {
+  const cx = (p.x0 + p.x1) / 2;
+  const cy = (p.y0 + p.y1) / 2;
+  return (cx > 0.60 && cy > 0.60) || cy > 0.80 || cx > 0.75;
+}
 
-  // Gather phrases from the bottom-right quadrant AND from the bottom strip.
-  const titleBlockPhrases = phrases.filter((p) => {
-    const cx = (p.x0 + p.x1) / 2;
-    const cy = (p.y0 + p.y1) / 2;
-    const inQuadrant = cx > 0.60 && cy > 0.60;
-    const inBottomStrip = cy > 0.80;
-    return inQuadrant || inBottomStrip;
-  });
+/**
+ * Classify a PDF page using only the spatial content of the title-block region.
+ * Accepts the phrase list already extracted by `extractPagePhrases`.
+ *
+ * Candidate title-block zone (union of):
+ *   1. Bottom-right quadrant (cx > 0.60 AND cy > 0.60) — standard title block.
+ *   2. Bottom strip (cy > 0.80) — wide title blocks that extend leftward.
+ *   3. Full right-side vertical strip (cx > 0.75) — tall title blocks that
+ *      occupy the full height of the right margin.
+ *
+ * Returns an object with:
+ *   type         — "floor_plan" | "sign_schedule" | "both" | "unknown"
+ *   titlePhrases — phrases inside the zone that matched the classification;
+ *                  empty for "unknown".  Used downstream for proximity-based
+ *                  hit exclusion in the heuristic extractor.
+ */
+export function classifyPageFromPhrases(phrases: PdfPhrase[]): ClassifyPageResult {
+  if (phrases.length === 0) return { type: "unknown", titlePhrases: [] };
 
-  if (titleBlockPhrases.length === 0) return "unknown";
+  const titleBlockPhrases = phrases.filter(isInTitleBlockZone);
+
+  if (titleBlockPhrases.length === 0) return { type: "unknown", titlePhrases: [] };
 
   const combined = titleBlockPhrases.map((p) => p.text).join(" ").toLowerCase();
 
-  // Priority 1: Exclusion veto — always wins. An electrical/mechanical/etc. page
-  // is never a floor plan or a sign schedule.
+  // Priority 1: Exclusion veto — always wins.
   const hasExclusion = FLOOR_PLAN_EXCLUSION_PHRASES.some((phrase) =>
     combined.includes(phrase.toLowerCase())
   );
-  if (hasExclusion) return "unknown";
+  if (hasExclusion) return { type: "unknown", titlePhrases: [] };
 
-  // Priority 2+: Check inclusion/sign phrases (no exclusion match at this point).
+  // Priority 2+: Check inclusion/sign phrases.
   const LEVEL_PLAN_RE = /\b\w+ level plan\b/;
   const hasFpPhrase =
     FLOOR_PLAN_INCLUSION_PHRASES.some((phrase) => combined.includes(phrase.toLowerCase()))
@@ -608,13 +617,27 @@ export function classifyPageFromPhrases(phrases: PdfPhrase[]): SpatialPageType {
     combined.includes(phrase.toLowerCase())
   );
 
-  // Priority 2: Both.
-  if (hasFpPhrase && hasSsPhrase) return "both";
-  // Priority 3: Sign schedule.
-  if (hasSsPhrase) return "sign_schedule";
-  // Priority 4: Floor plan.
-  if (hasFpPhrase) return "floor_plan";
-  return "unknown";
+  let type: SpatialPageType;
+  if (hasFpPhrase && hasSsPhrase) type = "both";
+  else if (hasSsPhrase) type = "sign_schedule";
+  else if (hasFpPhrase) type = "floor_plan";
+  else return { type: "unknown", titlePhrases: [] };
+
+  // Collect only the phrases whose text individually contributed to the classification.
+  // If no single phrase contains a matching keyword (e.g. the match was assembled
+  // from text concatenated across phrase boundaries), return an empty array so the
+  // heuristic extractor's fallback blanket-zone logic is used instead of a
+  // proximity check against non-title phrases.
+  const matchingPhrases = titleBlockPhrases.filter((p) => {
+    const lower = p.text.toLowerCase();
+    return (
+      FLOOR_PLAN_INCLUSION_PHRASES.some((ph) => lower.includes(ph.toLowerCase()))
+      || SIGN_SCHEDULE_PHRASES.some((ph) => lower.includes(ph.toLowerCase()))
+      || LEVEL_PLAN_RE.test(lower)
+    );
+  });
+
+  return { type, titlePhrases: matchingPhrases };
 }
 
 /**
@@ -637,11 +660,7 @@ export const CANONICAL_LEVEL_NAMES = CANONICAL_LEVEL_NAMES_FROM_VOCAB;
 export function extractFloorLevelName(phrases: PdfPhrase[]): string | null {
   if (phrases.length === 0) return null;
 
-  const titleBlockPhrases = phrases.filter((p) => {
-    const cx = (p.x0 + p.x1) / 2;
-    const cy = (p.y0 + p.y1) / 2;
-    return (cx > 0.60 && cy > 0.60) || cy > 0.80;
-  });
+  const titleBlockPhrases = phrases.filter(isInTitleBlockZone);
 
   const combined = (titleBlockPhrases.length > 0 ? titleBlockPhrases : phrases)
     .map((p) => p.text)

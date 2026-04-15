@@ -192,7 +192,7 @@ export async function runPdfProcessor(jobId: string): Promise<void> {
                   }
                 } else {
                   // No bookmark covers this page — fall back to phrase-based classification.
-                  spatialType = classifyPageFromPhrases(pageWords.phrases);
+                  spatialType = classifyPageFromPhrases(pageWords.phrases).type;
                 }
 
                 spatialPageTypes!.set(pageNum, spatialType);
