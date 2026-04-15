@@ -8,6 +8,7 @@ import {
   detectBuildingType,
   type CanonicalBuildingType,
 } from "./sign-vocabulary";
+import { OTHER_TITLE_KEYWORDS_STANDALONE } from "./extraction-classification";
 
 export interface PdfPhrase {
   text: string;
@@ -846,8 +847,13 @@ function isSignageLeaf(title: string): boolean {
 function classifyOutlineSection(title: string): PdfOutlineSection["type"] {
   const t = title.toLowerCase();
 
-  // Priority 1: Exclusion veto — always wins. An electrical/mechanical/etc. page
-  // is never a floor plan or a sign schedule.
+  // Priority 1: High-confidence "other" standalone keyword veto — always wins.
+  // Bookmark titles like "Building Elevations" or "Cover Sheet" must not be
+  // promoted to sign_schedule even when they contain incidental sign-related text.
+  const hasOtherStandalone = OTHER_TITLE_KEYWORDS_STANDALONE.some((p) => t.includes(p.toLowerCase()));
+  if (hasOtherStandalone) return "other";
+
+  // Priority 2: Exclusion veto — MEP/discipline sheets are never floor plans or sign schedules.
   const hasExclusion = FLOOR_PLAN_EXCLUSION_PHRASES.some((p) => t.includes(p.toLowerCase()));
   if (hasExclusion) return "other";
 
@@ -857,13 +863,13 @@ function classifyOutlineSection(title: string): PdfOutlineSection["type"] {
     || LEVEL_PLAN_RE.test(t);
   const hasSsPhrase = SIGN_SCHEDULE_PHRASES.some((p) => t.includes(p.toLowerCase()));
 
-  // Priority 2: Both floor plan and sign schedule indicators present.
+  // Priority 3: Both floor plan and sign schedule indicators present.
   if (hasFpPhrase && hasSsPhrase) return "both";
 
-  // Priority 3: Sign schedule.
+  // Priority 4: Sign schedule.
   if (hasSsPhrase) return "sign_schedule";
 
-  // Priority 4: Floor plan.
+  // Priority 5: Floor plan.
   if (hasFpPhrase) return "floor_plan";
 
   return "other";

@@ -160,7 +160,12 @@ export const SIGN_SCHEDULE_PHRASES: string[] = [
   "sign legend",
   "sign program",
   "sign list",
-  "sign detail",
+  // "sign detail" removed — too broad; matches incidental cross-references like
+  // "see sign details on A11" on elevation and structural sheets.  Replaced with
+  // phrases that only appear on actual sign spec pages.
+  "sign detail schedule",
+  "sign type detail",
+  "sign panel detail",
   "signage plan",
   // NOTE: "signs" removed — too broad as a substring match; catches cover sheets,
   // drawing indexes, and any page with the word "signs" anywhere in the title block.

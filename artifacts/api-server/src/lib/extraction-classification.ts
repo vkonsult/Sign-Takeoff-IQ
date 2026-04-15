@@ -98,7 +98,7 @@ const SIGN_SCHEDULE_DRAWING_NUMBER_PATTERNS: RegExp[] = [
 
 // High-confidence title phrases that unambiguously identify a non-floor-plan,
 // non-sign-schedule sheet (trusted standalone, no drawing-number requirement).
-const OTHER_TITLE_KEYWORDS_STANDALONE: string[] = [
+export const OTHER_TITLE_KEYWORDS_STANDALONE: string[] = [
   "cover sheet",
   "title sheet",
   "title page",
@@ -116,6 +116,11 @@ const OTHER_TITLE_KEYWORDS_STANDALONE: string[] = [
   "foundation plan",
   "sheet index",
   "drawing index",
+  // Structural / envelope sheets — these must not be captured as sign specs
+  // even when they contain incidental cross-references like "see sign details".
+  "metal building",
+  "steel building",
+  "structural detail",
 ];
 
 // Broader title phrases that indicate "other" — only trusted when a drawing
@@ -150,11 +155,11 @@ const SIGN_SCHEDULE_TITLE_KEYWORDS = SIGN_SCHEDULE_PHRASES;
  * Classify a page using drawing title-block signals.
  *
  * Classification rules (evaluated in order):
- *  0. Floor plan number + title + sign-schedule signal → "both"
- *  1. Sign schedule title keyword (standalone) → "sign_schedule"
- *  2. Sign schedule drawing number → "sign_schedule"
- *  3. Floor plan title keyword + floor plan drawing number → "floor_plan"
- *  4. High-confidence "other" title keyword (standalone) → "other"
+ *  0. High-confidence "other" title keyword (standalone) → "other"  [veto — always wins]
+ *  1. Floor plan number + title + sign-schedule signal → "both"
+ *  2. Sign schedule title keyword (standalone) → "sign_schedule"
+ *  3. Sign schedule drawing number → "sign_schedule"
+ *  4. Floor plan title keyword + floor plan drawing number → "floor_plan"
  *  5. Any "other" drawing number → "other"
  *  6. Floor plan drawing number + number-required "other" title keyword → "other"
  *  7. Floor plan drawing number alone → "unknown"
@@ -216,24 +221,27 @@ function detectTitleBlock(text: string): TitleBlockType {
   const hasSignScheduleTitle = SIGN_SCHEDULE_TITLE_KEYWORDS.some((kw) => upper.includes(kw.toUpperCase()));
   const hasSignScheduleNumber = !hasExclusion && SIGN_SCHEDULE_DRAWING_NUMBER_PATTERNS.some((p) => p.test(text));
 
-  // 0. Both floor plan and sign schedule on the same page
+  // 0. High-confidence "other" title keywords — veto that always wins.
+  // A page whose title explicitly identifies it as a cover sheet, elevation,
+  // structural/envelope sheet, etc. is classified "other" immediately, regardless
+  // of any incidental sign-related text (e.g. "see sign details on A11").
+  for (const kw of OTHER_TITLE_KEYWORDS_STANDALONE) {
+    if (upper.includes(kw.toUpperCase())) return "other";
+  }
+
+  // 1. Both floor plan and sign schedule on the same page
   if (hasFpNumber && hasFpTitle && (hasSignScheduleTitle || hasSignScheduleNumber)) {
     return "both";
   }
 
-  // 1. Sign schedule title keywords
+  // 2. Sign schedule title keywords
   if (hasSignScheduleTitle) return "sign_schedule";
 
-  // 2. Sign schedule drawing number
+  // 3. Sign schedule drawing number
   if (hasSignScheduleNumber) return "sign_schedule";
 
-  // 3. Floor plan: requires BOTH drawing number AND title
+  // 4. Floor plan: requires BOTH drawing number AND title
   if (hasFpNumber && hasFpTitle) return "floor_plan";
-
-  // 4. High-confidence "other" title keywords (standalone)
-  for (const kw of OTHER_TITLE_KEYWORDS_STANDALONE) {
-    if (upper.includes(kw.toUpperCase())) return "other";
-  }
 
   // 5. Any "other" drawing number (not overridden by a fp title)
   if (hasOtherNumber && !hasFpTitle) return "other";
