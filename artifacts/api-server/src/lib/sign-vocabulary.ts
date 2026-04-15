@@ -343,6 +343,11 @@ export const ROOM_LABEL_MAP: Record<string, string> = {
   auditorium: "AUDITORIUM SIGN",
   amphitheater: "AUDITORIUM SIGN",
   amphitheatre: "AUDITORIUM SIGN",
+  "black box": "AUDITORIUM SIGN",
+  blackbox: "AUDITORIUM SIGN",
+  "auditorium stage": "AUDITORIUM SIGN",
+  drama: "CLASSROOM SIGN",
+  orchestra: "CLASSROOM SIGN",
 
   // Additional circulation / access
   "coat room": "ROOM ID SIGN",
@@ -350,6 +355,34 @@ export const ROOM_LABEL_MAP: Record<string, string> = {
   cloakroom: "ROOM ID SIGN",
   "green room": "ROOM ID SIGN",
   greenroom: "ROOM ID SIGN",
+
+  // Athletic / recreation spaces
+  gymnasium: "GYM SIGN",
+  gym: "GYM SIGN",
+  "aux gym": "GYM SIGN",
+  "auxiliary gym": "GYM SIGN",
+  "weight room": "GYM SIGN",
+  "weight": "GYM SIGN",
+  fitness: "GYM SIGN",
+  "fitness room": "GYM SIGN",
+  "fitness center": "GYM SIGN",
+  pool: "POOL SIGN",
+  natatorium: "POOL SIGN",
+  "swimming pool": "POOL SIGN",
+  "locker room": "GYM SIGN",
+  locker: "GYM SIGN",
+  "boys locker": "GYM SIGN",
+  "girls locker": "GYM SIGN",
+
+  // Music / performing arts
+  "music room": "CLASSROOM SIGN",
+  music: "CLASSROOM SIGN",
+  band: "CLASSROOM SIGN",
+  "band room": "CLASSROOM SIGN",
+  choir: "CLASSROOM SIGN",
+
+  // Short abbreviations commonly seen on plans
+  wr: "RESTROOM SIGN",
 };
 
 /**

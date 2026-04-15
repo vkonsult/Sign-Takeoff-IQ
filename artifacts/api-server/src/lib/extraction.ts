@@ -1121,7 +1121,7 @@ MULTI-COLUMN SIGNAGE SCHEDULE SHEETS:
 If the page is a wide drawing sheet with parallel floor-level columns (e.g. ${CANONICAL_LEVEL_NAMES.map((n) => `"Signage Schedule - ${n.replace(/\b\w/g, (c) => c.toUpperCase())}"`).join(", ")} side by side), read each column independently:
 - Room section headings (larger/bolder text with a room number and name, e.g. "101 PORCH", "201 STAIR / ELEVATOR LOBBY") define the location for all sign rows beneath them in that column until the next room heading.
 - Sign rows follow the pattern: [Type Code] [Qty] [Signage Text] [Glass Backer Yes/No] [Comment codes].
-- Include the floor/level name in the location, e.g. "101 PORCH — ${CANONICAL_LEVEL_NAMES[0]?.replace(/\b\w/g, (c) => c.toUpperCase()) ?? "Lower Level"}".
+- Use the room number and name exactly as they appear in the heading (e.g. "101 PORCH", "201 STAIR / ELEVATOR LOBBY"). Do not add floor level or other descriptive text to the location field.
 - A "TYPICAL SIGN TYPES" diagram on the right shows dimension callouts (e.g. "6 1/2\"", "8 1/4\"", "11\"") per type code — read these and populate the dimensions field for matching type codes.
 - "Glass Backer: Yes" → add "glass backer" to materials. Comment codes (A, B, G) → add to notes.
 - Set x_position and y_position to null for schedule rows.

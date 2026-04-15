@@ -502,6 +502,7 @@ export default function JobDetails() {
   };
 
   const [showHidden, setShowHidden] = useState(false);
+  const [showExceptions, setShowExceptions] = useState(false);
   const [sortField, setSortField] = useState<string | null>(null);
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
   const [summaryFilter, setSummaryFilter] = useState<null | "flagged">(null);
@@ -651,6 +652,7 @@ export default function JobDetails() {
   // Paired image signs are excluded by the API (their data is in the paired text row).
   const extractedSigns = data.extractedSigns;
   const hiddenSigns = (data as typeof data & { hiddenSigns?: typeof data.extractedSigns }).hiddenSigns ?? [];
+  const exceptionSigns = extractedSigns.filter((s) => s.reviewFlag && s.exceptionReason);
 
   // Derive a source sort key matching the SourceBadge priority order
   function sourceKey(s: typeof extractedSigns[number]): string {
@@ -701,6 +703,9 @@ export default function JobDetails() {
         return sortDir === "asc" ? cmp : -cmp;
       })
     : filteredSigns;
+  const displaySigns = showExceptions
+    ? sortedSigns.filter((s) => s.reviewFlag && s.exceptionReason)
+    : sortedSigns;
   const isProcessing = job.status === "processing" || extractMutation.isPending;
   const isCompleted = job.status === "completed";
   const isPending = job.status === "pending";
@@ -1100,27 +1105,44 @@ export default function JobDetails() {
                 <>
                   {/* Data Table Container */}
                   <div className="flex-1 overflow-auto bg-card border-t border-border">
-                {/* Show Hidden toggle bar — only visible when there are hidden signs */}
-                {hiddenSigns.length > 0 && (
+                {/* Filter bar — exceptions toggle + hidden toggle */}
+                {(hiddenSigns.length > 0 || exceptionSigns.length > 0) && (
                   <div className="flex items-center gap-3 px-4 py-2 bg-secondary/60 border-b border-border/60">
-                    <button
-                      onClick={() => setShowHidden((v) => !v)}
-                      className={`flex items-center gap-2 px-3 py-1 rounded-md text-[11px] font-display font-semibold uppercase tracking-wide border transition-all ${
-                        showHidden
-                          ? "bg-muted-foreground/10 text-muted-foreground border-border/80"
-                          : "bg-secondary text-muted-foreground border-border hover:text-foreground hover:border-border/80"
-                      }`}
-                    >
-                      {showHidden ? (
-                        <Eye className="w-3 h-3" />
-                      ) : (
-                        <EyeOff className="w-3 h-3" />
-                      )}
-                      {showHidden ? "Hide hidden rows" : `Show hidden (${hiddenSigns.length})`}
-                    </button>
-                    <span className="text-[10px] text-muted-foreground/50 font-mono">
-                      {hiddenSigns.length} sign{hiddenSigns.length !== 1 ? "s" : ""} hidden from table and export
-                    </span>
+                    {exceptionSigns.length > 0 && (
+                      <button
+                        onClick={() => setShowExceptions((v) => !v)}
+                        className={`flex items-center gap-2 px-3 py-1 rounded-md text-[11px] font-display font-semibold uppercase tracking-wide border transition-all ${
+                          showExceptions
+                            ? "bg-amber-500/15 text-amber-600 border-amber-500/40"
+                            : "bg-secondary text-muted-foreground border-border hover:text-amber-600 hover:border-amber-500/40"
+                        }`}
+                      >
+                        <AlertTriangle className="w-3 h-3" />
+                        {showExceptions ? "Show all signs" : `Exceptions (${exceptionSigns.length})`}
+                      </button>
+                    )}
+                    {hiddenSigns.length > 0 && (
+                      <button
+                        onClick={() => setShowHidden((v) => !v)}
+                        className={`flex items-center gap-2 px-3 py-1 rounded-md text-[11px] font-display font-semibold uppercase tracking-wide border transition-all ${
+                          showHidden
+                            ? "bg-muted-foreground/10 text-muted-foreground border-border/80"
+                            : "bg-secondary text-muted-foreground border-border hover:text-foreground hover:border-border/80"
+                        }`}
+                      >
+                        {showHidden ? (
+                          <Eye className="w-3 h-3" />
+                        ) : (
+                          <EyeOff className="w-3 h-3" />
+                        )}
+                        {showHidden ? "Hide hidden rows" : `Show hidden (${hiddenSigns.length})`}
+                      </button>
+                    )}
+                    {hiddenSigns.length > 0 && (
+                      <span className="text-[10px] text-muted-foreground/50 font-mono">
+                        {hiddenSigns.length} sign{hiddenSigns.length !== 1 ? "s" : ""} hidden from table and export
+                      </span>
+                    )}
                   </div>
                 )}
 
@@ -1143,7 +1165,7 @@ export default function JobDetails() {
                       </tr>
                     </thead>
                     <tbody className="bg-background">
-                      {sortedSigns.map((sign, idx) => {
+                      {displaySigns.map((sign, idx) => {
                         const isAiRow = showAiHighlight && ((sign as Record<string, unknown>).dataSource === "ai" || (sign as Record<string, unknown>).aiBbox === true);
                         return (
                         <tr 
@@ -1182,10 +1204,19 @@ export default function JobDetails() {
                                   Verified
                                 </span>
                               )}
-                              {sign.reviewFlag && (
+                              {sign.reviewFlag && !sign.exceptionReason && (
                                 <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider bg-primary/20 text-primary border border-primary/30">
                                   <AlertTriangle className="w-3 h-3 mr-1" />
                                   Flag
+                                </span>
+                              )}
+                              {sign.exceptionReason && (
+                                <span
+                                  title={`Exception: ${sign.exceptionReason}`}
+                                  className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider bg-amber-500/15 text-amber-600 border border-amber-500/30 cursor-help"
+                                >
+                                  <AlertTriangle className="w-3 h-3 mr-1" />
+                                  Exception
                                 </span>
                               )}
                             </div>
@@ -1350,6 +1381,7 @@ function CoordinatesTable({
 }) {
   const [coordSortField, setCoordSortField] = useState<string>("page");
   const [coordSortDir, setCoordSortDir] = useState<"asc" | "desc">("asc");
+  const [showCoordExceptions, setShowCoordExceptions] = useState(false);
 
   const handleCoordSort = (field: string) => {
     if (coordSortField === field) {
@@ -1360,7 +1392,8 @@ function CoordinatesTable({
     }
   };
 
-  const sorted = [...signs].sort((a, b) => {
+  const coordExceptionCount = signs.filter((s) => s["reviewFlag"] && s["exceptionReason"]).length;
+  const sorted = [...(showCoordExceptions ? signs.filter((s) => s["reviewFlag"] && s["exceptionReason"]) : signs)].sort((a, b) => {
     let av: string | number = "";
     let bv: string | number = "";
     switch (coordSortField) {
@@ -1396,6 +1429,22 @@ function CoordinatesTable({
     v != null ? `${(v as number).toFixed(1)}%` : null;
 
   return (
+    <div>
+      {coordExceptionCount > 0 && (
+        <div className="flex items-center gap-3 px-4 py-2 bg-secondary/60 border-b border-border/60">
+          <button
+            onClick={() => setShowCoordExceptions((v) => !v)}
+            className={`flex items-center gap-2 px-3 py-1 rounded-md text-[11px] font-display font-semibold uppercase tracking-wide border transition-all ${
+              showCoordExceptions
+                ? "bg-amber-500/15 text-amber-600 border-amber-500/40"
+                : "bg-secondary text-muted-foreground border-border hover:text-amber-600 hover:border-amber-500/40"
+            }`}
+          >
+            <AlertTriangle className="w-3 h-3" />
+            {showCoordExceptions ? "Show all signs" : `Exceptions (${coordExceptionCount})`}
+          </button>
+        </div>
+      )}
     <div className="overflow-x-auto">
       <div className="min-w-[max-content] inline-block align-top w-full">
         <table className="w-full text-left border-collapse border-spacing-0">
@@ -1443,13 +1492,15 @@ function CoordinatesTable({
 
               const isNone = !hasCoords && !hasBbox;
               const codeVal = (sign.signIdentifier as string | null) || "—";
+              const exceptionReason = sign.exceptionReason as string | null | undefined;
+              const isException = !!(sign.reviewFlag && exceptionReason);
 
               return (
                 <tr
                   key={sign.id as string}
                   className={`
                     hover:bg-secondary/40 transition-colors
-                    ${idx % 2 === 0 ? "" : "bg-card/30"}
+                    ${isException ? "bg-amber-500/5" : idx % 2 === 0 ? "" : "bg-card/30"}
                     ${isNone ? "opacity-50" : ""}
                   `}
                   style={isAiRow ? { boxShadow: 'inset 3px 0 0 rgba(139, 92, 246, 0.6)', background: 'rgba(139, 92, 246, 0.04)' } : undefined}
@@ -1486,9 +1537,20 @@ function CoordinatesTable({
                     )}
                   </td>
                   <td className="data-cell text-center">
-                    <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold border ${statusCls}`}>
-                      {statusLabel}
-                    </span>
+                    <div className="flex flex-col gap-1 items-center">
+                      <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold border ${statusCls}`}>
+                        {statusLabel}
+                      </span>
+                      {isException && (
+                        <span
+                          title={`Exception: ${exceptionReason}`}
+                          className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider bg-amber-500/15 text-amber-600 border border-amber-500/30 cursor-help max-w-[120px] truncate"
+                        >
+                          <AlertTriangle className="w-3 h-3 shrink-0" />
+                          <span className="truncate">{exceptionReason}</span>
+                        </span>
+                      )}
+                    </div>
                   </td>
                   <td className="data-cell text-center">
                     <button
@@ -1505,6 +1567,7 @@ function CoordinatesTable({
           </tbody>
         </table>
       </div>
+    </div>
     </div>
   );
 }

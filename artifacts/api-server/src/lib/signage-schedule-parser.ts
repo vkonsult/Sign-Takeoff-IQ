@@ -186,8 +186,6 @@ function parseRoomHeading(line: TextLine): { roomNumber: string; roomName: strin
   if (!ROOM_NUMBER_RE.test(first) && !/^\d{1,4}$/.test(first)) return null;
 
   // If the line only has a few tokens and the rest looks like a room name, it's a heading
-  const restText = items.slice(1).map((it) => it.text.trim()).join(" ").trim();
-
   // Reject if the second token looks like a sign type code followed by a quantity
   // (that would be a sign row, not a room heading)
   if (items.length >= 3) {
@@ -198,7 +196,10 @@ function parseRoomHeading(line: TextLine): { roomNumber: string; roomName: strin
     }
   }
 
-  return { roomNumber: first, roomName: restText || "" };
+  // Store the full verbatim line text (including the room number prefix) so the
+  // complete heading string is preserved as-is from the document.
+  const verbatimLine = lineText(items);
+  return { roomNumber: first, roomName: verbatimLine || first };
 }
 
 /** Parse a sign row from a line. Returns null if the line doesn't look like a sign row. */

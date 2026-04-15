@@ -401,7 +401,7 @@ export async function extractPagePhrases(
     // The threshold matches the original 3 pt PDF-space threshold; scale 1.0 means
     // viewport pts == PDF pts for 0°/180° pages and the rotation swap is handled by
     // the coordinate conversion for 90°/270°.
-    const sameLine = Math.abs(vp.vyC - prev.vyC) <= 3;
+    const sameLine = Math.abs(vp.vyC - prev.vyC) <= 5;
     // Adjacent: gap less than the merge threshold.
     // The 1.2× item-width ratio works well for small character glyphs
     // (fragmented CAD text like "C","O","R" → "COR") but incorrectly merges

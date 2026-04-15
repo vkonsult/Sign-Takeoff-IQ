@@ -116,6 +116,7 @@ export interface ExtractedSign {
    */
   confidenceScore: number;
   reviewFlag: boolean;
+  exceptionReason?: string | null;
   createdAt: string;
 }
 
