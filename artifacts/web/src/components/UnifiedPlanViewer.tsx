@@ -67,6 +67,8 @@ export interface UnifiedPlanViewerProps {
   allSigns?: ExtractedSign[];
   initialSignId?: string;
   showAiHighlight?: boolean;
+  showMarkers?: boolean;
+  pageType?: "floor_plan" | "sign_schedule";
   onClose?: () => void;
   onSaved?: (updated: ExtractedSign) => void;
   onSignAdded?: (sign: ExtractedSign) => void;
@@ -440,6 +442,8 @@ interface PageViewerProps {
   onTextSearchStatusChange: (status: "idle" | "found" | "not-found") => void;
   onRegisterResetAiPlacement?: (fn: (signId: string) => void) => void;
   showAiHighlight?: boolean;
+  showMarkers?: boolean;
+  pagePrefix?: string;
   // Undo / Redo / Save — modal toolbar only
   canUndo?: boolean;
   canRedo?: boolean;
@@ -470,6 +474,8 @@ function PageViewer({
   onTextSearchStatusChange,
   onRegisterResetAiPlacement,
   showAiHighlight,
+  showMarkers = true,
+  pagePrefix = "Floor plan",
   canUndo,
   canRedo,
   onUndo,
@@ -975,7 +981,7 @@ function PageViewer({
               {pageIdx >= 0 && <span className="text-muted-foreground/50">({pageIdx + 1}/{navigablePages.length})</span>}
             </>
           ) : mode === "tab" ? (
-            <>Floor plan {pageIdx >= 0 ? pageIdx + 1 : "–"} / {navigablePages.length} <span className="text-muted-foreground/50">(pg {pageNumber})</span></>
+            <>{pagePrefix} {pageIdx >= 0 ? pageIdx + 1 : "–"} / {navigablePages.length} <span className="text-muted-foreground/50">(pg {pageNumber})</span></>
           ) : (
             totalPages ? `${pageNumber} / ${totalPages}` : `Page ${pageNumber}`
           )}
@@ -1090,7 +1096,7 @@ function PageViewer({
           )}
 
           {/* Show/hide markers — both modes */}
-          {textMarkers.length > 0 && (
+          {showMarkers && textMarkers.length > 0 && (
             <>
               <button
                 onClick={() => setShowOverlay((v) => !v)}
@@ -1233,7 +1239,7 @@ function PageViewer({
               )}
 
               {/* SVG marker overlay */}
-              {showOverlay && renderedW && renderedH && (textMarkers.length > 0 || (debugMode && serverPhrases)) && (
+              {showMarkers && showOverlay && renderedW && renderedH && (textMarkers.length > 0 || (debugMode && serverPhrases)) && (
                 <svg style={{ position: "absolute", top: 0, left: 0, width: renderedW, height: renderedH, overflow: "visible", pointerEvents: "none", zIndex: 5 }} viewBox={`0 0 ${renderedW} ${renderedH}`}>
 
                   {debugMode && serverPhrases && serverPhrases.phrases.map((p, i) => {
@@ -1329,7 +1335,7 @@ function PageViewer({
               )}
 
               {/* Hover tooltip: sign type + identifier */}
-              {hoveredMarkerId && renderedW && renderedH && !drawMode && !addMode && (() => {
+              {showMarkers && hoveredMarkerId && renderedW && renderedH && !drawMode && !addMode && (() => {
                 const m = textMarkers.find((tm) => tm.signId === hoveredMarkerId);
                 const s = signsOnCurrentPage.find((sg) => sg.id === hoveredMarkerId);
                 if (!m || !s) return null;
@@ -1454,12 +1460,14 @@ function PageViewer({
                     const nx = (e.clientX - rect.left) / renderedW;
                     const ny = (e.clientY - rect.top) / renderedH;
                     let best: TextMarker | null = null; let bestDist = Infinity;
-                    for (const m of textMarkers) {
-                      if (m.isGhost) continue;
-                      const d = Math.hypot(m.x - nx, m.y - ny);
-                      if (d < bestDist) { bestDist = d; best = m; }
+                    if (showMarkers) {
+                      for (const m of textMarkers) {
+                        if (m.isGhost) continue;
+                        const d = Math.hypot(m.x - nx, m.y - ny);
+                        if (d < bestDist) { bestDist = d; best = m; }
+                      }
                     }
-                    if (mode === "modal" && best && bestDist < 0.06) {
+                    if (showMarkers && mode === "modal" && best && bestDist < 0.06) {
                       e.currentTarget.setPointerCapture(e.pointerId);
                       const ds: DragState = { signId: best.signId, startX: nx, startY: ny, currentX: nx, currentY: ny, isDragging: false };
                       dragRef.current = ds;
@@ -1499,7 +1507,7 @@ function PageViewer({
                       setDragState({ ...updated });
                       return;
                     }
-                    if (!addMode && !drawMode) {
+                    if (showMarkers && !addMode && !drawMode) {
                       let best: TextMarker | null = null; let bestDist = Infinity;
                       for (const m of textMarkers) { const d = Math.hypot(m.x - nx, m.y - ny); if (d < bestDist) { bestDist = d; best = m; } }
                       setHoveredMarkerId(best && bestDist < 0.06 ? best.signId : null);
@@ -1567,7 +1575,7 @@ function PageViewer({
                       } else { setPendingNewMarker({ nx, ny }); setAddMode(true); setDrawMode(false); }
                       return;
                     }
-                    if (textMarkers.length === 0) return;
+                    if (!showMarkers || textMarkers.length === 0) return;
                     let best: TextMarker | null = null; let bestDist = Infinity;
                     for (const m of textMarkers) { const d = Math.hypot(m.x - nx, m.y - ny); if (d < bestDist) { bestDist = d; best = m; } }
                     if (best && bestDist < 0.05) {
@@ -1576,7 +1584,7 @@ function PageViewer({
                     }
                   }}
                   onDoubleClick={(e) => {
-                    if (mode !== "tab" || !onEditSign) return;
+                    if (!showMarkers || mode !== "tab" || !onEditSign) return;
                     const rect = e.currentTarget.getBoundingClientRect();
                     const nx = (e.clientX - rect.left) / renderedW!;
                     const ny = (e.clientY - rect.top) / renderedH!;
@@ -1628,6 +1636,8 @@ export function UnifiedPlanViewer({
   allSigns: allSignsProp,
   initialSignId,
   showAiHighlight,
+  showMarkers = true,
+  pageType = "floor_plan",
   onClose,
   onSaved,
   onSignAdded,
@@ -1875,9 +1885,16 @@ export function UnifiedPlanViewer({
   }, []);
 
   // ── File selection ─────────────────────────────────────────────────────────
-  const floorPlanFiles = useMemo(() => files.filter(
-    (f) => (f.pageStats?.floorPlanPages?.length ?? 0) > 0 || (f.pageStats?.bothPages?.length ?? 0) > 0
-  ), [files]);
+  const floorPlanFiles = useMemo(() => {
+    if (pageType === "sign_schedule") {
+      return files.filter(
+        (f) => (f.pageStats?.signSchedulePages?.length ?? 0) > 0 || (f.pageStats?.bothPages?.length ?? 0) > 0
+      );
+    }
+    return files.filter(
+      (f) => (f.pageStats?.floorPlanPages?.length ?? 0) > 0 || (f.pageStats?.bothPages?.length ?? 0) > 0
+    );
+  }, [files, pageType]);
 
   const [selectedFileId, setSelectedFileId] = useState<string>(() => {
     if (activeSign?.jobFileId) return activeSign.jobFileId;
@@ -1896,10 +1913,15 @@ export function UnifiedPlanViewer({
       const count = selectedFile.pageCount ?? 1;
       return Array.from({ length: count }, (_, i) => i + 1);
     }
+    if (pageType === "sign_schedule") {
+      const sp = selectedFile.pageStats?.signSchedulePages ?? [];
+      const bp = selectedFile.pageStats?.bothPages ?? [];
+      return [...new Set([...sp, ...bp])].sort((a, b) => a - b);
+    }
     const fp = selectedFile.pageStats?.floorPlanPages ?? [];
     const bp = selectedFile.pageStats?.bothPages ?? [];
     return [...new Set([...fp, ...bp])].sort((a, b) => a - b);
-  }, [selectedFile, mode]);
+  }, [selectedFile, mode, pageType]);
 
   // ── Page number ────────────────────────────────────────────────────────────
   const [pageNumber, setPageNumber] = useState<number>(() => {
@@ -1936,8 +1958,17 @@ export function UnifiedPlanViewer({
       <div className="flex-1 flex items-center justify-center text-muted-foreground p-8">
         <div className="text-center">
           <MapPin className="w-8 h-8 mx-auto mb-3 opacity-30" />
-          <p className="text-sm font-medium">No floor plan pages detected</p>
-          <p className="text-xs text-muted-foreground/60 mt-1">Upload plan PDFs and run extraction to classify pages.</p>
+          {pageType === "sign_schedule" ? (
+            <>
+              <p className="text-sm font-medium">No signage schedule pages detected</p>
+              <p className="text-xs text-muted-foreground/60 mt-1">Pages classified as sign schedule will appear here after extraction.</p>
+            </>
+          ) : (
+            <>
+              <p className="text-sm font-medium">No floor plan pages detected</p>
+              <p className="text-xs text-muted-foreground/60 mt-1">Upload plan PDFs and run extraction to classify pages.</p>
+            </>
+          )}
         </div>
       </div>
     );
@@ -1979,6 +2010,8 @@ export function UnifiedPlanViewer({
       onTextSearchStatusChange={setTextSearchStatus}
       onRegisterResetAiPlacement={handleRegisterResetAiPlacement}
       showAiHighlight={showAiHighlight}
+      showMarkers={showMarkers}
+      pagePrefix={pageType === "sign_schedule" ? "Sign page" : "Floor plan"}
       canUndo={historyStack.length > 0}
       canRedo={redoStack.length > 0}
       onUndo={handleUndo}

@@ -506,7 +506,7 @@ export default function JobDetails() {
   const [sortField, setSortField] = useState<string | null>(null);
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
   const [summaryFilter, setSummaryFilter] = useState<null | "flagged">(null);
-  const [activeTab, setActiveTab] = useState<"table" | "sheets" | "summary" | "floorplans" | "specs" | "timeline" | "coords" | "ai_scans">("table");
+  const [activeTab, setActiveTab] = useState<"table" | "sheets" | "summary" | "floorplans" | "signpages" | "specs" | "timeline" | "coords" | "ai_scans">("table");
   const [showAiHighlight, setShowAiHighlight] = useState(false);
 
   const PROCESSING_TIMEOUT_SECONDS = 5 * 60;
@@ -989,6 +989,17 @@ export default function JobDetails() {
                     Floor Plans
                   </button>
                   <button
+                    onClick={() => setActiveTab("signpages")}
+                    className={`flex items-center gap-1.5 px-3 py-2 text-[10px] font-display font-semibold uppercase tracking-wider border-b-2 transition-all ${
+                      activeTab === "signpages"
+                        ? "border-primary text-primary"
+                        : "border-transparent text-muted-foreground hover:text-foreground"
+                    }`}
+                  >
+                    <Layers className="w-3.5 h-3.5" />
+                    Sign Pages
+                  </button>
+                  <button
                     onClick={() => setActiveTab("specs")}
                     className={`flex items-center gap-1.5 px-3 py-2 text-[10px] font-display font-semibold uppercase tracking-wider border-b-2 transition-all ${
                       activeTab === "specs"
@@ -1050,6 +1061,17 @@ export default function JobDetails() {
                     onSignAdded={handleSignAdded}
                     onSignUpdated={handleSignUpdated}
                     onEditSign={(s) => setReviewSign(s as SignRow)}
+                  />
+                </div>
+              ) : activeTab === "signpages" ? (
+                <div className="flex-1 min-h-0">
+                  <UnifiedPlanViewer
+                    mode="tab"
+                    jobId={jobId}
+                    files={files}
+                    signs={[]}
+                    showMarkers={false}
+                    pageType="sign_schedule"
                   />
                 </div>
               ) : activeTab === "specs" ? (
