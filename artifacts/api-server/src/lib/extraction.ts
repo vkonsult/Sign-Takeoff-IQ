@@ -8,6 +8,7 @@ import {
   extractPagePhrases,
   extractTitleBlockBuildingType,
   extractFloorPlanTextCandidates,
+  extractCodeProximityPairs,
   type RoomCandidate,
 } from "./pdf-words";
 import type { PdfOutlineSection } from "./pdf-words";
@@ -58,6 +59,7 @@ export interface ExtractedSignRow {
   y_pos?: number | null;
   confidence_score: number;
   review_flag: boolean;
+  extraction_method?: string | null;
 }
 
 // ─── PROMPTS ────────────────────────────────────────────────────────────────
@@ -1839,7 +1841,7 @@ export async function extractSignsFromPdf(
   trainingContext?: VerifiedSignSummary[],
   specTypeContext?: string,
   spatialPageTypes?: Map<number, import("./pdf-words").SpatialPageType>
-): Promise<{ rows: ExtractedSignRow[]; pageCount: number; rawText: string; inputTokens: number; outputTokens: number; pageStats: PageStats }> {
+): Promise<{ rows: ExtractedSignRow[]; rawTextRows: ExtractedSignRow[]; pageCount: number; rawText: string; inputTokens: number; outputTokens: number; pageStats: PageStats }> {
   const { pages: rawPages, numPages } = await extractTextFromPdf(filePath, fileId);
 
   // Fetch PDF metadata (outline sections + page labels).
@@ -1963,7 +1965,7 @@ Pages:
 
   if (pages.length === 0) {
     logger.warn({ filePath }, "PDF yielded no pages");
-    return { rows: [], pageCount: numPages, rawText: "", inputTokens: 0, outputTokens: 0, pageStats: { floorPlanPages: [], signSchedulePages: [], otherPages: [] } };
+    return { rows: [], rawTextRows: [], pageCount: numPages, rawText: "", inputTokens: 0, outputTokens: 0, pageStats: { floorPlanPages: [], signSchedulePages: [], otherPages: [] } };
   }
 
   const allRows: ExtractedSignRow[] = [];
@@ -2253,7 +2255,46 @@ Pages:
     "Extraction complete"
   );
 
-  return { rows: dedupedRows, pageCount: numPages, rawText, inputTokens: totalInputTokens, outputTokens: totalOutputTokens, pageStats };
+  // ── Code-proximity pass: capture label+code pairs directly from PDF text ─────
+  // For each floor plan page, find text labels that are spatially adjacent to a
+  // sign callout code (e.g. "A-101"). Store them as raw_text rows so that labels
+  // like WORSHIP, LOBBY, STAGE appear in both tables even when the AI misses them.
+  const codeProximityRows: ExtractedSignRow[] = [];
+  const seenLabelCodePairs = new Set<string>();
+  for (const fpPage of floorPlanPages) {
+    try {
+      const pw = await extractPagePhrases(filePath, fileId, fpPage.pageNum);
+      const pairs = extractCodeProximityPairs(pw, fpPage.pageNum);
+      for (const pair of pairs) {
+        const dedupeKey = `${pair.code}||${pair.label.toUpperCase()}||${fpPage.pageNum}`;
+        if (seenLabelCodePairs.has(dedupeKey)) continue;
+        seenLabelCodePairs.add(dedupeKey);
+        codeProximityRows.push({
+          sheet_number: null,
+          detail_reference: null,
+          sign_type: null,
+          sign_identifier: pair.code,
+          quantity: null,
+          location: pair.label,
+          dimensions: null,
+          mounting_type: null,
+          finish_color: null,
+          illumination: null,
+          materials: null,
+          message_content: null,
+          notes: null,
+          page_number: pair.page,
+          x_pos: pair.x,
+          y_pos: pair.y,
+          confidence_score: 0.7,
+          review_flag: false,
+          extraction_method: "raw_text",
+        });
+      }
+    } catch { /* non-fatal */ }
+  }
+
+  return { rows: dedupedRows, rawTextRows: codeProximityRows, pageCount: numPages, rawText, inputTokens: totalInputTokens, outputTokens: totalOutputTokens, pageStats };
 }
 
 // ─── VISUAL LOCATE ──────────────────────────────────────────────────────────

@@ -502,6 +502,32 @@ router.post("/jobs/:jobId/compare", async (req, res) => {
       };
     }
 
+    function buildRawTextRow(row: Awaited<ReturnType<typeof extractSignsFromPdf>>["rawTextRows"][number], file: typeof files[number]) {
+      return {
+        jobId,
+        jobFileId: file.id,
+        sheetNumber: null as string | null,
+        detailReference: null as string | null,
+        signType: null as string | null,
+        signIdentifier: row.sign_identifier,
+        quantity: null as number | null,
+        location: row.location,
+        dimensions: null as string | null,
+        mountingType: null as string | null,
+        finishColor: null as string | null,
+        illumination: null as string | null,
+        materials: null as string | null,
+        messageContent: null as string | null,
+        notes: null as string | null,
+        pageNumber: row.page_number,
+        xPos: row.x_pos ?? null,
+        yPos: row.y_pos ?? null,
+        confidenceScore: row.confidence_score,
+        reviewFlag: row.review_flag,
+        extractionMethod: "raw_text" as const,
+      };
+    }
+
     function buildImageRow(row: Awaited<ReturnType<typeof extractSignsFromPdfImage>>["rows"][number], file: typeof files[number]) {
       return {
         jobId,
@@ -565,6 +591,8 @@ router.post("/jobs/:jobId/compare", async (req, res) => {
 
     const rawTextRows = textResults.flatMap((r) => r.rows.map((row) => buildTextRow(row, r.file)));
     const rawImageRows = imageResults.flatMap((r) => r.rows.map((row) => buildImageRow(row, r.file)));
+    // Code-proximity rows: deterministic label+code pairs from the PDF text layer.
+    const rawCodeProximityRows = textResults.flatMap((r) => (r.rawTextRows ?? []).map((row) => buildRawTextRow(row, r.file)));
 
     const textRows = deduplicateSignRows(rawTextRows);
     const textSeenKeys = new Set(
@@ -578,12 +606,24 @@ router.post("/jobs/:jobId/compare", async (req, res) => {
         return !textSeenKeys.has(`${r.location.toLowerCase().trim()}||${r.signType.toLowerCase().trim()}`);
       }),
     );
+    // Deduplicate code-proximity rows by code+location+pageNumber to avoid duplicates on re-scan.
+    const codeProximitySeenKeys = new Set<string>();
+    const codeProximityRows = rawCodeProximityRows.filter((r) => {
+      const key = `${(r.signIdentifier ?? "").toUpperCase()}||${(r.location ?? "").toUpperCase()}||${r.pageNumber ?? ""}`;
+      if (codeProximitySeenKeys.has(key)) return false;
+      codeProximitySeenKeys.add(key);
+      return true;
+    });
 
     if (textRows.length > 0) {
       await db.insert(extractedSignsTable).values(textRows);
     }
     if (imageRows.length > 0) {
       await db.insert(extractedSignsTable).values(imageRows);
+    }
+    if (codeProximityRows.length > 0) {
+      await db.insert(extractedSignsTable).values(codeProximityRows);
+      req.log.info({ count: codeProximityRows.length }, "Inserted code-proximity (raw_text) sign rows");
     }
 
     // Persist token counts for both passes on the job

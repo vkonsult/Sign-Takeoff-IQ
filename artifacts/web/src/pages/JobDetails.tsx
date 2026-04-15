@@ -667,7 +667,19 @@ export default function JobDetails() {
         const ar = a as Record<string, unknown>;
         const br = b as Record<string, unknown>;
         switch (sortField) {
-          case "sheet":      av = (ar.sheetNumber as string) ?? ""; bv = (br.sheetNumber as string) ?? ""; break;
+          case "code":
+            av = (ar.signIdentifier as string) ?? "";
+            bv = (br.signIdentifier as string) ?? "";
+            break;
+          case "codeText": {
+            const aId = (ar.signIdentifier as string) ?? "";
+            const aLoc = (ar.location as string) ?? "";
+            av = [aId, aLoc].filter(Boolean).join(" ");
+            const bId = (br.signIdentifier as string) ?? "";
+            const bLoc = (br.location as string) ?? "";
+            bv = [bId, bLoc].filter(Boolean).join(" ");
+            break;
+          }
           case "signType":   av = (ar.signType as string) ?? ""; bv = (br.signType as string) ?? ""; break;
           case "quantity":   av = (ar.quantity as number) ?? 0;  bv = (br.quantity as number) ?? 0;  break;
           case "location":   av = (ar.location as string) ?? ""; bv = (br.location as string) ?? ""; break;
@@ -1107,7 +1119,8 @@ export default function JobDetails() {
                   <table className="w-full text-left border-collapse border-spacing-0">
                     <thead>
                       <tr>
-                        <SortableHeader field="sheet"      label="Sheet / ID"    sortField={sortField} sortDir={sortDir} onSort={handleSort} className="sticky left-0 z-30 shadow-[2px_0_5px_-2px_rgba(0,0,0,0.3)]" />
+                        <SortableHeader field="code"     label="Code"          sortField={sortField} sortDir={sortDir} onSort={handleSort} className="sticky left-0 z-30 shadow-[2px_0_5px_-2px_rgba(0,0,0,0.3)]" />
+                        <SortableHeader field="codeText" label="Code + TEXT"   sortField={sortField} sortDir={sortDir} onSort={handleSort} />
                         <SortableHeader field="signType"   label="Sign Type"     sortField={sortField} sortDir={sortDir} onSort={handleSort} />
                         <SortableHeader field="quantity"   label="Qty"           sortField={sortField} sortDir={sortDir} onSort={handleSort} className="w-16 text-center" />
                         <SortableHeader field="location"   label="Location"      sortField={sortField} sortDir={sortDir} onSort={handleSort} />
@@ -1136,15 +1149,14 @@ export default function JobDetails() {
                           style={isAiRow ? { boxShadow: 'inset 3px 0 0 rgba(139, 92, 246, 0.6)', background: 'rgba(139, 92, 246, 0.04)' } : undefined}
                         >
                           <td className="data-cell sticky left-0 z-10 bg-inherit shadow-[2px_0_5px_-2px_rgba(0,0,0,0.3)]">
-                            <div className="flex items-center gap-1.5 mb-1">
-                              <span className="font-mono text-xs text-muted-foreground">{sign.sheetNumber || '—'}</span>
-                              {sign.pageNumber != null && (
-                                <span className="text-[10px] font-mono px-1 py-0 rounded bg-secondary text-muted-foreground border border-border">
-                                  pg {sign.pageNumber}
-                                </span>
-                              )}
-                            </div>
-                            <div className="font-medium text-foreground">{sign.signIdentifier || sign.detailReference || 'Unknown'}</div>
+                            <span className="font-mono text-xs font-semibold text-foreground">
+                              {sign.signIdentifier || '—'}
+                            </span>
+                          </td>
+                          <td className="data-cell max-w-[200px]" title={[sign.signIdentifier, sign.location].filter(Boolean).join(" ") || undefined}>
+                            <span className="text-xs text-foreground">
+                              {[sign.signIdentifier, sign.location].filter(Boolean).join(" ") || (sign.location as string | null) || '—'}
+                            </span>
                           </td>
                           <td className="data-cell text-foreground">{sign.signType || '—'}</td>
                           <td className="data-cell text-center font-mono font-medium">{sign.quantity || 1}</td>
@@ -1204,15 +1216,14 @@ export default function JobDetails() {
                           className="opacity-40 bg-muted/30 hover:opacity-60 transition-opacity"
                         >
                           <td className="data-cell sticky left-0 z-10 bg-inherit shadow-[2px_0_5px_-2px_rgba(0,0,0,0.3)]">
-                            <div className="flex items-center gap-1.5 mb-1">
-                              <span className="font-mono text-xs text-muted-foreground line-through">{sign.sheetNumber || '—'}</span>
-                              {sign.pageNumber != null && (
-                                <span className="text-[10px] font-mono px-1 py-0 rounded bg-secondary text-muted-foreground border border-border">
-                                  pg {sign.pageNumber}
-                                </span>
-                              )}
-                            </div>
-                            <div className="font-medium text-muted-foreground line-through">{sign.signIdentifier || sign.detailReference || 'Unknown'}</div>
+                            <span className="font-mono text-xs font-semibold text-muted-foreground line-through">
+                              {sign.signIdentifier || '—'}
+                            </span>
+                          </td>
+                          <td className="data-cell max-w-[200px]">
+                            <span className="text-xs text-muted-foreground line-through">
+                              {[sign.signIdentifier, sign.location].filter(Boolean).join(" ") || (sign.location as string | null) || '—'}
+                            </span>
                           </td>
                           <td className="data-cell text-muted-foreground line-through">{sign.signType || '—'}</td>
                           <td className="data-cell text-center font-mono font-medium text-muted-foreground line-through">{sign.quantity || 1}</td>
@@ -1248,14 +1259,14 @@ export default function JobDetails() {
 
                       {extractedSigns.length === 0 && hiddenSigns.length === 0 && (
                         <tr>
-                          <td colSpan={12} className="p-8 text-center text-muted-foreground">
+                          <td colSpan={13} className="p-8 text-center text-muted-foreground">
                             No signs were extracted from these documents.
                           </td>
                         </tr>
                       )}
                       {extractedSigns.length === 0 && hiddenSigns.length > 0 && !showHidden && (
                         <tr>
-                          <td colSpan={12} className="p-8 text-center text-muted-foreground">
+                          <td colSpan={13} className="p-8 text-center text-muted-foreground">
                             All signs are hidden. Click "Show hidden ({hiddenSigns.length})" above to view them.
                           </td>
                         </tr>
@@ -1339,13 +1350,48 @@ function CoordinatesTable({
   showAiHighlight?: boolean;
   onView: (sign: AnySign) => void;
 }) {
+  const [coordSortField, setCoordSortField] = useState<string>("page");
+  const [coordSortDir, setCoordSortDir] = useState<"asc" | "desc">("asc");
+
+  const handleCoordSort = (field: string) => {
+    if (coordSortField === field) {
+      setCoordSortDir((d) => (d === "asc" ? "desc" : "asc"));
+    } else {
+      setCoordSortField(field);
+      setCoordSortDir("asc");
+    }
+  };
+
   const sorted = [...signs].sort((a, b) => {
-    const pageA = (a.pageNumber as number | null) ?? 0;
-    const pageB = (b.pageNumber as number | null) ?? 0;
-    if (pageA !== pageB) return pageA - pageB;
-    const idA = (a.signIdentifier as string | null) ?? "";
-    const idB = (b.signIdentifier as string | null) ?? "";
-    return idA.localeCompare(idB);
+    let av: string | number = "";
+    let bv: string | number = "";
+    switch (coordSortField) {
+      case "code":
+        av = (a.signIdentifier as string | null) ?? "";
+        bv = (b.signIdentifier as string | null) ?? "";
+        break;
+      case "codeText": {
+        const aId = (a.signIdentifier as string | null) ?? "";
+        const aLoc = (a.location as string | null) ?? "";
+        av = [aId, aLoc].filter(Boolean).join(" ");
+        const bId = (b.signIdentifier as string | null) ?? "";
+        const bLoc = (b.location as string | null) ?? "";
+        bv = [bId, bLoc].filter(Boolean).join(" ");
+        break;
+      }
+      default: {
+        const pageA = (a.pageNumber as number | null) ?? 0;
+        const pageB = (b.pageNumber as number | null) ?? 0;
+        if (pageA !== pageB) return pageA - pageB;
+        const idA = (a.signIdentifier as string | null) ?? "";
+        const idB = (b.signIdentifier as string | null) ?? "";
+        return idA.localeCompare(idB);
+      }
+    }
+    const cmp = typeof av === "number" && typeof bv === "number"
+      ? av - bv
+      : String(av).localeCompare(String(bv));
+    return coordSortDir === "asc" ? cmp : -cmp;
   });
 
   const fmtCoord = (v: unknown) =>
@@ -1357,7 +1403,8 @@ function CoordinatesTable({
         <table className="w-full text-left border-collapse border-spacing-0">
           <thead>
             <tr>
-              <th className="data-header sticky left-0 z-30 shadow-[2px_0_5px_-2px_rgba(0,0,0,0.3)]">Sheet / ID</th>
+              <SortableHeader field="code" label="Code" sortField={coordSortField} sortDir={coordSortDir} onSort={handleCoordSort} className="sticky left-0 z-30 shadow-[2px_0_5px_-2px_rgba(0,0,0,0.3)]" />
+              <SortableHeader field="codeText" label="Code + TEXT" sortField={coordSortField} sortDir={coordSortDir} onSort={handleCoordSort} />
               <th className="data-header">Sign Type</th>
               <th className="data-header">Location</th>
               <th className="data-header">Message</th>
@@ -1398,6 +1445,8 @@ function CoordinatesTable({
               }
 
               const isNone = !hasCoords && !hasBbox;
+              const codeVal = (sign.signIdentifier as string | null) || "—";
+              const codeTextVal = [(sign.signIdentifier as string | null), (sign.location as string | null)].filter(Boolean).join(" ") || "—";
 
               return (
                 <tr
@@ -1410,16 +1459,10 @@ function CoordinatesTable({
                   style={isAiRow ? { boxShadow: 'inset 3px 0 0 rgba(139, 92, 246, 0.6)', background: 'rgba(139, 92, 246, 0.04)' } : undefined}
                 >
                   <td className="data-cell sticky left-0 z-10 bg-inherit shadow-[2px_0_5px_-2px_rgba(0,0,0,0.3)]">
-                    <div className="flex flex-col gap-0.5">
-                      {sign.sheetNumber && (
-                        <span className="text-[10px] font-mono text-muted-foreground">
-                          {sign.sheetNumber as string}
-                        </span>
-                      )}
-                      <span className="text-xs font-semibold">
-                        {(sign.signIdentifier as string | null) ?? "—"}
-                      </span>
-                    </div>
+                    <span className="text-xs font-semibold font-mono">{codeVal}</span>
+                  </td>
+                  <td className="data-cell max-w-[220px]">
+                    <span className="text-xs text-foreground">{codeTextVal}</span>
                   </td>
                   <td className="data-cell">
                     <span className="text-xs">{(sign.signType as string | null) ?? "—"}</span>

@@ -32,6 +32,7 @@ import {
   extractFloorLevelName,
   extractTitleBlockBuildingType,
   extractPdfMetadata,
+  extractCodeProximityPairs,
   type PdfPhrase,
   type SpatialPageType,
 } from "./pdf-words";
@@ -392,6 +393,64 @@ export async function runPdfProcessor(jobId: string): Promise<void> {
           }
         } catch (err) {
           logger.warn({ err, fileId: file.id }, "[PDF Processor] Heuristic extraction failed — non-fatal");
+        }
+
+        // ── Code-proximity extraction (raw_text rows) ─────────────────────
+        // Scan every floor-plan page for callout codes (e.g. A-101) spatially
+        // adjacent to room/area text labels (WORSHIP, STAGE, LOBBY, etc.) and
+        // store them as extraction_method="raw_text" rows.  These rows surface in
+        // the Sign Table and Coordinates Tab as "Code + TEXT" candidates.
+        try {
+          const t_cp = Date.now();
+          const fpPages = Array.from(fileFloorPlanPages.get(file.id) ?? []).sort((a, b) => a - b);
+          if (fpPages.length > 0) {
+            const allCpPairs = (
+              await Promise.all(
+                fpPages.map(async (pageNum) => {
+                  try {
+                    const pw = await extractPagePhrases(file.storedPath, file.id, pageNum);
+                    return extractCodeProximityPairs(pw, pageNum);
+                  } catch {
+                    return [];
+                  }
+                })
+              )
+            ).flat();
+
+            if (allCpPairs.length > 0) {
+              // Deduplicate by code+location+page
+              const seen = new Set<string>();
+              const cpInsertRows = allCpPairs
+                .filter((pair) => {
+                  const key = `${pair.code.toUpperCase()}||${pair.label.toUpperCase()}||${pair.page}`;
+                  if (seen.has(key)) return false;
+                  seen.add(key);
+                  return true;
+                })
+                .map((pair) => ({
+                  jobId,
+                  jobFileId: file.id,
+                  signIdentifier: pair.code,
+                  location: pair.label,
+                  pageNumber: pair.page,
+                  xPos: pair.x,
+                  yPos: pair.y,
+                  confidenceScore: 0.7,
+                  extractionMethod: "raw_text" as const,
+                  dataSource: "pdf" as const,
+                  userVerified: false,
+                  manuallyAdded: false,
+                  reviewFlag: false,
+                }));
+              const CHUNK = 200;
+              for (let i = 0; i < cpInsertRows.length; i += CHUNK) {
+                await db.insert(extractedSignsTable).values(cpInsertRows.slice(i, i + CHUNK));
+              }
+              logger.info({ jobId, fileId: file.id, inserted: cpInsertRows.length, durationMs: Date.now() - t_cp }, "[PDF Processor] Code-proximity (raw_text) extraction complete");
+            }
+          }
+        } catch (err) {
+          logger.warn({ err, fileId: file.id }, "[PDF Processor] Code-proximity extraction failed — non-fatal");
         }
 
         // ── Signage schedule spatial parsing (no AI) ──────────────────────
