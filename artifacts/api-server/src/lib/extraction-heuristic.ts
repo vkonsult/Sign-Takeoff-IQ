@@ -26,24 +26,6 @@ import { logger } from "./logger";
 const ROOM_NUM_RE = /^[0-9]{3}[AB]$/;
 // Unit type labels: 1A, 1B, 2A, 2B, 3A, 3B
 const UNIT_TYPE_RE = /^[123][AB]$/;
-// Service room IDs: A401–A409, B401–B409, AE-4, BE-4, AS1-4, BS2-4, etc.
-const SERVICE_ID_RE = /^(A|B)[0-9]{3}$|^(A|B)E-[0-9]$|^(A|B)S[12]-[0-9]$/;
-
-// ── Service room label lookup (ported from Python SERVICE_LABEL_MAP) ──────────
-const SERVICE_LABEL_MAP: Record<string, string> = {
-  A401: "LOBBY",       B401: "LOBBY",
-  A402: "CORR",        B402: "CORR",
-  A403: "ELEC",        B403: "ELEC",
-  A404: "ELEC",        B404: "ELEC",
-  A405: "MECH",        B405: "MECH",
-  A406: "ELEC",        B406: "ELEC",
-  A407: "MECH",        B407: "MECH",
-  A408: "ELEV EQUIP",  B408: "ELEV EQUIP",
-  A409: "TENANT STOR", B409: "TENANT STOR",
-  "AE-4": "ELEV",      "BE-4": "ELEV",
-  "AS1-4": "STAIR",    "AS2-4": "STAIR",
-  "BS1-4": "STAIR",    "BS2-4": "STAIR",
-};
 
 // ── Sign type classifier (ported from Python classify_sign) ──────────────────
 interface SignClassification {
@@ -67,7 +49,6 @@ function classifySign(roomId: string, roomType: string, labelMap: Record<string,
   }
 
   // Stairwell: check roomId prefix pattern before label map lookup
-  // (legacy A401-style IDs like "AS1-4" → STAIR come via SERVICE_LABEL_MAP → roomType)
   if (/^[AB]S/.test(rid)) {
     return { signType: "STAIRWELL SIGN", notes: "Egress Sign" };
   }
@@ -206,33 +187,6 @@ function extractRoomsFromWords(words: Word[], pageNum: number): ExtractedRoom[] 
       buildingId,
       nx: roomWord.nx,
       ny: roomWord.ny,
-      pageNumber: pageNum,
-    });
-  }
-
-  // ── Service / support spaces ──────────────────────────────────────────────
-  for (const svcWord of words) {
-    if (!SERVICE_ID_RE.test(svcWord.text)) continue;
-    const key = `${pageNum}:${svcWord.text}:${Math.round(svcWord.cx)}:${Math.round(svcWord.cy)}`;
-    if (usedIds.has(key)) continue;
-
-    const buildingId = svcWord.text.startsWith("A") ? "A" : "B";
-    const roomType = SERVICE_LABEL_MAP[svcWord.text];
-
-    // Skip codes with no explicit mapping — they are likely drawing callout
-    // reference symbols (e.g. A503, A504) rather than room identifiers.
-    if (!roomType) continue;
-
-    // Guard: skip if the room-type label itself is code-only (defense-in-depth)
-    if (isCodeOnlyLocation(roomType)) continue;
-
-    usedIds.add(key);
-    rooms.push({
-      roomId: svcWord.text,
-      roomType,
-      buildingId,
-      nx: svcWord.nx,
-      ny: svcWord.ny,
       pageNumber: pageNum,
     });
   }
