@@ -8,6 +8,7 @@ import { UnifiedPlanViewer } from "@/components/UnifiedPlanViewer";
 import type { ExtractedSign as SignMarker } from "@/components/UnifiedPlanViewer";
 import { SignSpecModal } from "@/components/SignSpecModal";
 import { AiScansTab } from "@/components/AiScansTab";
+import { SignSpecsTab } from "@/components/SignSpecsTab";
 import { getGetJobQueryKey } from "@workspace/api-client-react";
 import { 
   FileText, 
@@ -503,7 +504,7 @@ export default function JobDetails() {
   const [showHidden, setShowHidden] = useState(false);
   const [sortField, setSortField] = useState<string | null>(null);
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
-  const [activeTab, setActiveTab] = useState<"table" | "sheets" | "summary" | "floorplans" | "timeline" | "coords" | "ai_scans">("table");
+  const [activeTab, setActiveTab] = useState<"table" | "sheets" | "summary" | "floorplans" | "specs" | "timeline" | "coords" | "ai_scans">("table");
   const [showAiHighlight, setShowAiHighlight] = useState(false);
 
   const PROCESSING_TIMEOUT_SECONDS = 5 * 60;
@@ -962,6 +963,17 @@ export default function JobDetails() {
                     Floor Plans
                   </button>
                   <button
+                    onClick={() => setActiveTab("specs")}
+                    className={`flex items-center gap-1.5 px-4 py-2.5 text-[11px] font-display font-semibold uppercase tracking-wide border-b-2 transition-all ${
+                      activeTab === "specs"
+                        ? "border-primary text-primary"
+                        : "border-transparent text-muted-foreground hover:text-foreground"
+                    }`}
+                  >
+                    <FileText className="w-3.5 h-3.5" />
+                    Sign Specs &amp; Schedules
+                  </button>
+                  <button
                     onClick={() => setActiveTab("timeline")}
                     className={`flex items-center gap-1.5 px-4 py-2.5 text-[11px] font-display font-semibold uppercase tracking-wide border-b-2 transition-all ${
                       activeTab === "timeline"
@@ -1012,6 +1024,14 @@ export default function JobDetails() {
                     onSignAdded={handleSignAdded}
                     onSignUpdated={handleSignUpdated}
                     onEditSign={(s) => setReviewSign(s as SignRow)}
+                  />
+                </div>
+              ) : activeTab === "specs" ? (
+                <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
+                  <SignSpecsTab
+                    signs={extractedSigns}
+                    files={files}
+                    jobId={jobId}
                   />
                 </div>
               ) : activeTab === "sheets" ? (
