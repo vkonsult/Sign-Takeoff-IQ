@@ -974,8 +974,11 @@ function detectTitleBlock(text: string): TitleBlockType {
   const hasExclusionNearTitle = hasFpTitleAny &&
     !FLOOR_PLAN_TITLE_KEYWORDS.some((kw) => upper.includes(kw.toUpperCase()) && hasCleanOccurrence(kw));
 
-  // Whole-page exclusion flag — still used to veto sign schedule detection and
-  // the fallback text-score path (where no drawing number anchor is available).
+  // Whole-page exclusion flag — used to veto the weaker sign-schedule drawing
+  // number match and the fallback text-score path (where no drawing number
+  // anchor is available).  NOT applied to sign schedule title keywords: a direct
+  // title keyword match ("Signage Schedule", "signage", etc.) is authoritative
+  // regardless of body-text exclusion phrases.
   const hasExclusion = FLOOR_PLAN_EXCLUSION_PHRASES.some((kw) => upper.includes(kw.toUpperCase()));
 
   // hasFpTitle: fp title keyword present AND no plan-type modifier appears
@@ -983,8 +986,9 @@ function detectTitleBlock(text: string): TitleBlockType {
   const hasFpTitle = hasFpTitleAny && !hasExclusionNearTitle;
   const hasOtherNumber = OTHER_DRAWING_NUMBER_PATTERNS.some((p) => p.test(text));
   const hasAnyNumber = hasFpNumber || hasOtherNumber;
-  // Sign schedule flags — suppressed when the exclusion veto fires.
-  const hasSignScheduleTitle = !hasExclusion && SIGN_SCHEDULE_TITLE_KEYWORDS.some((kw) => upper.includes(kw.toUpperCase()));
+  // Sign schedule title is authoritative — NOT gated by the exclusion veto.
+  // Sign schedule drawing number is weaker evidence and retains the veto.
+  const hasSignScheduleTitle = SIGN_SCHEDULE_TITLE_KEYWORDS.some((kw) => upper.includes(kw.toUpperCase()));
   const hasSignScheduleNumber = !hasExclusion && SIGN_SCHEDULE_DRAWING_NUMBER_PATTERNS.some((p) => p.test(text));
 
   // ── 0. Detect "both" — page has BOTH a floor-plan signal AND a sign-schedule signal ──
