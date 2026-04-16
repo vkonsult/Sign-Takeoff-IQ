@@ -1,4 +1,7 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { createRequire } from "module";
+import { fileURLToPath } from "url";
+import { dirname, join } from "path";
 import { extractSignageData, phrasesToRawItems } from "./signage-schedule-parser";
 import type { RawTextItem } from "./signage-schedule-parser";
 import type { PdfPhrase } from "./pdf-words";
@@ -743,5 +746,83 @@ describe("phrasesToRawItems → extractSignageData integration", () => {
 
     expect(entries).toHaveLength(1);
     expect(entries[0]!.expandedComments).toBe("Verify field dimensions");
+  });
+});
+
+// ── Real PDF fixture — full pipeline integration ───────────────────────────────
+//
+// All tests above use hand-crafted coordinate arrays.  A regression in
+// pdf-words.ts (e.g. a broken coordinate normalisation) that produces
+// differently-shaped PdfPhrase objects would not be caught there.  This suite
+// loads an actual PDF fixture file through the real pdfjs extraction layer and
+// asserts on a known set of expected entries and specs so that the whole stack
+// — pdfjs → extractPagePhrases → phrasesToRawItems → extractSignageData — is
+// exercised in a single integration pass.
+
+const _req = createRequire(import.meta.url);
+const FIXTURE_PATH = join(
+  dirname(fileURLToPath(import.meta.url)),
+  "__fixtures__",
+  "sign-schedule-sample.pdf",
+);
+const FIXTURE_FILE_ID = "test-sign-schedule-sample";
+
+describe("Real PDF fixture — full pipeline integration", () => {
+  // extractPagePhrases lazy-loads pdfjs-dist and resolves the worker path via
+  // globalThis.require (injected by the esbuild build banner in production).
+  // We replicate that injection here so the same code path runs under vitest.
+  beforeAll(async () => {
+    (globalThis as Record<string, unknown>)["require"] = _req;
+    // Reset any previously cached pdfjs instance so the worker is re-configured
+    // using the require we just injected.
+    const { __resetPdfjsLibForTesting } = await import("./pdf-words");
+    __resetPdfjsLibForTesting();
+  });
+
+  afterAll(() => {
+    delete (globalThis as Record<string, unknown>)["require"];
+  });
+
+  it("reads the fixture PDF and extracts at least one phrase per content row", async () => {
+    const { extractPagePhrases } = await import("./pdf-words");
+    const pageWords = await extractPagePhrases(FIXTURE_PATH, FIXTURE_FILE_ID, 1);
+
+    // The fixture is a US Letter page
+    expect(pageWords.pageWidth).toBeCloseTo(612, 0);
+    expect(pageWords.pageHeight).toBeCloseTo(792, 0);
+    // Fixture has 11 text items placed as separate phrases
+    expect(pageWords.phrases.length).toBeGreaterThanOrEqual(9);
+  });
+
+  it("produces correct schedule entries and specs through the full pipeline", async () => {
+    const { extractPagePhrases } = await import("./pdf-words");
+    const { phrases, pageWidth, pageHeight } =
+      await extractPagePhrases(FIXTURE_PATH, FIXTURE_FILE_ID, 1);
+
+    const rawItems = phrasesToRawItems(phrases, pageWidth, pageHeight);
+    const { entries, specs } = extractSignageData(rawItems, 1, pageWidth, pageHeight);
+
+    // ── Schedule entry ──────────────────────────────────────────────────────
+    // The fixture contains: "SIGNAGE SCHEDULE" → room "101" → sign row "1A 2 ROOM ID"
+    expect(entries).toHaveLength(1);
+    const e = entries[0]!;
+    expect(e.signTypeCode).toBe("1A");
+    expect(e.quantity).toBe(2);
+    expect(e.signageText).toBe("ROOM ID");
+    expect(e.roomNumber).toBe("101");
+    expect(e.pageNumber).toBe(1);
+
+    // ── Legend spec ─────────────────────────────────────────────────────────
+    // The fixture contains: "SIGN TYPE LEGEND" → "1A  Acrylic"
+    expect(specs).toHaveLength(1);
+    const s = specs[0]!;
+    expect(s.typeCode).toBe("1A");
+    expect(s.material).toBe("Acrylic");
+
+    // ── Backfill: spec material propagates to schedule entry ─────────────────
+    expect(e.material).toBe("Acrylic");
+
+    // ── Keynote map: "KEYNOTES" → "A  Field verify dimensions" ───────────────
+    expect(s.keynoteMap["A"]).toBe("Field verify dimensions");
   });
 });
