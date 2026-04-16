@@ -541,3 +541,181 @@ describe("buildRoomInventory", () => {
     );
   });
 });
+
+// ─── buildRoomInventory — unusual naming conventions ─────────────────────────
+
+function makeRow(location: string, signType?: string) {
+  return {
+    location,
+    signType: signType ?? null,
+    signIdentifier: null,
+    pageNumber: 1,
+    xPos: null,
+    yPos: null,
+    sheetNumber: null,
+    messageContent: null,
+    notes: null,
+    quantity: 1,
+  };
+}
+
+describe("buildRoomInventory – abbreviation expansion (primary pass)", () => {
+  it("MECH RM → isMepUnoccupied", () => {
+    const [inv] = buildRoomInventory([makeRow("MECH RM")]);
+    expect(inv.isMepUnoccupied).toBe(true);
+  });
+
+  it("Mech Rm (mixed-case) → isMepUnoccupied", () => {
+    const [inv] = buildRoomInventory([makeRow("Mech Rm")]);
+    expect(inv.isMepUnoccupied).toBe(true);
+  });
+
+  it("ELEC RM → isMepUnoccupied", () => {
+    const [inv] = buildRoomInventory([makeRow("ELEC RM")]);
+    expect(inv.isMepUnoccupied).toBe(true);
+  });
+
+  it("ELEC. RM → isMepUnoccupied", () => {
+    const [inv] = buildRoomInventory([makeRow("ELEC. RM")]);
+    expect(inv.isMepUnoccupied).toBe(true);
+  });
+
+  it("STOR RM → isMepUnoccupied", () => {
+    const [inv] = buildRoomInventory([makeRow("STOR RM")]);
+    expect(inv.isMepUnoccupied).toBe(true);
+  });
+
+  it("UTIL RM → isMepUnoccupied", () => {
+    const [inv] = buildRoomInventory([makeRow("UTIL RM")]);
+    expect(inv.isMepUnoccupied).toBe(true);
+  });
+
+  it("JAN RM → isMepUnoccupied", () => {
+    const [inv] = buildRoomInventory([makeRow("JAN RM")]);
+    expect(inv.isMepUnoccupied).toBe(true);
+  });
+
+  it("EQUIP RM → isMepUnoccupied", () => {
+    const [inv] = buildRoomInventory([makeRow("EQUIP RM")]);
+    expect(inv.isMepUnoccupied).toBe(true);
+  });
+
+  it("CONF RM → isVariableUse", () => {
+    const [inv] = buildRoomInventory([makeRow("CONF RM")]);
+    expect(inv.isVariableUse).toBe(true);
+  });
+
+  it("W/C → isRestroom", () => {
+    const [inv] = buildRoomInventory([makeRow("W/C")]);
+    expect(inv.isRestroom).toBe(true);
+  });
+
+  it("T/R → isRestroom", () => {
+    const [inv] = buildRoomInventory([makeRow("T/R")]);
+    expect(inv.isRestroom).toBe(true);
+  });
+
+  it("E/R → isMepUnoccupied", () => {
+    const [inv] = buildRoomInventory([makeRow("E/R")]);
+    expect(inv.isMepUnoccupied).toBe(true);
+  });
+
+  it("M/R → isMepUnoccupied", () => {
+    const [inv] = buildRoomInventory([makeRow("M/R")]);
+    expect(inv.isMepUnoccupied).toBe(true);
+  });
+
+  it("CORR. → isCorridor", () => {
+    const [inv] = buildRoomInventory([makeRow("CORR.")]);
+    expect(inv.isCorridor).toBe(true);
+  });
+
+  it("VEST. → isVestibule", () => {
+    const [inv] = buildRoomInventory([makeRow("VEST.")]);
+    expect(inv.isVestibule).toBe(true);
+  });
+
+  it("isMepUnoccupied rooms produce no takeoff entries", () => {
+    const inventory = buildRoomInventory([makeRow("MECH RM"), makeRow("E/R")]);
+    expect(inventory.every((r) => r.isMepUnoccupied)).toBe(true);
+  });
+
+  it("room number preserves original abbreviation label (not the expanded form)", () => {
+    const [inv] = buildRoomInventory([makeRow("MECH RM")]);
+    expect(inv.roomNumber).toBe("MECH RM");
+  });
+});
+
+describe("buildRoomInventory – vocabulary secondary pass", () => {
+  it("MECH alone (no RM suffix) → isMepUnoccupied via vocab lookup", () => {
+    const [inv] = buildRoomInventory([makeRow("MECH")]);
+    expect(inv.isMepUnoccupied).toBe(true);
+  });
+
+  it("ELEC alone → isMepUnoccupied via vocab lookup", () => {
+    const [inv] = buildRoomInventory([makeRow("ELEC")]);
+    expect(inv.isMepUnoccupied).toBe(true);
+  });
+
+  it("JAN alone → isMepUnoccupied via vocab lookup", () => {
+    const [inv] = buildRoomInventory([makeRow("JAN")]);
+    expect(inv.isMepUnoccupied).toBe(true);
+  });
+
+  it("WR → isRestroom via vocab lookup", () => {
+    const [inv] = buildRoomInventory([makeRow("WR")]);
+    expect(inv.isRestroom).toBe(true);
+  });
+
+  it("CONF alone → isVariableUse via primary regex", () => {
+    const [inv] = buildRoomInventory([makeRow("CONF")]);
+    expect(inv.isVariableUse).toBe(true);
+  });
+
+  it("CONFERENCE ROOM via full string vocab lookup → isVariableUse", () => {
+    const [inv] = buildRoomInventory([makeRow("CONFERENCE")]);
+    expect(inv.isVariableUse).toBe(true);
+  });
+
+  it("STAIR (token) → isStairwell via vocab lookup", () => {
+    const [inv] = buildRoomInventory([makeRow("STAIR")]);
+    expect(inv.isStairwell).toBe(true);
+  });
+
+  it("ELEV (token) → isElevator via vocab lookup", () => {
+    const [inv] = buildRoomInventory([makeRow("ELEV")]);
+    expect(inv.isElevator).toBe(true);
+  });
+
+  it("vocabulary-detected MEP rooms produce no takeoff entries", () => {
+    const inventory = buildRoomInventory([makeRow("MECH"), makeRow("ELEC"), makeRow("JAN")]);
+    expect(inventory.every((r) => r.isMepUnoccupied)).toBe(true);
+  });
+});
+
+describe("buildRoomInventory – corridor classification guard", () => {
+  it("NARTHEX (lobby-synonym) is classified as corridor (isCorridor) via vocab pass, not as occupied room", () => {
+    const [inv] = buildRoomInventory([makeRow("NARTHEX")]);
+    expect(inv.isCorridor).toBe(true);
+    expect(inv.isOccupied).toBe(false);
+  });
+
+  it("W/C is NOT over-classified as corridor even though RESTROOM expands from it", () => {
+    const [inv] = buildRoomInventory([makeRow("W/C")]);
+    expect(inv.isRestroom).toBe(true);
+    expect(inv.isCorridor).toBe(false);
+  });
+
+  it("LOBBY correctly becomes isCorridor and isPublicCorridor when PUBLIC label is present", () => {
+    const [inv] = buildRoomInventory([makeRow("PUBLIC LOBBY")]);
+    expect(inv.isCorridor).toBe(true);
+    expect(inv.isPublicCorridor).toBe(true);
+    expect(inv.isOccupied).toBe(false);
+  });
+
+  it("plain occupied room (e.g. OFFICE) is never accidentally flagged as corridor", () => {
+    const [inv] = buildRoomInventory([makeRow("OFFICE 101")]);
+    expect(inv.isCorridor).toBe(false);
+    expect(inv.isOccupied).toBe(true);
+  });
+});

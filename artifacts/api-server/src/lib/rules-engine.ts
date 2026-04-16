@@ -5,6 +5,8 @@
  * Pure TypeScript; no database or network I/O.
  */
 
+import { LOCATION_ABBREVIATION_MAP, ROOM_LABEL_MAP } from "./sign-vocabulary";
+
 // ─── Interfaces ──────────────────────────────────────────────────────────────
 
 export interface RoomInventory {
@@ -304,6 +306,114 @@ export function applyEvacMapRules(stairs: RoomInventory[]): TakeoffEntry[] {
   return entries;
 }
 
+// ─── Abbreviation normalisation ───────────────────────────────────────────────
+
+/**
+ * Expand common project-specific abbreviations in an upper-cased location
+ * string so that the primary regex classifiers can recognise them.
+ *
+ * Examples:
+ *   "MECH RM"  → "MECHANICAL"
+ *   "W/C"      → "RESTROOM"
+ *   "CONF RM"  → "CONFERENCE"
+ *   "E/R"      → "ELECTRICAL"
+ */
+function normalizeLocationAbbreviations(locationUpper: string): string {
+  let result = locationUpper;
+  for (const [pattern, replacement] of LOCATION_ABBREVIATION_MAP) {
+    result = result.replace(pattern, replacement);
+  }
+  return result;
+}
+
+/**
+ * Maps a sign-type string from ROOM_LABEL_MAP to partial classification flags.
+ * Used in the vocabulary-based secondary classification pass.
+ */
+function signTypeToFlags(signType: string): {
+  isMepUnoccupied?: boolean;
+  isRestroom?: boolean;
+  isVariableUse?: boolean;
+  isCorridor?: boolean;
+  isStairwell?: boolean;
+  isElevator?: boolean;
+  isAssembly?: boolean;
+  isVestibule?: boolean;
+} {
+  const upper = signType.toUpperCase();
+  if (
+    upper.includes("MECHANICAL") ||
+    upper.includes("ELECTRICAL") ||
+    upper.includes("PLUMBING") ||
+    upper.includes("TELECOM") ||
+    upper.includes("IT ROOM") ||
+    upper.includes("JANITOR") ||
+    upper.includes("STORAGE") ||
+    upper.includes("UTILITY")
+  ) {
+    return { isMepUnoccupied: true };
+  }
+  if (upper.includes("RESTROOM") || upper.includes("TOILET")) {
+    return { isRestroom: true };
+  }
+  if (upper.includes("CONFERENCE") || upper.includes("CLASSROOM") || upper.includes("SEMINAR")) {
+    return { isVariableUse: true };
+  }
+  if (upper === "LOBBY SIGN" || upper === "CORRIDOR SIGN") {
+    return { isCorridor: true };
+  }
+  if (upper.includes("STAIRWELL")) {
+    return { isStairwell: true };
+  }
+  if (upper.includes("ELEVATOR")) {
+    return { isElevator: true };
+  }
+  if (
+    upper.includes("AUDITORIUM") ||
+    upper.includes("GYMNASIUM") ||
+    upper.includes("SANCTUARY") ||
+    upper === "GYM SIGN"
+  ) {
+    return { isAssembly: true };
+  }
+  return {};
+}
+
+/**
+ * Secondary classification pass using ROOM_LABEL_MAP vocabulary.
+ *
+ * Tokenises the (already abbreviation-normalised) location string and looks
+ * up each token in the generic room-label map.  Returns the union of all flag
+ * sets implied by the matched sign types.
+ *
+ * This catches labels like "MECH", "ELEC", "JAN", "WR", "CONF", "VEST", etc.
+ * that are too short or irregular for the primary word-boundary regexes.
+ */
+function classifyByVocabulary(locationUpper: string): ReturnType<typeof signTypeToFlags> {
+  const tokens = locationUpper
+    .split(/[\s,;/\-]+/)
+    .map((t) => t.toLowerCase())
+    .filter((t) => t.length > 0);
+
+  const combined: ReturnType<typeof signTypeToFlags> = {};
+
+  for (const token of tokens) {
+    const signType = ROOM_LABEL_MAP[token];
+    if (signType) {
+      Object.assign(combined, signTypeToFlags(signType));
+    }
+  }
+
+  // Also try the full lowercased string (handles multi-word entries like "break room")
+  const full = locationUpper.toLowerCase().trim();
+  const fullMatch = ROOM_LABEL_MAP[full];
+  if (fullMatch) {
+    Object.assign(combined, signTypeToFlags(fullMatch));
+  }
+
+  return combined;
+}
+
 // ─── buildRoomInventory ───────────────────────────────────────────────────────
 
 /**
@@ -348,36 +458,56 @@ export function buildRoomInventory(
     const signTypes = group.map((r) => (r.signType ?? "").toUpperCase());
     // Composite key is "LOCATION\x00LEVEL" — split it back out.
     const [locationUpper, level] = roomKey.split("\x00") as [string, string];
-    const roomName = inferRoomName(locationUpper, signTypes);
-    const restroomVariant = inferRestroomVariant(locationUpper, signTypes);
 
-    const isCorridor =
-      /CORR(?:IDOR)?|HALL(?:WAY)?|LOBBY|FOYER/.test(locationUpper) &&
+    // Normalize abbreviations for classification only (room number retains original label).
+    const locationNorm = normalizeLocationAbbreviations(locationUpper);
+
+    const roomName = inferRoomName(locationUpper, signTypes);
+    // Pass the normalised string so abbreviated restroom labels like "W/C" resolve correctly.
+    const restroomVariant = inferRestroomVariant(locationNorm, signTypes);
+
+    // ── Primary regex classification (uses the abbreviation-normalised string) ──
+    let isCorridor =
+      /CORR(?:IDOR)?|HALL(?:WAY)?|LOBBY|FOYER/.test(locationNorm) &&
       !restroomVariant;
-    const isBay = /\bBAY\b/.test(locationUpper);
-    const isMepUnoccupied =
+    const isBay = /\bBAY\b/.test(locationNorm);
+    let isMepUnoccupied =
       /\b(?:MEP|MECHANICAL|ELECTRICAL|PLUMBING|TELECOM|IT ROOM|JANITOR|STORAGE|UTILITY|EQUIP(?:MENT)?)\b/.test(
-        locationUpper
+        locationNorm
       );
-    const isStairwell =
-      /\b(?:STAIR(?:WELL)?|STAIR #?\d|STAIRCASE)\b/.test(locationUpper) ||
+    let isStairwell =
+      /\b(?:STAIR(?:WELL)?|STAIR #?\d|STAIRCASE)\b/.test(locationNorm) ||
       signTypes.some((s) => s.includes("STAIRWELL") || s.includes("STAIR SIGN"));
-    const isElevator =
-      /\bELEVATOR\b/.test(locationUpper) ||
+    let isElevator =
+      /\bELEVATOR\b/.test(locationNorm) ||
       signTypes.some((s) => s.includes("ELEVATOR"));
-    const isVariableUse =
+    let isVariableUse =
       /\b(?:MULTI.?PURPOSE|FLEX|VARIABLE|CONF(?:ERENCE)?|TRAINING|CLASSROOM|SEMINAR)\b/.test(
-        locationUpper
+        locationNorm
       );
-    const isAssembly =
+    let isAssembly =
       /\b(?:ASSEMBLY|AUDITORIUM|CHAPEL|SANCTUARY|GYMNASIUM|GYM|THEATER|THEATRE|WORSHIP|FELLOWSHIP)\b/.test(
-        locationUpper
+        locationNorm
       );
-    const isRestroom = !!restroomVariant || /\bR(?:ESTROOM|R)\b/.test(locationUpper);
-    const isVestibule = /\bVESTIBULE\b/.test(locationUpper);
+    let isRestroom = !!restroomVariant || /\bR(?:ESTROOM|R)\b/.test(locationNorm);
+    let isVestibule = /\bVESTIBULE\b/.test(locationNorm);
+
+    // ── Secondary vocabulary-based pass ───────────────────────────────────────
+    // Catches short tokens (MECH, ELEC, JAN, WR, CONF, VEST…) and multi-word
+    // synonyms that fall through the primary word-boundary regexes.
+    const vocabFlags = classifyByVocabulary(locationNorm);
+    isMepUnoccupied = isMepUnoccupied || !!vocabFlags.isMepUnoccupied;
+    isRestroom      = isRestroom      || !!vocabFlags.isRestroom;
+    isVariableUse   = isVariableUse   || !!vocabFlags.isVariableUse;
+    isCorridor      = (isCorridor     || !!vocabFlags.isCorridor) && !isRestroom;
+    isStairwell     = isStairwell     || !!vocabFlags.isStairwell;
+    isElevator      = isElevator      || !!vocabFlags.isElevator;
+    isAssembly      = isAssembly      || !!vocabFlags.isAssembly;
+    isVestibule     = isVestibule     || !!vocabFlags.isVestibule;
+
     const isPublicCorridor =
-      (isCorridor || /\bPUBLIC\b/.test(locationUpper)) &&
-      /\b(?:PUBLIC|MAIN|ENTRY|ENTRANCE|LOBBY)\b/.test(locationUpper);
+      (isCorridor || /\bPUBLIC\b/.test(locationNorm)) &&
+      /\b(?:PUBLIC|MAIN|ENTRY|ENTRANCE|LOBBY)\b/.test(locationNorm);
     const isOccupied =
       !isMepUnoccupied &&
       !isCorridor &&

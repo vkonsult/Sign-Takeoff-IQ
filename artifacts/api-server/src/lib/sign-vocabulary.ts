@@ -723,6 +723,48 @@ export const BUILDING_TYPE_VOCABULARY: Record<CanonicalBuildingType, Record<stri
 };
 
 /**
+ * Abbreviation expansion rules for room location strings.
+ *
+ * Applied (in order) as a pre-processing step in `buildRoomInventory` before
+ * the primary regex classifiers run.  Each entry is a [pattern, replacement]
+ * pair where the replacement is the canonical expanded form that the existing
+ * regexes already recognise.
+ *
+ * Ordering notes:
+ *   - Slash-separated abbreviations (W/C, E/R, M/R, T/R) must be listed before
+ *     any expansions that could partially overlap with them.
+ *   - All patterns are case-insensitive; the replacement text is uppercase so it
+ *     matches the upper-cased locationUpper string used downstream.
+ */
+export const LOCATION_ABBREVIATION_MAP: Array<[RegExp, string]> = [
+  // Water closet / toilet abbreviations → RESTROOM (caught by restroom regex)
+  [/\bW\/C\b/gi, "RESTROOM"],
+  [/\bT\/R\b/gi, "RESTROOM"],
+  // Slash-style room-type codes
+  [/\bE\/R\b/gi, "ELECTRICAL"],
+  [/\bM\/R\b/gi, "MECHANICAL"],
+  [/\bP\/R\b/gi, "PLUMBING"],
+  // "RM" suffix expansions — expand before generic token checks
+  [/\bMECH\s+RM\b/gi, "MECHANICAL"],
+  [/\bELEC\s+RM\b/gi, "ELECTRICAL"],
+  [/\bCONF\s+RM\b/gi, "CONFERENCE"],
+  [/\bSTOR\s+RM\b/gi, "STORAGE"],
+  [/\bUTIL\s+RM\b/gi, "UTILITY"],
+  [/\bEQUIP\s+RM\b/gi, "EQUIPMENT"],
+  [/\bJAN\s+RM\b/gi, "JANITOR"],
+  [/\bIT\s+RM\b/gi, "IT ROOM"],
+  [/\bTELECOM\s+RM\b/gi, "TELECOM"],
+  [/\bELEC\.\s*RM\b/gi, "ELECTRICAL"],
+  [/\bMECH\.\s*RM\b/gi, "MECHANICAL"],
+  // Trailing dot abbreviations (e.g. "CORR.", "VEST.", "STOR.")
+  [/\bCORR\./gi, "CORRIDOR"],
+  [/\bVEST\./gi, "VESTIBULE"],
+  [/\bSTOR\./gi, "STORAGE"],
+  // "RR" shorthand when used as a standalone token (not inside a word)
+  // Keep "\bRR\b" — already in inferRestroomVariant; listed here for normalisation parity.
+];
+
+/**
  * Keyword lists used to detect building type from a project name or title block text.
  * Each array entry is a lowercase keyword substring.
  */
