@@ -5,6 +5,7 @@ import {
   X,
   ChevronLeft,
   ChevronRight,
+  ChevronDown,
   ZoomIn,
   ZoomOut,
   Save,
@@ -1026,6 +1027,31 @@ function PageViewer({
     onActiveSignChange(s);
   };
 
+  // ── Page picker: locked count per navigable page ───────────────────────────
+  const lockedCountByPage = useMemo(() => {
+    const map = new Map<number, number>();
+    for (const s of localSigns) {
+      if (s.manuallyEdited && s.pageNumber != null && s.jobFileId === file.id) {
+        map.set(s.pageNumber, (map.get(s.pageNumber) ?? 0) + 1);
+      }
+    }
+    return map;
+  }, [localSigns, file.id]);
+
+  const [pageDropdownOpen, setPageDropdownOpen] = useState(false);
+  const pageDropdownRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!pageDropdownOpen) return;
+    const handler = (e: MouseEvent) => {
+      if (pageDropdownRef.current && !pageDropdownRef.current.contains(e.target as Node)) {
+        setPageDropdownOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [pageDropdownOpen]);
+
   return (
     <div className="flex flex-col flex-1 min-h-0 bg-secondary/30">
       {/* Toolbar */}
@@ -1034,18 +1060,76 @@ function PageViewer({
         <button aria-label="Previous page" disabled={!canPrevPage} onClick={goPrevPage} className="p-1.5 rounded hover:bg-secondary disabled:opacity-30 transition-colors">
           <ChevronLeft className="w-4 h-4" />
         </button>
-        <span className="text-xs font-mono text-muted-foreground min-w-[90px] text-center">
-          {mode === "tab" && pageLabel ? (
-            <>
-              <span className="text-foreground/80 font-medium">{pageLabel}</span>{" "}
-              {pageIdx >= 0 && <span className="text-muted-foreground/50">({pageIdx + 1}/{navigablePages.length})</span>}
-            </>
-          ) : mode === "tab" ? (
-            <>{pagePrefix} {pageIdx >= 0 ? pageIdx + 1 : "–"} / {navigablePages.length} <span className="text-muted-foreground/50">(pg {pageNumber})</span></>
-          ) : (
-            totalPages ? `${pageNumber} / ${totalPages}` : `Page ${pageNumber}`
-          )}
-        </span>
+
+        {/* Page picker — clickable dropdown in tab mode when >1 page */}
+        {mode === "tab" && navigablePages.length > 1 ? (
+          <div ref={pageDropdownRef} className="relative">
+            <button
+              onClick={() => setPageDropdownOpen((v) => !v)}
+              className="flex items-center gap-1 text-xs font-mono text-muted-foreground min-w-[90px] text-center px-2 py-0.5 rounded hover:bg-secondary transition-colors"
+              title="Jump to page"
+            >
+              <span>
+                {pageLabel ? (
+                  <><span className="text-foreground/80 font-medium">{pageLabel}</span> <span className="text-muted-foreground/50">({pageIdx + 1}/{navigablePages.length})</span></>
+                ) : (
+                  <>{pagePrefix} {pageIdx >= 0 ? pageIdx + 1 : "–"} / {navigablePages.length} <span className="text-muted-foreground/50">(pg {pageNumber})</span></>
+                )}
+              </span>
+              {(() => {
+                const lc = lockedCountByPage.get(pageNumber) ?? 0;
+                return lc > 0 ? (
+                  <span className="flex-shrink-0 text-[10px] font-semibold px-1 py-px rounded" style={{ backgroundColor: "#f59e0b22", color: "#f59e0b", border: "1px solid #f59e0b55" }}>
+                    {lc} locked
+                  </span>
+                ) : null;
+              })()}
+              <ChevronDown className="w-3 h-3 opacity-40 flex-shrink-0" />
+            </button>
+
+            {pageDropdownOpen && (
+              <div className="absolute top-full left-1/2 -translate-x-1/2 mt-1 bg-card border border-border rounded-lg shadow-xl z-50 min-w-[180px] py-1 max-h-64 overflow-y-auto">
+                {navigablePages.map((pg, i) => {
+                  const pgLabel = file.pageStats?.pageLabels?.[pg - 1];
+                  const lc = lockedCountByPage.get(pg) ?? 0;
+                  const isCurrent = pg === pageNumber;
+                  return (
+                    <button
+                      key={pg}
+                      onClick={() => { setPageNumber(pg); setPageDropdownOpen(false); }}
+                      className={`w-full flex items-center justify-between gap-2 px-3 py-1.5 text-xs font-mono transition-colors ${isCurrent ? "bg-primary/10 text-primary font-semibold" : "text-muted-foreground hover:bg-secondary hover:text-foreground"}`}
+                    >
+                      <span className="min-w-0 truncate">
+                        {pgLabel ?? `${pagePrefix} ${i + 1}`}
+                        {!pgLabel && <span className="opacity-40 ml-1">(pg {pg})</span>}
+                        {pgLabel && <span className="opacity-40 ml-1">(pg {pg})</span>}
+                      </span>
+                      {lc > 0 && (
+                        <span className="flex-shrink-0 text-[10px] font-semibold px-1.5 py-0.5 rounded" style={{ backgroundColor: "#f59e0b22", color: "#f59e0b", border: "1px solid #f59e0b55" }}>
+                          {lc} locked
+                        </span>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        ) : (
+          <span className="text-xs font-mono text-muted-foreground min-w-[90px] text-center">
+            {mode === "tab" && pageLabel ? (
+              <>
+                <span className="text-foreground/80 font-medium">{pageLabel}</span>{" "}
+                {pageIdx >= 0 && <span className="text-muted-foreground/50">({pageIdx + 1}/{navigablePages.length})</span>}
+              </>
+            ) : mode === "tab" ? (
+              <>{pagePrefix} {pageIdx >= 0 ? pageIdx + 1 : "–"} / {navigablePages.length} <span className="text-muted-foreground/50">(pg {pageNumber})</span></>
+            ) : (
+              totalPages ? `${pageNumber} / ${totalPages}` : `Page ${pageNumber}`
+            )}
+          </span>
+        )}
+
         <button aria-label="Next page" disabled={!canNextPage} onClick={goNextPage} className="p-1.5 rounded hover:bg-secondary disabled:opacity-30 transition-colors">
           <ChevronRight className="w-4 h-4" />
         </button>
