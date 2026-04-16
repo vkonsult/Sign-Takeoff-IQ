@@ -91,6 +91,7 @@ export function AiScansTab({
   const [editSaving, setEditSaving] = useState(false);
   const [editError, setEditError] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
 
   useEffect(() => {
     setRegistryLoading(true);
@@ -132,6 +133,7 @@ export function AiScansTab({
   useEffect(() => {
     setOccupantLoading(true);
     setOccupantLoadError(null);
+    setConfirmDeleteId(null);
     apiFetch(`/api/jobs/${jobId}/occupant-loads`)
       .then((res) => {
         if (!res.ok) throw new Error(`Server error ${res.status}`);
@@ -249,6 +251,7 @@ export function AiScansTab({
         if (getRes.ok) {
           const getData: { loads: OccupantLoadRow[] } = await getRes.json();
           setOccupantRows(getData.loads ?? []);
+          setConfirmDeleteId(null);
         }
         setOccupantStatus("success");
       } else {
@@ -262,6 +265,7 @@ export function AiScansTab({
   };
 
   const handleEditRow = (row: OccupantLoadRow) => {
+    setConfirmDeleteId(null);
     setEditingId(row.id);
     setEditDraft({
       roomNum: row.roomNum,
@@ -273,6 +277,7 @@ export function AiScansTab({
   };
 
   const handleAddRow = () => {
+    setConfirmDeleteId(null);
     setEditingId("__new__");
     setEditDraft({ roomNum: "", roomName: "", occupantLoad: "", occupancyGroup: "" });
     setEditError(null);
@@ -835,24 +840,46 @@ export function AiScansTab({
                           {row.occupancyGroup ?? <span className="text-muted-foreground/50">—</span>}
                         </td>
                         <td className="px-2 py-2">
-                          <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                            <button
-                              onClick={() => handleEditRow(row)}
-                              disabled={editingId !== null || deletingId !== null}
-                              className="flex items-center justify-center w-6 h-6 rounded text-muted-foreground hover:text-sky-400 hover:bg-sky-500/10 transition-colors disabled:opacity-30"
-                              title="Edit row"
-                            >
-                              <Pencil className="w-3 h-3" />
-                            </button>
-                            <button
-                              onClick={() => handleDeleteRow(row.id)}
-                              disabled={editingId !== null || deletingId !== null}
-                              className="flex items-center justify-center w-6 h-6 rounded text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors disabled:opacity-30"
-                              title="Delete row"
-                            >
-                              {isDeleting ? <Loader2 className="w-3 h-3 animate-spin" /> : <Trash2 className="w-3 h-3" />}
-                            </button>
-                          </div>
+                          {confirmDeleteId === row.id ? (
+                            <div className="flex items-center gap-1">
+                              <span className="text-[10px] text-destructive whitespace-nowrap mr-1">Delete?</span>
+                              <button
+                                onClick={() => { setConfirmDeleteId(null); handleDeleteRow(row.id); }}
+                                disabled={isDeleting}
+                                className="flex items-center justify-center px-1.5 h-5 rounded text-[10px] font-medium text-white bg-destructive hover:bg-destructive/80 transition-colors disabled:opacity-50"
+                                title="Confirm delete"
+                              >
+                                {isDeleting ? <Loader2 className="w-3 h-3 animate-spin" /> : "Yes"}
+                              </button>
+                              <button
+                                onClick={() => setConfirmDeleteId(null)}
+                                disabled={isDeleting}
+                                className="flex items-center justify-center px-1.5 h-5 rounded text-[10px] font-medium text-muted-foreground bg-secondary hover:text-foreground transition-colors disabled:opacity-50"
+                                title="Cancel"
+                              >
+                                No
+                              </button>
+                            </div>
+                          ) : (
+                            <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                              <button
+                                onClick={() => handleEditRow(row)}
+                                disabled={editingId !== null || deletingId !== null || confirmDeleteId !== null}
+                                className="flex items-center justify-center w-6 h-6 rounded text-muted-foreground hover:text-sky-400 hover:bg-sky-500/10 transition-colors disabled:opacity-30"
+                                title="Edit row"
+                              >
+                                <Pencil className="w-3 h-3" />
+                              </button>
+                              <button
+                                onClick={() => setConfirmDeleteId(row.id)}
+                                disabled={editingId !== null || deletingId !== null || confirmDeleteId !== null}
+                                className="flex items-center justify-center w-6 h-6 rounded text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors disabled:opacity-30"
+                                title="Delete row"
+                              >
+                                <Trash2 className="w-3 h-3" />
+                              </button>
+                            </div>
+                          )}
                         </td>
                       </tr>
                     );
