@@ -44,6 +44,8 @@ export const JobSummaryStatus = {
 
 export interface JobSummary {
   id: string;
+  /** Human-readable job name (editable by the user) */
+  name?: string | null;
   status: JobSummaryStatus;
   fileCount: number;
   error?: string | null;
@@ -106,11 +108,13 @@ export interface PageStats {
   /** PDF page numbers classified as both floor plan and sign schedule */
   bothPages?: number[];
   /** PDF logical page labels (e.g. "A1.1") indexed by page number (0-based) */
-  pageLabels?: (string | null)[] | null;
+  pageLabels?: (string | null)[];
   /** Top-level PDF outline (bookmark) sections with classified page ranges */
   outlineSections?: PdfOutlineSection[] | null;
   /** Map of page number (as string key) to server-relative path of pre-rendered PNG image (resolved server-side; not exposed to clients) */
   pageImagePaths?: PageStatsPageImagePaths;
+  /** Page numbers that have been manually rejected/excluded from detection results */
+  rejectedPageNumbers?: number[];
 }
 
 export interface JobFile {
@@ -144,6 +148,32 @@ export interface ExtractedSign {
    */
   confidenceScore: number;
   reviewFlag: boolean;
+  /** Reason this sign was flagged as an exception (set when reviewFlag is true and AI found an exception condition) */
+  exceptionReason?: string | null;
+  /** PDF page number where this sign was placed on the floor plan */
+  pageNumber?: number | null;
+  /** How this sign was extracted: "text" for text-based extraction, "image" for visual/AI bbox detection */
+  extractionMethod?: string | null;
+  /** ID of the paired text sign when this is the image-only counterpart (or vice versa) */
+  pairedSignId?: string | null;
+  /** Data source identifier used for AI-highlight display */
+  dataSource?: "pdf" | "ai" | "manual" | null;
+  /** True if this sign was placed via AI bounding-box detection */
+  aiBbox?: boolean | null;
+  /** X coordinate of the AI bounding box on the floor plan page */
+  aiBboxX?: number | null;
+  /** Y coordinate of the AI bounding box on the floor plan page */
+  aiBboxY?: number | null;
+  /** Width of the AI bounding box on the floor plan page */
+  aiBboxW?: number | null;
+  /** Height of the AI bounding box on the floor plan page */
+  aiBboxH?: number | null;
+  /** X coordinate of the sign placement on the floor plan page */
+  xPos?: number | null;
+  /** Y coordinate of the sign placement on the floor plan page */
+  yPos?: number | null;
+  /** Source of the placement (e.g. "word_match", "manual") */
+  placementSource?: string | null;
   /** True if this sign was manually placed by the user (not AI-extracted) */
   manuallyAdded?: boolean;
   /** True if the user has manually edited this sign; protected from AI re-run overwrites */

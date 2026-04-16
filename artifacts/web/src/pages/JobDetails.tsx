@@ -19,7 +19,7 @@ import {
   useExtractPlaqueSchedule,
   useExtractOccupantLoads,
 } from "@workspace/api-client-react";
-import type { PlaqueScheduleEntry, OccupantLoadEntry, AssemblyRoom } from "@workspace/api-client-react";
+import type { PlaqueScheduleEntry, OccupantLoadEntry, AssemblyRoom, ExtractedSign as ApiSign } from "@workspace/api-client-react";
 import { 
   FileText, 
   Cpu, 
@@ -128,7 +128,7 @@ function ProcessingTimeline({ steps }: { steps: ProcessingStep[] }) {
   for (const step of perFileSteps) {
     const match = PER_FILE_STEP_RE.exec(step.step);
     if (!match) continue;
-    const [, baseType, fileId] = match as [string, string, string];
+    const [, baseType, fileId] = match as unknown as [string, string, string];
     if (!fileStepGroups.has(fileId)) {
       fileStepGroups.set(fileId, { fileId, others: [] });
     }
@@ -815,8 +815,8 @@ export default function JobDetails() {
   const extractedSigns = data.extractedSigns;
   const hiddenSigns = (data as typeof data & { hiddenSigns?: typeof data.extractedSigns }).hiddenSigns ?? [];
   const exceptionSigns = extractedSigns.filter((s) => s.reviewFlag && s.exceptionReason);
-  const manuallyEditedSignsCount = extractedSigns.filter((s) => (s as Record<string, unknown>).manuallyEdited).length;
-  const lockedSigns = extractedSigns.filter((s) => (s as Record<string, unknown>).manuallyEdited);
+  const manuallyEditedSignsCount = extractedSigns.filter((s) => s.manuallyEdited).length;
+  const lockedSigns = extractedSigns.filter((s) => s.manuallyEdited);
 
   // Unplaced-sign counts used by both the PDF button badge and the canvas banner.
   const _placedCount = extractedSigns.filter((s) => s.pageNumber != null).length;
@@ -827,22 +827,21 @@ export default function JobDetails() {
 
   // Derive a source sort key matching the SourceBadge priority order
   function sourceKey(s: typeof extractedSigns[number]): string {
-    const r = s as Record<string, unknown>;
-    if (r.manuallyAdded) return "0_manual";
-    if (r.extractionMethod === "text" && r.pairedSignId) return "1_both";
-    if (r.extractionMethod === "image" && !r.pairedSignId) return "2_visual";
+    if (s.manuallyAdded) return "0_manual";
+    if (s.extractionMethod === "text" && s.pairedSignId) return "1_both";
+    if (s.extractionMethod === "image" && !s.pairedSignId) return "2_visual";
     return "3_text";
   }
 
   const filteredSigns = (() => {
     let signs = summaryFilter === "flagged"
-      ? extractedSigns.filter((s) => (s as Record<string, unknown>).reviewFlag === true)
+      ? extractedSigns.filter((s) => s.reviewFlag === true)
       : extractedSigns;
     if (showUnplacedOnly) {
       signs = signs.filter((s) => s.pageNumber == null);
     }
     if (showLockedOnly) {
-      signs = signs.filter((s) => (s as Record<string, unknown>).manuallyEdited);
+      signs = signs.filter((s) => s.manuallyEdited);
     }
     return signs;
   })();
@@ -851,30 +850,28 @@ export default function JobDetails() {
     ? [...filteredSigns].sort((a, b) => {
         let av: string | number = "";
         let bv: string | number = "";
-        const ar = a as Record<string, unknown>;
-        const br = b as Record<string, unknown>;
         switch (sortField) {
           case "code":
-            av = (ar.signIdentifier as string) ?? "";
-            bv = (br.signIdentifier as string) ?? "";
+            av = a.signIdentifier ?? "";
+            bv = b.signIdentifier ?? "";
             break;
           case "codeText": {
-            const aId = (ar.signIdentifier as string) ?? "";
-            const aLoc = (ar.location as string) ?? "";
+            const aId = a.signIdentifier ?? "";
+            const aLoc = a.location ?? "";
             av = [aId, aLoc].filter(Boolean).join(" ");
-            const bId = (br.signIdentifier as string) ?? "";
-            const bLoc = (br.location as string) ?? "";
+            const bId = b.signIdentifier ?? "";
+            const bLoc = b.location ?? "";
             bv = [bId, bLoc].filter(Boolean).join(" ");
             break;
           }
-          case "signType":   av = (ar.signType as string) ?? ""; bv = (br.signType as string) ?? ""; break;
-          case "quantity":   av = (ar.quantity as number) ?? 0;  bv = (br.quantity as number) ?? 0;  break;
-          case "location":   av = (ar.location as string) ?? ""; bv = (br.location as string) ?? ""; break;
-          case "dimensions": av = (ar.dimensions as string) ?? ""; bv = (br.dimensions as string) ?? ""; break;
-          case "mounting":   av = (ar.mountingType as string) ?? ""; bv = (br.mountingType as string) ?? ""; break;
-          case "finish":     av = (ar.finishColor as string) ?? ""; bv = (br.finishColor as string) ?? ""; break;
-          case "message":    av = (ar.messageContent as string) ?? ""; bv = (br.messageContent as string) ?? ""; break;
-          case "confidence": av = (ar.confidenceScore as number) ?? 0;  bv = (br.confidenceScore as number) ?? 0;  break;
+          case "signType":   av = a.signType ?? ""; bv = b.signType ?? ""; break;
+          case "quantity":   av = a.quantity ?? 0;  bv = b.quantity ?? 0;  break;
+          case "location":   av = a.location ?? ""; bv = b.location ?? ""; break;
+          case "dimensions": av = a.dimensions ?? ""; bv = b.dimensions ?? ""; break;
+          case "mounting":   av = a.mountingType ?? ""; bv = b.mountingType ?? ""; break;
+          case "finish":     av = a.finishColor ?? ""; bv = b.finishColor ?? ""; break;
+          case "message":    av = a.messageContent ?? ""; bv = b.messageContent ?? ""; break;
+          case "confidence": av = a.confidenceScore ?? 0;  bv = b.confidenceScore ?? 0;  break;
           case "source":     av = sourceKey(a); bv = sourceKey(b); break;
         }
         const cmp = typeof av === "number" && typeof bv === "number"
@@ -1156,8 +1153,8 @@ export default function JobDetails() {
                   onClick={() => setActiveTab("occupant_loads")}
                 />
                 <CostCard 
-                  inputTokens={(data as Record<string, unknown> & { processingCost?: { inputTokens?: number } }).processingCost?.inputTokens ?? (job.inputTokens ?? 0)}
-                  outputTokens={(data as Record<string, unknown> & { processingCost?: { outputTokens?: number } }).processingCost?.outputTokens ?? (job.outputTokens ?? 0)}
+                  inputTokens={job.inputTokens ?? 0}
+                  outputTokens={job.outputTokens ?? 0}
                 />
               </div>
               
@@ -1393,7 +1390,7 @@ export default function JobDetails() {
                       Processing Timeline
                     </div>
                     {(() => {
-                      const jobLog = (job as Record<string, unknown>).processingLog as ProcessingStep[] | null | undefined;
+                      const jobLog = (job as typeof job & { processingLog?: ProcessingStep[] | null }).processingLog;
                       return jobLog && jobLog.length > 0 ? (
                         <ProcessingTimeline steps={jobLog} />
                       ) : (
@@ -1577,7 +1574,7 @@ export default function JobDetails() {
                     </thead>
                     <tbody className="bg-background">
                       {displaySigns.map((sign, idx) => {
-                        const isAiRow = showAiHighlight && ((sign as Record<string, unknown>).dataSource === "ai" || (sign as Record<string, unknown>).aiBbox === true);
+                        const isAiRow = showAiHighlight && (sign.dataSource === "ai" || sign.aiBbox === true);
                         return (
                         <tr 
                           key={sign.id}
@@ -1618,7 +1615,7 @@ export default function JobDetails() {
                             <ConfidenceBadge score={sign.confidenceScore} />
                           </td>
                           <td className="data-cell text-center">
-                            <SourceBadge sign={sign as Record<string, unknown>} />
+                            <SourceBadge sign={sign} />
                           </td>
                           <td className="data-cell text-center">
                             <div className="flex flex-col gap-1 items-center">
@@ -1720,7 +1717,7 @@ export default function JobDetails() {
                             <ConfidenceBadge score={sign.confidenceScore} />
                           </td>
                           <td className="data-cell text-center">
-                            <SourceBadge sign={sign as Record<string, unknown>} />
+                            <SourceBadge sign={sign} />
                           </td>
                           <td className="data-cell text-center">
                             <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider bg-muted/50 text-muted-foreground border border-border/50">
@@ -1937,8 +1934,8 @@ function CoordinatesTable({
               const bboxY = sign.aiBboxY as number | null | undefined;
               const bboxW = sign.aiBboxW as number | null | undefined;
               const bboxH = sign.aiBboxH as number | null | undefined;
-              const isAiRow = showAiHighlight && ((sign.dataSource as string | null | undefined) === "ai" || (sign as Record<string, unknown>).aiBbox === true);
-              const isBboxAi = showAiHighlight && (sign as Record<string, unknown>).aiBbox === true;
+              const isAiRow = showAiHighlight && (sign.dataSource === "ai" || sign.aiBbox === true);
+              const isBboxAi = showAiHighlight && sign.aiBbox === true;
 
               const hasCoords = xPos != null && yPos != null;
               const hasBbox = bboxX != null && bboxY != null && bboxW != null && bboxH != null;
@@ -2140,7 +2137,7 @@ type SignSummaryRow = {
   sheets: string[];
 };
 
-type AnySign = Record<string, unknown>;
+type AnySign = ApiSign;
 
 function buildSignSummary(signs: AnySign[]): SignSummaryRow[] {
   const map = new Map<string, SignSummaryRow>();
@@ -2251,7 +2248,7 @@ function buildDetectionRows(
     return null;
   };
 
-  const bothPages: number[] = (stats as Record<string, unknown>).bothPages as number[] ?? [];
+  const bothPages: number[] = stats.bothPages ?? [];
 
   const floorPlanRows: DetectionRow[] = floorPlanPages.map((pgNo) => ({
     pageNo: pgNo,
@@ -2428,8 +2425,7 @@ function SheetsPanel({
   const totalPages = files.reduce((sum, f) => sum + (f.pageCount ?? 0), 0);
   const totalSignSchedule = files.reduce((sum, f) => {
     const ss = f.pageStats?.signSchedulePages?.length ?? 0;
-    const both = (f.pageStats as Record<string, unknown>)?.bothPages instanceof Array
-      ? ((f.pageStats as Record<string, unknown>).bothPages as number[]).length : 0;
+    const both = f.pageStats?.bothPages?.length ?? 0;
     return sum + ss + both;
   }, 0);
   const totalFloorPlan = files.reduce((sum, f) => sum + (f.pageStats?.floorPlanPages?.length ?? 0), 0);
@@ -2437,13 +2433,13 @@ function SheetsPanel({
   // Find the first file that has sign spec pages (sign schedule OR both)
   const firstSpecFile = files.find(
     (f) => (f.pageStats?.signSchedulePages?.length ?? 0) > 0 ||
-      (((f.pageStats as Record<string, unknown>)?.bothPages as number[] | undefined)?.length ?? 0) > 0
+      (f.pageStats?.bothPages?.length ?? 0) > 0
   );
 
   // Build the combined spec page list for a given file's pageStats
   const getSpecPages = (stats: NonNullable<typeof firstSpecFile>["pageStats"]): number[] => {
     const ss = stats?.signSchedulePages ?? [];
-    const both = (stats as Record<string, unknown>)?.bothPages as number[] | undefined ?? [];
+    const both = stats?.bothPages ?? [];
     return [...new Set([...ss, ...both])].sort((a, b) => a - b);
   };
 
@@ -2618,7 +2614,7 @@ function SheetsPanel({
                       {/* Detection tables */}
                       {(() => {
                         const { floorPlanRows, signSpecRows } = buildDetectionRows(stats);
-                        const rejectedPageNumbers = (stats as RawPageStats).rejectedPageNumbers ?? [];
+                        const rejectedPageNumbers = stats.rejectedPageNumbers ?? [];
                         return (
                           <>
                             <DetectionTable
@@ -2656,11 +2652,11 @@ function SheetsPanel({
 
 // ─── SOURCE BADGE ─────────────────────────────────────────────────────────────
 
-function SourceBadge({ sign }: { sign: Record<string, unknown> }) {
-  const method = sign.extractionMethod as string | null | undefined;
-  const paired = sign.pairedSignId as string | null | undefined;
-  const manual = sign.manuallyAdded as boolean | undefined;
-  const dataSource = sign.dataSource as string | null | undefined;
+function SourceBadge({ sign }: { sign: AnySign }) {
+  const method = sign.extractionMethod;
+  const paired = sign.pairedSignId;
+  const manual = sign.manuallyAdded;
+  const dataSource = sign.dataSource;
 
   if (manual) {
     return (

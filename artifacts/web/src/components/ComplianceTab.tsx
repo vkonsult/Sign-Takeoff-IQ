@@ -49,10 +49,12 @@ export function ComplianceTab({ jobId }: { jobId: string }) {
     setLoading(true);
     setError(null);
     try {
-      const data = await apiFetch<ComplianceScanResult>(
+      const res = await apiFetch(
         `/api/jobs/${jobId}/compliance-scan`,
         { method: "POST" }
       );
+      if (!res.ok) throw new Error(`Compliance scan failed: ${res.status}`);
+      const data = await res.json() as ComplianceScanResult;
       setScanResult(data);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Compliance scan failed");

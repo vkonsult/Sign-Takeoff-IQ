@@ -5,8 +5,9 @@ import {
   useGetJob, 
   useListJobs,
   getGetJobQueryKey,
-  getListJobsQueryKey
+  getListJobsQueryKey,
 } from "@workspace/api-client-react";
+import type { ListJobs200 } from "@workspace/api-client-react";
 import { apiFetch } from "@/lib/apiClient";
 
 export function useJobsList(includeArchived = false) {
@@ -26,7 +27,7 @@ export function useJobsList(includeArchived = false) {
     queryFn: async () => {
       const res = await apiFetch("/api/jobs?includeArchived=true");
       if (!res.ok) throw new Error("Failed to fetch jobs");
-      return res.json() as Promise<{ jobs: unknown[] }>;
+      return res.json() as Promise<ListJobs200>;
     },
     refetchInterval: 10000,
     enabled: includeArchived,

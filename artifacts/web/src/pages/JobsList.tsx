@@ -80,6 +80,8 @@ export default function JobsList() {
     updatedAt?: string | null;
     recentUsers?: RecentUser[];
     files?: { id: string; originalName: string }[];
+    plaqueCount?: number | null;
+    occupantLoadCount?: number | null;
   };
 
   const rawJobs = (data?.jobs ?? []) as JobSummaryListItem[];

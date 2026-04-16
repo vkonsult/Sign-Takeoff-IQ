@@ -50,14 +50,14 @@ export interface FileInfo {
     signSchedulePages: number[];
     bothPages?: number[];
     otherPages: number[];
-    pageLabels?: (string | null)[];
+    pageLabels?: (string | null)[] | null;
     pageImagePaths?: Record<string, string> | null;
     outlineSections?: Array<{
       title: string;
       pageStart: number;
       pageEnd: number;
       type: "floor_plan" | "sign_schedule" | "other" | null;
-    }>;
+    }> | null;
   } | null;
 }
 

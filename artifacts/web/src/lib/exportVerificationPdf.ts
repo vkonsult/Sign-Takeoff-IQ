@@ -140,7 +140,7 @@ export async function exportVerificationPdf(
   }
 
   const saved = await doc.save();
-  const blob = new Blob([saved], { type: "application/pdf" });
+  const blob = new Blob([saved.buffer as ArrayBuffer], { type: "application/pdf" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
