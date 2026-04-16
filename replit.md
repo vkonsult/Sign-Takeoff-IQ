@@ -39,3 +39,9 @@ Sign TakeOff IQ is built as a pnpm workspace monorepo using TypeScript.
 - **ChromaDB**: Vector database for the RAG knowledge layer. Requires a separate Python server instance.
 - **pdfjs**: For PDF parsing and word extraction.
 - **exceljs**: For generating XLSX export files.
+- **Sentry**: Frontend error monitoring via `@sentry/react`. Initialized in `artifacts/web/src/main.tsx` when the `VITE_SENTRY_DSN` secret is set. The logger (`artifacts/web/src/lib/logger.ts`) calls `Sentry.captureException` / `Sentry.captureMessage` for all `logger.error` calls.
+
+## Required Secrets / Environment Variables
+| Variable | Where set | Purpose |
+|---|---|---|
+| `VITE_SENTRY_DSN` | Replit secret | Sentry DSN for frontend error reporting. Create a project at sentry.io and paste the DSN here. Sentry is disabled when unset. |

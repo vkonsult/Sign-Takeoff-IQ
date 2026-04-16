@@ -4,6 +4,17 @@ import App from "./App";
 import "./index.css";
 import { setAuthTokenGetter } from "@workspace/api-client-react";
 import { getGuestToken } from "./lib/apiClient";
+import * as Sentry from "@sentry/react";
+
+const dsn = import.meta.env.VITE_SENTRY_DSN as string | undefined;
+
+if (dsn) {
+  Sentry.init({
+    dsn,
+    environment: import.meta.env.MODE,
+    tracesSampleRate: 1.0,
+  });
+}
 
 const sentryDsn = import.meta.env.VITE_SENTRY_DSN as string | undefined;
 
