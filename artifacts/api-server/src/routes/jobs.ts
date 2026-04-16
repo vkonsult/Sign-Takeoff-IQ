@@ -1492,7 +1492,7 @@ router.post("/jobs/:jobId/ai-scan", async (req, res) => {
 
           } else if (callType === "floor_plan_text") {
             const spatialMap = buildSpatialMap("floor_plan");
-            const { rows, inputTokens, outputTokens } = await runFloorPlanTextExtraction(file, projectContext, spatialMap.size > 0 ? spatialMap : undefined);
+            const { rows, inputTokens, outputTokens } = await runFloorPlanTextExtraction(file, projectContext as import("../lib/extraction").ProjectInfo | undefined, spatialMap.size > 0 ? spatialMap : undefined);
             const { newCount, updateCount } = await mergeAiSignRows(rows, jobId, file.id, existingSignKeys, existingSigns, files);
             totalNewSigns += newCount;
             totalUpdatedSigns += updateCount;

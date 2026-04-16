@@ -275,7 +275,7 @@ async function buildEmptyJobIdApp() {
   const app = express();
   app.use(express.json());
   app.use((req: Request, _res: Response, next: NextFunction) => {
-    req.authUser = SUPER_ADMIN_USER;
+    req.authUser = SUPER_ADMIN_USER as import("../middlewares/authMiddleware").AuthUser;
     next();
   });
   // Add param callback directly to the router so it fires for all routes
