@@ -49,6 +49,18 @@ This regenerates:
 
 3. Commit both the updated spec and the regenerated files together so the repo stays in sync.
 
+### Keeping generated files in sync
+
+A CI check called **`codegen-sync`** reruns `pnpm codegen` and then verifies that the output matches what is committed. The check fails if the generated files differ from the committed versions, which catches cases where someone edits `openapi.yaml` without running codegen.
+
+To run the check locally before pushing:
+
+```bash
+pnpm codegen && git diff --exit-code lib/api-client-react/src/generated lib/api-zod/src/generated
+```
+
+If the check fails, run `pnpm codegen` and commit the updated generated files alongside the spec change.
+
 ### How it works
 
 Codegen is powered by [Orval](https://orval.dev/). The configuration lives in `lib/api-spec/orval.config.ts` and points at `lib/api-spec/openapi.yaml` as the single source of truth.

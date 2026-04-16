@@ -46,6 +46,10 @@ args = "api-server-lint"
 task = "workflow.run"
 args = "web-lint"
 
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "codegen-sync"
+
 [[workflows.workflow]]
 name = "web-unit-tests"
 author = "agent"
@@ -108,6 +112,17 @@ author = "agent"
 [[workflows.workflow.tasks]]
 task = "shell.exec"
 args = "pnpm --filter @workspace/web lint"
+
+[workflows.workflow.metadata]
+isValidation = true
+
+[[workflows.workflow]]
+name = "codegen-sync"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "pnpm codegen && git diff --exit-code lib/api-client-react/src/generated lib/api-zod/src/generated"
 
 [workflows.workflow.metadata]
 isValidation = true
