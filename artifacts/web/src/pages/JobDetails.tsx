@@ -1627,9 +1627,20 @@ export default function JobDetails() {
                           className="opacity-40 bg-muted/30 hover:opacity-60 transition-opacity"
                         >
                           <td className="data-cell sticky left-0 z-10 bg-inherit shadow-[2px_0_5px_-2px_rgba(0,0,0,0.3)]">
-                            <span className="text-xs font-semibold text-muted-foreground line-through">
-                              {sign.signIdentifier || '—'}
-                            </span>
+                            <div className="flex items-center gap-1.5">
+                              <span className="text-xs font-semibold text-muted-foreground line-through">
+                                {sign.signIdentifier || '—'}
+                              </span>
+                              {sign.manuallyEdited && (
+                                <span
+                                  title="Manually locked — this row will not be overwritten by AI re-runs"
+                                  className="inline-flex items-center gap-0.5 px-1 py-0.5 rounded text-[9px] font-medium bg-amber-500/10 text-amber-400 border border-amber-500/20 cursor-default"
+                                >
+                                  <Lock className="w-2.5 h-2.5" />
+                                  locked
+                                </span>
+                              )}
+                            </div>
                           </td>
                           <td className="data-cell truncate max-w-[200px] text-muted-foreground line-through">{sign.location || '—'}</td>
                           <td className="data-cell text-muted-foreground line-through">{sign.signType || '—'}</td>
