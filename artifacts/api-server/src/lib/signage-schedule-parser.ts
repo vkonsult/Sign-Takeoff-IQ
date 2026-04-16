@@ -12,6 +12,7 @@
  */
 
 import { logger as rootLogger } from "./logger";
+import { sanitizePhraseCoords, type PdfPhrase } from "./pdf-words";
 
 const logger = rootLogger.child({ module: "signage-schedule-parser" });
 
@@ -848,16 +849,12 @@ Return ONLY the JSON object. No markdown, no explanation.`;
  * This allows the parser to work in point-space for threshold comparisons.
  */
 export function phrasesToRawItems(
-  phrases: import("./pdf-words").PdfPhrase[],
+  phrases: PdfPhrase[],
   pageWidth: number,
   pageHeight: number,
 ): RawTextItem[] {
-  const clamp = (v: number) => Math.max(0, Math.min(1, v));
   return phrases.map((p) => {
-    const x0 = clamp(Math.min(p.x0, p.x1));
-    const x1 = clamp(Math.max(p.x0, p.x1));
-    const y0 = clamp(Math.min(p.y0, p.y1));
-    const y1 = clamp(Math.max(p.y0, p.y1));
+    const { x0, x1, y0, y1 } = sanitizePhraseCoords(p.x0, p.x1, p.y0, p.y1);
     return {
       text: p.text,
       x: x0 * pageWidth,
