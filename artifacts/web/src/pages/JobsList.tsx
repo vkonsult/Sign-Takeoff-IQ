@@ -463,13 +463,18 @@ export default function JobsList() {
                               </span>
                             )}
                             {unplacedCount > 0 && (
-                              <span
-                                className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-orange-500/10 text-orange-400 border border-orange-500/20"
-                                title={`${unplacedCount} sign${unplacedCount !== 1 ? "s" : ""} not yet placed on a floor plan`}
+                              <button
+                                onClick={(e) => {
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                  setLocation(`/jobs/${job.id}?unplaced=1`);
+                                }}
+                                className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-orange-500/10 text-orange-400 border border-orange-500/20 hover:bg-orange-500/20 hover:border-orange-500/40 transition-colors cursor-pointer"
+                                title={`${unplacedCount} sign${unplacedCount !== 1 ? "s" : ""} not yet placed on a floor plan — click to view`}
                               >
                                 <MapPinOff className="w-2.5 h-2.5" />
                                 {unplacedCount} unplaced
-                              </span>
+                              </button>
                             )}
                           </div>
                         </div>
