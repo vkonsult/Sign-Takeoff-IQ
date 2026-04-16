@@ -2188,6 +2188,23 @@ export function UnifiedPlanViewer({
   const confidence = activeSign ? Math.round(activeSign.confidenceScore * 100) : 0;
   const confColor = confidence >= 80 ? "text-accent" : confidence >= 60 ? "text-primary" : "text-destructive";
 
+  // ── Unplaced count per file (for tab badges) ───────────────────────────────
+  const unplacedCountByFile = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const s of localSigns) {
+      if (s.jobFileId && (s.xPos == null || s.yPos == null)) {
+        map.set(s.jobFileId, (map.get(s.jobFileId) ?? 0) + 1);
+      }
+    }
+    return map;
+  }, [localSigns]);
+
+  // Focus the modal container when it mounts so Ctrl+Z works without a click
+  useEffect(() => {
+    if (mode !== "modal") return;
+    modalContainerRef.current?.focus();
+  }, [mode]);
+
   // ── No files guard ─────────────────────────────────────────────────────────
   if (mode === "tab" && floorPlanFiles.length === 0) {
     return (
@@ -2262,18 +2279,6 @@ export function UnifiedPlanViewer({
     />
   );
 
-  // ── Unplaced count per file (for tab badges) ───────────────────────────────
-  // eslint-disable-next-line react-hooks/rules-of-hooks
-  const unplacedCountByFile = useMemo(() => {
-    const map = new Map<string, number>();
-    for (const s of localSigns) {
-      if (s.jobFileId && (s.xPos == null || s.yPos == null)) {
-        map.set(s.jobFileId, (map.get(s.jobFileId) ?? 0) + 1);
-      }
-    }
-    return map;
-  }, [localSigns]);
-
   // ── Tab mode ───────────────────────────────────────────────────────────────
   if (mode === "tab") {
     return (
@@ -2310,13 +2315,6 @@ export function UnifiedPlanViewer({
       </div>
     );
   }
-
-  // Focus the modal container when it mounts so Ctrl+Z works without a click
-  // eslint-disable-next-line react-hooks/rules-of-hooks
-  useEffect(() => {
-    if (mode !== "modal") return;
-    modalContainerRef.current?.focus();
-  }, [mode]);
 
   // ── Modal mode ─────────────────────────────────────────────────────────────
   const handleCloseWithGuard = () => {
