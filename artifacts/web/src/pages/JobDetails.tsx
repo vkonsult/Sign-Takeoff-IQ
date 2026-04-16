@@ -50,6 +50,7 @@ import {
   Brain,
   Users,
   BookOpen,
+  Lock,
 } from "lucide-react";
 import { format, formatDistanceToNow } from "date-fns";
 import { exportMarkedupPdf, type MarkerSign } from "@/lib/exportMarkedupPdf";
@@ -536,6 +537,7 @@ export default function JobDetails() {
   const [summaryFilter, setSummaryFilter] = useState<null | "flagged">(null);
   const [activeTab, setActiveTab] = useState<"table" | "sheets" | "summary" | "floorplans" | "signpages" | "specs" | "timeline" | "coords" | "ai_scans" | "compliance" | "plaque_schedule" | "occupant_loads">("table");
   const [showAiHighlight, setShowAiHighlight] = useState(false);
+  const [unlockingSignId, setUnlockingSignId] = useState<string | null>(null);
 
   const PROCESSING_TIMEOUT_SECONDS = 5 * 60;
   const [processingSeconds, setProcessingSeconds] = useState(0);
@@ -610,6 +612,32 @@ export default function JobDetails() {
       }
     } catch {
       queryClient.invalidateQueries({ queryKey: getGetJobQueryKey(jobId) });
+    }
+  };
+
+  const handleUnlockSign = async (signId: string) => {
+    setUnlockingSignId(signId);
+    try {
+      const res = await apiFetch(`/api/extracted-signs/${signId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ manuallyEdited: false }),
+      });
+      if (res.ok) {
+        queryClient.setQueryData(getGetJobQueryKey(jobId), (old: typeof data) => {
+          if (!old) return old;
+          const extractedSigns = (old.extractedSigns ?? []).map((s) =>
+            s.id === signId ? { ...s, manuallyEdited: false } : s
+          );
+          return { ...old, extractedSigns };
+        });
+      } else {
+        queryClient.invalidateQueries({ queryKey: getGetJobQueryKey(jobId) });
+      }
+    } catch {
+      queryClient.invalidateQueries({ queryKey: getGetJobQueryKey(jobId) });
+    } finally {
+      setUnlockingSignId(null);
     }
   };
 
@@ -1441,6 +1469,17 @@ export default function JobDetails() {
                                 <Pencil className="w-3 h-3" />
                                 Edit
                               </button>
+                              {sign.manuallyEdited && (
+                                <button
+                                  onClick={() => handleUnlockSign(sign.id)}
+                                  disabled={unlockingSignId !== null}
+                                  title="Unlock row — allow AI to update again"
+                                  aria-label="Unlock row"
+                                  className="inline-flex items-center justify-center w-7 h-7 rounded-md bg-secondary hover:bg-emerald-500/10 hover:text-emerald-400 border border-border text-amber-400 transition-all disabled:opacity-40"
+                                >
+                                  {unlockingSignId === sign.id ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Lock className="w-3.5 h-3.5" />}
+                                </button>
+                              )}
                               <button
                                 onClick={() => toggleHidden(sign.id, false)}
                                 title="Hide this row"
