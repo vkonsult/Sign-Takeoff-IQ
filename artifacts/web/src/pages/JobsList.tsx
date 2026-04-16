@@ -10,7 +10,7 @@ import { Button } from "@/components/ui/button";
 import {
   FolderOpen, Eye, FileText, CheckCircle2, Cpu,
   AlertTriangle, Trash2, X, Square, CheckSquare, MinusSquare,
-  Archive, EyeOff, Layers, Users, ChevronUp, ChevronDown, ChevronsUpDown,
+  Archive, EyeOff, Layers, Users, ChevronUp, ChevronDown, ChevronsUpDown, MapPinOff,
 } from "lucide-react";
 import { Link } from "wouter";
 
@@ -30,12 +30,20 @@ const ACTION_LABELS: Record<string, string> = {
   pdf_exported: "exported PDF for",
 };
 
-type SortBy = "name" | "createdAt" | "updatedAt" | "plaqueCount" | "occupantLoadCount";
+type SortBy = "name" | "status" | "createdAt" | "updatedAt" | "plaqueCount" | "occupantLoadCount";
 type SortDir = "asc" | "desc";
 
-const VALID_SORT_COLS: SortBy[] = ["name", "createdAt", "updatedAt", "plaqueCount", "occupantLoadCount"];
+const VALID_SORT_COLS: SortBy[] = ["name", "status", "createdAt", "updatedAt", "plaqueCount", "occupantLoadCount"];
 const DEFAULT_SORT_BY: SortBy = "createdAt";
 const DEFAULT_SORT_DIR: SortDir = "desc";
+
+const STATUS_ORDER: Record<string, number> = {
+  processing: 0,
+  completed: 1,
+  failed: 2,
+  archived: 3,
+};
+
 
 function parseSortParams(search: string): { sortBy: SortBy; sortDir: SortDir } {
   const params = new URLSearchParams(search);
@@ -143,6 +151,11 @@ export default function JobsList() {
       } else {
         aVal = new Date(a.createdAt).getTime();
         bVal = new Date(b.createdAt).getTime();
+      }
+      if (sortBy === "status") {
+        const aOrd = STATUS_ORDER[a.status] ?? 99;
+        const bOrd = STATUS_ORDER[b.status] ?? 99;
+        return sortDir === "asc" ? aOrd - bOrd : bOrd - aOrd;
       }
       return sortDir === "asc" ? aVal - bVal : bVal - aVal;
     });
@@ -324,7 +337,9 @@ export default function JobsList() {
                     : <Square className="w-4 h-4" />}
               </button>
               <SortHeader col="name" label="Job Name" />
-              <div className="text-center text-xs font-display font-semibold uppercase tracking-wider text-muted-foreground">Status</div>
+              <div className="flex justify-center">
+                <SortHeader col="status" label="Status" />
+              </div>
               <div className="text-center text-xs font-display font-semibold uppercase tracking-wider text-muted-foreground" title="Last active user">User</div>
               <div className="flex justify-end">
                 <SortHeader col="createdAt" label="Created" />
