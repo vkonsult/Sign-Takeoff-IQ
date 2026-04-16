@@ -1247,7 +1247,7 @@ export default function JobDetails() {
                     id="tab-table"
                     role="tab"
                     aria-selected={activeTab === "table"}
-                    aria-controls="tabpanel-main"
+                    aria-controls="tabpanel-table"
                     tabIndex={activeTab === "table" ? 0 : -1}
                     onClick={() => setActiveTab("table")}
                     className={`flex items-center gap-1.5 px-3 py-2 text-[10px] font-display font-semibold uppercase tracking-wider border-b-2 transition-all ${
@@ -1263,7 +1263,7 @@ export default function JobDetails() {
                     id="tab-sheets"
                     role="tab"
                     aria-selected={activeTab === "sheets"}
-                    aria-controls="tabpanel-main"
+                    aria-controls="tabpanel-sheets"
                     tabIndex={activeTab === "sheets" ? 0 : -1}
                     onClick={() => setActiveTab("sheets")}
                     className={`flex items-center gap-1.5 px-3 py-2 text-[10px] font-display font-semibold uppercase tracking-wider border-b-2 transition-all ${
@@ -1279,7 +1279,7 @@ export default function JobDetails() {
                     id="tab-summary"
                     role="tab"
                     aria-selected={activeTab === "summary"}
-                    aria-controls="tabpanel-main"
+                    aria-controls="tabpanel-summary"
                     tabIndex={activeTab === "summary" ? 0 : -1}
                     onClick={() => setActiveTab("summary")}
                     className={`flex items-center gap-1.5 px-3 py-2 text-[10px] font-display font-semibold uppercase tracking-wider border-b-2 transition-all ${
@@ -1295,7 +1295,7 @@ export default function JobDetails() {
                     id="tab-floorplans"
                     role="tab"
                     aria-selected={activeTab === "floorplans"}
-                    aria-controls="tabpanel-main"
+                    aria-controls="tabpanel-floorplans"
                     tabIndex={activeTab === "floorplans" ? 0 : -1}
                     onClick={() => setActiveTab("floorplans")}
                     className={`flex items-center gap-1.5 px-3 py-2 text-[10px] font-display font-semibold uppercase tracking-wider border-b-2 transition-all ${
@@ -1311,7 +1311,7 @@ export default function JobDetails() {
                     id="tab-signpages"
                     role="tab"
                     aria-selected={activeTab === "signpages"}
-                    aria-controls="tabpanel-main"
+                    aria-controls="tabpanel-signpages"
                     tabIndex={activeTab === "signpages" ? 0 : -1}
                     onClick={() => setActiveTab("signpages")}
                     className={`flex items-center gap-1.5 px-3 py-2 text-[10px] font-display font-semibold uppercase tracking-wider border-b-2 transition-all ${
@@ -1327,7 +1327,7 @@ export default function JobDetails() {
                     id="tab-specs"
                     role="tab"
                     aria-selected={activeTab === "specs"}
-                    aria-controls="tabpanel-main"
+                    aria-controls="tabpanel-specs"
                     tabIndex={activeTab === "specs" ? 0 : -1}
                     onClick={() => setActiveTab("specs")}
                     className={`flex items-center gap-1.5 px-3 py-2 text-[10px] font-display font-semibold uppercase tracking-wider border-b-2 transition-all ${
@@ -1343,7 +1343,7 @@ export default function JobDetails() {
                     id="tab-timeline"
                     role="tab"
                     aria-selected={activeTab === "timeline"}
-                    aria-controls="tabpanel-main"
+                    aria-controls="tabpanel-timeline"
                     tabIndex={activeTab === "timeline" ? 0 : -1}
                     onClick={() => setActiveTab("timeline")}
                     className={`flex items-center gap-1.5 px-3 py-2 text-[10px] font-display font-semibold uppercase tracking-wider border-b-2 transition-all ${
@@ -1360,7 +1360,7 @@ export default function JobDetails() {
                       id="tab-coords"
                       role="tab"
                       aria-selected={activeTab === "coords"}
-                      aria-controls="tabpanel-main"
+                      aria-controls="tabpanel-coords"
                       tabIndex={activeTab === "coords" ? 0 : -1}
                       onClick={() => setActiveTab("coords")}
                       className={`flex items-center gap-1.5 px-3 py-2 text-[10px] font-display font-semibold uppercase tracking-wider border-b-2 transition-all ${
@@ -1378,7 +1378,7 @@ export default function JobDetails() {
                       id="tab-ai_scans"
                       role="tab"
                       aria-selected={activeTab === "ai_scans"}
-                      aria-controls="tabpanel-main"
+                      aria-controls="tabpanel-ai_scans"
                       tabIndex={activeTab === "ai_scans" ? 0 : -1}
                       onClick={() => setActiveTab("ai_scans")}
                       className={`flex items-center gap-1.5 px-3 py-2 text-[10px] font-display font-semibold uppercase tracking-wider border-b-2 transition-all ${
@@ -1396,7 +1396,7 @@ export default function JobDetails() {
                       id="tab-compliance"
                       role="tab"
                       aria-selected={activeTab === "compliance"}
-                      aria-controls="tabpanel-main"
+                      aria-controls="tabpanel-compliance"
                       tabIndex={activeTab === "compliance" ? 0 : -1}
                       onClick={() => setActiveTab("compliance")}
                       className={`flex items-center gap-1.5 px-3 py-2 text-[10px] font-display font-semibold uppercase tracking-wider border-b-2 transition-all ${
@@ -1414,7 +1414,7 @@ export default function JobDetails() {
                       id="tab-plaque_schedule"
                       role="tab"
                       aria-selected={activeTab === "plaque_schedule"}
-                      aria-controls="tabpanel-main"
+                      aria-controls="tabpanel-plaque_schedule"
                       tabIndex={activeTab === "plaque_schedule" ? 0 : -1}
                       onClick={() => setActiveTab("plaque_schedule")}
                       className={`flex items-center gap-1.5 px-3 py-2 text-[10px] font-display font-semibold uppercase tracking-wider border-b-2 transition-all ${
@@ -1437,7 +1437,7 @@ export default function JobDetails() {
                       id="tab-occupant_loads"
                       role="tab"
                       aria-selected={activeTab === "occupant_loads"}
-                      aria-controls="tabpanel-main"
+                      aria-controls="tabpanel-occupant_loads"
                       tabIndex={activeTab === "occupant_loads" ? 0 : -1}
                       onClick={() => setActiveTab("occupant_loads")}
                       className={`flex items-center gap-1.5 px-3 py-2 text-[10px] font-display font-semibold uppercase tracking-wider border-b-2 transition-all ${
@@ -1458,9 +1458,9 @@ export default function JobDetails() {
                 </div>
               </div>
 
-              <div id="tabpanel-main" role="tabpanel" aria-labelledby={`tab-${activeTab}`} className="flex-1 flex flex-col min-h-0">
+              <div className="flex-1 flex flex-col min-h-0">
               {activeTab === "floorplans" ? (
-                <div className="flex-1 min-h-0 flex flex-col">
+                <div role="tabpanel" id="tabpanel-floorplans" aria-labelledby="tab-floorplans" className="flex-1 min-h-0 flex flex-col">
                   {showUnplacedWarning && (
                     <div className="flex items-center gap-2 px-3 py-2 bg-yellow-500/10 border-b border-yellow-500/30 text-yellow-300 text-xs shrink-0">
                       <AlertTriangle className="w-3.5 h-3.5 text-yellow-400 shrink-0" />
@@ -1514,7 +1514,7 @@ export default function JobDetails() {
                   </div>
                 </div>
               ) : activeTab === "signpages" ? (
-                <div className="flex-1 min-h-0">
+                <div role="tabpanel" id="tabpanel-signpages" aria-labelledby="tab-signpages" className="flex-1 min-h-0">
                   <UnifiedPlanViewer
                     mode="tab"
                     jobId={jobId}
@@ -1525,7 +1525,7 @@ export default function JobDetails() {
                   />
                 </div>
               ) : activeTab === "specs" ? (
-                <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
+                <div role="tabpanel" id="tabpanel-specs" aria-labelledby="tab-specs" className="flex-1 flex flex-col min-h-0 overflow-hidden">
                   <SignSpecsTab
                     signs={extractedSigns}
                     files={files}
@@ -1533,17 +1533,19 @@ export default function JobDetails() {
                   />
                 </div>
               ) : activeTab === "sheets" ? (
-                <SheetsPanel
-                  files={files}
-                  onOpenSpec={setSpecViewer}
-                  allSigns={extractedSigns}
-                  hiddenSigns={hiddenSigns}
-                  toggleHidden={toggleHidden}
-                  jobId={jobId}
-                  toggleRejectedPage={toggleRejectedPage}
-                />
+                <div role="tabpanel" id="tabpanel-sheets" aria-labelledby="tab-sheets" className="flex-1 flex flex-col min-h-0">
+                  <SheetsPanel
+                    files={files}
+                    onOpenSpec={setSpecViewer}
+                    allSigns={extractedSigns}
+                    hiddenSigns={hiddenSigns}
+                    toggleHidden={toggleHidden}
+                    jobId={jobId}
+                    toggleRejectedPage={toggleRejectedPage}
+                  />
+                </div>
               ) : activeTab === "timeline" ? (
-                <div className="flex-1 overflow-auto p-8">
+                <div role="tabpanel" id="tabpanel-timeline" aria-labelledby="tab-timeline" className="flex-1 overflow-auto p-8">
                   <div className="max-w-4xl mx-auto">
                     <div className="text-xs font-display font-semibold uppercase tracking-wider text-muted-foreground mb-6">
                       Processing Timeline
@@ -1559,13 +1561,15 @@ export default function JobDetails() {
                   </div>
                 </div>
               ) : activeTab === "summary" ? (
-                <SignSummaryPanel signs={extractedSigns} />
+                <div role="tabpanel" id="tabpanel-summary" aria-labelledby="tab-summary" className="flex-1 flex flex-col min-h-0">
+                  <SignSummaryPanel signs={extractedSigns} />
+                </div>
               ) : activeTab === "coords" ? (
-                <div className="flex-1 overflow-auto bg-card border-t border-border">
+                <div role="tabpanel" id="tabpanel-coords" aria-labelledby="tab-coords" className="flex-1 overflow-auto bg-card border-t border-border">
                   <CoordinatesTable signs={extractedSigns} showAiHighlight={showAiHighlight} onView={(sign) => setReviewSign(sign as SignRow)} />
                 </div>
               ) : activeTab === "ai_scans" ? (
-                <div className="flex-1 overflow-auto bg-card border-t border-border">
+                <div role="tabpanel" id="tabpanel-ai_scans" aria-labelledby="tab-ai_scans" className="flex-1 overflow-auto bg-card border-t border-border">
                   <AiScansTab
                     jobId={jobId}
                     showAiHighlight={showAiHighlight}
@@ -1576,11 +1580,11 @@ export default function JobDetails() {
                   />
                 </div>
               ) : activeTab === "compliance" ? (
-                <div className="flex-1 flex flex-col min-h-0 bg-card border-t border-border overflow-hidden">
+                <div role="tabpanel" id="tabpanel-compliance" aria-labelledby="tab-compliance" className="flex-1 flex flex-col min-h-0 bg-card border-t border-border overflow-hidden">
                   <ComplianceTab jobId={jobId} />
                 </div>
               ) : activeTab === "plaque_schedule" ? (
-                <div className="flex-1 overflow-auto bg-card border-t border-border">
+                <div role="tabpanel" id="tabpanel-plaque_schedule" aria-labelledby="tab-plaque_schedule" className="flex-1 overflow-auto bg-card border-t border-border">
                   <PlaqueScheduleTab
                     jobId={jobId}
                     plaques={plaqueScheduleQuery.data?.plaques ?? []}
@@ -1595,7 +1599,7 @@ export default function JobDetails() {
                   />
                 </div>
               ) : activeTab === "occupant_loads" ? (
-                <div className="flex-1 overflow-auto bg-card border-t border-border">
+                <div role="tabpanel" id="tabpanel-occupant_loads" aria-labelledby="tab-occupant_loads" className="flex-1 overflow-auto bg-card border-t border-border">
                   <OccupantLoadsTab
                     jobId={jobId}
                     loads={occupantLoadsQuery.data?.loads ?? []}
@@ -1611,7 +1615,7 @@ export default function JobDetails() {
                   />
                 </div>
               ) : (
-                <>
+                <div role="tabpanel" id="tabpanel-table" aria-labelledby="tab-table" className="flex-1 flex flex-col min-h-0">
                   {/* Data Table Container */}
                   <div className="flex-1 overflow-auto bg-card border-t border-border">
                 {/* Filter bar — exceptions toggle + hidden toggle + unlock all + unplaced filter */}
@@ -1938,7 +1942,7 @@ export default function JobDetails() {
                   </table>
                 </div>
               </div>
-                </>
+                </div>
               )}
               </div>
             </div>
