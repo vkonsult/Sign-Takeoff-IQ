@@ -220,6 +220,32 @@ async function getPdfjs(): Promise<PdfjsLib> {
   return lib;
 }
 
+// ── Coordinate sanitiser ──────────────────────────────────────────────────
+/**
+ * Normalise a raw bounding box so that the returned PdfPhrase coordinates are
+ * always in canonical form:
+ *
+ *  - x0 ≤ x1  (swap if inverted)
+ *  - y0 ≤ y1  (swap if inverted)
+ *  - all four values clamped to [0, 1]
+ *
+ * Call this at every site that constructs a PdfPhrase so that any downstream
+ * consumer — including future ones that never pass through the parser — receives
+ * well-formed data regardless of what pdfjs-dist provides.
+ */
+export function sanitizePhraseCoords(
+  rawX0: number,
+  rawX1: number,
+  rawY0: number,
+  rawY1: number,
+): { x0: number; x1: number; y0: number; y1: number } {
+  const x0 = Math.min(1, Math.max(0, Math.min(rawX0, rawX1)));
+  const x1 = Math.min(1, Math.max(0, Math.max(rawX0, rawX1)));
+  const y0 = Math.min(1, Math.max(0, Math.min(rawY0, rawY1)));
+  const y1 = Math.min(1, Math.max(0, Math.max(rawY0, rawY1)));
+  return { x0, x1, y0, y1 };
+}
+
 // ── Type guard: distinguishes real TextItem from TextMarkedContent ────────
 function isTextItem(item: PdfjsTextItem | Record<string, unknown>): item is PdfjsTextItem {
   return (
@@ -425,13 +451,12 @@ export async function extractPagePhrases(
     }
     text = text.trim().replace(/  +/g, " ");
 
-    // Normalise to [0, 1] — viewport space is already top-down so no y-flip needed
+    // Normalise to [0, 1] and enforce canonical order via sanitizePhraseCoords.
+    // Viewport space is already top-down so no y-flip is needed; the helper
+    // additionally guards against any inversion pdfjs might introduce.
     phrases.push({
       text,
-      x0: Math.min(1, Math.max(0, vxMin / pageW)),
-      x1: Math.min(1, Math.max(0, vxMax / pageW)),
-      y0: Math.min(1, Math.max(0, vyMin / pageH)),
-      y1: Math.min(1, Math.max(0, vyMax / pageH)),
+      ...sanitizePhraseCoords(vxMin / pageW, vxMax / pageW, vyMin / pageH, vyMax / pageH),
     });
     group = null;
   }
