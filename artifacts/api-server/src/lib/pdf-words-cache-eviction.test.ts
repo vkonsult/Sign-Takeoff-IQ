@@ -27,6 +27,7 @@ vi.mock("pdfjs-dist/legacy/build/pdf.mjs", () => {
 import {
   getOrOpenPdfjsDoc,
   extractPagePhrases,
+  invalidatePdfCaches,
   __pdfjsDocCache,
   __phraseCache,
   __PDFJS_DOC_CACHE_MAX,
@@ -138,5 +139,95 @@ describe("phraseCache eviction", () => {
     await extractPagePhrases(pdfPath, "file-new", 1);
 
     expect(__phraseCache.size).toBe(200);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// invalidatePdfCaches — stale cache eviction on file replacement
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("invalidatePdfCaches", () => {
+  function seedDocCache(pdfPath: string, destroyFn = vi.fn()) {
+    const mockDoc = {
+      getPage: vi.fn().mockResolvedValue({
+        getViewport: () => ({ width: 800, height: 600 }),
+        getTextContent: vi.fn().mockResolvedValue({ items: [] }),
+      }),
+      destroy: destroyFn,
+    };
+    __pdfjsDocCache.set(pdfPath, Promise.resolve(mockDoc as never));
+    return { mockDoc, destroyFn };
+  }
+
+  it("removes the pdfjsDocCache entry for the given path", () => {
+    const pdfPath = "/pdf/plan-v1.pdf";
+    seedDocCache(pdfPath);
+    expect(__pdfjsDocCache.has(pdfPath)).toBe(true);
+
+    invalidatePdfCaches(pdfPath, "file-abc");
+
+    expect(__pdfjsDocCache.has(pdfPath)).toBe(false);
+  });
+
+  it("calls destroy() on the evicted pdfjs document", async () => {
+    const destroyFn = vi.fn();
+    const pdfPath = "/pdf/plan-v2.pdf";
+    seedDocCache(pdfPath, destroyFn);
+
+    invalidatePdfCaches(pdfPath, "file-abc");
+
+    await vi.waitFor(() => expect(destroyFn).toHaveBeenCalledOnce(), { timeout: 200 });
+  });
+
+  it("removes all phraseCache entries whose key starts with the given fileId", () => {
+    const fileId = "file-xyz";
+    __phraseCache.set(`${fileId}:1`, { pageWidth: 800, pageHeight: 600, phrases: [] });
+    __phraseCache.set(`${fileId}:2`, { pageWidth: 800, pageHeight: 600, phrases: [] });
+    __phraseCache.set(`${fileId}:10`, { pageWidth: 800, pageHeight: 600, phrases: [] });
+    __phraseCache.set("other-file:1", { pageWidth: 800, pageHeight: 600, phrases: [] });
+
+    invalidatePdfCaches("/pdf/plan.pdf", fileId);
+
+    expect(__phraseCache.has(`${fileId}:1`)).toBe(false);
+    expect(__phraseCache.has(`${fileId}:2`)).toBe(false);
+    expect(__phraseCache.has(`${fileId}:10`)).toBe(false);
+    expect(__phraseCache.has("other-file:1")).toBe(true);
+  });
+
+  it("causes fresh extraction after the file is replaced (re-upload simulation)", async () => {
+    const pdfPath = "/pdf/revised-plan.pdf";
+    const fileId = "file-revised";
+
+    // Seed stale phrase cache entry (as if the old PDF was already parsed)
+    __phraseCache.set(`${fileId}:1`, {
+      pageWidth: 800,
+      pageHeight: 600,
+      phrases: [{ text: "STALE DATA", x0: 0, y0: 0, x1: 0.5, y1: 0.1 }],
+    });
+
+    // Seed a doc cache entry for the old file
+    seedDocCache(pdfPath);
+
+    expect(__phraseCache.get(`${fileId}:1`)?.phrases[0]?.text).toBe("STALE DATA");
+
+    // Simulate re-upload: invalidate then seed a fresh doc (the new PDF on disk)
+    invalidatePdfCaches(pdfPath, fileId);
+
+    expect(__phraseCache.has(`${fileId}:1`)).toBe(false);
+    expect(__pdfjsDocCache.has(pdfPath)).toBe(false);
+
+    // Seed the new file into the doc cache (what getOrOpenPdfjsDoc would do)
+    seedDocCache(pdfPath);
+
+    // Next extraction should re-parse and return fresh (empty) results
+    const result = await extractPagePhrases(pdfPath, fileId, 1);
+    expect(result.phrases).toEqual([]);
+    expect(__phraseCache.has(`${fileId}:1`)).toBe(true);
+  });
+
+  it("is a no-op when neither cache contains entries for the given path/fileId", () => {
+    expect(() => invalidatePdfCaches("/pdf/nonexistent.pdf", "file-unknown")).not.toThrow();
+    expect(__pdfjsDocCache.size).toBe(0);
+    expect(__phraseCache.size).toBe(0);
   });
 });

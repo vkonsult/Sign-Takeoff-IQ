@@ -118,6 +118,33 @@ const phraseCache = new Map<string, PageWords>();
 const PDFJS_DOC_CACHE_MAX = 20;
 const pdfjsDocCache = new Map<string, Promise<PdfjsDocument>>();
 
+/**
+ * Evict all cached state for a specific PDF file.
+ *
+ * Call this whenever a PDF is written (or overwritten) at `pdfPath` so that
+ * the next request re-reads the file from disk rather than serving stale data.
+ *
+ * - `pdfjsDocCache`: removes the entry keyed by `pdfPath` and calls
+ *   `destroy()` on the document so pdfjs-dist releases its resources.
+ * - `phraseCache`: removes every entry whose key starts with `${fileId}:`.
+ */
+export function invalidatePdfCaches(pdfPath: string, fileId: string): void {
+  const existingDocPromise = pdfjsDocCache.get(pdfPath);
+  if (existingDocPromise) {
+    pdfjsDocCache.delete(pdfPath);
+    existingDocPromise
+      .then((doc) => { try { doc.destroy(); } catch { /* ignore */ } })
+      .catch(() => { /* ignore */ });
+  }
+
+  const prefix = `${fileId}:`;
+  for (const key of phraseCache.keys()) {
+    if (key.startsWith(prefix)) {
+      phraseCache.delete(key);
+    }
+  }
+}
+
 // ── Test-only exports (not part of the public API) ────────────────────────
 // Exposed so unit tests can seed / inspect the module-level caches without
 // touching the filesystem or loading pdfjs-dist.
