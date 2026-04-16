@@ -23,6 +23,7 @@ import {
   RotateCcw,
   Undo2,
   Redo2,
+  LockOpen,
 } from "lucide-react";
 
 import type { ExtractedSign } from "@/types/sign";
@@ -75,6 +76,7 @@ export interface UnifiedPlanViewerProps {
   onSignUpdated?: (signId: string, xPos: number, yPos: number) => void;
   onSignDeleted?: (signId: string) => void;
   onEditSign?: (sign: ExtractedSign) => void;
+  onUnlock?: (signId: string) => Promise<boolean>;
 }
 
 // ── Internal Types ────────────────────────────────────────────────────────────
@@ -236,6 +238,7 @@ interface EditPanelProps {
   onSaved?: (updated: ExtractedSign) => void;
   onSignDeleted?: (signId: string) => void;
   onDeleteCommit?: (signId: string) => void;
+  onUnlock?: (signId: string) => Promise<boolean>;
   setLocalSigns: React.Dispatch<React.SetStateAction<ExtractedSign[]>>;
   setActiveSign: (s: ExtractedSign | null) => void;
   localSigns: ExtractedSign[];
@@ -249,6 +252,7 @@ function EditPanel({
   onSaved,
   onSignDeleted,
   onDeleteCommit,
+  onUnlock,
   setLocalSigns,
   setActiveSign,
   localSigns,
@@ -258,11 +262,14 @@ function EditPanel({
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [dirty, setDirty] = useState(false);
+  const [unlocking, setUnlocking] = useState(false);
+  const [unlockError, setUnlockError] = useState<string | null>(null);
 
   useEffect(() => {
     setForm(signToForm(activeSign));
     setDirty(false);
     setSaveError(null);
+    setUnlockError(null);
   }, [activeSign.id]);
 
   const handleField = useCallback((field: keyof FormState, value: string | boolean) => {
@@ -409,6 +416,42 @@ function EditPanel({
             Save Changes
           </button>
         </div>
+        {activeSign.manuallyEdited && onUnlock && (
+          <>
+            {unlockError && (
+              <div className="text-xs text-destructive bg-destructive/10 border border-destructive/20 rounded px-3 py-2 flex items-center gap-2">
+                <AlertTriangle className="w-3 h-3 flex-shrink-0" />
+                {unlockError}
+                <button onClick={() => setUnlockError(null)} className="ml-auto text-destructive/60 hover:text-destructive"><X className="w-3 h-3" /></button>
+              </div>
+            )}
+            <button
+              onClick={async () => {
+                setUnlocking(true);
+                setUnlockError(null);
+                try {
+                  const ok = await onUnlock(activeSign.id);
+                  if (ok) {
+                    setLocalSigns((prev) => prev.map((s) => s.id === activeSign.id ? { ...s, manuallyEdited: false } : s));
+                    setActiveSign({ ...activeSign, manuallyEdited: false });
+                  } else {
+                    setUnlockError("Failed to unlock this row. Please try again.");
+                  }
+                } catch {
+                  setUnlockError("Failed to unlock this row. Please try again.");
+                } finally {
+                  setUnlocking(false);
+                }
+              }}
+              disabled={unlocking || saving}
+              title="Remove manual-edit lock — allow AI to update this row again"
+              className="w-full flex items-center justify-center gap-2 px-4 py-2 text-xs font-display font-semibold uppercase tracking-wide rounded-lg text-amber-400 border border-amber-400/30 bg-amber-400/5 hover:bg-amber-400/15 transition-colors disabled:opacity-40"
+            >
+              {unlocking ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <LockOpen className="w-3.5 h-3.5" />}
+              Unlock for AI
+            </button>
+          </>
+        )}
         <button
           onClick={() => handleDeleteSign(activeSign.id)}
           className="w-full flex items-center justify-center gap-2 px-4 py-2 text-xs font-display font-semibold uppercase tracking-wide rounded-lg text-destructive border border-destructive/20 hover:bg-destructive/10 transition-colors"
@@ -1644,6 +1687,7 @@ export function UnifiedPlanViewer({
   onSignUpdated,
   onSignDeleted,
   onEditSign,
+  onUnlock,
 }: UnifiedPlanViewerProps) {
   const sourceSigns = (allSignsProp ?? signs ?? []) as ExtractedSign[];
   const [localSigns, setLocalSigns] = useState<ExtractedSign[]>(sourceSigns);
@@ -2195,6 +2239,7 @@ export function UnifiedPlanViewer({
             onSaved={onSaved}
             onSignDeleted={onSignDeleted}
             onDeleteCommit={handleDeleteCommit}
+            onUnlock={onUnlock}
             setLocalSigns={setLocalSigns}
             setActiveSign={setActiveSign}
             localSigns={localSigns}

@@ -618,7 +618,7 @@ export default function JobDetails() {
     }
   };
 
-  const handleUnlockSign = async (signId: string) => {
+  const handleUnlockSign = async (signId: string): Promise<boolean> => {
     setUnlockingSignId(signId);
     try {
       const res = await apiFetch(`/api/extracted-signs/${signId}`, {
@@ -634,11 +634,14 @@ export default function JobDetails() {
           );
           return { ...old, extractedSigns };
         });
+        return true;
       } else {
         queryClient.invalidateQueries({ queryKey: getGetJobQueryKey(jobId) });
+        return false;
       }
     } catch {
       queryClient.invalidateQueries({ queryKey: getGetJobQueryKey(jobId) });
+      return false;
     } finally {
       setUnlockingSignId(null);
     }
@@ -1732,6 +1735,7 @@ export default function JobDetails() {
           onSaved={handleSignSaved}
           onSignAdded={handleSignAdded}
           onSignDeleted={handleSignDeleted}
+          onUnlock={handleUnlockSign}
         />
       )}
 
