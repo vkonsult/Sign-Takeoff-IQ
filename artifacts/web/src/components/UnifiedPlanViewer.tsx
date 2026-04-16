@@ -1213,7 +1213,7 @@ function PageViewer({
             return (
               <button
                 key={s.id}
-                title={`${s.signType ?? "Sign"} — ${s.location ?? ""}\nClick to edit`}
+                title={`${s.signType ?? "Sign"} — ${s.location ?? ""}${s.manuallyEdited ? "\nManually locked — protected from AI re-runs" : ""}\nClick to edit`}
                 onClick={() => handleSelectSign(s)}
                 className="flex-shrink-0 flex items-center gap-1 text-[10px] font-mono px-1.5 py-0.5 rounded whitespace-nowrap transition-all"
                 style={{
@@ -1224,6 +1224,9 @@ function PageViewer({
               >
                 {isActive && <span className="inline-block w-1.5 h-1.5 rounded-full bg-white flex-shrink-0" />}
                 {s.signIdentifier ?? s.signType?.slice(0, 8) ?? "SIGN"}
+                {s.manuallyEdited && (
+                  <Lock style={{ width: 8, height: 8, flexShrink: 0, color: isActive ? "#fff" : "#f59e0b", opacity: 0.9 }} />
+                )}
                 {!isLocated && (
                   <span style={{ fontSize: 8, fontWeight: 700, letterSpacing: "0.05em", background: "#ef444420", color: "#ef4444", border: "1px solid #ef444455", borderRadius: 3, padding: "0 3px" }}>
                     UNLOCATED
@@ -2163,6 +2166,11 @@ export function UnifiedPlanViewer({
             {activeSign?.manuallyAdded && (
               <span className="flex items-center gap-1 text-[10px] font-display font-bold uppercase tracking-wider border px-2 py-0.5 rounded" style={{ color: "#a855f7", borderColor: "#a855f755", background: "#a855f710" }}>
                 <Plus className="w-3 h-3" />Manually Added
+              </span>
+            )}
+            {activeSign?.manuallyEdited && (
+              <span className="flex items-center gap-1 text-[10px] font-display font-bold uppercase tracking-wider border px-2 py-0.5 rounded" style={{ color: "#f59e0b", borderColor: "#f59e0b55", background: "#f59e0b10" }}>
+                <Lock className="w-3 h-3" />Locked
               </span>
             )}
             {activeSign?.userVerified && (
