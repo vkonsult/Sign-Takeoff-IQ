@@ -91,6 +91,7 @@ export function AiScansTab({
   const [plaqueEditError, setPlaqueEditError] = useState<string | null>(null);
   const [plaqueDeletingId, setPlaqueDeletingId] = useState<string | null>(null);
   const [plaqueConfirmDeleteId, setPlaqueConfirmDeleteId] = useState<string | null>(null);
+  const [showPlaqueConfirm, setShowPlaqueConfirm] = useState(false);
 
   // Occupant Loads inline-editing state
   // editingId: id of the row being edited, or "__new__" for a new unsaved row
@@ -121,6 +122,15 @@ export function AiScansTab({
       document.removeEventListener("keydown", handleKeyDown);
     };
   }, [confirmDeleteId]);
+
+  useEffect(() => {
+    if (!showPlaqueConfirm) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setShowPlaqueConfirm(false);
+    };
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, [showPlaqueConfirm]);
 
   useEffect(() => {
     setRegistryLoading(true);
@@ -722,34 +732,58 @@ export function AiScansTab({
               </p>
             </div>
           </div>
-          <button
-            onClick={handleExtractPlaqueSchedule}
-            disabled={plaqueStatus === "running"}
-            className={`flex-shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded text-[11px] font-medium border transition-all disabled:opacity-50 disabled:cursor-not-allowed ${
-              plaqueStatus === "success"
-                ? "bg-amber-500/10 text-amber-400 border-amber-500/20 hover:bg-amber-500/20"
+          {showPlaqueConfirm ? (
+            <div className="flex-shrink-0 flex items-center gap-1.5">
+              <span className="text-[11px] text-amber-400 whitespace-nowrap">Replace existing rows?</span>
+              <button
+                onClick={() => { setShowPlaqueConfirm(false); handleExtractPlaqueSchedule(); }}
+                className="flex items-center justify-center px-2 py-1 rounded text-[11px] font-medium text-white bg-amber-500 hover:bg-amber-400 transition-colors border border-amber-400/30"
+              >
+                Continue
+              </button>
+              <button
+                onClick={() => setShowPlaqueConfirm(false)}
+                className="flex items-center justify-center px-2 py-1 rounded text-[11px] font-medium text-muted-foreground bg-secondary hover:text-foreground transition-colors border border-border"
+              >
+                Cancel
+              </button>
+            </div>
+          ) : (
+            <button
+              onClick={() => {
+                if (plaqueRows.length > 0) {
+                  setShowPlaqueConfirm(true);
+                } else {
+                  handleExtractPlaqueSchedule();
+                }
+              }}
+              disabled={plaqueStatus === "running"}
+              className={`flex-shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded text-[11px] font-medium border transition-all disabled:opacity-50 disabled:cursor-not-allowed ${
+                plaqueStatus === "success"
+                  ? "bg-amber-500/10 text-amber-400 border-amber-500/20 hover:bg-amber-500/20"
+                  : plaqueStatus === "error"
+                  ? "bg-destructive/10 text-destructive border-destructive/20 hover:bg-destructive/20"
+                  : "bg-secondary text-muted-foreground border-border hover:text-foreground"
+              }`}
+            >
+              {plaqueStatus === "running" ? (
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              ) : plaqueStatus === "success" ? (
+                <CheckCircle2 className="w-3.5 h-3.5" />
+              ) : plaqueStatus === "error" ? (
+                <AlertTriangle className="w-3.5 h-3.5" />
+              ) : (
+                <Play className="w-3.5 h-3.5" />
+              )}
+              {plaqueStatus === "running"
+                ? "Running…"
+                : plaqueStatus === "success"
+                ? "Re-run"
                 : plaqueStatus === "error"
-                ? "bg-destructive/10 text-destructive border-destructive/20 hover:bg-destructive/20"
-                : "bg-secondary text-muted-foreground border-border hover:text-foreground"
-            }`}
-          >
-            {plaqueStatus === "running" ? (
-              <Loader2 className="w-3.5 h-3.5 animate-spin" />
-            ) : plaqueStatus === "success" ? (
-              <CheckCircle2 className="w-3.5 h-3.5" />
-            ) : plaqueStatus === "error" ? (
-              <AlertTriangle className="w-3.5 h-3.5" />
-            ) : (
-              <Play className="w-3.5 h-3.5" />
-            )}
-            {plaqueStatus === "running"
-              ? "Running…"
-              : plaqueStatus === "success"
-              ? "Re-run"
-              : plaqueStatus === "error"
-              ? "Retry"
-              : "Run"}
-          </button>
+                ? "Retry"
+                : "Run"}
+            </button>
+          )}
         </div>
 
         {plaqueError && (
