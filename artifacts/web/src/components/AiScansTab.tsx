@@ -134,7 +134,7 @@ export function AiScansTab({
   const [editError, setEditError] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [unlockingId, setUnlockingId] = useState<string | null>(null);
-  const [unlockingAll, setUnlockingAll] = useState(false);
+  const [occupantUnlockingAll, setOccupantUnlockingAll] = useState(false);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const confirmRef = useRef<HTMLTableRowElement | null>(null);
 
@@ -476,33 +476,24 @@ export function AiScansTab({
   };
 
   const handleUnlockAllPlaqueRows = async () => {
-    const lockedIds = plaqueRows.filter((r) => r.manuallyEdited).map((r) => r.id);
-    if (lockedIds.length === 0) return;
     setPlaqueUnlockingAll(true);
     setPlaqueEditError(null);
     try {
-      const results = await Promise.all(
-        lockedIds.map(async (id) => {
-          try {
-            const res = await apiFetch(`/api/jobs/${jobId}/plaque-schedule/${id}`, {
-              method: "PUT",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ manuallyEdited: false }),
-            });
-            return { id, ok: res.ok };
-          } catch {
-            return { id, ok: false };
-          }
-        })
-      );
-      const unlockedIds = new Set(results.filter((r) => r.ok).map((r) => r.id));
-      const failedCount = results.filter((r) => !r.ok).length;
-      if (unlockedIds.size > 0) {
-        setPlaqueRows((prev) => prev.map((r) => unlockedIds.has(r.id) ? { ...r, manuallyEdited: false } : r));
+      const res = await apiFetch(`/api/jobs/${jobId}/plaque-schedule/unlock-all`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setPlaqueEditError(data.error ?? "Failed to unlock all rows.");
+        return;
       }
-      if (failedCount > 0) {
-        setPlaqueEditError(`${failedCount} row${failedCount !== 1 ? "s" : ""} could not be unlocked. Please try again.`);
-      }
+      const updatedRows = data.rows as PlaqueRow[];
+      setPlaqueRows((prev) => prev.map((r) => {
+        const updated = updatedRows.find((u) => u.id === r.id);
+        return updated ?? r;
+      }));
     } catch (err) {
       setPlaqueEditError(String(err));
     } finally {
@@ -666,37 +657,28 @@ export function AiScansTab({
   };
 
   const handleUnlockAllOccupantRows = async () => {
-    const lockedIds = occupantRows.filter((r) => r.manuallyEdited).map((r) => r.id);
-    if (lockedIds.length === 0) return;
-    setUnlockingAll(true);
+    setOccupantUnlockingAll(true);
     setEditError(null);
     try {
-      const results = await Promise.all(
-        lockedIds.map(async (id) => {
-          try {
-            const res = await apiFetch(`/api/jobs/${jobId}/occupant-loads/${id}`, {
-              method: "PUT",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ manuallyEdited: false }),
-            });
-            return { id, ok: res.ok };
-          } catch {
-            return { id, ok: false };
-          }
-        })
-      );
-      const unlockedIds = new Set(results.filter((r) => r.ok).map((r) => r.id));
-      const failedCount = results.filter((r) => !r.ok).length;
-      if (unlockedIds.size > 0) {
-        setOccupantRows((prev) => prev.map((r) => unlockedIds.has(r.id) ? { ...r, manuallyEdited: false } : r));
+      const res = await apiFetch(`/api/jobs/${jobId}/occupant-loads/unlock-all`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setEditError(data.error ?? "Failed to unlock all rows.");
+        return;
       }
-      if (failedCount > 0) {
-        setEditError(`${failedCount} row${failedCount !== 1 ? "s" : ""} could not be unlocked. Please try again.`);
-      }
+      const updatedLoads = data.loads as OccupantLoadRow[];
+      setOccupantRows((prev) => prev.map((r) => {
+        const updated = updatedLoads.find((u) => u.id === r.id);
+        return updated ?? r;
+      }));
     } catch (err) {
       setEditError(String(err));
     } finally {
-      setUnlockingAll(false);
+      setOccupantUnlockingAll(false);
     }
   };
 
@@ -1308,6 +1290,15 @@ export function AiScansTab({
                         <Lock className="w-2.5 h-2.5" />
                         {plaqueRows.filter((r) => r.manuallyEdited).length} manually protected
                       </button>
+                      <span className="text-border">·</span>
+                      <button
+                        onClick={handleUnlockAllPlaqueRows}
+                        disabled={plaqueUnlockingAll}
+                        className="flex items-center gap-1 text-amber-400 hover:text-amber-300 disabled:opacity-50 transition-colors"
+                      >
+                        {plaqueUnlockingAll ? <Loader2 className="w-3 h-3 animate-spin" /> : <Lock className="w-3 h-3" />}
+                        Unlock all
+                      </button>
                     </>
                   )}
                 </>
@@ -1333,11 +1324,11 @@ export function AiScansTab({
             {occupantRows.some((r) => r.manuallyEdited) && !showOccupantConfirm && (
               <button
                 onClick={handleUnlockAllOccupantRows}
-                disabled={unlockingAll || editingId !== null || deletingId !== null || unlockingId !== null || confirmDeleteId !== null}
+                disabled={occupantUnlockingAll || editingId !== null || deletingId !== null || unlockingId !== null || confirmDeleteId !== null}
                 className="flex items-center gap-1.5 px-3 py-1.5 rounded text-[11px] font-medium border transition-all disabled:opacity-50 disabled:cursor-not-allowed bg-sky-500/10 text-sky-400 border-sky-500/20 hover:bg-sky-500/20"
                 title="Remove the manually-edited lock from all rows, allowing AI to update them again"
               >
-                {unlockingAll ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <LockOpen className="w-3.5 h-3.5" />}
+                {occupantUnlockingAll ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <LockOpen className="w-3.5 h-3.5" />}
                 Unlock all
               </button>
             )}
@@ -1366,7 +1357,7 @@ export function AiScansTab({
                     handleExtractOccupantLoads();
                   }
                 }}
-                disabled={occupantStatus === "running" || unlockingAll}
+                disabled={occupantStatus === "running" || occupantUnlockingAll}
                 className={`flex items-center gap-1.5 px-3 py-1.5 rounded text-[11px] font-medium border transition-all disabled:opacity-50 disabled:cursor-not-allowed ${
                   occupantStatus === "success"
                     ? "bg-sky-500/10 text-sky-400 border-sky-500/20 hover:bg-sky-500/20"
@@ -1705,6 +1696,15 @@ export function AiScansTab({
                       >
                         <Lock className="w-2.5 h-2.5" />
                         {occupantRows.filter((r) => r.manuallyEdited).length} manually protected
+                      </button>
+                      <span className="text-border">·</span>
+                      <button
+                        onClick={handleUnlockAllOccupantRows}
+                        disabled={occupantUnlockingAll}
+                        className="flex items-center gap-1 text-sky-400 hover:text-sky-300 disabled:opacity-50 transition-colors"
+                      >
+                        {occupantUnlockingAll ? <Loader2 className="w-3 h-3 animate-spin" /> : <Lock className="w-3 h-3" />}
+                        Unlock all
                       </button>
                     </>
                   )}

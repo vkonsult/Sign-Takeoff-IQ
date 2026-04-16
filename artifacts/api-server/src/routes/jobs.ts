@@ -2630,5 +2630,75 @@ router.delete("/jobs/:jobId/plaque-schedule/:id", async (req, res) => {
   }
 });
 
+// ── Plaque Schedule Batch Unlock ──────────────────────────────────────────────
+
+const BatchUnlockSchema = z.object({
+  ids: z.array(z.string()).optional(),
+});
+
+router.post("/jobs/:jobId/plaque-schedule/unlock-all", async (req, res) => {
+  const { jobId } = req.params;
+  if (!jobId) { res.status(400).json({ error: "Job ID required" }); return; }
+
+  const parsed = BatchUnlockSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: "Invalid request body", details: parsed.error.issues });
+    return;
+  }
+
+  try {
+    const job = await getJobWithOrgCheck(req, res, jobId);
+    if (!job) return;
+
+    const whereClause = parsed.data.ids && parsed.data.ids.length > 0
+      ? and(eq(plaqueSchedulesTable.jobId, jobId), inArray(plaqueSchedulesTable.id, parsed.data.ids))
+      : eq(plaqueSchedulesTable.jobId, jobId);
+
+    const updated = await db
+      .update(plaqueSchedulesTable)
+      .set({ manuallyEdited: false })
+      .where(whereClause)
+      .returning();
+
+    res.json({ unlockedCount: updated.length, rows: updated });
+  } catch (err) {
+    req.log.error({ err, jobId }, "plaque-schedule unlock-all failed");
+    res.status(500).json({ error: "Failed to unlock plaque schedule rows" });
+  }
+});
+
+// ── Occupant Loads Batch Unlock ───────────────────────────────────────────────
+
+router.post("/jobs/:jobId/occupant-loads/unlock-all", async (req, res) => {
+  const { jobId } = req.params;
+  if (!jobId) { res.status(400).json({ error: "Job ID required" }); return; }
+
+  const parsed = BatchUnlockSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: "Invalid request body", details: parsed.error.issues });
+    return;
+  }
+
+  try {
+    const job = await getJobWithOrgCheck(req, res, jobId);
+    if (!job) return;
+
+    const whereClause = parsed.data.ids && parsed.data.ids.length > 0
+      ? and(eq(occupantLoadsTable.jobId, jobId), inArray(occupantLoadsTable.id, parsed.data.ids))
+      : eq(occupantLoadsTable.jobId, jobId);
+
+    const updated = await db
+      .update(occupantLoadsTable)
+      .set({ manuallyEdited: false })
+      .where(whereClause)
+      .returning();
+
+    res.json({ unlockedCount: updated.length, loads: updated });
+  } catch (err) {
+    req.log.error({ err, jobId }, "occupant-loads unlock-all failed");
+    res.status(500).json({ error: "Failed to unlock occupant load rows" });
+  }
+});
+
 export default router;
 
