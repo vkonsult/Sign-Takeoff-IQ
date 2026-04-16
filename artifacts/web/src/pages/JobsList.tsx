@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { AppShell } from "@/components/layout/Shell";
 import { useJobsList } from "@/hooks/use-takeoff";
 import { apiFetch, openPdfInNewTab } from "@/lib/apiClient";
@@ -9,7 +9,7 @@ import { Button } from "@/components/ui/button";
 import {
   FolderOpen, Eye, FileText, CheckCircle2, Cpu,
   AlertTriangle, Trash2, X, Square, CheckSquare, MinusSquare,
-  Archive, EyeOff, Layers, Users,
+  Archive, EyeOff, Layers, Users, ArrowUp, ArrowDown, ArrowUpDown,
 } from "lucide-react";
 import { Link } from "wouter";
 
@@ -61,13 +61,34 @@ export default function JobsList() {
   const [deletingSingle, setDeletingSingle] = useState<string | null>(null);
   const [bulkConfirming, setBulkConfirming] = useState(false);
   const [bulkDeleting, setBulkDeleting] = useState(false);
+  type SortKey = "plaqueCount" | "occupantLoadCount";
+  const [sortBy, setSortBy] = useState<SortKey | null>(null);
+  const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
+
+  const handleSort = (key: SortKey) => {
+    if (sortBy === key) {
+      setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+    } else {
+      setSortBy(key);
+      setSortDir("desc");
+    }
+  };
+
   type JobSummaryListItem = JobSummary & {
     name?: string | null;
     updatedAt?: string | null;
     recentUsers?: RecentUser[];
     files?: { id: string; originalName: string }[];
   };
-  const jobs = (data?.jobs ?? []) as JobSummaryListItem[];
+  const rawJobs = (data?.jobs ?? []) as JobSummaryListItem[];
+  const jobs = useMemo(() => {
+    if (!sortBy) return rawJobs;
+    return [...rawJobs].sort((a, b) => {
+      const aVal = Number(a[sortBy] ?? 0);
+      const bVal = Number(b[sortBy] ?? 0);
+      return sortDir === "asc" ? aVal - bVal : bVal - aVal;
+    });
+  }, [rawJobs, sortBy, sortDir]);
   const allIds = jobs.map((j) => j.id);
   const allSelected = allIds.length > 0 && allIds.every((id) => selected.has(id));
   const someSelected = selected.size > 0 && !allSelected;
@@ -210,7 +231,37 @@ export default function JobsList() {
                     ? <MinusSquare className="w-4 h-4 text-primary" />
                     : <Square className="w-4 h-4" />}
               </button>
-              <div>Job Name</div>
+              <div className="flex items-center gap-2 flex-wrap">
+                <span>Job Name</span>
+                <button
+                  onClick={() => handleSort("plaqueCount")}
+                  title="Sort by plaque count"
+                  className={`inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] font-semibold border transition-colors cursor-pointer select-none
+                    ${sortBy === "plaqueCount"
+                      ? "bg-violet-500/20 text-violet-300 border-violet-500/40"
+                      : "bg-violet-500/10 text-violet-400/60 border-violet-500/20 hover:text-violet-300 hover:bg-violet-500/20"}`}
+                >
+                  <Layers className="w-2.5 h-2.5" />
+                  Plaques
+                  {sortBy === "plaqueCount"
+                    ? (sortDir === "desc" ? <ArrowDown className="w-2.5 h-2.5" /> : <ArrowUp className="w-2.5 h-2.5" />)
+                    : <ArrowUpDown className="w-2.5 h-2.5 opacity-50" />}
+                </button>
+                <button
+                  onClick={() => handleSort("occupantLoadCount")}
+                  title="Sort by occupant load count"
+                  className={`inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] font-semibold border transition-colors cursor-pointer select-none
+                    ${sortBy === "occupantLoadCount"
+                      ? "bg-sky-500/20 text-sky-300 border-sky-500/40"
+                      : "bg-sky-500/10 text-sky-400/60 border-sky-500/20 hover:text-sky-300 hover:bg-sky-500/20"}`}
+                >
+                  <Users className="w-2.5 h-2.5" />
+                  Occ. Load
+                  {sortBy === "occupantLoadCount"
+                    ? (sortDir === "desc" ? <ArrowDown className="w-2.5 h-2.5" /> : <ArrowUp className="w-2.5 h-2.5" />)
+                    : <ArrowUpDown className="w-2.5 h-2.5 opacity-50" />}
+                </button>
+              </div>
               <div className="text-center">Status</div>
               <div className="text-center" title="Last active user">User</div>
               <div className="text-right">Created</div>
