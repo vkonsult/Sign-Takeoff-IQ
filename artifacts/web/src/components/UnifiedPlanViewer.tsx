@@ -2235,10 +2235,16 @@ export function UnifiedPlanViewer({
           <div className="flex-none flex items-end gap-0 px-4 pt-2 border-b border-border bg-secondary/20 overflow-x-auto">
             {floorPlanFiles.map((f) => {
               const active = f.id === selectedFileId;
+              const lockedCount = localSigns.filter((s) => s.jobFileId === f.id && s.manuallyEdited).length;
               return (
                 <button key={f.id} onClick={() => setSelectedFileId(f.id)}
-                  className={`px-3 py-1.5 text-xs font-mono rounded-t-md border-b-2 whitespace-nowrap transition-all -mb-px ${active ? "border-primary text-primary bg-background border-x border-t border-border" : "border-transparent text-muted-foreground hover:text-foreground hover:bg-secondary/40"}`}>
+                  className={`px-3 py-1.5 text-xs font-mono rounded-t-md border-b-2 whitespace-nowrap transition-all -mb-px flex items-center gap-1.5 ${active ? "border-primary text-primary bg-background border-x border-t border-border" : "border-transparent text-muted-foreground hover:text-foreground hover:bg-secondary/40"}`}>
                   {f.originalName.replace(/\.pdf$/i, "").slice(0, 30)}
+                  {lockedCount > 0 && (
+                    <span className="inline-flex items-center justify-center min-w-[1.25rem] h-4 px-1 rounded-full bg-amber-500/20 text-amber-600 dark:text-amber-400 text-[10px] font-semibold leading-none">
+                      {lockedCount}
+                    </span>
+                  )}
                 </button>
               );
             })}
