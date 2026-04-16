@@ -2636,6 +2636,39 @@ const BatchUnlockSchema = z.object({
   ids: z.array(z.string()).optional(),
 });
 
+// ── Signs Batch Unlock ────────────────────────────────────────────────────────
+
+router.post("/jobs/:jobId/signs/unlock-all", async (req, res) => {
+  const { jobId } = req.params;
+  if (!jobId) { res.status(400).json({ error: "Job ID required" }); return; }
+
+  const parsed = BatchUnlockSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: "Invalid request body", details: parsed.error.issues });
+    return;
+  }
+
+  try {
+    const job = await getJobWithOrgCheck(req, res, jobId);
+    if (!job) return;
+
+    const whereClause = parsed.data.ids && parsed.data.ids.length > 0
+      ? and(eq(extractedSignsTable.jobId, jobId), inArray(extractedSignsTable.id, parsed.data.ids))
+      : eq(extractedSignsTable.jobId, jobId);
+
+    const updated = await db
+      .update(extractedSignsTable)
+      .set({ manuallyEdited: false })
+      .where(whereClause)
+      .returning();
+
+    res.json({ unlockedCount: updated.length, signs: updated });
+  } catch (err) {
+    req.log.error({ err, jobId }, "signs unlock-all failed");
+    res.status(500).json({ error: "Failed to unlock sign rows" });
+  }
+});
+
 router.post("/jobs/:jobId/plaque-schedule/unlock-all", async (req, res) => {
   const { jobId } = req.params;
   if (!jobId) { res.status(400).json({ error: "Job ID required" }); return; }

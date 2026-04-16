@@ -532,6 +532,7 @@ export default function JobDetails() {
 
   const [showHidden, setShowHidden] = useState(false);
   const [showExceptions, setShowExceptions] = useState(false);
+  const [signsUnlockingAll, setSignsUnlockingAll] = useState(false);
   const [sortField, setSortField] = useState<string | null>(null);
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
   const [summaryFilter, setSummaryFilter] = useState<null | "flagged">(null);
@@ -639,6 +640,37 @@ export default function JobDetails() {
       queryClient.invalidateQueries({ queryKey: getGetJobQueryKey(jobId) });
     } finally {
       setUnlockingSignId(null);
+    }
+  };
+
+  const handleUnlockAllSigns = async () => {
+    setSignsUnlockingAll(true);
+    try {
+      const res = await apiFetch(`/api/jobs/${jobId}/signs/unlock-all`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      const responseData = await res.json();
+      if (!res.ok) {
+        toast({ title: "Unlock failed", description: responseData.error ?? "Failed to unlock all sign rows.", variant: "destructive" });
+        return;
+      }
+      const unlockedSigns = responseData.signs as Array<{ id: string; manuallyEdited: boolean }>;
+      queryClient.setQueryData(getGetJobQueryKey(jobId), (old: typeof data) => {
+        if (!old) return old;
+        return {
+          ...old,
+          extractedSigns: old.extractedSigns.map((s) => {
+            const updated = unlockedSigns.find((u) => u.id === s.id);
+            return updated ? { ...s, manuallyEdited: updated.manuallyEdited } : s;
+          }),
+        };
+      });
+    } catch {
+      toast({ title: "Unlock failed", description: "Failed to unlock all sign rows.", variant: "destructive" });
+    } finally {
+      setSignsUnlockingAll(false);
     }
   };
 
@@ -758,6 +790,7 @@ export default function JobDetails() {
   const extractedSigns = data.extractedSigns;
   const hiddenSigns = (data as typeof data & { hiddenSigns?: typeof data.extractedSigns }).hiddenSigns ?? [];
   const exceptionSigns = extractedSigns.filter((s) => s.reviewFlag && s.exceptionReason);
+  const manuallyEditedSignsCount = extractedSigns.filter((s) => (s as Record<string, unknown>).manuallyEdited).length;
 
   // Derive a source sort key matching the SourceBadge priority order
   function sourceKey(s: typeof extractedSigns[number]): string {
@@ -1372,8 +1405,8 @@ export default function JobDetails() {
                 <>
                   {/* Data Table Container */}
                   <div className="flex-1 overflow-auto bg-card border-t border-border">
-                {/* Filter bar — exceptions toggle + hidden toggle */}
-                {(hiddenSigns.length > 0 || exceptionSigns.length > 0) && (
+                {/* Filter bar — exceptions toggle + hidden toggle + unlock all */}
+                {(hiddenSigns.length > 0 || exceptionSigns.length > 0 || manuallyEditedSignsCount > 0) && (
                   <div className="flex items-center gap-3 px-4 py-2 bg-secondary/60 border-b border-border/60">
                     {exceptionSigns.length > 0 && (
                       <button
@@ -1409,6 +1442,20 @@ export default function JobDetails() {
                       <span className="text-[10px] text-muted-foreground/50 font-mono">
                         {hiddenSigns.length} sign{hiddenSigns.length !== 1 ? "s" : ""} hidden from table and export
                       </span>
+                    )}
+                    {manuallyEditedSignsCount > 0 && (
+                      <button
+                        onClick={handleUnlockAllSigns}
+                        disabled={signsUnlockingAll}
+                        className="flex items-center gap-2 px-3 py-1 rounded-md text-[11px] font-display font-semibold uppercase tracking-wide border transition-all bg-secondary text-muted-foreground border-border hover:text-amber-600 hover:border-amber-500/40 disabled:opacity-50 disabled:cursor-not-allowed"
+                      >
+                        {signsUnlockingAll ? (
+                          <Loader2 className="w-3 h-3 animate-spin" />
+                        ) : (
+                          <RefreshCw className="w-3 h-3" />
+                        )}
+                        Unlock all ({manuallyEditedSignsCount})
+                      </button>
                     )}
                   </div>
                 )}
