@@ -27,7 +27,7 @@ interface SignSpecModalProps {
 export function SignSpecModal({ jobId, fileId, fileName, specPages, onClose }: SignSpecModalProps) {
   const [specIdx, setSpecIdx] = useState(0);
   const [scale, setScale] = useState(1.2);
-  const [fitScale, setFitScale] = useState(1.2);
+  const [_fitScale, setFitScale] = useState(1.2);
   const [error, setError] = useState<string | null>(null);
   const [isPanning, setIsPanning] = useState(false);
 

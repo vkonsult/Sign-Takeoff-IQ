@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef, useEffect } from "react";
 import { useRoute, useSearch, useLocation } from "wouter";
 import { useQueryClient } from "@tanstack/react-query";
 import { AppShell } from "@/components/layout/Shell";
@@ -2015,7 +2015,9 @@ function CoordinatesTable({
 
   const coordExceptionCount = signs.filter((s) => s["reviewFlag"] && s["exceptionReason"]).length;
   const sorted = [...(showCoordExceptions ? signs.filter((s) => s["reviewFlag"] && s["exceptionReason"]) : signs)].sort((a, b) => {
+    // eslint-disable-next-line no-useless-assignment
     let av: string | number = "";
+    // eslint-disable-next-line no-useless-assignment
     let bv: string | number = "";
     switch (coordSortField) {
       case "code":
@@ -2558,9 +2560,9 @@ function OutlineSectionsTree({ sections }: { sections: OutlineSection[] }) {
 function SheetsPanel({
   files,
   onOpenSpec,
-  allSigns,
-  hiddenSigns,
-  toggleHidden,
+  allSigns: _allSigns,
+  hiddenSigns: _hiddenSigns,
+  toggleHidden: _toggleHidden,
   jobId,
   toggleRejectedPage,
 }: {

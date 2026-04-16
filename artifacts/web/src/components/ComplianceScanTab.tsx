@@ -106,8 +106,6 @@ export function ComplianceScanTab({ jobId }: { jobId: string }) {
   };
 
   const entries = scanResult?.entries ?? [];
-  const allRules = Array.from(new Set(entries.map((e) => e.ruleRef))).sort();
-  const allLevels = Array.from(new Set(entries.map((e) => e.level))).sort();
 
   const filtered = entries
     .filter((e) => !filterRule || e.ruleRef === filterRule)

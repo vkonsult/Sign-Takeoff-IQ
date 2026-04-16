@@ -15,6 +15,7 @@ export function AppShell({ children }: { children: ReactNode }) {
   const toggle = () => {
     setCollapsed((prev) => {
       const next = !prev;
+      // eslint-disable-next-line no-empty
       try { localStorage.setItem(LS_KEY, String(next)); } catch {}
       return next;
     });

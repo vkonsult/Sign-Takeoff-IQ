@@ -118,21 +118,6 @@ function SignUpPage() {
   );
 }
 
-function ProtectedRoute({ component: Component }: { component: React.ComponentType }) {
-  if (isGuestMode()) {
-    return <Component />;
-  }
-  return (
-    <>
-      <Show when="signed-in">
-        <Component />
-      </Show>
-      <Show when="signed-out">
-        <Redirect to="/sign-in" />
-      </Show>
-    </>
-  );
-}
 
 /** Tenant-ADMIN only: requires signed-in ADMIN (not SUPER_ADMIN) with completed onboarding. */
 function AdminRoute({ component: Component }: { component: React.ComponentType }) {

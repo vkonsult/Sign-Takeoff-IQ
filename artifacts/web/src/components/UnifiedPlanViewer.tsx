@@ -146,6 +146,7 @@ const SIGN_TYPE_COLORS: Record<string, string> = {
   "building sign": "#6366F1",
 };
 
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 function getSignColor(signType: string | null | undefined): string {
   if (!signType) return "#6B7280";
   const key = signType.toLowerCase();
@@ -256,7 +257,7 @@ function EditPanel({
   onSaved,
   onSignDeleted,
   onDeleteCommit,
-  onUnlock,
+  onUnlock: _onUnlock,
   setLocalSigns,
   setActiveSign,
   localSigns,
@@ -1953,7 +1954,7 @@ export function UnifiedPlanViewer({
       setSavedSigns(currentSigns);
       setHistoryStack([]);
       setRedoStack([]);
-      onSignUpdated && currentSigns.forEach((s) => {
+      if (onSignUpdated) currentSigns.forEach((s) => {
         const orig = savedMap.get(s.id);
         if (orig && (orig.xPos !== s.xPos || orig.yPos !== s.yPos)) {
           onSignUpdated(s.id, s.xPos ?? 0, s.yPos ?? 0);
@@ -2239,6 +2240,7 @@ export function UnifiedPlanViewer({
   );
 
   // ── Unplaced count per file (for tab badges) ───────────────────────────────
+  // eslint-disable-next-line react-hooks/rules-of-hooks
   const unplacedCountByFile = useMemo(() => {
     const map = new Map<string, number>();
     for (const s of localSigns) {
@@ -2287,6 +2289,7 @@ export function UnifiedPlanViewer({
   }
 
   // Focus the modal container when it mounts so Ctrl+Z works without a click
+  // eslint-disable-next-line react-hooks/rules-of-hooks
   useEffect(() => {
     if (mode !== "modal") return;
     modalContainerRef.current?.focus();

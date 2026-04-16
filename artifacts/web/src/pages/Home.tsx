@@ -1,7 +1,7 @@
 import { useState, useCallback } from "react";
 import { useLocation } from "wouter";
 import { useDropzone } from "react-dropzone";
-import { UploadCloud, FileText, X, ChevronRight, AlertCircle, Loader2 } from "lucide-react";
+import { UploadCloud, FileText, X, AlertCircle, Loader2 } from "lucide-react";
 import { AppShell } from "@/components/layout/Shell";
 import { useUploadJobFiles } from "@/hooks/use-takeoff";
 import { formatBytes } from "@/lib/utils";
