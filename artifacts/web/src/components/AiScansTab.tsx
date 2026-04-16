@@ -1,6 +1,6 @@
 import { useState, useCallback, useEffect } from "react";
 import { apiFetch } from "@/lib/apiClient";
-import { Brain, Play, Loader2, CheckCircle2, AlertTriangle, Info, Cpu, Eye, EyeOff, ChevronDown, ChevronRight, BookOpen, Users } from "lucide-react";
+import { Brain, Play, Loader2, CheckCircle2, AlertTriangle, Info, Cpu, Eye, EyeOff, ChevronDown, ChevronRight, BookOpen, Users, Pencil, Trash2, Plus, Check, X } from "lucide-react";
 
 export interface AiCallDescriptor {
   type: string;
@@ -83,6 +83,14 @@ export function AiScansTab({
   const [occupantLoadError, setOccupantLoadError] = useState<string | null>(null);
   const [occupantRows, setOccupantRows] = useState<OccupantLoadRow[]>([]);
   const [occupantLoading, setOccupantLoading] = useState(true);
+
+  // Occupant Loads inline-editing state
+  // editingId: id of the row being edited, or "__new__" for a new unsaved row
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editDraft, setEditDraft] = useState<{ roomNum: string; roomName: string; occupantLoad: string; occupancyGroup: string }>({ roomNum: "", roomName: "", occupantLoad: "", occupancyGroup: "" });
+  const [editSaving, setEditSaving] = useState(false);
+  const [editError, setEditError] = useState<string | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
 
   useEffect(() => {
     setRegistryLoading(true);
@@ -250,6 +258,112 @@ export function AiScansTab({
     } catch (err) {
       setOccupantError(String(err));
       setOccupantStatus("error");
+    }
+  };
+
+  const handleEditRow = (row: OccupantLoadRow) => {
+    setEditingId(row.id);
+    setEditDraft({
+      roomNum: row.roomNum,
+      roomName: row.roomName ?? "",
+      occupantLoad: row.occupantLoad !== null && row.occupantLoad !== undefined ? String(row.occupantLoad) : "",
+      occupancyGroup: row.occupancyGroup ?? "",
+    });
+    setEditError(null);
+  };
+
+  const handleAddRow = () => {
+    setEditingId("__new__");
+    setEditDraft({ roomNum: "", roomName: "", occupantLoad: "", occupancyGroup: "" });
+    setEditError(null);
+  };
+
+  const handleCancelEdit = () => {
+    setEditingId(null);
+    setEditDraft({ roomNum: "", roomName: "", occupantLoad: "", occupancyGroup: "" });
+    setEditError(null);
+  };
+
+  const handleSaveRow = async () => {
+    if (!editDraft.roomNum.trim()) {
+      setEditError("Room # is required.");
+      return;
+    }
+    setEditSaving(true);
+    setEditError(null);
+
+    const rawLoad = editDraft.occupantLoad.trim();
+    let parsedLoad: number | null = null;
+    if (rawLoad !== "") {
+      const n = parseFloat(rawLoad);
+      if (!Number.isFinite(n) || n < 0) {
+        setEditError("Occupant load must be a valid non-negative number.");
+        setEditSaving(false);
+        return;
+      }
+      parsedLoad = n;
+    }
+
+    const body = {
+      roomNum: editDraft.roomNum.trim(),
+      roomName: editDraft.roomName.trim() || null,
+      occupantLoad: parsedLoad,
+      occupancyGroup: editDraft.occupancyGroup.trim() || null,
+    };
+
+    try {
+      if (editingId === "__new__") {
+        const res = await apiFetch(`/api/jobs/${jobId}/occupant-loads`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          setEditError(data.error ?? "Failed to create row");
+          return;
+        }
+        setOccupantRows((prev) => [...prev, data.load as OccupantLoadRow]);
+      } else {
+        const res = await apiFetch(`/api/jobs/${jobId}/occupant-loads/${editingId}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          setEditError(data.error ?? "Failed to update row");
+          return;
+        }
+        setOccupantRows((prev) => prev.map((r) => r.id === editingId ? (data.load as OccupantLoadRow) : r));
+      }
+      setEditingId(null);
+      setEditDraft({ roomNum: "", roomName: "", occupantLoad: "", occupancyGroup: "" });
+    } catch (err) {
+      setEditError(String(err));
+    } finally {
+      setEditSaving(false);
+    }
+  };
+
+  const handleDeleteRow = async (id: string) => {
+    setDeletingId(id);
+    setEditError(null);
+    try {
+      const res = await apiFetch(`/api/jobs/${jobId}/occupant-loads/${id}`, { method: "DELETE" });
+      if (!res.ok) {
+        const data = await res.json();
+        setEditError(data.error ?? "Failed to delete row.");
+        return;
+      }
+      setOccupantRows((prev) => prev.filter((r) => r.id !== id));
+      if (editingId === id) {
+        setEditingId(null);
+      }
+    } catch (err) {
+      setEditError(String(err));
+    } finally {
+      setDeletingId(null);
     }
   };
 
@@ -606,65 +720,234 @@ export function AiScansTab({
           <div className="flex items-center gap-2 px-3 py-4 text-xs text-muted-foreground">
             <Loader2 className="w-3.5 h-3.5 animate-spin" /> Loading occupant loads…
           </div>
-        ) : occupantLoadError ? null : occupantRows.length === 0 ? (
-          <div className="px-3 py-4 text-[11px] text-muted-foreground">
-            No occupant load data extracted yet. Run the extraction above.
-          </div>
         ) : (
           <div className="overflow-x-auto">
-            <table className="w-full text-[11px]">
-              <thead>
-                <tr className="border-b border-border bg-secondary/30">
-                  <th className="px-3 py-2 text-left font-medium text-muted-foreground">Room #</th>
-                  <th className="px-3 py-2 text-left font-medium text-muted-foreground">Room Name</th>
-                  <th className="px-3 py-2 text-left font-medium text-muted-foreground">Occupant Load</th>
-                  <th className="px-3 py-2 text-left font-medium text-muted-foreground">Occupancy Group</th>
-                </tr>
-              </thead>
-              <tbody>
-                {occupantRows.map((row) => {
-                  const isAssembly = typeof row.occupantLoad === "number" && row.occupantLoad >= 50;
-                  return (
-                    <tr
-                      key={row.id}
-                      className={`border-b border-border/50 transition-colors ${
-                        isAssembly
-                          ? "bg-orange-500/8 hover:bg-orange-500/12"
-                          : "hover:bg-secondary/20"
-                      }`}
-                    >
-                      <td className="px-3 py-2 font-mono text-sky-400">{row.roomNum}</td>
-                      <td className="px-3 py-2 text-foreground">
-                        {row.roomName ?? <span className="text-muted-foreground/50">—</span>}
+            {occupantRows.length === 0 && editingId !== "__new__" && (
+              <div className="px-3 py-4 text-[11px] text-muted-foreground">
+                No occupant load data extracted yet. Run the extraction above or add rows manually.
+              </div>
+            )}
+
+            {(occupantRows.length > 0 || editingId === "__new__") && (
+              <table className="w-full text-[11px]">
+                <thead>
+                  <tr className="border-b border-border bg-secondary/30">
+                    <th className="px-3 py-2 text-left font-medium text-muted-foreground">Room #</th>
+                    <th className="px-3 py-2 text-left font-medium text-muted-foreground">Room Name</th>
+                    <th className="px-3 py-2 text-left font-medium text-muted-foreground">Occupant Load</th>
+                    <th className="px-3 py-2 text-left font-medium text-muted-foreground">Occupancy Group</th>
+                    <th className="px-3 py-2 w-16" />
+                  </tr>
+                </thead>
+                <tbody>
+                  {occupantRows.map((row) => {
+                    const isAssembly = typeof row.occupantLoad === "number" && row.occupantLoad >= 50;
+                    const isEditing = editingId === row.id;
+                    const isDeleting = deletingId === row.id;
+
+                    if (isEditing) {
+                      return (
+                        <tr key={row.id} className="border-b border-sky-500/20 bg-sky-500/5">
+                          <td className="px-2 py-1.5">
+                            <input
+                              autoFocus
+                              value={editDraft.roomNum}
+                              onChange={(e) => setEditDraft((d) => ({ ...d, roomNum: e.target.value }))}
+                              placeholder="Room #"
+                              className="w-full bg-background border border-border rounded px-2 py-1 text-[11px] text-foreground focus:outline-none focus:border-sky-500/60 font-mono"
+                            />
+                          </td>
+                          <td className="px-2 py-1.5">
+                            <input
+                              value={editDraft.roomName}
+                              onChange={(e) => setEditDraft((d) => ({ ...d, roomName: e.target.value }))}
+                              placeholder="Room name"
+                              className="w-full bg-background border border-border rounded px-2 py-1 text-[11px] text-foreground focus:outline-none focus:border-sky-500/60"
+                            />
+                          </td>
+                          <td className="px-2 py-1.5">
+                            <input
+                              type="number"
+                              value={editDraft.occupantLoad}
+                              onChange={(e) => setEditDraft((d) => ({ ...d, occupantLoad: e.target.value }))}
+                              placeholder="0"
+                              className="w-full bg-background border border-border rounded px-2 py-1 text-[11px] text-foreground focus:outline-none focus:border-sky-500/60"
+                            />
+                          </td>
+                          <td className="px-2 py-1.5">
+                            <input
+                              value={editDraft.occupancyGroup}
+                              onChange={(e) => setEditDraft((d) => ({ ...d, occupancyGroup: e.target.value }))}
+                              placeholder="e.g. A-2"
+                              className="w-full bg-background border border-border rounded px-2 py-1 text-[11px] text-foreground focus:outline-none focus:border-sky-500/60"
+                            />
+                          </td>
+                          <td className="px-2 py-1.5">
+                            <div className="flex items-center gap-1">
+                              <button
+                                onClick={handleSaveRow}
+                                disabled={editSaving}
+                                className="flex items-center justify-center w-6 h-6 rounded text-emerald-400 hover:bg-emerald-500/15 transition-colors disabled:opacity-50"
+                                title="Save"
+                              >
+                                {editSaving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Check className="w-3.5 h-3.5" />}
+                              </button>
+                              <button
+                                onClick={handleCancelEdit}
+                                disabled={editSaving}
+                                className="flex items-center justify-center w-6 h-6 rounded text-muted-foreground hover:bg-secondary/60 transition-colors disabled:opacity-50"
+                                title="Cancel"
+                              >
+                                <X className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    }
+
+                    return (
+                      <tr
+                        key={row.id}
+                        className={`border-b border-border/50 transition-colors group ${
+                          isAssembly ? "bg-orange-500/8 hover:bg-orange-500/12" : "hover:bg-secondary/20"
+                        } ${isDeleting ? "opacity-40" : ""}`}
+                      >
+                        <td className="px-3 py-2 font-mono text-sky-400">{row.roomNum}</td>
+                        <td className="px-3 py-2 text-foreground">
+                          {row.roomName ?? <span className="text-muted-foreground/50">—</span>}
+                        </td>
+                        <td className="px-3 py-2">
+                          {row.occupantLoad !== null && row.occupantLoad !== undefined ? (
+                            <span className={isAssembly ? "text-orange-400 font-semibold" : "text-foreground"}>
+                              {row.occupantLoad}
+                              {isAssembly && (
+                                <span className="ml-1.5 text-[10px] font-normal px-1 py-0.5 rounded bg-orange-500/15 text-orange-400 border border-orange-500/20">
+                                  assembly
+                                </span>
+                              )}
+                            </span>
+                          ) : (
+                            <span className="text-muted-foreground/50">—</span>
+                          )}
+                        </td>
+                        <td className="px-3 py-2 text-foreground">
+                          {row.occupancyGroup ?? <span className="text-muted-foreground/50">—</span>}
+                        </td>
+                        <td className="px-2 py-2">
+                          <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                            <button
+                              onClick={() => handleEditRow(row)}
+                              disabled={editingId !== null || deletingId !== null}
+                              className="flex items-center justify-center w-6 h-6 rounded text-muted-foreground hover:text-sky-400 hover:bg-sky-500/10 transition-colors disabled:opacity-30"
+                              title="Edit row"
+                            >
+                              <Pencil className="w-3 h-3" />
+                            </button>
+                            <button
+                              onClick={() => handleDeleteRow(row.id)}
+                              disabled={editingId !== null || deletingId !== null}
+                              className="flex items-center justify-center w-6 h-6 rounded text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors disabled:opacity-30"
+                              title="Delete row"
+                            >
+                              {isDeleting ? <Loader2 className="w-3 h-3 animate-spin" /> : <Trash2 className="w-3 h-3" />}
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+
+                  {/* New row being added */}
+                  {editingId === "__new__" && (
+                    <tr className="border-b border-sky-500/20 bg-sky-500/5">
+                      <td className="px-2 py-1.5">
+                        <input
+                          autoFocus
+                          value={editDraft.roomNum}
+                          onChange={(e) => setEditDraft((d) => ({ ...d, roomNum: e.target.value }))}
+                          placeholder="Room #"
+                          className="w-full bg-background border border-border rounded px-2 py-1 text-[11px] text-foreground focus:outline-none focus:border-sky-500/60 font-mono"
+                        />
                       </td>
-                      <td className="px-3 py-2">
-                        {row.occupantLoad !== null && row.occupantLoad !== undefined ? (
-                          <span className={isAssembly ? "text-orange-400 font-semibold" : "text-foreground"}>
-                            {row.occupantLoad}
-                            {isAssembly && (
-                              <span className="ml-1.5 text-[10px] font-normal px-1 py-0.5 rounded bg-orange-500/15 text-orange-400 border border-orange-500/20">
-                                assembly
-                              </span>
-                            )}
-                          </span>
-                        ) : (
-                          <span className="text-muted-foreground/50">—</span>
-                        )}
+                      <td className="px-2 py-1.5">
+                        <input
+                          value={editDraft.roomName}
+                          onChange={(e) => setEditDraft((d) => ({ ...d, roomName: e.target.value }))}
+                          placeholder="Room name"
+                          className="w-full bg-background border border-border rounded px-2 py-1 text-[11px] text-foreground focus:outline-none focus:border-sky-500/60"
+                        />
                       </td>
-                      <td className="px-3 py-2 text-foreground">
-                        {row.occupancyGroup ?? <span className="text-muted-foreground/50">—</span>}
+                      <td className="px-2 py-1.5">
+                        <input
+                          type="number"
+                          value={editDraft.occupantLoad}
+                          onChange={(e) => setEditDraft((d) => ({ ...d, occupantLoad: e.target.value }))}
+                          placeholder="0"
+                          className="w-full bg-background border border-border rounded px-2 py-1 text-[11px] text-foreground focus:outline-none focus:border-sky-500/60"
+                        />
+                      </td>
+                      <td className="px-2 py-1.5">
+                        <input
+                          value={editDraft.occupancyGroup}
+                          onChange={(e) => setEditDraft((d) => ({ ...d, occupancyGroup: e.target.value }))}
+                          placeholder="e.g. A-2"
+                          className="w-full bg-background border border-border rounded px-2 py-1 text-[11px] text-foreground focus:outline-none focus:border-sky-500/60"
+                        />
+                      </td>
+                      <td className="px-2 py-1.5">
+                        <div className="flex items-center gap-1">
+                          <button
+                            onClick={handleSaveRow}
+                            disabled={editSaving}
+                            className="flex items-center justify-center w-6 h-6 rounded text-emerald-400 hover:bg-emerald-500/15 transition-colors disabled:opacity-50"
+                            title="Save"
+                          >
+                            {editSaving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Check className="w-3.5 h-3.5" />}
+                          </button>
+                          <button
+                            onClick={handleCancelEdit}
+                            disabled={editSaving}
+                            className="flex items-center justify-center w-6 h-6 rounded text-muted-foreground hover:bg-secondary/60 transition-colors disabled:opacity-50"
+                            title="Cancel"
+                          >
+                            <X className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
                       </td>
                     </tr>
-                  );
-                })}
-              </tbody>
-            </table>
+                  )}
+                </tbody>
+              </table>
+            )}
+
+            {/* Validation error for editing */}
+            {editError && (
+              <div className="flex items-center gap-2 px-3 py-2 text-[11px] text-destructive border-t border-border/50">
+                <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0" />
+                {editError}
+              </div>
+            )}
+
             <div className="px-3 py-2 text-[10px] text-muted-foreground border-t border-border/50 flex items-center gap-3">
-              <span>{occupantRows.length} room{occupantRows.length !== 1 ? "s" : ""} extracted</span>
-              {occupantRows.filter((r) => typeof r.occupantLoad === "number" && r.occupantLoad >= 50).length > 0 && (
-                <span className="text-orange-400">
-                  · {occupantRows.filter((r) => typeof r.occupantLoad === "number" && r.occupantLoad >= 50).length} assembly room{occupantRows.filter((r) => typeof r.occupantLoad === "number" && r.occupantLoad >= 50).length !== 1 ? "s" : ""}
-                </span>
+              <button
+                onClick={handleAddRow}
+                disabled={editingId !== null || deletingId !== null}
+                className="flex items-center gap-1 text-sky-400 hover:text-sky-300 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+              >
+                <Plus className="w-3 h-3" />
+                Add row
+              </button>
+              {occupantRows.length > 0 && (
+                <>
+                  <span className="text-border">·</span>
+                  <span>{occupantRows.length} room{occupantRows.length !== 1 ? "s" : ""}</span>
+                  {occupantRows.filter((r) => typeof r.occupantLoad === "number" && r.occupantLoad >= 50).length > 0 && (
+                    <span className="text-orange-400">
+                      · {occupantRows.filter((r) => typeof r.occupantLoad === "number" && r.occupantLoad >= 50).length} assembly room{occupantRows.filter((r) => typeof r.occupantLoad === "number" && r.occupantLoad >= 50).length !== 1 ? "s" : ""}
+                    </span>
+                  )}
+                </>
               )}
             </div>
           </div>

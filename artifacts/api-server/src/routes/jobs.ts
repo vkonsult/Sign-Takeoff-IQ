@@ -2303,6 +2303,126 @@ router.get("/jobs/:jobId/occupant-loads", async (req, res) => {
   }
 });
 
+// ── Occupant Load Create ──────────────────────────────────────────────────────
+
+const OccupantLoadCreateSchema = z.object({
+  roomNum: z.string().min(1),
+  roomName: z.string().nullable().optional(),
+  occupantLoad: z.number().nonnegative().nullable().optional(),
+  occupancyGroup: z.string().nullable().optional(),
+});
+
+router.post("/jobs/:jobId/occupant-loads", async (req, res) => {
+  const jobId = req.params.jobId;
+  if (!jobId) { res.status(400).json({ error: "Job ID required" }); return; }
+
+  const parsed = OccupantLoadCreateSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: "Invalid request body", details: parsed.error.issues });
+    return;
+  }
+
+  try {
+    const job = await getJobWithOrgCheck(req, res, jobId);
+    if (!job) return;
+
+    const [created] = await db
+      .insert(occupantLoadsTable)
+      .values({
+        jobId,
+        roomNum: parsed.data.roomNum,
+        roomName: parsed.data.roomName ?? null,
+        occupantLoad: parsed.data.occupantLoad ?? null,
+        occupancyGroup: parsed.data.occupancyGroup ?? null,
+      })
+      .returning();
+
+    res.status(201).json({ load: created });
+  } catch (err) {
+    req.log.error({ err, jobId }, "occupant-load create failed");
+    res.status(500).json({ error: "Failed to create occupant load" });
+  }
+});
+
+// ── Occupant Load Update ──────────────────────────────────────────────────────
+
+const OccupantLoadUpdateSchema = z.object({
+  roomNum: z.string().min(1).optional(),
+  roomName: z.string().nullable().optional(),
+  occupantLoad: z.number().nonnegative().nullable().optional(),
+  occupancyGroup: z.string().nullable().optional(),
+});
+
+router.put("/jobs/:jobId/occupant-loads/:id", async (req, res) => {
+  const { jobId, id } = req.params;
+  if (!jobId || !id) { res.status(400).json({ error: "Job ID and load ID required" }); return; }
+
+  const parsed = OccupantLoadUpdateSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: "Invalid request body", details: parsed.error.issues });
+    return;
+  }
+
+  try {
+    const job = await getJobWithOrgCheck(req, res, jobId);
+    if (!job) return;
+
+    const updateData: Record<string, unknown> = {};
+    if (parsed.data.roomNum !== undefined) updateData.roomNum = parsed.data.roomNum;
+    if (parsed.data.roomName !== undefined) updateData.roomName = parsed.data.roomName;
+    if (parsed.data.occupantLoad !== undefined) updateData.occupantLoad = parsed.data.occupantLoad;
+    if (parsed.data.occupancyGroup !== undefined) updateData.occupancyGroup = parsed.data.occupancyGroup;
+
+    if (Object.keys(updateData).length === 0) {
+      res.status(400).json({ error: "No fields provided to update" });
+      return;
+    }
+
+    const [updated] = await db
+      .update(occupantLoadsTable)
+      .set(updateData)
+      .where(and(eq(occupantLoadsTable.id, id), eq(occupantLoadsTable.jobId, jobId)))
+      .returning();
+
+    if (!updated) {
+      res.status(404).json({ error: "Occupant load not found" });
+      return;
+    }
+
+    res.json({ load: updated });
+  } catch (err) {
+    req.log.error({ err, jobId, id }, "occupant-load update failed");
+    res.status(500).json({ error: "Failed to update occupant load" });
+  }
+});
+
+// ── Occupant Load Delete ──────────────────────────────────────────────────────
+
+router.delete("/jobs/:jobId/occupant-loads/:id", async (req, res) => {
+  const { jobId, id } = req.params;
+  if (!jobId || !id) { res.status(400).json({ error: "Job ID and load ID required" }); return; }
+
+  try {
+    const job = await getJobWithOrgCheck(req, res, jobId);
+    if (!job) return;
+
+    const [deleted] = await db
+      .delete(occupantLoadsTable)
+      .where(and(eq(occupantLoadsTable.id, id), eq(occupantLoadsTable.jobId, jobId)))
+      .returning();
+
+    if (!deleted) {
+      res.status(404).json({ error: "Occupant load not found" });
+      return;
+    }
+
+    res.json({ success: true });
+  } catch (err) {
+    req.log.error({ err, jobId, id }, "occupant-load delete failed");
+    res.status(500).json({ error: "Failed to delete occupant load" });
+  }
+});
+
 // ── Plaque Schedule Query ─────────────────────────────────────────────────────
 
 router.get("/jobs/:jobId/plaque-schedule", async (req, res) => {
