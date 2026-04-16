@@ -6,6 +6,7 @@ import trainingRouter from "./training";
 import adminRouter from "./admin";
 import activityRouter from "./activity";
 import vocabularyRouter from "./vocabulary";
+import filesRouter from "./files";
 import { requireAuth } from "../middlewares/authMiddleware";
 import { LOGOS_DIR } from "../lib/storage";
 
@@ -23,5 +24,6 @@ router.use(trainingRouter);
 router.use(adminRouter);
 router.use(activityRouter);
 router.use(vocabularyRouter);
+router.use(filesRouter);
 
 export default router;

@@ -48,7 +48,8 @@ export function watchPdfFile(pdfPath: string, fileId: string): void {
         }
       }
     });
-  } catch {
+  } catch (err) {
+    logger.warn({ err, pdfPath, fileId }, "Could not set up file watcher for PDF");
     return;
   }
 
@@ -58,6 +59,7 @@ export function watchPdfFile(pdfPath: string, fileId: string): void {
   });
 
   watchers.set(pdfPath, { fileId, watcher });
+  logger.info({ pdfPath, fileId }, "Watching PDF file for changes");
 }
 
 /**
@@ -85,6 +87,9 @@ export function unwatchAllPdfFiles(): void {
     unwatchPdfFile(pdfPath);
   }
 }
+
+/** Alias for unwatchAllPdfFiles — kept for API compatibility. */
+export const closeAllWatchers = unwatchAllPdfFiles;
 
 /**
  * Query the database for all existing file records and register a file-system
@@ -116,3 +121,6 @@ export function __watcherCount(): number {
  * Exposed for testing: gives direct access to the internal watchers map.
  */
 export const __watchers = watchers;
+
+/** Alias kept for backward-compatibility with test imports. */
+export const __activeWatchers = watchers;
