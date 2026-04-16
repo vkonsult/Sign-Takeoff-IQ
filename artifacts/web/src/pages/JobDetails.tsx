@@ -4,6 +4,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { AppShell } from "@/components/layout/Shell";
 import { apiFetch, openPdfInNewTab } from "@/lib/apiClient";
 import { useJobDetails, useStartExtraction, downloadExport, useUpdateJobName } from "@/hooks/use-takeoff";
+import { useToast } from "@/hooks/use-toast";
 import { UnifiedPlanViewer } from "@/components/UnifiedPlanViewer";
 import type { ExtractedSign as SignMarker } from "@/components/UnifiedPlanViewer";
 import { SignSpecModal } from "@/components/SignSpecModal";
@@ -453,6 +454,8 @@ export default function JobDetails() {
   const nameInputRef = useRef<HTMLInputElement>(null);
   const updateJobName = useUpdateJobName(jobId);
 
+  const { toast } = useToast();
+
   const plaqueScheduleQuery = useGetPlaqueSchedule(jobId);
   const occupantLoadsQuery = useGetOccupantLoads(jobId);
   const extractPlaqueMutation = useExtractPlaqueSchedule();
@@ -487,7 +490,17 @@ export default function JobDetails() {
 
   const handleExport = () => {
     if (jobId) {
-      downloadExport(jobId).catch((err) => console.error("Export failed:", err));
+      downloadExport(jobId)
+        .then(({ signCount }) => {
+          if (signCount === 0) {
+            toast({
+              title: "Partial export downloaded",
+              description:
+                "This export contains plaque/occupant load data only — no sign takeoff rows were found.",
+            });
+          }
+        })
+        .catch((err) => console.error("Export failed:", err));
     }
   };
 

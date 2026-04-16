@@ -85,9 +85,11 @@ export function useUpdateJobName(jobId: string) {
   };
 }
 
-export async function downloadExport(jobId: string): Promise<void> {
+export async function downloadExport(jobId: string): Promise<{ signCount: number }> {
   const res = await apiFetch(`/api/jobs/${jobId}/export`);
   if (!res.ok) throw new Error("Export failed");
+  const signCountHeader = res.headers.get("x-sign-count");
+  const signCount = signCountHeader !== null ? parseInt(signCountHeader, 10) : -1;
   const blob = await res.blob();
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
@@ -99,4 +101,5 @@ export async function downloadExport(jobId: string): Promise<void> {
   a.click();
   a.remove();
   URL.revokeObjectURL(url);
+  return { signCount };
 }

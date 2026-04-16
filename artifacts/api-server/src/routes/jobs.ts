@@ -1312,6 +1312,7 @@ router.get("/jobs/:jobId/export", async (req, res) => {
       "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     );
     res.setHeader("Content-Disposition", `attachment; filename="${fileName}"`);
+    res.setHeader("X-Sign-Count", String(signs.length));
 
     const fileBuffer = await fs.readFile(exportPath);
     res.send(fileBuffer);
