@@ -1,4 +1,5 @@
 import { useState, useMemo } from "react";
+import { useSearch, useLocation } from "wouter";
 import { AppShell } from "@/components/layout/Shell";
 import { useJobsList } from "@/hooks/use-takeoff";
 import { apiFetch, openPdfInNewTab } from "@/lib/apiClient";
@@ -9,9 +10,9 @@ import { Button } from "@/components/ui/button";
 import {
   FolderOpen, Eye, FileText, CheckCircle2, Cpu,
   AlertTriangle, Trash2, X, Square, CheckSquare, MinusSquare,
-  Archive, EyeOff, Layers, Users, ArrowUp, ArrowDown, ArrowUpDown, MapPinOff,
+  Archive, EyeOff, Layers, Users, ChevronUp, ChevronDown, ChevronsUpDown,
 } from "lucide-react";
-import { Link, useLocation } from "wouter";
+import { Link } from "wouter";
 
 
 interface RecentUser {
@@ -28,6 +29,31 @@ const ACTION_LABELS: Record<string, string> = {
   xlsx_exported: "exported XLSX for",
   pdf_exported: "exported PDF for",
 };
+
+type SortBy = "createdAt" | "updatedAt" | "plaqueCount" | "occupantLoadCount";
+type SortDir = "asc" | "desc";
+
+const VALID_SORT_COLS: SortBy[] = ["createdAt", "updatedAt", "plaqueCount", "occupantLoadCount"];
+const DEFAULT_SORT_BY: SortBy = "createdAt";
+const DEFAULT_SORT_DIR: SortDir = "desc";
+
+function parseSortParams(search: string): { sortBy: SortBy; sortDir: SortDir } {
+  const params = new URLSearchParams(search);
+  const rawBy = params.get("sortBy") ?? "";
+  const rawDir = params.get("sortDir") ?? "";
+  const sortBy = (VALID_SORT_COLS as string[]).includes(rawBy)
+    ? (rawBy as SortBy)
+    : DEFAULT_SORT_BY;
+  const sortDir: SortDir = rawDir === "asc" || rawDir === "desc" ? rawDir : DEFAULT_SORT_DIR;
+  return { sortBy, sortDir };
+}
+
+function SortIcon({ col, active, dir }: { col: string; active: string; dir: SortDir }) {
+  if (col !== active) return <ChevronsUpDown className="w-3 h-3 opacity-40" />;
+  return dir === "asc"
+    ? <ChevronUp className="w-3 h-3" />
+    : <ChevronDown className="w-3 h-3" />;
+}
 
 function StackedUserBadges({ users }: { users: RecentUser[] }) {
   if (users.length === 0) return <span className="text-muted-foreground/30 text-xs">—</span>;
@@ -52,7 +78,20 @@ function StackedUserBadges({ users }: { users: RecentUser[] }) {
 }
 
 export default function JobsList() {
-  const [, navigate] = useLocation();
+  const search = useSearch();
+  const [, setLocation] = useLocation();
+
+  const { sortBy, sortDir } = parseSortParams(search);
+
+  const setSort = (col: SortBy) => {
+    const newDir: SortDir =
+      col === sortBy ? (sortDir === "desc" ? "asc" : "desc") : DEFAULT_SORT_DIR;
+    const params = new URLSearchParams(search);
+    params.set("sortBy", col);
+    params.set("sortDir", newDir);
+    setLocation(`/jobs?${params.toString()}`, { replace: true });
+  };
+
   const [showArchived, setShowArchived] = useState(false);
   const { data, isLoading } = useJobsList(showArchived);
   const queryClient = useQueryClient();
@@ -62,18 +101,6 @@ export default function JobsList() {
   const [deletingSingle, setDeletingSingle] = useState<string | null>(null);
   const [bulkConfirming, setBulkConfirming] = useState(false);
   const [bulkDeleting, setBulkDeleting] = useState(false);
-  type SortKey = "plaqueCount" | "occupantLoadCount" | "createdAt" | "updatedAt";
-  const [sortBy, setSortBy] = useState<SortKey | null>(null);
-  const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
-
-  const handleSort = (key: SortKey) => {
-    if (sortBy === key) {
-      setSortDir((d) => (d === "asc" ? "desc" : "asc"));
-    } else {
-      setSortBy(key);
-      setSortDir("desc");
-    }
-  };
 
   type JobSummaryListItem = JobSummary & {
     name?: string | null;
@@ -85,20 +112,28 @@ export default function JobsList() {
   };
 
   const rawJobs = (data?.jobs ?? []) as JobSummaryListItem[];
+
   const jobs = useMemo(() => {
-    if (!sortBy) return rawJobs;
     return [...rawJobs].sort((a, b) => {
-      if (sortBy === "createdAt" || sortBy === "updatedAt") {
-        const aVal = sortBy === "updatedAt" ? (a.updatedAt ?? a.createdAt) : a.createdAt;
-        const bVal = sortBy === "updatedAt" ? (b.updatedAt ?? b.createdAt) : b.createdAt;
-        const diff = new Date(aVal).getTime() - new Date(bVal).getTime();
-        return sortDir === "asc" ? diff : -diff;
+      let aVal: number;
+      let bVal: number;
+      if (sortBy === "plaqueCount") {
+        aVal = Number(a.plaqueCount ?? 0);
+        bVal = Number(b.plaqueCount ?? 0);
+      } else if (sortBy === "occupantLoadCount") {
+        aVal = Number(a.occupantLoadCount ?? 0);
+        bVal = Number(b.occupantLoadCount ?? 0);
+      } else if (sortBy === "updatedAt") {
+        aVal = a.updatedAt ? new Date(a.updatedAt).getTime() : 0;
+        bVal = b.updatedAt ? new Date(b.updatedAt).getTime() : 0;
+      } else {
+        aVal = new Date(a.createdAt).getTime();
+        bVal = new Date(b.createdAt).getTime();
       }
-      const aVal = Number(a[sortBy] ?? 0);
-      const bVal = Number(b[sortBy] ?? 0);
       return sortDir === "asc" ? aVal - bVal : bVal - aVal;
     });
   }, [rawJobs, sortBy, sortDir]);
+
   const allIds = jobs.map((j) => j.id);
   const allSelected = allIds.length > 0 && allIds.every((id) => selected.has(id));
   const someSelected = selected.size > 0 && !allSelected;
@@ -179,6 +214,28 @@ export default function JobsList() {
     }
   };
 
+  function SortHeader({
+    col,
+    label,
+    className,
+  }: {
+    col: SortBy;
+    label: string;
+    className?: string;
+  }) {
+    return (
+      <button
+        onClick={() => setSort(col)}
+        className={`flex items-center gap-1 font-display font-semibold uppercase tracking-wider text-xs transition-colors
+          ${sortBy === col ? "text-primary" : "text-muted-foreground hover:text-foreground"}
+          ${className ?? ""}`}
+      >
+        {label}
+        <SortIcon col={col} active={sortBy} dir={sortDir} />
+      </button>
+    );
+  }
+
   return (
     <AppShell>
       <div className="flex-1 p-8 max-w-5xl mx-auto w-full pb-32">
@@ -228,7 +285,7 @@ export default function JobsList() {
         ) : (
           <div className="bg-card rounded-xl border border-border overflow-hidden shadow-lg">
             {/* Header row */}
-            <div className="grid grid-cols-[36px_1fr_120px_40px_160px_160px_48px] gap-3 px-4 py-3 border-b border-border bg-secondary/50 text-xs font-display font-semibold uppercase tracking-wider text-muted-foreground items-center">
+            <div className="grid grid-cols-[36px_1fr_120px_40px_160px_160px_48px] gap-3 px-4 py-3 border-b border-border bg-secondary/50 items-center">
               {/* Select-all checkbox */}
               <button
                 onClick={toggleAll}
@@ -241,64 +298,43 @@ export default function JobsList() {
                     ? <MinusSquare className="w-4 h-4 text-primary" />
                     : <Square className="w-4 h-4" />}
               </button>
-              <div className="flex items-center gap-2 flex-wrap">
-                <span>Job Name</span>
-                <button
-                  onClick={() => handleSort("plaqueCount")}
-                  title="Sort by plaque count"
-                  className={`inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] font-semibold border transition-colors cursor-pointer select-none
-                    ${sortBy === "plaqueCount"
-                      ? "bg-violet-500/20 text-violet-300 border-violet-500/40"
-                      : "bg-violet-500/10 text-violet-400/60 border-violet-500/20 hover:text-violet-300 hover:bg-violet-500/20"}`}
-                >
-                  <Layers className="w-2.5 h-2.5" />
-                  Plaques
-                  {sortBy === "plaqueCount"
-                    ? (sortDir === "desc" ? <ArrowDown className="w-2.5 h-2.5" /> : <ArrowUp className="w-2.5 h-2.5" />)
-                    : <ArrowUpDown className="w-2.5 h-2.5 opacity-50" />}
-                </button>
-                <button
-                  onClick={() => handleSort("occupantLoadCount")}
-                  title="Sort by occupant load count"
-                  className={`inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] font-semibold border transition-colors cursor-pointer select-none
-                    ${sortBy === "occupantLoadCount"
-                      ? "bg-sky-500/20 text-sky-300 border-sky-500/40"
-                      : "bg-sky-500/10 text-sky-400/60 border-sky-500/20 hover:text-sky-300 hover:bg-sky-500/20"}`}
-                >
-                  <Users className="w-2.5 h-2.5" />
-                  Occ. Load
-                  {sortBy === "occupantLoadCount"
-                    ? (sortDir === "desc" ? <ArrowDown className="w-2.5 h-2.5" /> : <ArrowUp className="w-2.5 h-2.5" />)
-                    : <ArrowUpDown className="w-2.5 h-2.5 opacity-50" />}
-                </button>
+              <div className="text-xs font-display font-semibold uppercase tracking-wider text-muted-foreground">Job Name</div>
+              <div className="text-center text-xs font-display font-semibold uppercase tracking-wider text-muted-foreground">Status</div>
+              <div className="text-center text-xs font-display font-semibold uppercase tracking-wider text-muted-foreground" title="Last active user">User</div>
+              <div className="flex justify-end">
+                <SortHeader col="createdAt" label="Created" />
               </div>
-              <div className="text-center">Status</div>
-              <div className="text-center" title="Last active user">User</div>
-              <button
-                onClick={() => handleSort("createdAt")}
-                className="flex items-center justify-end gap-1 hover:text-foreground transition-colors ml-auto"
-                title="Sort by created date"
-              >
-                Created
-                {sortBy === "createdAt"
-                  ? sortDir === "asc"
-                    ? <ArrowUp className="w-3 h-3 text-primary" />
-                    : <ArrowDown className="w-3 h-3 text-primary" />
-                  : <ArrowUpDown className="w-3 h-3 opacity-40" />}
-              </button>
-              <button
-                onClick={() => handleSort("updatedAt")}
-                className="flex items-center justify-end gap-1 pr-8 hover:text-foreground transition-colors ml-auto"
-                title="Sort by updated date"
-              >
-                Updated
-                {sortBy === "updatedAt"
-                  ? sortDir === "asc"
-                    ? <ArrowUp className="w-3 h-3 text-primary" />
-                    : <ArrowDown className="w-3 h-3 text-primary" />
-                  : <ArrowUpDown className="w-3 h-3 opacity-40" />}
-              </button>
+              <div className="flex justify-end pr-8">
+                <SortHeader col="updatedAt" label="Updated" />
+              </div>
               <div />
+            </div>
+
+            {/* Badge sort bar */}
+            <div className="flex items-center gap-2 px-4 py-2 border-b border-border bg-secondary/20">
+              <span className="text-[10px] font-display font-semibold uppercase tracking-wider text-muted-foreground/60 mr-1">Sort by:</span>
+              <button
+                onClick={() => setSort("plaqueCount")}
+                className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-semibold border transition-colors
+                  ${sortBy === "plaqueCount"
+                    ? "bg-violet-500/20 text-violet-400 border-violet-500/40"
+                    : "bg-violet-500/5 text-violet-400/60 border-violet-500/10 hover:bg-violet-500/15 hover:text-violet-400"}`}
+              >
+                <Layers className="w-2.5 h-2.5" />
+                Plaque count
+                <SortIcon col="plaqueCount" active={sortBy} dir={sortDir} />
+              </button>
+              <button
+                onClick={() => setSort("occupantLoadCount")}
+                className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-semibold border transition-colors
+                  ${sortBy === "occupantLoadCount"
+                    ? "bg-sky-500/20 text-sky-400 border-sky-500/40"
+                    : "bg-sky-500/5 text-sky-400/60 border-sky-500/10 hover:bg-sky-500/15 hover:text-sky-400"}`}
+              >
+                <Users className="w-2.5 h-2.5" />
+                Occ. load count
+                <SortIcon col="occupantLoadCount" active={sortBy} dir={sortDir} />
+              </button>
             </div>
 
             <div className="divide-y divide-border">
@@ -359,34 +395,28 @@ export default function JobsList() {
                               {job.id.split("-")[0]}
                             </span>
                             {plaqueCount > 0 && (
-                              <button
-                                type="button"
-                                onClick={(e) => {
-                                  e.preventDefault();
-                                  e.stopPropagation();
-                                  navigate(`/jobs/${job.id}?tab=plaque_schedule`);
-                                }}
-                                className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-violet-500/10 text-violet-400 border border-violet-500/20 hover:bg-violet-500/20 transition-colors cursor-pointer"
-                                title={`${plaqueCount} plaque type${plaqueCount !== 1 ? "s" : ""} — click to view Plaque Schedule`}
+                              <span
+                                className={`inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] font-semibold border
+                                  ${sortBy === "plaqueCount"
+                                    ? "bg-violet-500/20 text-violet-400 border-violet-500/40"
+                                    : "bg-violet-500/10 text-violet-400 border-violet-500/20"}`}
+                                title={`${plaqueCount} plaque type${plaqueCount !== 1 ? "s" : ""} extracted`}
                               >
                                 <Layers className="w-2.5 h-2.5" />
                                 {plaqueCount} plaque{plaqueCount !== 1 ? "s" : ""}
-                              </button>
+                              </span>
                             )}
                             {occupantLoadCount > 0 && (
-                              <button
-                                type="button"
-                                onClick={(e) => {
-                                  e.preventDefault();
-                                  e.stopPropagation();
-                                  navigate(`/jobs/${job.id}?tab=occupant_loads`);
-                                }}
-                                className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-sky-500/10 text-sky-400 border border-sky-500/20 hover:bg-sky-500/20 transition-colors cursor-pointer"
-                                title={`${occupantLoadCount} occupant load room${occupantLoadCount !== 1 ? "s" : ""} — click to view Occupant Loads`}
+                              <span
+                                className={`inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] font-semibold border
+                                  ${sortBy === "occupantLoadCount"
+                                    ? "bg-sky-500/20 text-sky-400 border-sky-500/40"
+                                    : "bg-sky-500/10 text-sky-400 border-sky-500/20"}`}
+                                title={`${occupantLoadCount} occupant load room${occupantLoadCount !== 1 ? "s" : ""} extracted`}
                               >
                                 <Users className="w-2.5 h-2.5" />
                                 {occupantLoadCount} occ. load{occupantLoadCount !== 1 ? "s" : ""}
-                              </button>
+                              </span>
                             )}
                             {unplacedCount > 0 && (
                               <span
@@ -409,11 +439,11 @@ export default function JobsList() {
                         <StackedUserBadges users={recentUsers} />
                       </div>
 
-                      <div className="text-right text-sm text-muted-foreground py-4">
+                      <div className={`text-right text-sm py-4 ${sortBy === "createdAt" ? "text-foreground font-medium" : "text-muted-foreground"}`}>
                         {format(new Date(job.createdAt), "MMM d, yyyy HH:mm")}
                       </div>
 
-                      <div className="text-right text-sm text-muted-foreground py-4 pr-8">
+                      <div className={`text-right text-sm py-4 pr-8 ${sortBy === "updatedAt" ? "text-foreground font-medium" : "text-muted-foreground"}`}>
                         {job.updatedAt
                           ? format(new Date(job.updatedAt), "MMM d, yyyy HH:mm")
                           : <span className="text-muted-foreground/30">—</span>}
