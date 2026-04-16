@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { useRoute, useSearch, useLocation } from "wouter";
+import { logger } from "@/lib/logger";
 import { useQueryClient } from "@tanstack/react-query";
 import { AppShell } from "@/components/layout/Shell";
 import { apiFetch, openPdfInNewTab } from "@/lib/apiClient";
@@ -509,7 +510,7 @@ export default function JobDetails() {
             });
           }
         })
-        .catch((err) => console.error("Export failed:", err));
+        .catch((err) => logger.error("Export failed:", err));
     }
   };
 
@@ -531,7 +532,7 @@ export default function JobDetails() {
       );
       apiFetch(`/api/jobs/${jobId}/log-pdf-export`, { method: "POST" }).catch(() => {});
     } catch (err) {
-      console.error("PDF export failed:", err);
+      logger.error("PDF export failed:", err);
       alert("Failed to export marked-up PDF. Please try again.");
     } finally {
       setExportingPdf(false);
@@ -970,6 +971,38 @@ export default function JobDetails() {
   const isCompleted = job.status === "completed";
   const isPending = job.status === "pending";
   const isFailed = job.status === "failed";
+
+  // eslint-disable-next-line react-hooks/rules-of-hooks
+  const handleTabListKeyDown = useCallback((e: React.KeyboardEvent<HTMLDivElement>) => {
+    const tablist = e.currentTarget;
+    const tabs = Array.from(tablist.querySelectorAll<HTMLButtonElement>('[role="tab"]'));
+    if (tabs.length === 0) return;
+    const focused = tabs.findIndex((t) => t === document.activeElement);
+    if (focused === -1) return;
+    // eslint-disable-next-line no-useless-assignment
+    let next = focused;
+    if (e.key === "ArrowRight") {
+      e.preventDefault();
+      next = (focused + 1) % tabs.length;
+    } else if (e.key === "ArrowLeft") {
+      e.preventDefault();
+      next = (focused - 1 + tabs.length) % tabs.length;
+    } else if (e.key === "Home") {
+      e.preventDefault();
+      next = 0;
+    } else if (e.key === "End") {
+      e.preventDefault();
+      next = tabs.length - 1;
+    } else if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      tabs[focused].click();
+      return;
+    } else {
+      return;
+    }
+    tabs[next].focus();
+  }, []);
+
 
   return (
     <AppShell>
@@ -2040,8 +2073,10 @@ function CoordinatesTable({
 
   const coordExceptionCount = signs.filter((s) => s.reviewFlag && s.exceptionReason).length;
   const sorted = [...(showCoordExceptions ? signs.filter((s) => s.reviewFlag && s.exceptionReason) : signs)].sort((a, b) => {
-    let av: string | number;
-    let bv: string | number;
+    // eslint-disable-next-line no-useless-assignment
+    let av: string | number = "";
+    // eslint-disable-next-line no-useless-assignment
+    let bv: string | number = "";
     switch (coordSortField) {
       case "code":
         av = a.signIdentifier ?? "";

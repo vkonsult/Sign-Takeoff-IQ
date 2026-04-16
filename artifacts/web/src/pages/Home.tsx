@@ -1,5 +1,6 @@
 import { useState, useCallback } from "react";
 import { useLocation } from "wouter";
+import { logger } from "@/lib/logger";
 import { useDropzone } from "react-dropzone";
 import { UploadCloud, FileText, X, AlertCircle, Loader2 } from "lucide-react";
 import { AppShell } from "@/components/layout/Shell";
@@ -37,7 +38,7 @@ export default function Home() {
       });
       setLocation(`/jobs/${result.jobId}`);
     } catch (error) {
-      console.error("Upload failed", error);
+      logger.error("Upload failed", error);
     }
   };
 

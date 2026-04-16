@@ -1,5 +1,6 @@
 import { useState, useCallback, useEffect, useMemo, useRef } from "react";
 import { apiFetch } from "@/lib/apiClient";
+import { logger } from "@/lib/logger";
 import { AddMarkerForm } from "./AddMarkerForm";
 import {
   X,
@@ -362,7 +363,7 @@ function EditPanel({
       onSignDeleted?.(signId);
       if (!next) onClose?.();
     } catch (err) {
-      console.error("Delete sign failed:", err);
+      logger.error("Delete sign failed:", err);
     }
   };
 
@@ -676,7 +677,6 @@ function PageViewer({
       .then((data: ServerPhraseData) => { if (!cancelled) setServerPhrases(data); })
       .catch(() => { if (!cancelled) setPhrasesFetchFailed(true); });
     return () => { cancelled = true; };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [file.id, pageNumber, jobId]);
 
   // ── Page classification ────────────────────────────────────────────────────
@@ -938,11 +938,11 @@ function PageViewer({
               setLocalSigns((prev) => prev.map((s) => s.id === signId ? d.sign : s));
               if (signId === activeSignId) onActiveSignChange(d.sign);
             })
-            .catch((err) => console.error(`[visual-locate] auto-apply failed for ${signId}:`, err));
+            .catch((err) => logger.error(`[visual-locate] auto-apply failed for ${signId}:`, err));
         }
       })
       .catch((err) => {
-        console.error("[visual-locate] request failed:", err);
+        logger.error("[visual-locate] request failed:", err);
         visualLocateQueriedRef.current.delete(pageKey);
         targetSigns.forEach((s) => visualLocateSubmittedRef.current.delete(s.id));
       })
@@ -963,7 +963,7 @@ function PageViewer({
       setLocalSigns((prev) => prev.map((s) => s.id === signId ? data.sign : s));
       setVisualCandidates((prev) => { const n = new Map(prev); n.delete(signId); return n; });
       if (signId === activeSignId) onActiveSignChange(data.sign);
-    } catch (err) { console.error("[visual-locate] confirm failed:", err); }
+    } catch (err) { logger.error("[visual-locate] confirm failed:", err); }
   };
 
   // ── Reset AI placement ─────────────────────────────────────────────────────
@@ -982,7 +982,7 @@ function PageViewer({
       visualLocateSubmittedRef.current.delete(signId);
       setVisualLocateFailed((prev) => { const n = new Set(prev); n.delete(signId); return n; });
       setVisualCandidates((prev) => { const n = new Map(prev); n.delete(signId); return n; });
-    } catch (err) { console.error("[visual-locate] reset failed:", err); }
+    } catch (err) { logger.error("[visual-locate] reset failed:", err); }
   };
 
   // Register resetAiPlacement with the outer component so the modal top-bar can call
@@ -1004,7 +1004,7 @@ function PageViewer({
         onActiveSignChange(next ?? null);
       }
       onSignDeleted?.(signId);
-    } catch (err) { console.error("Delete sign failed:", err); }
+    } catch (err) { logger.error("Delete sign failed:", err); }
   };
 
   // ── Page navigation ────────────────────────────────────────────────────────
@@ -1746,7 +1746,7 @@ function PageViewer({
                             if (ds.signId === activeSignId) onActiveSignChange(d.sign);
                             onSignUpdated?.(ds.signId, nx, ny);
                           })
-                          .catch((err) => console.error("[drag] PATCH failed:", err));
+                          .catch((err) => logger.error("[drag] PATCH failed:", err));
                       }
                     } else {
                       const found = localSigns.find((s) => s.id === ds.signId);

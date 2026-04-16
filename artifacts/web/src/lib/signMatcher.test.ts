@@ -21,7 +21,7 @@ function makeSign(overrides: Partial<ExtractedSign> = {}): ExtractedSign {
     confidenceScore: 0.9,
     reviewFlag: false,
     ...overrides,
-  };
+  } as ExtractedSign;
 }
 
 // ─── phraseMatchScore ─────────────────────────────────────────────────────────

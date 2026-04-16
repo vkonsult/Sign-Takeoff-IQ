@@ -398,7 +398,7 @@ export function findPairedClusterMatch(
   drawingPhrases: PdfPhrase[],
   typeToken: string,
   numberToken: string,
-  signId: string | undefined,
+  _signId: string | undefined,
 ): { x: number; y: number; matched: string; score: number; phrase: PdfPhrase; rejectedCandidates: PdfPhrase[] } | null | "ambiguous" {
   const CLUSTER_RADIUS = 0.05;
   const TYPE_MATCH_THRESHOLD = 0.70;
@@ -412,18 +412,7 @@ export function findPairedClusterMatch(
     (p) => exactBoundaryMatch(normId(p.text), numNorm),
   );
 
-  console.log(
-    `[CLUSTER] ${signId ?? "?"} type="${typeToken}" number="${numberToken}"`,
-  );
-  console.log(
-    `  typeCands(${typeCands.length}): [${typeCands.slice(0, 4).map((p) => `"${p.text}"@(${((p.x0 + p.x1) / 2).toFixed(2)},${((p.y0 + p.y1) / 2).toFixed(2)})`).join(", ")}]`,
-  );
-  console.log(
-    `  numCands(${numCands.length}): [${numCands.slice(0, 4).map((p) => `"${p.text}"@(${((p.x0 + p.x1) / 2).toFixed(2)},${((p.y0 + p.y1) / 2).toFixed(2)})`).join(", ")}]`,
-  );
-
   if (typeCands.length === 0 || numCands.length === 0) {
-    console.log(`  → no candidates — null`);
     return null;
   }
 
@@ -442,16 +431,11 @@ export function findPairedClusterMatch(
       const dist = Math.hypot(ncx - tcx, ncy - tcy);
       if (dist <= CLUSTER_RADIUS) {
         pairs.push({ typePhrase: tc, numPhrase: nc, dist });
-        console.log(
-          `  pair: "${tc.text}"+(${tcx.toFixed(2)},${tcy.toFixed(2)}) + ` +
-          `"${nc.text}"+(${ncx.toFixed(2)},${ncy.toFixed(2)}) dist=${dist.toFixed(3)}`,
-        );
       }
     }
   }
 
   if (pairs.length === 0) {
-    console.log(`  → 0 pairs — null`);
     return null;
   }
 
@@ -460,9 +444,6 @@ export function findPairedClusterMatch(
   const second = pairs[1];
 
   if (second !== undefined && second.dist - winner.dist < 0.02) {
-    console.log(
-      `  → AMBIGUOUS: winner dist=${winner.dist.toFixed(3)} vs second dist=${second.dist.toFixed(3)}`,
-    );
     return "ambiguous";
   }
 
@@ -470,10 +451,6 @@ export function findPairedClusterMatch(
     x: (winner.numPhrase.x0 + winner.numPhrase.x1) / 2,
     y: (winner.numPhrase.y0 + winner.numPhrase.y1) / 2,
   };
-  console.log(
-    `  → WINNER: "${winner.typePhrase.text}" + "${winner.numPhrase.text}" ` +
-    `anchor=(${anchor.x.toFixed(3)},${anchor.y.toFixed(3)}) score=0.95`,
-  );
 
   const winningTypePhrase = winner.typePhrase;
   const rejectedCandidates = typeCands
@@ -566,9 +543,6 @@ export function findSignLocationFromPhrases(
         }
       }
       if (bestOverlapScore >= 0.4 && bestOverlapPhrase) {
-        console.log(
-          `[MATCH] ${sign.signIdentifier ?? "?"} Pre-B token-overlap→"${bestOverlapPhrase.text}" score=${bestOverlapScore.toFixed(2)}`,
-        );
         return {
           x: (bestOverlapPhrase.x0 + bestOverlapPhrase.x1) / 2,
           y: (bestOverlapPhrase.y0 + bestOverlapPhrase.y1) / 2,
@@ -589,9 +563,6 @@ export function findSignLocationFromPhrases(
         const phraseUp = p.text.trim().toUpperCase();
         const phraseRooms: string[] = phraseUp.match(roomNumRegex) ?? [];
         if (phraseRooms.includes(roomNum)) {
-          console.log(
-            `[MATCH] ${sign.signIdentifier ?? "?"} Pre-C room-num→"${p.text}" room=${roomNum}`,
-          );
           return {
             x: (p.x0 + p.x1) / 2,
             y: (p.y0 + p.y1) / 2,
@@ -681,23 +652,9 @@ export function findSignLocationFromPhrases(
         && top1.totalScore < 0.75;
 
       if (ambiguous1) {
-        console.log(
-          `[MATCH] ${sign.signIdentifier ?? "?"} P1-AMBIGUOUS: ` +
-          `top="${top1.phrase.text}" ${top1.totalScore.toFixed(2)} vs ` +
-          `"${second1.phrase.text}" ${second1.totalScore.toFixed(2)}`,
-        );
+        // ambiguous — fall through
       } else {
         const rejected1 = ranked1.slice(1, 3).map((r) => r.phrase);
-        console.log(
-          `[MATCH] ${sign.signIdentifier ?? "?"} P1→"${top1.phrase.text}" ` +
-          `total=${top1.totalScore.toFixed(2)} room=${top1.roomBonus.toFixed(2)} cluster=${top1.clusterScore.toFixed(2)}`,
-        );
-        ranked1.slice(1, 3).forEach((r, i) =>
-          console.log(
-            `  [MATCH] cand${i + 2}: "${r.phrase.text}" ` +
-            `total=${r.totalScore.toFixed(2)} room=${r.roomBonus.toFixed(2)} cluster=${r.clusterScore.toFixed(2)}`,
-          ),
-        );
         const confidence = 0.8 + (top1.phraseScore - PASS1_THRESHOLD) / (1 - PASS1_THRESHOLD) * 0.2;
         const tight1 = tightBboxForTokens(top1.phrase, sign.location ?? top1.phrase.text);
         return {
@@ -747,25 +704,10 @@ export function findSignLocationFromPhrases(
         && top2.totalScore < 0.75;
 
       if (ambiguous2) {
-        console.log(
-          `[MATCH] ${sign.signIdentifier ?? "?"} P2-AMBIGUOUS on "${token}": ` +
-          `top="${top2.phrase.text}" ${top2.totalScore.toFixed(2)} vs ` +
-          `"${second2.phrase.text}" ${second2.totalScore.toFixed(2)}`,
-        );
         continue;
       }
 
       const rejected2 = ranked2.slice(1, 3).map((r) => r.phrase);
-      console.log(
-        `[MATCH] ${sign.signIdentifier ?? "?"} P2→"${top2.phrase.text}" ` +
-        `total=${top2.totalScore.toFixed(2)} room=${top2.roomBonus.toFixed(2)} cluster=${top2.clusterScore.toFixed(2)}`,
-      );
-      ranked2.slice(1, 3).forEach((r, i) =>
-        console.log(
-          `  [MATCH] cand${i + 2}: "${r.phrase.text}" ` +
-          `total=${r.totalScore.toFixed(2)} room=${r.roomBonus.toFixed(2)} cluster=${r.clusterScore.toFixed(2)}`,
-        ),
-      );
       const tight2 = tightBboxForTokens(top2.phrase, token);
       return {
         x: (tight2.x0 + tight2.x1) / 2,

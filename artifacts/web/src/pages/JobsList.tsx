@@ -1,5 +1,6 @@
 import { useState, useMemo } from "react";
 import { useSearch, useLocation } from "wouter";
+import { logger } from "@/lib/logger";
 import { AppShell } from "@/components/layout/Shell";
 import { useJobsList } from "@/hooks/use-takeoff";
 import { apiFetch, openPdfInNewTab } from "@/lib/apiClient";
@@ -244,7 +245,7 @@ export default function JobsList() {
       await queryClient.invalidateQueries({ queryKey: getListJobsQueryKey() });
       setSelected((prev) => { const n = new Set(prev); n.delete(jobId); return n; });
     } catch (err) {
-      console.error("Delete failed:", err);
+      logger.error("Delete failed:", err);
     } finally {
       setDeletingSingle(null);
       setConfirmDelete(null);
@@ -275,7 +276,7 @@ export default function JobsList() {
       setSelected(new Set());
       setBulkConfirming(false);
     } catch (err) {
-      console.error("Bulk delete failed:", err);
+      logger.error("Bulk delete failed:", err);
     } finally {
       setBulkDeleting(false);
     }
