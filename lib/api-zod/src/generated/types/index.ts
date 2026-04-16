@@ -6,11 +6,15 @@
  * OpenAPI spec version: 0.1.0
  */
 
+export * from "./activityLogActor";
 export * from "./assemblyRoom";
 export * from "./deletePlaqueScheduleRow200";
 export * from "./errorResponse";
 export * from "./extractedSign";
 export * from "./extractedSignDataSource";
+export * from "./extractedSignExtractionMethod";
+export * from "./extractedSignPlacementSource";
+export * from "./extractedSignRawJson";
 export * from "./extractOccupantLoadsResponse";
 export * from "./extractOccupantLoadsResponseDetails";
 export * from "./extractPlaqueScheduleResponse";
@@ -41,6 +45,7 @@ export * from "./plaqueScheduleEntryGeneralNotes";
 export * from "./plaqueScheduleEntryRawJson";
 export * from "./plaqueScheduleFileDetail";
 export * from "./plaqueScheduleResponse";
+export * from "./processingCost";
 export * from "./processResponse";
 export * from "./processResponseStatus";
 export * from "./uploadFilesBody";

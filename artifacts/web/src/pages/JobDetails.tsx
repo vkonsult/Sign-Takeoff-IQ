@@ -19,7 +19,7 @@ import {
   useExtractPlaqueSchedule,
   useExtractOccupantLoads,
 } from "@workspace/api-client-react";
-import type { PlaqueScheduleEntry, OccupantLoadEntry, AssemblyRoom, ExtractedSign as ApiSign } from "@workspace/api-client-react";
+import type { PlaqueScheduleEntry, OccupantLoadEntry, AssemblyRoom, ExtractedSign } from "@workspace/api-client-react";
 import { 
   FileText, 
   Cpu, 
@@ -854,17 +854,13 @@ export default function JobDetails() {
   }
 
   const { job, files, totalSigns, flaggedCount, highConfidenceCount, plaqueCount, occupantLoadCount } = data;
-  const dataAny = data as typeof data & {
-    lastScan?: { at: string; userName: string; userInitials: string } | null;
-    lastEdit?: { at: string; userName: string; userInitials: string } | null;
-  };
-  const lastScan = dataAny.lastScan ?? null;
-  const lastEdit = dataAny.lastEdit ?? null;
+  const lastScan = data.lastScan ?? null;
+  const lastEdit = data.lastEdit ?? null;
 
   // Show all signs: text, manual, and image-only (visual-only finds).
   // Paired image signs are excluded by the API (their data is in the paired text row).
-  const extractedSigns = data.extractedSigns as SignMarker[];
-  const hiddenSigns = ((data as typeof data & { hiddenSigns?: SignMarker[] }).hiddenSigns) ?? [];
+  const extractedSigns = data.extractedSigns;
+  const hiddenSigns = data.hiddenSigns ?? [];
   const exceptionSigns = extractedSigns.filter((s) => s.reviewFlag && s.exceptionReason);
   const manuallyEditedSignsCount = extractedSigns.filter((s) => s.manuallyEdited).length;
   const lockedSigns = extractedSigns.filter((s) => s.manuallyEdited);
@@ -1230,8 +1226,8 @@ export default function JobDetails() {
                   onClick={() => setActiveTab("occupant_loads")}
                 />
                 <CostCard 
-                  inputTokens={job.inputTokens ?? 0}
-                  outputTokens={job.outputTokens ?? 0}
+                  inputTokens={data.processingCost?.inputTokens ?? (job.inputTokens ?? 0)}
+                  outputTokens={data.processingCost?.outputTokens ?? (job.outputTokens ?? 0)}
                 />
               </div>
               
@@ -2099,12 +2095,12 @@ function CoordinatesTable({
           </thead>
           <tbody className="bg-background">
             {sorted.map((sign, idx) => {
-              const xPos = sign.xPos as number | null | undefined;
-              const yPos = sign.yPos as number | null | undefined;
-              const bboxX = sign.aiBboxX as number | null | undefined;
-              const bboxY = sign.aiBboxY as number | null | undefined;
-              const bboxW = sign.aiBboxW as number | null | undefined;
-              const bboxH = sign.aiBboxH as number | null | undefined;
+              const xPos = sign.xPos;
+              const yPos = sign.yPos;
+              const bboxX = sign.aiBboxX;
+              const bboxY = sign.aiBboxY;
+              const bboxW = sign.aiBboxW;
+              const bboxH = sign.aiBboxH;
               const isAiRow = showAiHighlight && (sign.dataSource === "ai" || sign.aiBbox === true);
               const isBboxAi = showAiHighlight && sign.aiBbox === true;
 
@@ -2128,13 +2124,13 @@ function CoordinatesTable({
               }
 
               const isNone = !hasCoords && !hasBbox;
-              const codeVal = (sign.signIdentifier as string | null) || "—";
-              const exceptionReason = sign.exceptionReason as string | null | undefined;
+              const codeVal = sign.signIdentifier || "—";
+              const exceptionReason = sign.exceptionReason;
               const isException = !!(sign.reviewFlag && exceptionReason);
 
               return (
                 <tr
-                  key={sign.id as string}
+                  key={sign.id}
                   className={`
                     hover:bg-secondary/40 transition-colors
                     ${isException ? "bg-amber-500/5" : idx % 2 === 0 ? "" : "bg-card/30"}
@@ -2308,7 +2304,7 @@ type SignSummaryRow = {
   sheets: string[];
 };
 
-type AnySign = SignMarker;
+type AnySign = ExtractedSign;
 
 function buildSignSummary(signs: AnySign[]): SignSummaryRow[] {
   const map = new Map<string, SignSummaryRow>();
@@ -2823,10 +2819,9 @@ function SheetsPanel({
 
 // ─── SOURCE BADGE ─────────────────────────────────────────────────────────────
 
-function SourceBadge({ sign }: { sign: SignMarker }) {
-  const r = sign as SignMarker & Record<string, unknown>;
-  const method = r.extractionMethod as string | null | undefined;
-  const paired = r.pairedSignId as string | null | undefined;
+function SourceBadge({ sign }: { sign: ExtractedSign }) {
+  const method = sign.extractionMethod;
+  const paired = sign.pairedSignId;
   const manual = sign.manuallyAdded;
   const dataSource = sign.dataSource;
 

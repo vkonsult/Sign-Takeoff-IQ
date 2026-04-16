@@ -18,11 +18,11 @@ export interface PageStats {
   /** PDF page numbers classified as both floor plan and sign schedule */
   bothPages?: number[];
   /** PDF logical page labels (e.g. "A1.1") indexed by page number (0-based) */
-  pageLabels?: (string | null)[] | null;
+  pageLabels?: (string | null)[];
   /** Top-level PDF outline (bookmark) sections with classified page ranges */
-  outlineSections?: PdfOutlineSection[] | null;
+  outlineSections?: PdfOutlineSection[];
   /** PDF page numbers explicitly rejected by the user from their classification */
-  rejectedPageNumbers?: number[] | null;
+  rejectedPageNumbers?: number[];
   /** Map of page number (as string key) to server-relative path of pre-rendered PNG image (resolved server-side; not exposed to clients) */
   pageImagePaths?: PageStatsPageImagePaths;
 }

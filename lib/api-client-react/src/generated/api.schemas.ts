@@ -108,11 +108,11 @@ export interface PageStats {
   /** PDF page numbers classified as both floor plan and sign schedule */
   bothPages?: number[];
   /** PDF logical page labels (e.g. "A1.1") indexed by page number (0-based) */
-  pageLabels?: (string | null)[] | null;
+  pageLabels?: (string | null)[];
   /** Top-level PDF outline (bookmark) sections with classified page ranges */
-  outlineSections?: PdfOutlineSection[] | null;
+  outlineSections?: PdfOutlineSection[];
   /** PDF page numbers explicitly rejected by the user from their classification */
-  rejectedPageNumbers?: number[] | null;
+  rejectedPageNumbers?: number[];
   /** Map of page number (as string key) to server-relative path of pre-rendered PNG image (resolved server-side; not exposed to clients) */
   pageImagePaths?: PageStatsPageImagePaths;
 }
@@ -127,7 +127,37 @@ export interface JobFile {
 }
 
 /**
- * Data source classification
+ * How the floor-plan placement coordinates were determined
+ */
+export type ExtractedSignPlacementSource =
+  | (typeof ExtractedSignPlacementSource)[keyof typeof ExtractedSignPlacementSource]
+  | null;
+
+export const ExtractedSignPlacementSource = {
+  word_match: "word_match",
+  text_match: "text_match",
+  gemini_vision: "gemini_vision",
+  user_confirmed: "user_confirmed",
+  manual: "manual",
+  user_drag: "user_drag",
+} as const;
+
+/**
+ * How this sign row was extracted (text-pass, image-pass, raw-text, or manually added)
+ */
+export type ExtractedSignExtractionMethod =
+  | (typeof ExtractedSignExtractionMethod)[keyof typeof ExtractedSignExtractionMethod]
+  | null;
+
+export const ExtractedSignExtractionMethod = {
+  text: "text",
+  raw_text: "raw_text",
+  image: "image",
+  manual: "manual",
+} as const;
+
+/**
+ * Origin of the sign data (pdf text extraction, AI vision pass, or manual entry)
  */
 export type ExtractedSignDataSource =
   | (typeof ExtractedSignDataSource)[keyof typeof ExtractedSignDataSource]
@@ -139,10 +169,15 @@ export const ExtractedSignDataSource = {
   manual: "manual",
 } as const;
 
+/**
+ * Raw JSON payload returned by the AI extraction model
+ */
+export type ExtractedSignRawJson = { [key: string]: unknown } | null;
+
 export interface ExtractedSign {
   id: string;
-  /** Job this sign belongs to */
-  jobId?: string | null;
+  /** ID of the job this sign belongs to */
+  jobId: string;
   jobFileId?: string | null;
   sheetNumber?: string | null;
   detailReference?: string | null;
@@ -157,56 +192,105 @@ export interface ExtractedSign {
   materials?: string | null;
   messageContent?: string | null;
   notes?: string | null;
+  /** PDF page number (1-indexed) where this sign is placed on the floor plan */
+  pageNumber?: number | null;
+  /**
+   * Normalized X position (0–1) of the sign marker on the page
+   * @minimum 0
+   * @maximum 1
+   */
+  xPos?: number | null;
+  /**
+   * Normalized Y position (0–1) of the sign marker on the page
+   * @minimum 0
+   * @maximum 1
+   */
+  yPos?: number | null;
+  /** How the floor-plan placement coordinates were determined */
+  placementSource?: ExtractedSignPlacementSource;
+  /** How this sign row was extracted (text-pass, image-pass, raw-text, or manually added) */
+  extractionMethod?: ExtractedSignExtractionMethod;
+  /** ID of the complementary sign row in the paired text/image match */
+  pairedSignId?: string | null;
+  /** True if this sign is flagged as ADA-required */
+  adaRequired: boolean;
+  /** True if this sign was manually placed by the user (not AI-extracted) */
+  manuallyAdded: boolean;
+  /** True if the user has manually edited this sign; protected from AI re-run overwrites */
+  manuallyEdited: boolean | null;
+  /** True if the user has saved/confirmed this sign entry; preserved across re-extractions */
+  userVerified: boolean;
+  /** True if this sign has been soft-deleted (hidden from the main sign list) */
+  hidden: boolean;
+  /** Reason a sign is flagged as an exception (e.g. locked out of normal processing) */
+  exceptionReason?: string | null;
+  /** AI-detected bounding box X coordinate (normalized 0–1) */
+  aiBboxX?: number | null;
+  /** AI-detected bounding box Y coordinate (normalized 0–1) */
+  aiBboxY?: number | null;
+  /** AI-detected bounding box width (normalized 0–1) */
+  aiBboxW?: number | null;
+  /** AI-detected bounding box height (normalized 0–1) */
+  aiBboxH?: number | null;
+  /** True if AI bounding box data is available for this sign */
+  aiBbox: boolean;
+  /** Origin of the sign data (pdf text extraction, AI vision pass, or manual entry) */
+  dataSource?: ExtractedSignDataSource;
+  /** Raw JSON payload returned by the AI extraction model */
+  rawJson?: ExtractedSignRawJson;
   /**
    * @minimum 0
    * @maximum 1
    */
   confidenceScore: number;
   reviewFlag: boolean;
-  /** Reason this sign was flagged as an exception (set when reviewFlag is true and AI found an exception condition) */
-  exceptionReason?: string | null;
-  /** How this sign was extracted: "text" for text-based extraction, "image" for visual/AI bbox detection */
-  extractionMethod?: string | null;
-  /** ID of the paired text sign when this is the image-only counterpart (or vice versa) */
-  pairedSignId?: string | null;
-  /** True if this sign was manually placed by the user (not AI-extracted) */
-  manuallyAdded?: boolean;
-  /** True if the user has manually edited this sign; protected from AI re-run overwrites */
-  manuallyEdited?: boolean | null;
-  /** True if the user has saved/confirmed this sign entry; preserved across re-extractions */
-  userVerified?: boolean;
-  /** PDF page number where this sign is placed (1-indexed); null means unplaced */
-  pageNumber?: number | null;
-  /** Horizontal position on the page (0–1 fraction) */
-  xPos?: number | null;
-  /** Vertical position on the page (0–1 fraction) */
-  yPos?: number | null;
-  /** How the sign was placed: "pdf" = auto, "ai" = AI-detected, "manual" = user-placed */
-  placementSource?: string | null;
-  /** Data source classification */
-  dataSource?: ExtractedSignDataSource;
-  /** Whether AI bounding box was used for placement */
-  aiBbox?: boolean | null;
-  /** AI bounding box X coordinate (fraction) */
-  aiBboxX?: number | null;
-  /** AI bounding box Y coordinate (fraction) */
-  aiBboxY?: number | null;
-  /** AI bounding box width (fraction) */
-  aiBboxW?: number | null;
-  /** AI bounding box height (fraction) */
-  aiBboxH?: number | null;
   createdAt: string;
+}
+
+/**
+ * User identity snapshot recorded on a job activity log entry
+ */
+export interface ActivityLogActor {
+  /** Timestamp of the activity */
+  at: string;
+  /** Display name of the user who performed the action */
+  userName?: string;
+  /** Initials of the user who performed the action */
+  userInitials?: string;
+}
+
+/**
+ * Combined Gemini API token usage and estimated cost for a job
+ */
+export interface ProcessingCost {
+  /** Total input tokens consumed (text-pass + image-pass) */
+  inputTokens: number;
+  /** Total output tokens consumed (text-pass + image-pass) */
+  outputTokens: number;
+  /** Estimated USD cost based on Gemini pricing */
+  totalCost: number;
 }
 
 export interface JobDetails {
   job: JobSummary;
   files: JobFile[];
+  /** Visible (non-hidden) signs for display in the sign list */
   extractedSigns: ExtractedSign[];
+  /** Soft-deleted signs hidden from the main sign list */
+  hiddenSigns: ExtractedSign[];
+  /** All signs with floor-plan coordinates (used for map marker overlays) */
+  markerSigns: ExtractedSign[];
   totalSigns: number;
   flaggedCount: number;
   highConfidenceCount: number;
   plaqueCount: number;
   occupantLoadCount: number;
+  /** User and timestamp of the most recent extraction scan */
+  lastScan?: ActivityLogActor | null;
+  /** User and timestamp of the most recent sign edit */
+  lastEdit?: ActivityLogActor | null;
+  /** Token usage and cost summary for the job */
+  processingCost?: ProcessingCost;
 }
 
 export type KnowledgeIngestRequestCollection =

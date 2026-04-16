@@ -541,20 +541,17 @@ components:
           description: PDF page numbers classified as both floor plan and sign schedule
         pageLabels:
           type: array
-          nullable: true
           items:
             type: string
             nullable: true
           description: PDF logical page labels (e.g. "A1.1") indexed by page number (0-based)
         outlineSections:
           type: array
-          nullable: true
           items:
             $ref: '#/components/schemas/PdfOutlineSection'
           description: Top-level PDF outline (bookmark) sections with classified page ranges
         rejectedPageNumbers:
           type: array
-          nullable: true
           items:
             type: integer
           description: PDF page numbers explicitly rejected by the user from their classification
@@ -601,8 +598,7 @@ components:
         jobId:
           type: string
           format: uuid
-          nullable: true
-          description: Job this sign belongs to
+          description: ID of the job this sign belongs to
         jobFileId:
           type: string
           format: uuid
@@ -646,25 +642,40 @@ components:
         notes:
           type: string
           nullable: true
-        confidenceScore:
+        pageNumber:
+          type: integer
+          nullable: true
+          description: PDF page number (1-indexed) where this sign is placed on the floor plan
+        xPos:
           type: number
           minimum: 0
           maximum: 1
-        reviewFlag:
-          type: boolean
-        exceptionReason:
+          nullable: true
+          description: Normalized X position (0–1) of the sign marker on the page
+        yPos:
+          type: number
+          minimum: 0
+          maximum: 1
+          nullable: true
+          description: Normalized Y position (0–1) of the sign marker on the page
+        placementSource:
           type: string
           nullable: true
-          description: Reason this sign was flagged as an exception (set when reviewFlag is true and AI found an exception condition)
+          enum: [word_match, text_match, gemini_vision, user_confirmed, manual, user_drag]
+          description: How the floor-plan placement coordinates were determined
         extractionMethod:
           type: string
           nullable: true
-          description: 'How this sign was extracted: "text" for text-based extraction, "image" for visual/AI bbox detection'
+          enum: [text, raw_text, image, manual]
+          description: How this sign row was extracted (text-pass, image-pass, raw-text, or manually added)
         pairedSignId:
           type: string
           format: uuid
           nullable: true
-          description: ID of the paired text sign when this is the image-only counterpart (or vice versa)
+          description: ID of the complementary sign row in the paired text/image match
+        adaRequired:
+          type: boolean
+          description: True if this sign is flagged as ADA-required
         manuallyAdded:
           type: boolean
           description: True if this sign was manually placed by the user (not AI-extracted)
@@ -675,55 +686,98 @@ components:
         userVerified:
           type: boolean
           description: True if the user has saved/confirmed this sign entry; preserved across re-extractions
-        pageNumber:
-          type: integer
-          nullable: true
-          description: PDF page number where this sign is placed (1-indexed); null means unplaced
-        xPos:
-          type: number
-          nullable: true
-          description: Horizontal position on the page (0–1 fraction)
-        yPos:
-          type: number
-          nullable: true
-          description: Vertical position on the page (0–1 fraction)
-        placementSource:
-          type: string
-          nullable: true
-          description: 'How the sign was placed: "pdf" = auto, "ai" = AI-detected, "manual" = user-placed'
-        dataSource:
-          type: string
-          enum: [pdf, ai, manual]
-          nullable: true
-          description: Data source classification
-        aiBbox:
+        hidden:
           type: boolean
+          description: True if this sign has been soft-deleted (hidden from the main sign list)
+        exceptionReason:
+          type: string
           nullable: true
-          description: Whether AI bounding box was used for placement
+          description: Reason a sign is flagged as an exception (e.g. locked out of normal processing)
         aiBboxX:
           type: number
           nullable: true
-          description: AI bounding box X coordinate (fraction)
+          description: AI-detected bounding box X coordinate (normalized 0–1)
         aiBboxY:
           type: number
           nullable: true
-          description: AI bounding box Y coordinate (fraction)
+          description: AI-detected bounding box Y coordinate (normalized 0–1)
         aiBboxW:
           type: number
           nullable: true
-          description: AI bounding box width (fraction)
+          description: AI-detected bounding box width (normalized 0–1)
         aiBboxH:
           type: number
           nullable: true
-          description: AI bounding box height (fraction)
+          description: AI-detected bounding box height (normalized 0–1)
+        aiBbox:
+          type: boolean
+          description: True if AI bounding box data is available for this sign
+        dataSource:
+          type: string
+          nullable: true
+          enum: [pdf, ai, manual]
+          description: Origin of the sign data (pdf text extraction, AI vision pass, or manual entry)
+        rawJson:
+          type: object
+          nullable: true
+          additionalProperties: true
+          description: Raw JSON payload returned by the AI extraction model
+        confidenceScore:
+          type: number
+          minimum: 0
+          maximum: 1
+        reviewFlag:
+          type: boolean
         createdAt:
           type: string
           format: date-time
       required:
         - id
+        - jobId
         - confidenceScore
         - reviewFlag
+        - manuallyAdded
+        - manuallyEdited
+        - userVerified
+        - hidden
+        - adaRequired
+        - aiBbox
         - createdAt
+
+    ActivityLogActor:
+      type: object
+      description: User identity snapshot recorded on a job activity log entry
+      properties:
+        at:
+          type: string
+          format: date-time
+          description: Timestamp of the activity
+        userName:
+          type: string
+          description: Display name of the user who performed the action
+        userInitials:
+          type: string
+          description: Initials of the user who performed the action
+      required:
+        - at
+
+    ProcessingCost:
+      type: object
+      description: Combined Gemini API token usage and estimated cost for a job
+      properties:
+        inputTokens:
+          type: integer
+          description: Total input tokens consumed (text-pass + image-pass)
+        outputTokens:
+          type: integer
+          description: Total output tokens consumed (text-pass + image-pass)
+        totalCost:
+          type: number
+          description: Estimated USD cost based on Gemini pricing
+      required:
+        - inputTokens
+        - outputTokens
+        - totalCost
 
     JobDetails:
       type: object
@@ -738,6 +792,17 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/ExtractedSign"
+          description: Visible (non-hidden) signs for display in the sign list
+        hiddenSigns:
+          type: array
+          items:
+            $ref: "#/components/schemas/ExtractedSign"
+          description: Soft-deleted signs hidden from the main sign list
+        markerSigns:
+          type: array
+          items:
+            $ref: "#/components/schemas/ExtractedSign"
+          description: All signs with floor-plan coordinates (used for map marker overlays)
         totalSigns:
           type: integer
         flaggedCount:
@@ -748,10 +813,23 @@ components:
           type: integer
         occupantLoadCount:
           type: integer
+        lastScan:
+          $ref: "#/components/schemas/ActivityLogActor"
+          nullable: true
+          description: User and timestamp of the most recent extraction scan
+        lastEdit:
+          $ref: "#/components/schemas/ActivityLogActor"
+          nullable: true
+          description: User and timestamp of the most recent sign edit
+        processingCost:
+          $ref: "#/components/schemas/ProcessingCost"
+          description: Token usage and cost summary for the job
       required:
         - job
         - files
         - extractedSigns
+        - hiddenSigns
+        - markerSigns
         - totalSigns
         - flaggedCount
         - highConfidenceCount

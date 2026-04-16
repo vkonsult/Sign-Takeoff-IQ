@@ -7,7 +7,7 @@
  */
 
 /**
- * Data source classification
+ * Origin of the sign data (pdf text extraction, AI vision pass, or manual entry)
  */
 export type ExtractedSignDataSource =
   | (typeof ExtractedSignDataSource)[keyof typeof ExtractedSignDataSource]

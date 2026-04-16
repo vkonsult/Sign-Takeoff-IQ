@@ -5,17 +5,30 @@
  * Sign Takeoff Portal API
  * OpenAPI spec version: 0.1.0
  */
+import type { ActivityLogActor } from "./activityLogActor";
 import type { ExtractedSign } from "./extractedSign";
 import type { JobFile } from "./jobFile";
 import type { JobSummary } from "./jobSummary";
+import type { ProcessingCost } from "./processingCost";
 
 export interface JobDetails {
   job: JobSummary;
   files: JobFile[];
+  /** Visible (non-hidden) signs for display in the sign list */
   extractedSigns: ExtractedSign[];
+  /** Soft-deleted signs hidden from the main sign list */
+  hiddenSigns: ExtractedSign[];
+  /** All signs with floor-plan coordinates (used for map marker overlays) */
+  markerSigns: ExtractedSign[];
   totalSigns: number;
   flaggedCount: number;
   highConfidenceCount: number;
   plaqueCount: number;
   occupantLoadCount: number;
+  /** User and timestamp of the most recent extraction scan */
+  lastScan?: ActivityLogActor | null;
+  /** User and timestamp of the most recent sign edit */
+  lastEdit?: ActivityLogActor | null;
+  /** Token usage and cost summary for the job */
+  processingCost?: ProcessingCost;
 }

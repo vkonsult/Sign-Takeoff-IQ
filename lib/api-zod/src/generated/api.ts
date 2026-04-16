@@ -46,8 +46,32 @@ export const GetJobParams = zod.object({
   jobId: zod.coerce.string().uuid(),
 });
 
+export const getJobResponseExtractedSignsItemXPosMin = 0;
+export const getJobResponseExtractedSignsItemXPosMax = 1;
+
+export const getJobResponseExtractedSignsItemYPosMin = 0;
+export const getJobResponseExtractedSignsItemYPosMax = 1;
+
 export const getJobResponseExtractedSignsItemConfidenceScoreMin = 0;
 export const getJobResponseExtractedSignsItemConfidenceScoreMax = 1;
+
+export const getJobResponseHiddenSignsItemXPosMin = 0;
+export const getJobResponseHiddenSignsItemXPosMax = 1;
+
+export const getJobResponseHiddenSignsItemYPosMin = 0;
+export const getJobResponseHiddenSignsItemYPosMax = 1;
+
+export const getJobResponseHiddenSignsItemConfidenceScoreMin = 0;
+export const getJobResponseHiddenSignsItemConfidenceScoreMax = 1;
+
+export const getJobResponseMarkerSignsItemXPosMin = 0;
+export const getJobResponseMarkerSignsItemXPosMax = 1;
+
+export const getJobResponseMarkerSignsItemYPosMin = 0;
+export const getJobResponseMarkerSignsItemYPosMax = 1;
+
+export const getJobResponseMarkerSignsItemConfidenceScoreMin = 0;
+export const getJobResponseMarkerSignsItemConfidenceScoreMax = 1;
 
 export const GetJobResponse = zod.object({
   job: zod.object({
@@ -124,7 +148,7 @@ export const GetJobResponse = zod.object({
             ),
           pageLabels: zod
             .array(zod.string().nullable())
-            .nullish()
+            .optional()
             .describe(
               'PDF logical page labels (e.g. \"A1.1\") indexed by page number (0-based)',
             ),
@@ -144,13 +168,13 @@ export const GetJobResponse = zod.object({
                   .describe("Classified type of this outline section"),
               }),
             )
-            .nullish()
+            .optional()
             .describe(
               "Top-level PDF outline (bookmark) sections with classified page ranges",
             ),
           rejectedPageNumbers: zod
             .array(zod.number())
-            .nullish()
+            .optional()
             .describe(
               "PDF page numbers explicitly rejected by the user from their classification",
             ),
@@ -166,118 +190,463 @@ export const GetJobResponse = zod.object({
       createdAt: zod.date(),
     }),
   ),
-  extractedSigns: zod.array(
-    zod.object({
-      id: zod.string().uuid(),
-      jobId: zod.string().uuid().nullish().describe("Job this sign belongs to"),
-      jobFileId: zod.string().uuid().nullish(),
-      sheetNumber: zod.string().nullish(),
-      detailReference: zod.string().nullish(),
-      signType: zod.string().nullish(),
-      signIdentifier: zod.string().nullish(),
-      quantity: zod.number().nullish(),
-      location: zod.string().nullish(),
-      dimensions: zod.string().nullish(),
-      mountingType: zod.string().nullish(),
-      finishColor: zod.string().nullish(),
-      illumination: zod.string().nullish(),
-      materials: zod.string().nullish(),
-      messageContent: zod.string().nullish(),
-      notes: zod.string().nullish(),
-      confidenceScore: zod
-        .number()
-        .min(getJobResponseExtractedSignsItemConfidenceScoreMin)
-        .max(getJobResponseExtractedSignsItemConfidenceScoreMax),
-      reviewFlag: zod.boolean(),
-      exceptionReason: zod
-        .string()
-        .nullish()
-        .describe(
-          "Reason this sign was flagged as an exception (set when reviewFlag is true and AI found an exception condition)",
-        ),
-      extractionMethod: zod
-        .string()
-        .nullish()
-        .describe(
-          'How this sign was extracted: \"text\" for text-based extraction, \"image\" for visual\/AI bbox detection',
-        ),
-      pairedSignId: zod
-        .string()
-        .uuid()
-        .nullish()
-        .describe(
-          "ID of the paired text sign when this is the image-only counterpart (or vice versa)",
-        ),
-      manuallyAdded: zod
-        .boolean()
-        .optional()
-        .describe(
-          "True if this sign was manually placed by the user (not AI-extracted)",
-        ),
-      manuallyEdited: zod
-        .boolean()
-        .nullish()
-        .describe(
-          "True if the user has manually edited this sign; protected from AI re-run overwrites",
-        ),
-      userVerified: zod
-        .boolean()
-        .optional()
-        .describe(
-          "True if the user has saved\/confirmed this sign entry; preserved across re-extractions",
-        ),
-      pageNumber: zod
-        .number()
-        .nullish()
-        .describe(
-          "PDF page number where this sign is placed (1-indexed); null means unplaced",
-        ),
-      xPos: zod
-        .number()
-        .nullish()
-        .describe("Horizontal position on the page (0–1 fraction)"),
-      yPos: zod
-        .number()
-        .nullish()
-        .describe("Vertical position on the page (0–1 fraction)"),
-      placementSource: zod
-        .string()
-        .nullish()
-        .describe(
-          'How the sign was placed: \"pdf\" = auto, \"ai\" = AI-detected, \"manual\" = user-placed',
-        ),
-      dataSource: zod
-        .enum(["pdf", "ai", "manual"])
-        .nullish()
-        .describe("Data source classification"),
-      aiBbox: zod
-        .boolean()
-        .nullish()
-        .describe("Whether AI bounding box was used for placement"),
-      aiBboxX: zod
-        .number()
-        .nullish()
-        .describe("AI bounding box X coordinate (fraction)"),
-      aiBboxY: zod
-        .number()
-        .nullish()
-        .describe("AI bounding box Y coordinate (fraction)"),
-      aiBboxW: zod
-        .number()
-        .nullish()
-        .describe("AI bounding box width (fraction)"),
-      aiBboxH: zod
-        .number()
-        .nullish()
-        .describe("AI bounding box height (fraction)"),
-      createdAt: zod.date(),
-    }),
-  ),
+  extractedSigns: zod
+    .array(
+      zod.object({
+        id: zod.string().uuid(),
+        jobId: zod
+          .string()
+          .uuid()
+          .describe("ID of the job this sign belongs to"),
+        jobFileId: zod.string().uuid().nullish(),
+        sheetNumber: zod.string().nullish(),
+        detailReference: zod.string().nullish(),
+        signType: zod.string().nullish(),
+        signIdentifier: zod.string().nullish(),
+        quantity: zod.number().nullish(),
+        location: zod.string().nullish(),
+        dimensions: zod.string().nullish(),
+        mountingType: zod.string().nullish(),
+        finishColor: zod.string().nullish(),
+        illumination: zod.string().nullish(),
+        materials: zod.string().nullish(),
+        messageContent: zod.string().nullish(),
+        notes: zod.string().nullish(),
+        pageNumber: zod
+          .number()
+          .nullish()
+          .describe(
+            "PDF page number (1-indexed) where this sign is placed on the floor plan",
+          ),
+        xPos: zod
+          .number()
+          .min(getJobResponseExtractedSignsItemXPosMin)
+          .max(getJobResponseExtractedSignsItemXPosMax)
+          .nullish()
+          .describe(
+            "Normalized X position (0–1) of the sign marker on the page",
+          ),
+        yPos: zod
+          .number()
+          .min(getJobResponseExtractedSignsItemYPosMin)
+          .max(getJobResponseExtractedSignsItemYPosMax)
+          .nullish()
+          .describe(
+            "Normalized Y position (0–1) of the sign marker on the page",
+          ),
+        placementSource: zod
+          .enum([
+            "word_match",
+            "text_match",
+            "gemini_vision",
+            "user_confirmed",
+            "manual",
+            "user_drag",
+          ])
+          .nullish()
+          .describe("How the floor-plan placement coordinates were determined"),
+        extractionMethod: zod
+          .enum(["text", "raw_text", "image", "manual"])
+          .nullish()
+          .describe(
+            "How this sign row was extracted (text-pass, image-pass, raw-text, or manually added)",
+          ),
+        pairedSignId: zod
+          .string()
+          .uuid()
+          .nullish()
+          .describe(
+            "ID of the complementary sign row in the paired text\/image match",
+          ),
+        adaRequired: zod
+          .boolean()
+          .describe("True if this sign is flagged as ADA-required"),
+        manuallyAdded: zod
+          .boolean()
+          .describe(
+            "True if this sign was manually placed by the user (not AI-extracted)",
+          ),
+        manuallyEdited: zod
+          .boolean()
+          .nullable()
+          .describe(
+            "True if the user has manually edited this sign; protected from AI re-run overwrites",
+          ),
+        userVerified: zod
+          .boolean()
+          .describe(
+            "True if the user has saved\/confirmed this sign entry; preserved across re-extractions",
+          ),
+        hidden: zod
+          .boolean()
+          .describe(
+            "True if this sign has been soft-deleted (hidden from the main sign list)",
+          ),
+        exceptionReason: zod
+          .string()
+          .nullish()
+          .describe(
+            "Reason a sign is flagged as an exception (e.g. locked out of normal processing)",
+          ),
+        aiBboxX: zod
+          .number()
+          .nullish()
+          .describe("AI-detected bounding box X coordinate (normalized 0–1)"),
+        aiBboxY: zod
+          .number()
+          .nullish()
+          .describe("AI-detected bounding box Y coordinate (normalized 0–1)"),
+        aiBboxW: zod
+          .number()
+          .nullish()
+          .describe("AI-detected bounding box width (normalized 0–1)"),
+        aiBboxH: zod
+          .number()
+          .nullish()
+          .describe("AI-detected bounding box height (normalized 0–1)"),
+        aiBbox: zod
+          .boolean()
+          .describe("True if AI bounding box data is available for this sign"),
+        dataSource: zod
+          .enum(["pdf", "ai", "manual"])
+          .nullish()
+          .describe(
+            "Origin of the sign data (pdf text extraction, AI vision pass, or manual entry)",
+          ),
+        rawJson: zod
+          .record(zod.string(), zod.unknown())
+          .nullish()
+          .describe("Raw JSON payload returned by the AI extraction model"),
+        confidenceScore: zod
+          .number()
+          .min(getJobResponseExtractedSignsItemConfidenceScoreMin)
+          .max(getJobResponseExtractedSignsItemConfidenceScoreMax),
+        reviewFlag: zod.boolean(),
+        createdAt: zod.date(),
+      }),
+    )
+    .describe("Visible (non-hidden) signs for display in the sign list"),
+  hiddenSigns: zod
+    .array(
+      zod.object({
+        id: zod.string().uuid(),
+        jobId: zod
+          .string()
+          .uuid()
+          .describe("ID of the job this sign belongs to"),
+        jobFileId: zod.string().uuid().nullish(),
+        sheetNumber: zod.string().nullish(),
+        detailReference: zod.string().nullish(),
+        signType: zod.string().nullish(),
+        signIdentifier: zod.string().nullish(),
+        quantity: zod.number().nullish(),
+        location: zod.string().nullish(),
+        dimensions: zod.string().nullish(),
+        mountingType: zod.string().nullish(),
+        finishColor: zod.string().nullish(),
+        illumination: zod.string().nullish(),
+        materials: zod.string().nullish(),
+        messageContent: zod.string().nullish(),
+        notes: zod.string().nullish(),
+        pageNumber: zod
+          .number()
+          .nullish()
+          .describe(
+            "PDF page number (1-indexed) where this sign is placed on the floor plan",
+          ),
+        xPos: zod
+          .number()
+          .min(getJobResponseHiddenSignsItemXPosMin)
+          .max(getJobResponseHiddenSignsItemXPosMax)
+          .nullish()
+          .describe(
+            "Normalized X position (0–1) of the sign marker on the page",
+          ),
+        yPos: zod
+          .number()
+          .min(getJobResponseHiddenSignsItemYPosMin)
+          .max(getJobResponseHiddenSignsItemYPosMax)
+          .nullish()
+          .describe(
+            "Normalized Y position (0–1) of the sign marker on the page",
+          ),
+        placementSource: zod
+          .enum([
+            "word_match",
+            "text_match",
+            "gemini_vision",
+            "user_confirmed",
+            "manual",
+            "user_drag",
+          ])
+          .nullish()
+          .describe("How the floor-plan placement coordinates were determined"),
+        extractionMethod: zod
+          .enum(["text", "raw_text", "image", "manual"])
+          .nullish()
+          .describe(
+            "How this sign row was extracted (text-pass, image-pass, raw-text, or manually added)",
+          ),
+        pairedSignId: zod
+          .string()
+          .uuid()
+          .nullish()
+          .describe(
+            "ID of the complementary sign row in the paired text\/image match",
+          ),
+        adaRequired: zod
+          .boolean()
+          .describe("True if this sign is flagged as ADA-required"),
+        manuallyAdded: zod
+          .boolean()
+          .describe(
+            "True if this sign was manually placed by the user (not AI-extracted)",
+          ),
+        manuallyEdited: zod
+          .boolean()
+          .nullable()
+          .describe(
+            "True if the user has manually edited this sign; protected from AI re-run overwrites",
+          ),
+        userVerified: zod
+          .boolean()
+          .describe(
+            "True if the user has saved\/confirmed this sign entry; preserved across re-extractions",
+          ),
+        hidden: zod
+          .boolean()
+          .describe(
+            "True if this sign has been soft-deleted (hidden from the main sign list)",
+          ),
+        exceptionReason: zod
+          .string()
+          .nullish()
+          .describe(
+            "Reason a sign is flagged as an exception (e.g. locked out of normal processing)",
+          ),
+        aiBboxX: zod
+          .number()
+          .nullish()
+          .describe("AI-detected bounding box X coordinate (normalized 0–1)"),
+        aiBboxY: zod
+          .number()
+          .nullish()
+          .describe("AI-detected bounding box Y coordinate (normalized 0–1)"),
+        aiBboxW: zod
+          .number()
+          .nullish()
+          .describe("AI-detected bounding box width (normalized 0–1)"),
+        aiBboxH: zod
+          .number()
+          .nullish()
+          .describe("AI-detected bounding box height (normalized 0–1)"),
+        aiBbox: zod
+          .boolean()
+          .describe("True if AI bounding box data is available for this sign"),
+        dataSource: zod
+          .enum(["pdf", "ai", "manual"])
+          .nullish()
+          .describe(
+            "Origin of the sign data (pdf text extraction, AI vision pass, or manual entry)",
+          ),
+        rawJson: zod
+          .record(zod.string(), zod.unknown())
+          .nullish()
+          .describe("Raw JSON payload returned by the AI extraction model"),
+        confidenceScore: zod
+          .number()
+          .min(getJobResponseHiddenSignsItemConfidenceScoreMin)
+          .max(getJobResponseHiddenSignsItemConfidenceScoreMax),
+        reviewFlag: zod.boolean(),
+        createdAt: zod.date(),
+      }),
+    )
+    .describe("Soft-deleted signs hidden from the main sign list"),
+  markerSigns: zod
+    .array(
+      zod.object({
+        id: zod.string().uuid(),
+        jobId: zod
+          .string()
+          .uuid()
+          .describe("ID of the job this sign belongs to"),
+        jobFileId: zod.string().uuid().nullish(),
+        sheetNumber: zod.string().nullish(),
+        detailReference: zod.string().nullish(),
+        signType: zod.string().nullish(),
+        signIdentifier: zod.string().nullish(),
+        quantity: zod.number().nullish(),
+        location: zod.string().nullish(),
+        dimensions: zod.string().nullish(),
+        mountingType: zod.string().nullish(),
+        finishColor: zod.string().nullish(),
+        illumination: zod.string().nullish(),
+        materials: zod.string().nullish(),
+        messageContent: zod.string().nullish(),
+        notes: zod.string().nullish(),
+        pageNumber: zod
+          .number()
+          .nullish()
+          .describe(
+            "PDF page number (1-indexed) where this sign is placed on the floor plan",
+          ),
+        xPos: zod
+          .number()
+          .min(getJobResponseMarkerSignsItemXPosMin)
+          .max(getJobResponseMarkerSignsItemXPosMax)
+          .nullish()
+          .describe(
+            "Normalized X position (0–1) of the sign marker on the page",
+          ),
+        yPos: zod
+          .number()
+          .min(getJobResponseMarkerSignsItemYPosMin)
+          .max(getJobResponseMarkerSignsItemYPosMax)
+          .nullish()
+          .describe(
+            "Normalized Y position (0–1) of the sign marker on the page",
+          ),
+        placementSource: zod
+          .enum([
+            "word_match",
+            "text_match",
+            "gemini_vision",
+            "user_confirmed",
+            "manual",
+            "user_drag",
+          ])
+          .nullish()
+          .describe("How the floor-plan placement coordinates were determined"),
+        extractionMethod: zod
+          .enum(["text", "raw_text", "image", "manual"])
+          .nullish()
+          .describe(
+            "How this sign row was extracted (text-pass, image-pass, raw-text, or manually added)",
+          ),
+        pairedSignId: zod
+          .string()
+          .uuid()
+          .nullish()
+          .describe(
+            "ID of the complementary sign row in the paired text\/image match",
+          ),
+        adaRequired: zod
+          .boolean()
+          .describe("True if this sign is flagged as ADA-required"),
+        manuallyAdded: zod
+          .boolean()
+          .describe(
+            "True if this sign was manually placed by the user (not AI-extracted)",
+          ),
+        manuallyEdited: zod
+          .boolean()
+          .nullable()
+          .describe(
+            "True if the user has manually edited this sign; protected from AI re-run overwrites",
+          ),
+        userVerified: zod
+          .boolean()
+          .describe(
+            "True if the user has saved\/confirmed this sign entry; preserved across re-extractions",
+          ),
+        hidden: zod
+          .boolean()
+          .describe(
+            "True if this sign has been soft-deleted (hidden from the main sign list)",
+          ),
+        exceptionReason: zod
+          .string()
+          .nullish()
+          .describe(
+            "Reason a sign is flagged as an exception (e.g. locked out of normal processing)",
+          ),
+        aiBboxX: zod
+          .number()
+          .nullish()
+          .describe("AI-detected bounding box X coordinate (normalized 0–1)"),
+        aiBboxY: zod
+          .number()
+          .nullish()
+          .describe("AI-detected bounding box Y coordinate (normalized 0–1)"),
+        aiBboxW: zod
+          .number()
+          .nullish()
+          .describe("AI-detected bounding box width (normalized 0–1)"),
+        aiBboxH: zod
+          .number()
+          .nullish()
+          .describe("AI-detected bounding box height (normalized 0–1)"),
+        aiBbox: zod
+          .boolean()
+          .describe("True if AI bounding box data is available for this sign"),
+        dataSource: zod
+          .enum(["pdf", "ai", "manual"])
+          .nullish()
+          .describe(
+            "Origin of the sign data (pdf text extraction, AI vision pass, or manual entry)",
+          ),
+        rawJson: zod
+          .record(zod.string(), zod.unknown())
+          .nullish()
+          .describe("Raw JSON payload returned by the AI extraction model"),
+        confidenceScore: zod
+          .number()
+          .min(getJobResponseMarkerSignsItemConfidenceScoreMin)
+          .max(getJobResponseMarkerSignsItemConfidenceScoreMax),
+        reviewFlag: zod.boolean(),
+        createdAt: zod.date(),
+      }),
+    )
+    .describe(
+      "All signs with floor-plan coordinates (used for map marker overlays)",
+    ),
   totalSigns: zod.number(),
   flaggedCount: zod.number(),
   highConfidenceCount: zod.number(),
   plaqueCount: zod.number(),
   occupantLoadCount: zod.number(),
+  lastScan: zod
+    .object({
+      at: zod.date().describe("Timestamp of the activity"),
+      userName: zod
+        .string()
+        .optional()
+        .describe("Display name of the user who performed the action"),
+      userInitials: zod
+        .string()
+        .optional()
+        .describe("Initials of the user who performed the action"),
+    })
+    .nullish()
+    .describe("User and timestamp of the most recent extraction scan"),
+  lastEdit: zod
+    .object({
+      at: zod.date().describe("Timestamp of the activity"),
+      userName: zod
+        .string()
+        .optional()
+        .describe("Display name of the user who performed the action"),
+      userInitials: zod
+        .string()
+        .optional()
+        .describe("Initials of the user who performed the action"),
+    })
+    .nullish()
+    .describe("User and timestamp of the most recent sign edit"),
+  processingCost: zod
+    .object({
+      inputTokens: zod
+        .number()
+        .describe("Total input tokens consumed (text-pass + image-pass)"),
+      outputTokens: zod
+        .number()
+        .describe("Total output tokens consumed (text-pass + image-pass)"),
+      totalCost: zod
+        .number()
+        .describe("Estimated USD cost based on Gemini pricing"),
+    })
+    .optional()
+    .describe("Token usage and cost summary for the job"),
 });
 
 /**
