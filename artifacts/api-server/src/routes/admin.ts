@@ -7,7 +7,7 @@ import {
   jobFilesTable,
   extractedSignsTable,
 } from "@workspace/db";
-import { desc, eq, and, count, max } from "drizzle-orm";
+import { desc, eq, and, count, max, inArray, sql } from "drizzle-orm";
 import { runPdfProcessor } from "../lib/pdf-processor";
 import { requireRole } from "../middlewares/authMiddleware";
 import { createClerkClient } from "@clerk/express";
@@ -545,6 +545,75 @@ router.delete("/admin/users/:membershipId", requireRole("ADMIN"), async (req, re
   } catch (err) {
     req.log.error({ err, membershipId }, "Failed to remove member");
     res.status(500).json({ error: "Failed to remove member" });
+  }
+});
+
+// GET /admin/extraction-report — per-job page classification and marker counts (SUPER_ADMIN)
+router.get("/admin/extraction-report", requireRole("SUPER_ADMIN"), async (req, res) => {
+  try {
+    const jobs = await db
+      .select({ id: jobsTable.id, name: jobsTable.name })
+      .from(jobsTable)
+      .orderBy(jobsTable.name);
+
+    if (jobs.length === 0) {
+      res.json({ report: [] });
+      return;
+    }
+
+    const jobIds = jobs.map((j) => j.id);
+
+    // Aggregate sign stats per job in a single query
+    const signStats = await db
+      .select({
+        jobId: extractedSignsTable.jobId,
+        totalSigns: count(),
+        totalMarkers: sql<number>`cast(count(*) filter (where ${extractedSignsTable.xPos} is not null and ${extractedSignsTable.yPos} is not null) as int)`,
+        flaggedCount: sql<number>`cast(count(*) filter (where ${extractedSignsTable.reviewFlag} = true) as int)`,
+      })
+      .from(extractedSignsTable)
+      .where(inArray(extractedSignsTable.jobId, jobIds))
+      .groupBy(extractedSignsTable.jobId);
+
+    // Collect page stats from all job files
+    const fileRows = await db
+      .select({ jobId: jobFilesTable.jobId, pageStats: jobFilesTable.pageStats })
+      .from(jobFilesTable)
+      .where(inArray(jobFilesTable.jobId, jobIds));
+
+    const signStatsMap = new Map(signStats.map((s) => [s.jobId, s]));
+
+    // Sum page counts across all files per job
+    const pageCountsByJob = new Map<string, { fp: number; ss: number; both: number }>();
+    for (const file of fileRows) {
+      if (!file.jobId || !file.pageStats) continue;
+      const ps = file.pageStats;
+      const cur = pageCountsByJob.get(file.jobId) ?? { fp: 0, ss: 0, both: 0 };
+      cur.fp += ps.floorPlanPages?.length ?? 0;
+      cur.ss += ps.signSchedulePages?.length ?? 0;
+      cur.both += ps.bothPages?.length ?? 0;
+      pageCountsByJob.set(file.jobId, cur);
+    }
+
+    const report = jobs.map((job) => {
+      const stats = signStatsMap.get(job.id);
+      const pages = pageCountsByJob.get(job.id) ?? { fp: 0, ss: 0, both: 0 };
+      return {
+        jobId: job.id,
+        jobName: job.name,
+        floorPlanPageCount: pages.fp,
+        signSchedulePageCount: pages.ss,
+        bothPageCount: pages.both,
+        totalSigns: Number(stats?.totalSigns ?? 0),
+        totalMarkers: Number(stats?.totalMarkers ?? 0),
+        flaggedCount: Number(stats?.flaggedCount ?? 0),
+      };
+    });
+
+    res.json({ report });
+  } catch (err) {
+    req.log.error({ err }, "Failed to generate extraction report");
+    res.status(500).json({ error: "Failed to generate extraction report" });
   }
 });
 
