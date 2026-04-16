@@ -396,7 +396,7 @@ router.post(
         const markers: VerificationMarker[] = [];
 
         for (const row of extractedRows) {
-          if (row.xPos == null || row.yPos == null || row.pageNumber == null) continue;
+          if (row.x_pos == null || row.y_pos == null || row.page_number == null) continue;
 
           let bestScore = 0;
           let bestIdx = -1;
@@ -405,7 +405,7 @@ router.post(
             if (scheduleMatched[i]) continue;
             const s = signsToInsert[i]!;
             const score = matchScore(
-              row.signType, row.location, row.signIdentifier,
+              row.sign_type, row.location, row.sign_identifier,
               s.signType, s.location, s.signIdentifier
             );
             if (score > bestScore) {
@@ -418,11 +418,11 @@ router.post(
           if (isMatched) scheduleMatched[bestIdx] = true;
 
           markers.push({
-            pageNumber: row.pageNumber,
-            xPos: row.xPos,
-            yPos: row.yPos,
-            signIdentifier: row.signIdentifier ?? null,
-            signType: row.signType ?? null,
+            pageNumber: row.page_number,
+            xPos: row.x_pos,
+            yPos: row.y_pos,
+            signIdentifier: row.sign_identifier ?? null,
+            signType: row.sign_type ?? null,
             location: row.location ?? null,
             status: isMatched ? "matched" : "extra",
           });

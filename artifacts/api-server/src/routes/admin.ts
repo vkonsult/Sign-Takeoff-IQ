@@ -175,7 +175,7 @@ const SuperUpdateOrgSchema = z.object({
 });
 
 router.patch("/admin/organizations/:orgId", requireRole("SUPER_ADMIN"), async (req, res) => {
-  const { orgId } = req.params;
+  const { orgId } = req.params as Record<string, string>;
   const parsed = SuperUpdateOrgSchema.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: "Invalid request body", details: parsed.error.issues });
@@ -200,7 +200,7 @@ router.patch("/admin/organizations/:orgId", requireRole("SUPER_ADMIN"), async (r
 
 // GET /admin/organizations/:orgId/members — list members of any org (SUPER_ADMIN)
 router.get("/admin/organizations/:orgId/members", requireRole("SUPER_ADMIN"), async (req, res) => {
-  const { orgId } = req.params;
+  const { orgId } = req.params as Record<string, string>;
   try {
     const members = await db
       .select()
@@ -450,7 +450,7 @@ const UpdateMemberSchema = z.object({
 
 router.patch("/admin/users/:membershipId", requireRole("ADMIN"), async (req, res) => {
   const { organizationId, role: callerRole } = req.authUser!;
-  const { membershipId } = req.params;
+  const { membershipId } = req.params as Record<string, string>;
   if (!organizationId) {
     res.status(400).json({ error: "No organization context" });
     return;
@@ -507,7 +507,7 @@ router.patch("/admin/users/:membershipId", requireRole("ADMIN"), async (req, res
 // Cannot remove SUPER_ADMIN or (for tenant admins) ADMIN accounts, or yourself.
 router.delete("/admin/users/:membershipId", requireRole("ADMIN"), async (req, res) => {
   const { organizationId, userId: callerUserId, role: callerRole } = req.authUser!;
-  const { membershipId } = req.params;
+  const { membershipId } = req.params as Record<string, string>;
   if (!organizationId) {
     res.status(400).json({ error: "No organization context" });
     return;
@@ -659,11 +659,11 @@ router.post("/admin/rescan-all", requireRole("SUPER_ADMIN"), async (req, res) =>
     for (const job of jobs) {
       try {
         await runPdfProcessor(job.id);
-        results.push({ jobId: job.id, name: job.name, status: "succeeded" });
+        results.push({ jobId: job.id, name: job.name ?? "", status: "succeeded" });
         req.log.info({ jobId: job.id, name: job.name }, "[Rescan All] Job succeeded");
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err);
-        results.push({ jobId: job.id, name: job.name, status: "failed", error: errMsg });
+        results.push({ jobId: job.id, name: job.name ?? "", status: "failed", error: errMsg });
         req.log.error({ jobId: job.id, name: job.name, err }, "[Rescan All] Job failed");
         // Ensure the job is not left stuck in 'processing' if runPdfProcessor threw
         try {

@@ -50,6 +50,10 @@ args = "web-lint"
 task = "workflow.run"
 args = "codegen-sync"
 
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "api-typecheck"
+
 [[workflows.workflow]]
 name = "web-unit-tests"
 author = "agent"
@@ -123,6 +127,17 @@ author = "agent"
 [[workflows.workflow.tasks]]
 task = "shell.exec"
 args = "pnpm codegen && git diff --exit-code lib/api-client-react/src/generated lib/api-zod/src/generated"
+
+[workflows.workflow.metadata]
+isValidation = true
+
+[[workflows.workflow]]
+name = "api-typecheck"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "pnpm --filter @workspace/api-server typecheck"
 
 [workflows.workflow.metadata]
 isValidation = true

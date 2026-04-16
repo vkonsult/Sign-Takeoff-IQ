@@ -190,7 +190,7 @@ export async function runPdfProcessor(jobId: string): Promise<void> {
             for (const section of pdfMeta.outlineSections) {
               for (let p = section.pageStart; p <= section.pageEnd; p++) {
                 if (!bookmarkPageMap.has(p)) {
-                  bookmarkPageMap.set(p, { title: section.title, type: section.type });
+                  bookmarkPageMap.set(p, { title: section.title, type: (section.type === "both" ? "floor_plan" : section.type) as "floor_plan" | "sign_schedule" | "other" | null });
                 }
               }
             }

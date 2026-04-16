@@ -255,7 +255,7 @@ router.delete("/jobs", async (req, res) => {
 
   try {
     const orgCondition = user && !user.isSuperAdmin
-      ? eq(jobsTable.organizationId, user.organizationId)
+      ? eq(jobsTable.organizationId, user.organizationId!)
       : undefined;
 
     // Collect file paths BEFORE deleting so ON DELETE CASCADE doesn't wipe them first.
@@ -657,7 +657,11 @@ router.post("/jobs/:jobId/compare", async (req, res) => {
     const rawTextRows = textResults.flatMap((r) => r.rows.map((row) => buildTextRow(row, r.file)));
     const rawImageRows = imageResults.flatMap((r) => r.rows.map((row) => buildImageRow(row, r.file)));
     // Code-proximity rows: deterministic label+code pairs from the PDF text layer.
-    const rawCodeProximityRows = textResults.flatMap((r) => (r.rawTextRows ?? []).map((row) => buildRawTextRow(row, r.file)));
+    const rawCodeProximityRows = textResults.flatMap((r) => {
+      type RawRow = Parameters<typeof buildRawTextRow>[0];
+      const rows = (r as { rawTextRows?: RawRow[] }).rawTextRows ?? [];
+      return rows.map((row) => buildRawTextRow(row, r.file));
+    });
 
     const textRows = deduplicateSignRows(rawTextRows);
     const textSeenKeys = new Set(
@@ -1436,9 +1440,13 @@ router.post("/jobs/:jobId/ai-scan", async (req, res) => {
 
     // Build project context from job record
     const projectContext = (job.projectAddress || job.projectCity || job.projectState) ? {
-      address: job.projectAddress ?? undefined,
-      city: job.projectCity ?? undefined,
-      state: job.projectState ?? undefined,
+      project_name: null,
+      address: job.projectAddress ?? null,
+      city: job.projectCity ?? null,
+      state: job.projectState ?? null,
+      zip: null,
+      occupancy_type: null,
+      ahj: null,
     } : undefined;
 
     // Process each file
@@ -1500,7 +1508,7 @@ router.post("/jobs/:jobId/ai-scan", async (req, res) => {
             if (updatedPaths && Object.keys(updatedPaths).length > 0) {
               pageImagePaths = { ...pageImagePaths, ...updatedPaths }; // in-memory update for same-run calls
               const updatedStats = { ...(pageStats ?? {}), pageImagePaths };
-              await db.update(jobFilesTable).set({ pageStats: updatedStats }).where(eq(jobFilesTable.id, file.id));
+              await db.update(jobFilesTable).set({ pageStats: updatedStats as NonNullable<typeof jobFilesTable.$inferInsert['pageStats']> }).where(eq(jobFilesTable.id, file.id));
             }
             results[`${callType}_${file.id}`] = { callouts: scanResult.callouts?.length ?? 0, skipped: scanResult.skipped, skipReason: scanResult.skipReason, inputTokens: scanResult.inputTokens, outputTokens: scanResult.outputTokens };
 
@@ -1520,7 +1528,7 @@ router.post("/jobs/:jobId/ai-scan", async (req, res) => {
                 floorPageLevels[String(pageNum)] = level;
               }
               const updatedStats = { ...(pageStats ?? {}), floorPageLevels };
-              await db.update(jobFilesTable).set({ pageStats: updatedStats }).where(eq(jobFilesTable.id, file.id));
+              await db.update(jobFilesTable).set({ pageStats: updatedStats as unknown as NonNullable<typeof jobFilesTable.$inferInsert['pageStats']> }).where(eq(jobFilesTable.id, file.id));
             }
             results[`${callType}_${file.id}`] = { levelsFound: levelMap.size, levels: Object.fromEntries(levelMap) };
           } else if (callType === "sign_schedule_enrich") {
@@ -1630,7 +1638,7 @@ router.post("/jobs/:jobId/ai-scan", async (req, res) => {
       details: results,
     });
 
-    recordActivity(req, "ai_scan_run", jobId);
+    recordActivity(req, "scan_run", jobId);
   } catch (err) {
     req.log.error({ err, jobId }, "ai-scan failed");
     res.status(500).json({ error: "AI scan failed", details: String(err) });
@@ -1816,7 +1824,7 @@ async function assignMissingCoordinates(jobId: string, files: DbFile[]): Promise
 // ── GET /jobs/:jobId/schedule-entries ─────────────────────────────────────────
 // Returns schedule entries with joined sign type spec data for the given job.
 router.get("/jobs/:jobId/schedule-entries", async (req: Request, res: Response) => {
-  const { jobId } = req.params;
+  const { jobId } = req.params as Record<string, string>;
 
   try {
     const job = await getJobWithOrgCheck(req, res, jobId);
@@ -1870,7 +1878,7 @@ router.get("/jobs/:jobId/schedule-entries", async (req: Request, res: Response) 
 // ── GET /jobs/:jobId/schedule-crops/:fileId/:fileName ─────────────────────────
 // Serves pre-rendered crop PNG images for sign type diagrams.
 router.get("/jobs/:jobId/schedule-crops/:fileId/:fileName", async (req: Request, res: Response) => {
-  const { jobId, fileId, fileName } = req.params;
+  const { jobId, fileId, fileName } = req.params as Record<string, string>;
   const job = await getJobWithOrgCheck(req, res, jobId);
   if (!job) return;
 
@@ -1904,7 +1912,7 @@ const ToggleRejectedPageSchema = z.object({
 });
 
 router.patch("/jobs/:jobId/files/:fileId/rejected-pages", async (req: Request, res: Response) => {
-  const { jobId, fileId } = req.params;
+  const { jobId, fileId } = req.params as Record<string, string>;
   if (!jobId || !fileId) {
     res.status(400).json({ error: "Job ID and file ID required" });
     return;
@@ -2232,7 +2240,7 @@ router.post("/jobs/:jobId/extract-plaque-schedule", async (req, res) => {
 
     await persistPlaqueSchedule(jobId, finalPlaques, finalGeneralNotes, finalSourcePage, overwrite);
 
-    recordActivity(req, "ai_scan_run", jobId);
+    recordActivity(req, "scan_run", jobId);
 
     res.json({
       success: true,
@@ -2328,7 +2336,7 @@ router.post("/jobs/:jobId/extract-occupant-loads", async (req, res) => {
         isAssembly: true,
       }));
 
-    recordActivity(req, "ai_scan_run", jobId);
+    recordActivity(req, "scan_run", jobId);
 
     res.json({
       success: true,

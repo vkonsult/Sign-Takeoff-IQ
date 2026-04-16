@@ -472,7 +472,7 @@ export async function runSignScheduleEnrich(jobId: string): Promise<SignSchedule
         const spec = fileSpecs.find((s) => s.typeCode === typeCode);
         if (!spec) continue;
         await db.update(signTypeSpecsTable).set({
-          geminiNotes: result.notes as Record<string, unknown>,
+          geminiNotes: (result.notes as unknown) as Record<string, unknown>,
           cropImageUrl: result.cropImageUrl ?? null,
           geminiEnriched: true,
         }).where(eq(signTypeSpecsTable.id, spec.id));

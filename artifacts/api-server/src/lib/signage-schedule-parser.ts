@@ -710,7 +710,7 @@ export interface GeminiEnrichmentResult {
 export async function enrichWithGemini(
   specs: SignTypeSpec[],
   pdfPath: string,
-  ai: import("@workspace/integrations-gemini-ai").GeminiAI,
+  ai: typeof import("@workspace/integrations-gemini-ai").ai,
   saveImageFn?: (typeCode: string, pngBuffer: Buffer) => Promise<string>,
 ): Promise<Map<string, { notes: GeminiEnrichmentResult; cropImageUrl: string | null }>> {
   const results = new Map<string, { notes: GeminiEnrichmentResult; cropImageUrl: string | null }>();

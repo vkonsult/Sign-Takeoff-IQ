@@ -241,7 +241,7 @@ vi.mock("@clerk/express", () => ({
 
 const SUPER_ADMIN_USER = {
   userId: "user-1",
-  role: "SUPER_ADMIN",
+  role: "SUPER_ADMIN" as const,
   organizationId: null,
   isSuperAdmin: true,
   userName: "Test Admin",
@@ -254,7 +254,7 @@ async function buildApp(authUser: Record<string, unknown> | null = null) {
   app.use(express.json());
   // Inject authUser so getJobWithOrgCheck sees a super-admin (bypasses org filtering)
   app.use((req: Request, _res: Response, next: NextFunction) => {
-    req.authUser = authUser ?? SUPER_ADMIN_USER;
+    req.authUser = (authUser ?? SUPER_ADMIN_USER) as typeof SUPER_ADMIN_USER;
     next();
   });
   app.use(jobsRouter);
@@ -481,7 +481,7 @@ describe("DELETE /jobs/:jobId/plaque-schedule/:id", () => {
     // (i.e., the request reached the deletion stage, not an earlier guard).
     deleteReturningResult = [];
     const { db } = await import("@workspace/db");
-    const dbTyped = db as { delete: ReturnType<typeof vi.fn> };
+    const dbTyped = db as unknown as { delete: ReturnType<typeof vi.fn> };
     dbTyped.delete.mockClear();
     const res = await supertest(app).delete("/jobs/job-111/plaque-schedule/plaque-from-other-job");
     expect(res.status).toBe(404);
@@ -527,7 +527,7 @@ describe("DELETE /jobs/:jobId/occupant-loads/:id", () => {
     // (i.e., the request reached the deletion stage, not an earlier guard).
     deleteReturningResult = [];
     const { db } = await import("@workspace/db");
-    const dbTyped = db as { delete: ReturnType<typeof vi.fn> };
+    const dbTyped = db as unknown as { delete: ReturnType<typeof vi.fn> };
     dbTyped.delete.mockClear();
     const res = await supertest(app).delete("/jobs/job-111/occupant-loads/load-from-other-job");
     expect(res.status).toBe(404);
