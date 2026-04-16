@@ -118,6 +118,14 @@ const phraseCache = new Map<string, PageWords>();
 const PDFJS_DOC_CACHE_MAX = 20;
 const pdfjsDocCache = new Map<string, Promise<PdfjsDocument>>();
 
+// ── Test-only exports (not part of the public API) ────────────────────────
+// Exposed so unit tests can seed / inspect the module-level caches without
+// touching the filesystem or loading pdfjs-dist.
+export const __pdfjsDocCache = pdfjsDocCache;
+export const __phraseCache = phraseCache;
+export const __PDFJS_DOC_CACHE_MAX = PDFJS_DOC_CACHE_MAX;
+export function __resetPdfjsLibForTesting() { pdfjsLib = null; }
+
 export async function getOrOpenPdfjsDoc(pdfPath: string): Promise<PdfjsDocument> {
   const existing = pdfjsDocCache.get(pdfPath);
   if (existing) return existing;
