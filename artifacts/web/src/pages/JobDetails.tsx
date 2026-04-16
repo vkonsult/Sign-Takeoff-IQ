@@ -955,7 +955,7 @@ export default function JobDetails() {
           case "mounting":   av = a.mountingType ?? ""; bv = b.mountingType ?? ""; break;
           case "finish":     av = a.finishColor ?? ""; bv = b.finishColor ?? ""; break;
           case "message":    av = a.messageContent ?? ""; bv = b.messageContent ?? ""; break;
-          case "confidence": av = a.confidenceScore ?? 0;  bv = b.confidenceScore ?? 0;  break;
+          case "confidence": av = a.confidenceScore;  bv = b.confidenceScore;  break;
           case "source":     av = sourceKey(a); bv = sourceKey(b); break;
         }
         const cmp = typeof av === "number" && typeof bv === "number"
