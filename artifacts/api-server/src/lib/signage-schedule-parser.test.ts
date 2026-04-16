@@ -825,4 +825,50 @@ describe("Real PDF fixture — full pipeline integration", () => {
     // ── Keynote map: "KEYNOTES" → "A  Field verify dimensions" ───────────────
     expect(s.keynoteMap["A"]).toBe("Field verify dimensions");
   });
+
+  it("extractRawPageItems returns items with text and plausible viewport coordinates", async () => {
+    const { extractRawPageItems } = await import("./pdf-words");
+    const { items, pageWidth, pageHeight } = await extractRawPageItems(FIXTURE_PATH, 1);
+
+    // The fixture is a US Letter page — verify dimensions are rotation-adjusted
+    expect(pageWidth).toBeCloseTo(612, 0);
+    expect(pageHeight).toBeCloseTo(792, 0);
+
+    // Every item must fall within the page bounds
+    for (const it of items) {
+      expect(it.x).toBeGreaterThanOrEqual(0);
+      expect(it.y).toBeGreaterThanOrEqual(0);
+      expect(it.x + it.w).toBeLessThanOrEqual(pageWidth + 1); // +1 for floating-point tolerance
+      expect(it.y + it.h).toBeLessThanOrEqual(pageHeight + 1);
+      expect(it.w).toBeGreaterThan(0);
+      expect(it.h).toBeGreaterThan(0);
+    }
+
+    // ── Required text items must be present ─────────────────────────────────
+    const texts = items.map((it) => it.text);
+    expect(texts).toContain("SIGNAGE SCHEDULE");
+    expect(texts).toContain("1A");
+    expect(texts).toContain("2");
+    expect(texts).toContain("ROOM ID");
+
+    // ── Vertical ordering: header above sign row ─────────────────────────────
+    // "SIGNAGE SCHEDULE" must appear above the "1A" sign-code item (smaller y).
+    const headerItem = items.find((it) => it.text === "SIGNAGE SCHEDULE")!;
+    const signCodeItem = items.find((it) => it.text === "1A")!;
+    expect(headerItem).toBeDefined();
+    expect(signCodeItem).toBeDefined();
+    expect(headerItem.y).toBeLessThan(signCodeItem.y);
+
+    // ── Horizontal ordering: sign-code left of qty left of signage text ──────
+    // In the sign row "1A  2  ROOM ID", the sign code must be the leftmost
+    // token, quantity next, and signage text rightmost.  A broken corner
+    // transformation (e.g. swapping ux/vy in the bounding-box computation)
+    // would mis-place one or more items and break this ordering.
+    const qtyItem = items.find((it) => it.text === "2" && it.y > headerItem.y)!;
+    const textItem = items.find((it) => it.text === "ROOM ID")!;
+    expect(qtyItem).toBeDefined();
+    expect(textItem).toBeDefined();
+    expect(signCodeItem.x).toBeLessThan(qtyItem.x);
+    expect(qtyItem.x).toBeLessThan(textItem.x);
+  });
 });
