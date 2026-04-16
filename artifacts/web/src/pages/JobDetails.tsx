@@ -551,6 +551,13 @@ export default function JobDetails() {
   const [showAiHighlight, setShowAiHighlight] = useState(false);
   const [unlockingSignId, setUnlockingSignId] = useState<string | null>(null);
 
+  useEffect(() => {
+    setShowHidden(false);
+    setShowExceptions(false);
+    setShowUnplacedOnly(false);
+    setShowLockedOnly(false);
+  }, [activeTab]);
+
   const PROCESSING_TIMEOUT_SECONDS = 5 * 60;
   const [processingSeconds, setProcessingSeconds] = useState(0);
   const isProcessingNow = (data?.job?.status === "processing") || extractMutation.isPending;
