@@ -574,6 +574,9 @@ export default function JobDetails() {
     }
   }, [jobId, activeTab]);
   const [placeSignId, setPlaceSignId] = useState<string | null>(null);
+  useEffect(() => {
+    if (activeTab !== "floorplans") setPlaceSignId(null);
+  }, [activeTab]);
   const [showAiHighlight, setShowAiHighlight] = useState(false);
   const [unlockingSignId, setUnlockingSignId] = useState<string | null>(null);
 
