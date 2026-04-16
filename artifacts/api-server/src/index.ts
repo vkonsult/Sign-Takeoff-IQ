@@ -1,5 +1,6 @@
 import app from "./app";
 import { logger } from "./lib/logger";
+import { unwatchAllPdfFiles } from "./lib/pdf-file-watcher";
 
 const rawPort = process.env["PORT"];
 
@@ -14,6 +15,15 @@ const port = Number(rawPort);
 if (Number.isNaN(port) || port <= 0) {
   throw new Error(`Invalid PORT value: "${rawPort}"`);
 }
+
+function shutdown(signal: string): void {
+  logger.info({ signal }, "Received shutdown signal — closing file watchers");
+  unwatchAllPdfFiles();
+  process.exit(0);
+}
+
+process.on("SIGTERM", () => shutdown("SIGTERM"));
+process.on("SIGINT", () => shutdown("SIGINT"));
 
 app.listen(port, (err) => {
   if (err) {

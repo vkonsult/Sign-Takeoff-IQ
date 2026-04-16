@@ -2,6 +2,7 @@ import fs from "fs";
 import { db } from "@workspace/db";
 import { jobFilesTable } from "@workspace/db";
 import { invalidatePdfCaches } from "./pdf-words";
+import { logger } from "./logger";
 
 interface WatchEntry {
   fileId: string;
@@ -42,6 +43,7 @@ export function watchPdfFile(pdfPath: string, fileId: string): void {
       if (eventType === "change" || eventType === "rename") {
         const entry = watchers.get(pdfPath);
         if (entry) {
+          logger.info({ pdfPath, fileId: entry.fileId, eventType }, "PDF file changed — invalidating caches");
           invalidatePdfCaches(pdfPath, entry.fileId);
         }
       }
@@ -50,7 +52,8 @@ export function watchPdfFile(pdfPath: string, fileId: string): void {
     return;
   }
 
-  watcher.on("error", () => {
+  watcher.on("error", (err) => {
+    logger.warn({ pdfPath, fileId, err }, "PDF file watcher error — removing watcher");
     watchers.delete(pdfPath);
   });
 
@@ -71,7 +74,11 @@ export function unwatchPdfFile(pdfPath: string): void {
 }
 
 /**
- * Stop all active watchers.  Useful for graceful server shutdown or test teardown.
+ * Close every open PDF file watcher.
+ *
+ * Call this during server shutdown (SIGTERM / SIGINT) to release all
+ * `FSWatcher` handles before the process exits.  Leaving them open can delay
+ * shutdown or produce "Error: watcher closed" noise on some platforms.
  */
 export function unwatchAllPdfFiles(): void {
   for (const [pdfPath] of watchers) {
@@ -97,4 +104,15 @@ export async function registerExistingFileWatchers(): Promise<void> {
   }
 }
 
+/**
+ * Returns the number of currently active PDF file watchers.
+ * Intended for testing and diagnostics only.
+ */
+export function __watcherCount(): number {
+  return watchers.size;
+}
+
+/**
+ * Exposed for testing: gives direct access to the internal watchers map.
+ */
 export const __watchers = watchers;

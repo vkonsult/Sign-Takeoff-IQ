@@ -41,11 +41,19 @@ vi.mock("@workspace/db", () => ({
   jobFilesTable: {},
 }));
 
+vi.mock("./logger", () => ({
+  logger: {
+    info: vi.fn(),
+    warn: vi.fn(),
+  },
+}));
+
 import { invalidatePdfCaches } from "./pdf-words";
 import {
   watchPdfFile,
   unwatchPdfFile,
   unwatchAllPdfFiles,
+  __watcherCount,
   __watchers,
 } from "./pdf-file-watcher";
 
@@ -198,5 +206,32 @@ describe("watcher error handling", () => {
     }
 
     expect(__watchers.has(pdfPath)).toBe(false);
+  });
+});
+
+describe("unwatchAllPdfFiles — shutdown path", () => {
+  it("closes all open watchers and clears the registry", () => {
+    const paths = ["/uploads/jobs/1/a.pdf", "/uploads/jobs/2/b.pdf", "/uploads/jobs/3/c.pdf"];
+    paths.forEach((p, i) => watchPdfFile(p, `file-${i}`));
+
+    expect(__watcherCount()).toBe(3);
+
+    unwatchAllPdfFiles();
+
+    for (const p of paths) {
+      const instance = mockWatcherInstances.get(p);
+      expect(instance?.close).toHaveBeenCalledOnce();
+    }
+    expect(__watcherCount()).toBe(0);
+  });
+
+  it("is safe to call when no watchers are active", () => {
+    expect(() => unwatchAllPdfFiles()).not.toThrow();
+  });
+
+  it("leaves the watcher map empty after closing everything", () => {
+    watchPdfFile("/uploads/jobs/1/a.pdf", "file-1");
+    unwatchAllPdfFiles();
+    expect(__watchers.size).toBe(0);
   });
 });
