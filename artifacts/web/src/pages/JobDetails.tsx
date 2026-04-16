@@ -945,34 +945,51 @@ export default function JobDetails() {
                       <TooltipContent>Re-run both text and visual scans to refresh sign data</TooltipContent>
                     </Tooltip>
                   </TooltipProvider>
-                  <TooltipProvider>
-                    <Tooltip>
-                      <TooltipTrigger asChild>
-                        <span>
-                          <Button
-                            onClick={handleExportMarkedPdf}
-                            disabled={exportingPdf || hasNoMapData}
-                            variant="outline"
-                            className="font-display font-semibold uppercase tracking-wide hover:bg-primary/10 hover:text-primary hover:border-primary/40 disabled:opacity-50 disabled:cursor-not-allowed disabled:pointer-events-none"
-                          >
-                            {exportingPdf ? (
-                              <Loader2 className="w-4 h-4 animate-spin" />
-                            ) : (
-                              <Stamp className="w-4 h-4" />
-                            )}
-                            {exportingPdf ? "Building PDF…" : "Export Marked PDF"}
-                          </Button>
-                        </span>
-                      </TooltipTrigger>
-                      <TooltipContent>
-                        {isProcessingNow
-                          ? "Job is still processing — wait for extraction to finish before exporting"
-                          : hasNoMapData
-                          ? "No signs have floor plan locations — nothing to mark on the PDF"
-                          : "Download the original PDF with sign markers drawn on each floor plan page"}
-                      </TooltipContent>
-                    </Tooltip>
-                  </TooltipProvider>
+                  {(() => {
+                    const pdfSigns = data?.extractedSigns ?? [];
+                    const showPdfPartialNotice =
+                      hasNoMapData &&
+                      pdfSigns.length > 0 &&
+                      !exportingPdf &&
+                      !isProcessingNow;
+                    return (
+                      <TooltipProvider>
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <span className="relative inline-flex">
+                              <Button
+                                onClick={handleExportMarkedPdf}
+                                disabled={exportingPdf || hasNoMapData}
+                                variant="outline"
+                                className="font-display font-semibold uppercase tracking-wide hover:bg-primary/10 hover:text-primary hover:border-primary/40 disabled:opacity-50 disabled:cursor-not-allowed disabled:pointer-events-none"
+                              >
+                                {exportingPdf ? (
+                                  <Loader2 className="w-4 h-4 animate-spin" />
+                                ) : (
+                                  <Stamp className="w-4 h-4" />
+                                )}
+                                {exportingPdf ? "Building PDF…" : "Export Marked PDF"}
+                              </Button>
+                              {showPdfPartialNotice && (
+                                <span className="absolute -top-1.5 -right-1.5 flex h-4 w-4 items-center justify-center rounded-full bg-yellow-400 text-[9px] font-bold text-yellow-900 shadow">
+                                  !
+                                </span>
+                              )}
+                            </span>
+                          </TooltipTrigger>
+                          <TooltipContent>
+                            {isProcessingNow
+                              ? "Job is still processing — wait for extraction to finish before exporting"
+                              : showPdfPartialNotice
+                              ? "Partial export — signs exist but none have floor plan locations. The PDF will have no markers."
+                              : hasNoMapData
+                              ? "No signs have floor plan locations — nothing to mark on the PDF"
+                              : "Download the original PDF with sign markers drawn on each floor plan page"}
+                          </TooltipContent>
+                        </Tooltip>
+                      </TooltipProvider>
+                    );
+                  })()}
                   {(() => {
                     const hasNoSigns = extractedSigns.length === 0;
                     const hasPartialData =
