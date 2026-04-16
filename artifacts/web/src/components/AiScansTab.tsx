@@ -217,6 +217,18 @@ export function AiScansTab({
   }, [showOccupantConfirm]);
 
   useEffect(() => {
+    if (plaqueEditingId !== null && plaqueUnlockConfirm !== null) {
+      setPlaqueUnlockConfirm(null);
+    }
+  }, [plaqueEditingId, plaqueUnlockConfirm]);
+
+  useEffect(() => {
+    if (editingId !== null && occupantUnlockConfirm !== null) {
+      setOccupantUnlockConfirm(null);
+    }
+  }, [editingId, occupantUnlockConfirm]);
+
+  useEffect(() => {
     if (!plaqueUnlockConfirm) return;
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape") setPlaqueUnlockConfirm(null);
