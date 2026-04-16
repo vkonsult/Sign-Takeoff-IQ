@@ -160,9 +160,8 @@ export default function JobsList() {
     unplacedCount?: number;
   };
 
-  const rawJobs = (data?.jobs ?? []) as JobSummaryListItem[];
-
   const jobs = useMemo(() => {
+    const rawJobs = (data?.jobs ?? []) as JobSummaryListItem[];
     let result = rawJobs;
     if (showNeedsPlacement) {
       result = result.filter((j) => Number(j.unplacedCount ?? 0) > 0);
@@ -199,7 +198,7 @@ export default function JobsList() {
       }
       return sortDir === "asc" ? aVal - bVal : bVal - aVal;
     });
-  }, [rawJobs, sortBy, sortDir, showNeedsPlacement]);
+  }, [data?.jobs, sortBy, sortDir, showNeedsPlacement]);
 
   const allIds = jobs.map((j) => j.id);
   const allSelected = allIds.length > 0 && allIds.every((id) => selected.has(id));

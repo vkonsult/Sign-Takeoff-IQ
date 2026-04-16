@@ -276,7 +276,7 @@ function EditPanel({
     setDirty(false);
     setSaveError(null);
     setUnlockError(null);
-  }, [activeSign.id]);
+  }, [activeSign]);
 
   const handleField = useCallback((field: keyof FormState, value: string | boolean) => {
     setForm((prev) => ({ ...prev, [field]: value }));

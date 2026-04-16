@@ -559,9 +559,9 @@ export default function JobDetails() {
       : _storedTab && VALID_TABS.has(_storedTab)
         ? _storedTab
         : "table";
-  const setActiveTab = (tab: TabId) => {
+  const setActiveTab = useCallback((tab: TabId) => {
     setLocation(`/jobs/${jobId}?tab=${tab}`);
-  };
+  }, [setLocation, jobId]);
 
   useEffect(() => {
     if (jobId && activeTab) {
@@ -588,7 +588,7 @@ export default function JobDetails() {
         ),
       });
     }
-  }, [activeTab]);
+  }, [activeTab, placeSignId, setActiveTab, toast]);
   const [showAiHighlight, setShowAiHighlight] = useState(false);
   const [unlockingSignId, setUnlockingSignId] = useState<string | null>(null);
 
