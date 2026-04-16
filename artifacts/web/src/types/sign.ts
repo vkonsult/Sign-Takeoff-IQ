@@ -21,6 +21,7 @@ export interface ExtractedSign {
   yPos?: number | null;
   placementSource?: string | null;
   manuallyAdded?: boolean;
+  manuallyEdited?: boolean | null;
   userVerified?: boolean;
   adaRequired?: boolean;
   confidenceScore: number;

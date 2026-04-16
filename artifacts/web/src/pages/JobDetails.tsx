@@ -1342,8 +1342,19 @@ export default function JobDetails() {
                           style={isAiRow ? { boxShadow: 'inset 3px 0 0 rgba(139, 92, 246, 0.6)', background: 'rgba(139, 92, 246, 0.04)' } : undefined}
                         >
                           <td className="data-cell sticky left-0 z-10 bg-inherit shadow-[2px_0_5px_-2px_rgba(0,0,0,0.3)]">
-                            <span className="text-xs font-semibold text-foreground">
-                              {sign.signIdentifier || '—'}
+                            <span className="flex items-center gap-1.5">
+                              <span className="text-xs font-semibold text-foreground">
+                                {sign.signIdentifier || '—'}
+                              </span>
+                              {sign.manuallyEdited && (
+                                <span
+                                  title="This row was manually edited and will not be overwritten by AI re-runs"
+                                  className="inline-flex items-center gap-0.5 px-1 py-0.5 rounded text-[9px] font-medium bg-amber-500/10 text-amber-400 border border-amber-500/20 cursor-default"
+                                >
+                                  <Pencil className="w-2.5 h-2.5" />
+                                  edited
+                                </span>
+                              )}
                             </span>
                           </td>
                           <td className="data-cell truncate max-w-[200px]" title={sign.location || ''}>{sign.location || '—'}</td>

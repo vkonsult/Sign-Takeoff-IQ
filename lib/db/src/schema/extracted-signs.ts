@@ -44,6 +44,7 @@ export const extractedSignsTable = pgTable("extracted_signs", {
   ),
   adaRequired: boolean("ada_required").default(false),
   manuallyAdded: boolean("manually_added").notNull().default(false),
+  manuallyEdited: boolean("manually_edited").notNull().default(false),
   userVerified: boolean("user_verified").notNull().default(false),
   hidden: boolean("hidden").notNull().default(false),
   confidenceScore: real("confidence_score").notNull().default(0),

@@ -140,6 +140,8 @@ export interface ExtractedSign {
   reviewFlag: boolean;
   /** True if this sign was manually placed by the user (not AI-extracted) */
   manuallyAdded?: boolean;
+  /** True if the user has manually edited this sign; protected from AI re-run overwrites */
+  manuallyEdited?: boolean | null;
   /** True if the user has saved/confirmed this sign entry; preserved across re-extractions */
   userVerified?: boolean;
   createdAt: string;

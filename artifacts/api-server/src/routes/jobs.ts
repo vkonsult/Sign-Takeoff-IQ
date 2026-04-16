@@ -1094,6 +1094,7 @@ const UpdateSignSchema = z.object({
   notes: z.string().nullable().optional(),
   reviewFlag: z.boolean().optional(),
   hidden: z.boolean().optional(),
+  manuallyEdited: z.boolean().optional(),
   xPos: z.number().min(0).max(1).nullable().optional(),
   yPos: z.number().min(0).max(1).nullable().optional(),
   placementSource: z.enum(["word_match", "text_match", "gemini_vision", "user_confirmed", "manual", "user_drag"]).nullable().optional(),
@@ -1138,8 +1139,9 @@ router.patch("/extracted-signs/:signId", async (req, res) => {
     ];
     const isPlacementUpdate = parsed.data.placementSource !== undefined;
     const hasContentEdit = !isPlacementUpdate && contentFields.some((f) => parsed.data[f] !== undefined);
+    const explicitManuallyEdited = parsed.data.manuallyEdited !== undefined;
     const updatePayload = hasContentEdit
-      ? { ...parsed.data, userVerified: true }
+      ? { ...parsed.data, userVerified: true, ...(explicitManuallyEdited ? {} : { manuallyEdited: true }) }
       : { ...parsed.data };
 
     const [updated] = await db
