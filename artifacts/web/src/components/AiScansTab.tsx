@@ -100,6 +100,8 @@ export function AiScansTab({
   const [showPlaqueConfirm, setShowPlaqueConfirm] = useState(false);
   const plaqueConfirmRef = useRef<HTMLTableRowElement | null>(null);
   const [showOccupantConfirm, setShowOccupantConfirm] = useState(false);
+  const [plaqueUnlockConfirm, setPlaqueUnlockConfirm] = useState<"header" | "footer" | null>(null);
+  const [occupantUnlockConfirm, setOccupantUnlockConfirm] = useState<"header" | "footer" | null>(null);
   const [confirmRunOneType, setConfirmRunOneType] = useState<string | null>(null);
   const [confirmRunSelected, setConfirmRunSelected] = useState(false);
   const [confirmRunAll, setConfirmRunAll] = useState(false);
@@ -213,6 +215,24 @@ export function AiScansTab({
     document.addEventListener("keydown", handleKeyDown);
     return () => document.removeEventListener("keydown", handleKeyDown);
   }, [showOccupantConfirm]);
+
+  useEffect(() => {
+    if (!plaqueUnlockConfirm) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setPlaqueUnlockConfirm(null);
+    };
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, [plaqueUnlockConfirm]);
+
+  useEffect(() => {
+    if (!occupantUnlockConfirm) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOccupantUnlockConfirm(null);
+    };
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, [occupantUnlockConfirm]);
 
   useEffect(() => {
     if (!confirmRunOneType) return;
@@ -1021,9 +1041,9 @@ export function AiScansTab({
             </div>
           </div>
           <div className="flex-shrink-0 flex items-center gap-2">
-            {plaqueRows.some((r) => r.manuallyEdited) && !showPlaqueConfirm && (
+            {plaqueRows.some((r) => r.manuallyEdited) && !showPlaqueConfirm && plaqueUnlockConfirm !== "header" && (
               <button
-                onClick={handleUnlockAllPlaqueRows}
+                onClick={() => setPlaqueUnlockConfirm("header")}
                 disabled={plaqueUnlockingAll || plaqueEditingId !== null || plaqueDeletingId !== null || plaqueUnlockingId !== null || plaqueConfirmDeleteId !== null}
                 className="flex items-center gap-1.5 px-3 py-1.5 rounded text-[11px] font-medium border transition-all disabled:opacity-50 disabled:cursor-not-allowed bg-amber-500/10 text-amber-400 border-amber-500/20 hover:bg-amber-500/20"
                 title="Remove the manually-edited lock from all rows, allowing AI to update them again"
@@ -1031,6 +1051,25 @@ export function AiScansTab({
                 {plaqueUnlockingAll ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <LockOpen className="w-3.5 h-3.5" />}
                 Unlock all
               </button>
+            )}
+            {plaqueUnlockConfirm === "header" && (
+              <div className="flex items-center gap-1.5">
+                <span className="text-[11px] text-amber-400 whitespace-nowrap">Remove all locks?</span>
+                <button
+                  onClick={() => { setPlaqueUnlockConfirm(null); handleUnlockAllPlaqueRows(); }}
+                  disabled={plaqueUnlockingAll}
+                  className="flex items-center justify-center gap-1 px-2 py-1 rounded text-[11px] font-medium text-white bg-amber-500 hover:bg-amber-400 transition-colors border border-amber-400/30 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {plaqueUnlockingAll ? <Loader2 className="w-3 h-3 animate-spin" /> : <LockOpen className="w-3 h-3" />}
+                  Unlock all
+                </button>
+                <button
+                  onClick={() => setPlaqueUnlockConfirm(null)}
+                  className="flex items-center justify-center px-2 py-1 rounded text-[11px] font-medium text-muted-foreground bg-secondary hover:text-foreground transition-colors border border-border"
+                >
+                  Cancel
+                </button>
+              </div>
             )}
             {showPlaqueConfirm ? (
               <div className="flex items-center gap-1.5">
@@ -1401,14 +1440,34 @@ export function AiScansTab({
                         {plaqueRows.filter((r) => r.manuallyEdited).length} manually protected
                       </button>
                       <span className="text-border">·</span>
-                      <button
-                        onClick={handleUnlockAllPlaqueRows}
-                        disabled={plaqueUnlockingAll}
-                        className="flex items-center gap-1 text-amber-400 hover:text-amber-300 disabled:opacity-50 transition-colors"
-                      >
-                        {plaqueUnlockingAll ? <Loader2 className="w-3 h-3 animate-spin" /> : <Lock className="w-3 h-3" />}
-                        Unlock all
-                      </button>
+                      {plaqueUnlockConfirm === "footer" ? (
+                        <>
+                          <span className="text-amber-400">Remove all locks?</span>
+                          <button
+                            onClick={() => { setPlaqueUnlockConfirm(null); handleUnlockAllPlaqueRows(); }}
+                            disabled={plaqueUnlockingAll}
+                            className="flex items-center gap-1 text-amber-400 hover:text-amber-300 font-medium disabled:opacity-50 transition-colors"
+                          >
+                            {plaqueUnlockingAll ? <Loader2 className="w-3 h-3 animate-spin" /> : <LockOpen className="w-3 h-3" />}
+                            Unlock all
+                          </button>
+                          <button
+                            onClick={() => setPlaqueUnlockConfirm(null)}
+                            className="text-muted-foreground hover:text-foreground transition-colors"
+                          >
+                            Cancel
+                          </button>
+                        </>
+                      ) : (
+                        <button
+                          onClick={() => setPlaqueUnlockConfirm("footer")}
+                          disabled={plaqueUnlockingAll}
+                          className="flex items-center gap-1 text-amber-400 hover:text-amber-300 disabled:opacity-50 transition-colors"
+                        >
+                          {plaqueUnlockingAll ? <Loader2 className="w-3 h-3 animate-spin" /> : <Lock className="w-3 h-3" />}
+                          Unlock all
+                        </button>
+                      )}
                     </>
                   )}
                 </>
@@ -1431,9 +1490,9 @@ export function AiScansTab({
             </div>
           </div>
           <div className="flex-shrink-0 flex items-center gap-2">
-            {occupantRows.some((r) => r.manuallyEdited) && !showOccupantConfirm && (
+            {occupantRows.some((r) => r.manuallyEdited) && !showOccupantConfirm && occupantUnlockConfirm !== "header" && (
               <button
-                onClick={handleUnlockAllOccupantRows}
+                onClick={() => setOccupantUnlockConfirm("header")}
                 disabled={occupantUnlockingAll || editingId !== null || deletingId !== null || unlockingId !== null || confirmDeleteId !== null}
                 className="flex items-center gap-1.5 px-3 py-1.5 rounded text-[11px] font-medium border transition-all disabled:opacity-50 disabled:cursor-not-allowed bg-sky-500/10 text-sky-400 border-sky-500/20 hover:bg-sky-500/20"
                 title="Remove the manually-edited lock from all rows, allowing AI to update them again"
@@ -1441,6 +1500,25 @@ export function AiScansTab({
                 {occupantUnlockingAll ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <LockOpen className="w-3.5 h-3.5" />}
                 Unlock all
               </button>
+            )}
+            {occupantUnlockConfirm === "header" && (
+              <div className="flex items-center gap-1.5">
+                <span className="text-[11px] text-sky-400 whitespace-nowrap">Remove all locks?</span>
+                <button
+                  onClick={() => { setOccupantUnlockConfirm(null); handleUnlockAllOccupantRows(); }}
+                  disabled={occupantUnlockingAll}
+                  className="flex items-center justify-center gap-1 px-2 py-1 rounded text-[11px] font-medium text-white bg-sky-500 hover:bg-sky-400 transition-colors border border-sky-400/30 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {occupantUnlockingAll ? <Loader2 className="w-3 h-3 animate-spin" /> : <LockOpen className="w-3 h-3" />}
+                  Unlock all
+                </button>
+                <button
+                  onClick={() => setOccupantUnlockConfirm(null)}
+                  className="flex items-center justify-center px-2 py-1 rounded text-[11px] font-medium text-muted-foreground bg-secondary hover:text-foreground transition-colors border border-border"
+                >
+                  Cancel
+                </button>
+              </div>
             )}
             {showOccupantConfirm ? (
               <div className="flex items-center gap-1.5">
@@ -1808,14 +1886,34 @@ export function AiScansTab({
                         {occupantRows.filter((r) => r.manuallyEdited).length} manually protected
                       </button>
                       <span className="text-border">·</span>
-                      <button
-                        onClick={handleUnlockAllOccupantRows}
-                        disabled={occupantUnlockingAll}
-                        className="flex items-center gap-1 text-sky-400 hover:text-sky-300 disabled:opacity-50 transition-colors"
-                      >
-                        {occupantUnlockingAll ? <Loader2 className="w-3 h-3 animate-spin" /> : <Lock className="w-3 h-3" />}
-                        Unlock all
-                      </button>
+                      {occupantUnlockConfirm === "footer" ? (
+                        <>
+                          <span className="text-sky-400">Remove all locks?</span>
+                          <button
+                            onClick={() => { setOccupantUnlockConfirm(null); handleUnlockAllOccupantRows(); }}
+                            disabled={occupantUnlockingAll}
+                            className="flex items-center gap-1 text-sky-400 hover:text-sky-300 font-medium disabled:opacity-50 transition-colors"
+                          >
+                            {occupantUnlockingAll ? <Loader2 className="w-3 h-3 animate-spin" /> : <LockOpen className="w-3 h-3" />}
+                            Unlock all
+                          </button>
+                          <button
+                            onClick={() => setOccupantUnlockConfirm(null)}
+                            className="text-muted-foreground hover:text-foreground transition-colors"
+                          >
+                            Cancel
+                          </button>
+                        </>
+                      ) : (
+                        <button
+                          onClick={() => setOccupantUnlockConfirm("footer")}
+                          disabled={occupantUnlockingAll}
+                          className="flex items-center gap-1 text-sky-400 hover:text-sky-300 disabled:opacity-50 transition-colors"
+                        >
+                          {occupantUnlockingAll ? <Loader2 className="w-3 h-3 animate-spin" /> : <Lock className="w-3 h-3" />}
+                          Unlock all
+                        </button>
+                      )}
                     </>
                   )}
                 </>
