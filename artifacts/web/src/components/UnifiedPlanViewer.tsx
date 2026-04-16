@@ -2227,6 +2227,17 @@ export function UnifiedPlanViewer({
     />
   );
 
+  // ── Unplaced count per file (for tab badges) ───────────────────────────────
+  const unplacedCountByFile = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const s of localSigns) {
+      if (s.jobFileId && (s.xPos == null || s.yPos == null)) {
+        map.set(s.jobFileId, (map.get(s.jobFileId) ?? 0) + 1);
+      }
+    }
+    return map;
+  }, [localSigns]);
+
   // ── Tab mode ───────────────────────────────────────────────────────────────
   if (mode === "tab") {
     return (
@@ -2236,6 +2247,7 @@ export function UnifiedPlanViewer({
             {floorPlanFiles.map((f) => {
               const active = f.id === selectedFileId;
               const lockedCount = localSigns.filter((s) => s.jobFileId === f.id && s.manuallyEdited).length;
+              const unplacedCount = unplacedCountByFile.get(f.id) ?? 0;
               return (
                 <button key={f.id} onClick={() => setSelectedFileId(f.id)}
                   className={`px-3 py-1.5 text-xs font-mono rounded-t-md border-b-2 whitespace-nowrap transition-all -mb-px flex items-center gap-1.5 ${active ? "border-primary text-primary bg-background border-x border-t border-border" : "border-transparent text-muted-foreground hover:text-foreground hover:bg-secondary/40"}`}>
@@ -2243,6 +2255,11 @@ export function UnifiedPlanViewer({
                   {lockedCount > 0 && (
                     <span className="inline-flex items-center justify-center min-w-[1.25rem] h-4 px-1 rounded-full bg-amber-500/20 text-amber-600 dark:text-amber-400 text-[10px] font-semibold leading-none">
                       {lockedCount}
+                    </span>
+                  )}
+                  {unplacedCount > 0 && (
+                    <span className="inline-flex items-center justify-center rounded-full bg-muted text-muted-foreground border border-border text-[10px] font-semibold leading-none px-1.5 py-0.5 min-w-[18px]">
+                      {unplacedCount}
                     </span>
                   )}
                 </button>
