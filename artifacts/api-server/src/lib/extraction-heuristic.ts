@@ -53,22 +53,25 @@ function isRoomCode(text: string): boolean {
  * Noise-filter: returns true if the phrase should be skipped for anchor/companion matching.
  * Only rejects definitively non-room content:
  *   - Strings shorter than 2 characters
- *   - Strings longer than 50 characters (annotations, legends, data fields)
+ *   - Strings longer than 17 characters (no real room label exceeds "DIRECTOR'S OFFICE")
  *   - Strings containing a colon (key-value structured data, never a room label)
  *   - Dimension strings containing foot/inch marks (e.g. 6'-8", 4")
  *   - Fractional dimensions (digit/digit, e.g. 1/4, 3/8)
  *   - Strings with zero alphanumeric characters
  *   - Area measurement strings (e.g. 217.75 sq ft, 100 sqft, 50 sf)
+ *   - Strings starting with '(' — IBC occupancy codes, annotations (e.g. (A-3), (INCHES))
+ *   - Strings with more ')' than '(' — fragments like CMU), OF STAIRS)
+ *   - Strings containing '(EXISTING)' — existing-element labels, never a sign location
  *
  * IMPORTANT: slash-separated room labels like "UTL/JAN/RISER" must NOT be
  * filtered here — they are legitimate compound room labels.  Only filter
  * slashes when they are part of a dimension-style fraction (digit/digit).
  */
-function isNoisyPhrase(text: string): boolean {
+export function isNoisyPhrase(text: string): boolean {
   const t = text.trim();
   if (t.length < 2) return true;
-  // Long strings are never room labels — always annotations, legends, or data fields
-  if (t.length > 50) return true;
+  // Long strings are never room labels — no legitimate label exceeds "DIRECTOR'S OFFICE" (17 chars)
+  if (t.length > 17) return true;
   // Colon indicates key-value structured data, never a room label
   if (t.includes(':')) return true;
   // Dimension strings: foot/inch marks after digits (e.g. 6'-8", 4")
@@ -89,6 +92,25 @@ function isNoisyPhrase(text: string): boolean {
   const lastWord = t.replace(/[.,!?]+$/, '').split(/\s+/).pop()?.toLowerCase() ?? '';
   if (['inc', 'llc', 'corp', 'ltd', 'co'].includes(lastWord)) {
     logger.debug({ phrase: t, lastWord }, 'isNoisyPhrase: rejected — firm-name suffix');
+    return true;
+  }
+  // Parenthetical IBC occupancy codes and annotations — strings starting with '('
+  // are always noise: (A-3), (B), (S-1), (INCHES), (ABOVE CEILING), etc.
+  if (t.startsWith('(')) {
+    logger.debug({ phrase: t }, 'isNoisyPhrase: rejected — starts with (');
+    return true;
+  }
+  // Mismatched parentheses — more closing ')' than opening '(' indicates a fragment
+  // cut from a larger annotation, e.g. "CMU)", "OF STAIRS)", "THICK CMU)"
+  const openCount = (t.match(/\(/g) ?? []).length;
+  const closeCount = (t.match(/\)/g) ?? []).length;
+  if (closeCount > openCount) {
+    logger.debug({ phrase: t, openCount, closeCount }, 'isNoisyPhrase: rejected — mismatched parentheses');
+    return true;
+  }
+  // Existing-element labels — never a sign location
+  if (/\(EXISTING\)/i.test(t)) {
+    logger.debug({ phrase: t }, 'isNoisyPhrase: rejected — contains (EXISTING)');
     return true;
   }
   return false;
