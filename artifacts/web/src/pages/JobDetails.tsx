@@ -534,6 +534,7 @@ export default function JobDetails() {
   const [showHidden, setShowHidden] = useState(false);
   const [showExceptions, setShowExceptions] = useState(false);
   const [showUnplacedOnly, setShowUnplacedOnly] = useState(false);
+  const [showLockedOnly, setShowLockedOnly] = useState(false);
   const [signsUnlockingAll, setSignsUnlockingAll] = useState(false);
   const [showSignsConfirm, setShowSignsConfirm] = useState(false);
   const [sortField, setSortField] = useState<string | null>(null);
@@ -801,6 +802,7 @@ export default function JobDetails() {
   const hiddenSigns = (data as typeof data & { hiddenSigns?: typeof data.extractedSigns }).hiddenSigns ?? [];
   const exceptionSigns = extractedSigns.filter((s) => s.reviewFlag && s.exceptionReason);
   const manuallyEditedSignsCount = extractedSigns.filter((s) => (s as Record<string, unknown>).manuallyEdited).length;
+  const lockedSigns = extractedSigns.filter((s) => (s as Record<string, unknown>).manuallyEdited);
 
   // Unplaced-sign counts used by both the PDF button badge and the canvas banner.
   const _placedCount = extractedSigns.filter((s) => s.pageNumber != null).length;
@@ -824,6 +826,9 @@ export default function JobDetails() {
       : extractedSigns;
     if (showUnplacedOnly) {
       signs = signs.filter((s) => s.pageNumber == null);
+    }
+    if (showLockedOnly) {
+      signs = signs.filter((s) => (s as Record<string, unknown>).manuallyEdited);
     }
     return signs;
   })();
@@ -1440,7 +1445,7 @@ export default function JobDetails() {
                   {/* Data Table Container */}
                   <div className="flex-1 overflow-auto bg-card border-t border-border">
                 {/* Filter bar — exceptions toggle + hidden toggle + unlock all + unplaced filter */}
-                {(hiddenSigns.length > 0 || exceptionSigns.length > 0 || manuallyEditedSignsCount > 0 || unplacedCount > 0 || showUnplacedOnly) && (
+                {(hiddenSigns.length > 0 || exceptionSigns.length > 0 || manuallyEditedSignsCount > 0 || unplacedCount > 0 || showUnplacedOnly || showLockedOnly) && (
                   <div className="flex items-center gap-3 px-4 py-2 bg-secondary/60 border-b border-border/60">
                     {(unplacedCount > 0 || showUnplacedOnly) && (
                       <button
@@ -1453,6 +1458,19 @@ export default function JobDetails() {
                       >
                         <MapPin className="w-3 h-3" />
                         {showUnplacedOnly ? `Show all signs (${unplacedCount} unplaced)` : `Unplaced only (${unplacedCount})`}
+                      </button>
+                    )}
+                    {(lockedSigns.length > 0 || showLockedOnly) && (
+                      <button
+                        onClick={() => setShowLockedOnly((v) => !v)}
+                        className={`flex items-center gap-2 px-3 py-1 rounded-md text-[11px] font-display font-semibold uppercase tracking-wide border transition-all ${
+                          showLockedOnly
+                            ? "bg-amber-500/15 text-amber-600 border-amber-500/40"
+                            : "bg-secondary text-muted-foreground border-border hover:text-amber-600 hover:border-amber-500/40"
+                        }`}
+                      >
+                        <Lock className="w-3 h-3" />
+                        {showLockedOnly ? `Show all signs (${lockedSigns.length} locked)` : `Locked (${lockedSigns.length})`}
                       </button>
                     )}
                     {exceptionSigns.length > 0 && (
