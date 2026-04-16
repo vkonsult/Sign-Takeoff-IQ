@@ -67,9 +67,12 @@ function isRoomCode(text: string): boolean {
  * Noise-filter: returns true if the phrase should be skipped for anchor/companion matching.
  * Only rejects definitively non-room content:
  *   - Strings shorter than 2 characters
+ *   - Strings longer than 50 characters (annotations, legends, data fields)
+ *   - Strings containing a colon (key-value structured data, never a room label)
  *   - Dimension strings containing foot/inch marks (e.g. 6'-8", 4")
  *   - Fractional dimensions (digit/digit, e.g. 1/4, 3/8)
  *   - Strings with zero alphanumeric characters
+ *   - Area measurement strings (e.g. 217.75 sq ft, 100 sqft, 50 sf)
  *
  * IMPORTANT: slash-separated room labels like "UTL/JAN/RISER" must NOT be
  * filtered here — they are legitimate compound room labels.  Only filter
@@ -78,12 +81,18 @@ function isRoomCode(text: string): boolean {
 function isNoisyPhrase(text: string): boolean {
   const t = text.trim();
   if (t.length < 2) return true;
+  // Long strings are never room labels — always annotations, legends, or data fields
+  if (t.length > 50) return true;
+  // Colon indicates key-value structured data, never a room label
+  if (t.includes(':')) return true;
   // Dimension strings: foot/inch marks after digits (e.g. 6'-8", 4")
   if (/[0-9]['"]/.test(t)) return true;
   // Fractional dimension: digit/digit (e.g. 1/4, 3/8, 1/2)
   if (/[0-9]\/[0-9]/.test(t)) return true;
   // Strings with zero alphanumeric characters (pure symbols like "#@!")
   if (!/[A-Za-z0-9]/.test(t)) return true;
+  // Area measurement strings (e.g. 217.75 sq ft, 100 sqft, 50 sf, 200 square feet)
+  if (/[0-9]\s*(?:sq\.?\s*ft\.?|sqft|sf|square\s+f(?:eet|oot))/i.test(t)) return true;
   return false;
 }
 
