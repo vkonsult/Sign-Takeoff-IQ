@@ -41,26 +41,20 @@ interface PhraseRecord {
 
 /**
  * Returns true if the phrase looks like a floor-plan room code.
- * Accepts any compact alphanumeric identifier (up to ~20 chars) that:
- *   - Contains at least one digit
- *   - Contains only letters, digits, hyphens, dots, or spaces
- *   - Is not a dimension string (no foot/inch marks)
- *   - Is not a pure fraction (digit/digit)
- *
- * Covers: 101, A101, C300, A306, BS2-3, AS1-3, 1.2A, B-101, S2-3, etc.
+ * Accepted forms (digit group must be 101–999):
+ *   - 3 digits only:                   101, 202, 999
+ *   - 1 letter + 3 digits:             A101, Z999
+ *   - 2 letters + 3 digits:            AB123
+ *   - 2 letters + dash/dot + 3 digits: BS-123, BS.123, AB-123
  */
+// Numeric portion: exactly 101–999 (excludes 000–100)
+const _D3 = '(?:1(?:0[1-9]|[1-9]\\d)|[2-9]\\d{2})';
+const ROOM_CODE_RE = new RegExp(
+  `^(?:${_D3}|[A-Za-z]${_D3}|[A-Za-z]{2}[-.]?${_D3})$`
+);
+
 function isRoomCode(text: string): boolean {
-  const t = text.trim();
-  if (t.length === 0 || t.length > 20) return false;
-  // Must contain at least one digit
-  if (!/[0-9]/.test(t)) return false;
-  // Must only contain letters, digits, hyphens, dots, or spaces
-  if (!/^[A-Za-z0-9\-.\s]+$/.test(t)) return false;
-  // Reject dimension strings (foot/inch marks after digits)
-  if (/[0-9]['"]/.test(t)) return false;
-  // Reject pure fractions (digit/digit)
-  if (/[0-9]\/[0-9]/.test(t)) return false;
-  return true;
+  return ROOM_CODE_RE.test(text.trim());
 }
 
 /**
