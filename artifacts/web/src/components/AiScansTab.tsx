@@ -109,14 +109,23 @@ export function AiScansTab({
   const [occupantHighlightProtected, setOccupantHighlightProtected] = useState(false);
   const plaqueTableRef = useRef<HTMLDivElement | null>(null);
   const occupantTableRef = useRef<HTMLDivElement | null>(null);
+  const plaqueHighlightTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const occupantHighlightTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const handlePlaqueProtectedClick = useCallback(() => {
     const container = plaqueTableRef.current;
     if (!container) return;
     const firstProtected = container.querySelector<HTMLElement>("[data-protected='true']");
     if (firstProtected) firstProtected.scrollIntoView({ behavior: "smooth", block: "nearest" });
-    setPlaqueHighlightProtected(true);
-    setTimeout(() => setPlaqueHighlightProtected(false), 1800);
+    if (plaqueHighlightTimerRef.current !== null) clearTimeout(plaqueHighlightTimerRef.current);
+    setPlaqueHighlightProtected(false);
+    requestAnimationFrame(() => {
+      setPlaqueHighlightProtected(true);
+      plaqueHighlightTimerRef.current = setTimeout(() => {
+        setPlaqueHighlightProtected(false);
+        plaqueHighlightTimerRef.current = null;
+      }, 1800);
+    });
   }, []);
 
   const handleOccupantProtectedClick = useCallback(() => {
@@ -124,8 +133,15 @@ export function AiScansTab({
     if (!container) return;
     const firstProtected = container.querySelector<HTMLElement>("[data-protected='true']");
     if (firstProtected) firstProtected.scrollIntoView({ behavior: "smooth", block: "nearest" });
-    setOccupantHighlightProtected(true);
-    setTimeout(() => setOccupantHighlightProtected(false), 1800);
+    if (occupantHighlightTimerRef.current !== null) clearTimeout(occupantHighlightTimerRef.current);
+    setOccupantHighlightProtected(false);
+    requestAnimationFrame(() => {
+      setOccupantHighlightProtected(true);
+      occupantHighlightTimerRef.current = setTimeout(() => {
+        setOccupantHighlightProtected(false);
+        occupantHighlightTimerRef.current = null;
+      }, 1800);
+    });
   }, []);
 
   // Occupant Loads inline-editing state
@@ -1173,7 +1189,7 @@ export function AiScansTab({
                         key={row.id}
                         ref={plaqueConfirmDeleteId === row.id ? plaqueConfirmRef : null}
                         data-protected={row.manuallyEdited ? "true" : undefined}
-                        className={`border-b border-border/50 hover:bg-secondary/20 transition-colors group ${isDeleting || isPlaqueUnlocking ? "opacity-40" : ""} ${plaqueHighlightProtected && row.manuallyEdited ? "ring-1 ring-inset ring-amber-400/60 bg-amber-500/10" : ""}`}
+                        className={`border-b border-border/50 hover:bg-secondary/20 transition-colors group ${isDeleting || isPlaqueUnlocking ? "opacity-40" : ""} ${plaqueHighlightProtected && row.manuallyEdited ? "protected-flash-amber" : ""}`}
                       >
                         <td className="px-3 py-2 font-mono text-amber-400">
                           <span className="flex items-center gap-1.5">
@@ -1576,7 +1592,7 @@ export function AiScansTab({
                         data-protected={row.manuallyEdited ? "true" : undefined}
                         className={`border-b border-border/50 transition-colors group ${
                           isAssembly ? "bg-orange-500/8 hover:bg-orange-500/12" : "hover:bg-secondary/20"
-                        } ${isDeleting || isUnlocking ? "opacity-40" : ""} ${occupantHighlightProtected && row.manuallyEdited ? "ring-1 ring-inset ring-sky-400/60 bg-sky-500/10" : ""}`}
+                        } ${isDeleting || isUnlocking ? "opacity-40" : ""} ${occupantHighlightProtected && row.manuallyEdited ? "protected-flash-sky" : ""}`}
                       >
                         <td className="px-3 py-2 font-mono text-sky-400">
                           <span className="flex items-center gap-1.5">
