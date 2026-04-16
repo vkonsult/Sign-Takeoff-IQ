@@ -9,7 +9,7 @@ import { Button } from "@/components/ui/button";
 import {
   FolderOpen, Eye, FileText, CheckCircle2, Cpu,
   AlertTriangle, Trash2, X, Square, CheckSquare, MinusSquare,
-  Archive, EyeOff,
+  Archive, EyeOff, Layers, Users,
 } from "lucide-react";
 import { Link } from "wouter";
 
@@ -70,6 +70,8 @@ export default function JobsList() {
     updatedAt?: string | null;
     recentUsers?: RecentUser[];
     files?: { id: string; originalName: string }[];
+    plaqueCount?: number | null;
+    occupantLoadCount?: number | null;
   }>;
   const allIds = jobs.map((j) => j.id);
   const allSelected = allIds.length > 0 && allIds.every((id) => selected.has(id));
@@ -236,6 +238,8 @@ export default function JobsList() {
                 };
                 const recentUsers: RecentUser[] = jobAny.recentUsers ?? [];
                 const jobFiles: { id: string; originalName: string }[] = jobAny.files ?? [];
+                const plaqueCount = Number(job.plaqueCount ?? 0);
+                const occupantLoadCount = Number(job.occupantLoadCount ?? 0);
 
                 return (
                   <div key={job.id} className="flex flex-col">
@@ -277,8 +281,28 @@ export default function JobsList() {
                               </button>
                             ))}
                           </div>
-                          <div className="text-xs font-mono text-muted-foreground/60 truncate mt-0.5">
-                            {job.id.split("-")[0]}
+                          <div className="flex items-center gap-2 mt-0.5 flex-wrap">
+                            <span className="text-xs font-mono text-muted-foreground/60">
+                              {job.id.split("-")[0]}
+                            </span>
+                            {plaqueCount > 0 && (
+                              <span
+                                className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-violet-500/10 text-violet-400 border border-violet-500/20"
+                                title={`${plaqueCount} plaque type${plaqueCount !== 1 ? "s" : ""} extracted`}
+                              >
+                                <Layers className="w-2.5 h-2.5" />
+                                {plaqueCount} plaque{plaqueCount !== 1 ? "s" : ""}
+                              </span>
+                            )}
+                            {occupantLoadCount > 0 && (
+                              <span
+                                className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-sky-500/10 text-sky-400 border border-sky-500/20"
+                                title={`${occupantLoadCount} occupant load room${occupantLoadCount !== 1 ? "s" : ""} extracted`}
+                              >
+                                <Users className="w-2.5 h-2.5" />
+                                {occupantLoadCount} occ. load{occupantLoadCount !== 1 ? "s" : ""}
+                              </span>
+                            )}
                           </div>
                         </div>
                       </div>

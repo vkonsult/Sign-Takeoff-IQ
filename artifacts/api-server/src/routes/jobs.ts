@@ -82,6 +82,8 @@ router.get("/jobs", async (req, res) => {
         lastActivityUser: sql<string | null>`(SELECT user_name FROM activity_logs WHERE job_id = ${jobsTable.id} ORDER BY created_at DESC LIMIT 1)`.as("last_activity_user"),
         lastActivityInitials: sql<string | null>`(SELECT user_initials FROM activity_logs WHERE job_id = ${jobsTable.id} ORDER BY created_at DESC LIMIT 1)`.as("last_activity_initials"),
         lastActivityType: sql<string | null>`(SELECT event_type FROM activity_logs WHERE job_id = ${jobsTable.id} ORDER BY created_at DESC LIMIT 1)`.as("last_activity_type"),
+        plaqueCount: sql<number>`(SELECT COUNT(*) FROM plaque_schedules WHERE job_id = ${jobsTable.id})`.as("plaque_count"),
+        occupantLoadCount: sql<number>`(SELECT COUNT(*) FROM occupant_loads WHERE job_id = ${jobsTable.id})`.as("occupant_load_count"),
       })
       .from(jobsTable)
       .where(whereClause)
