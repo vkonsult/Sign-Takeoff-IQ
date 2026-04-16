@@ -560,11 +560,57 @@ export default function JobDetails() {
     (data?.extractedSigns?.length ?? 0) === 0 &&
     (plaqueScheduleQuery.data?.plaques?.length ?? 0) === 0 &&
     (occupantLoadsQuery.data?.loads?.length ?? 0) === 0;
-  const exportDisabled = isProcessingNow || supplementalDataLoading || hasNoData;
-  const hasNoMapData =
-    isProcessingNow ||
-    (isJobCompleted &&
-    (data?.extractedSigns ?? []).filter((s: { pageNumber?: number | null }) => s.pageNumber != null).length === 0);
+  // ── Unified export-button state ─────────────────────────────────────────
+  // All conditions that affect either export button live here.
+  // Adding a new shared condition (e.g. a new job state) only requires
+  // editing this one object; both buttons automatically stay in sync.
+  const exportButtonState = (() => {
+    const processing = isProcessingNow;
+
+    // XLSX
+    const xlsxDisabled = processing || supplementalDataLoading || hasNoData;
+    const xlsxHasNoSigns = (data?.extractedSigns ?? []).length === 0;
+    const xlsxHasPartialData =
+      (plaqueScheduleQuery.data?.plaques?.length ?? 0) > 0 ||
+      (occupantLoadsQuery.data?.loads?.length ?? 0) > 0 ||
+      (occupantLoadsQuery.data?.assemblyRooms?.length ?? 0) > 0;
+    const xlsxShowPartialBadge = xlsxHasNoSigns && xlsxHasPartialData;
+    const xlsxTooltip = xlsxDisabled
+      ? processing
+        ? "Job is still processing — wait for extraction to finish before exporting"
+        : supplementalDataLoading
+        ? "Loading data…"
+        : "No sign, plaque, or occupant load data to export"
+      : xlsxShowPartialBadge
+      ? "Partial export — no sign takeoff rows found. File will contain plaque/occupant load data only."
+      : "Download sign takeoff data as an Excel spreadsheet";
+
+    // PDF
+    const pdfSigns = data?.extractedSigns ?? [];
+    const pdfPlacedCount = pdfSigns.filter((s: { pageNumber?: number | null }) => s.pageNumber != null).length;
+    const pdfUnplacedCount = pdfSigns.length - pdfPlacedCount;
+    const pdfNoneArePlaced = pdfSigns.length > 0 && pdfPlacedCount === 0;
+    const pdfSomeAreUnplaced = pdfSigns.length > 0 && pdfUnplacedCount > 0 && pdfPlacedCount > 0;
+    const pdfDisabled =
+      processing ||
+      (isJobCompleted && pdfPlacedCount === 0);
+    const pdfShowPartialBadge =
+      !exportingPdf && !processing && (pdfNoneArePlaced || pdfSomeAreUnplaced);
+    const pdfTooltip = processing
+      ? "Job is still processing — wait for extraction to finish before exporting"
+      : pdfNoneArePlaced
+      ? "Partial export — signs exist but none have floor plan locations. The PDF will have no markers."
+      : pdfSomeAreUnplaced
+      ? `Partial export — ${pdfUnplacedCount} of ${pdfSigns.length} sign${pdfSigns.length !== 1 ? "s" : ""} ${pdfUnplacedCount !== 1 ? "are" : "is"} not placed on the floor plan and will be missing from the PDF.`
+      : pdfDisabled
+      ? "No signs have floor plan locations — nothing to mark on the PDF"
+      : "Download the original PDF with sign markers drawn on each floor plan page";
+
+    return {
+      xlsx: { disabled: xlsxDisabled, showPartialBadge: xlsxShowPartialBadge, tooltip: xlsxTooltip },
+      pdf: { disabled: pdfDisabled, showPartialBadge: pdfShowPartialBadge, tooltip: pdfTooltip },
+    };
+  })();
 
   const handleSort = (field: string) => {
     if (sortField === field) {
@@ -982,98 +1028,55 @@ export default function JobDetails() {
                       <TooltipContent>Re-run both text and visual scans to refresh sign data</TooltipContent>
                     </Tooltip>
                   </TooltipProvider>
-                  {(() => {
-                    const pdfSigns = data?.extractedSigns ?? [];
-                    const placedCount = pdfSigns.filter((s: { pageNumber?: number | null }) => s.pageNumber != null).length;
-                    const unplacedCount = pdfSigns.length - placedCount;
-                    const noneArePlaced = pdfSigns.length > 0 && placedCount === 0;
-                    const someAreUnplaced = pdfSigns.length > 0 && unplacedCount > 0 && placedCount > 0;
-                    const showPdfPartialNotice =
-                      !exportingPdf &&
-                      !isProcessingNow &&
-                      (noneArePlaced || someAreUnplaced);
-                    return (
-                      <TooltipProvider>
-                        <Tooltip>
-                          <TooltipTrigger asChild>
-                            <span className="relative inline-flex">
-                              <Button
-                                onClick={handleExportMarkedPdf}
-                                disabled={exportingPdf || hasNoMapData}
-                                variant="outline"
-                                className="font-display font-semibold uppercase tracking-wide hover:bg-primary/10 hover:text-primary hover:border-primary/40 disabled:opacity-50 disabled:cursor-not-allowed disabled:pointer-events-none"
-                              >
-                                {exportingPdf ? (
-                                  <Loader2 className="w-4 h-4 animate-spin" />
-                                ) : (
-                                  <Stamp className="w-4 h-4" />
-                                )}
-                                {exportingPdf ? "Building PDF…" : "Export Marked PDF"}
-                              </Button>
-                              {showPdfPartialNotice && (
-                                <span className="absolute -top-1.5 -right-1.5 flex h-4 w-4 items-center justify-center rounded-full bg-yellow-400 text-[9px] font-bold text-yellow-900 shadow">
-                                  !
-                                </span>
-                              )}
+                  <TooltipProvider>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <span className="relative inline-flex">
+                          <Button
+                            onClick={handleExportMarkedPdf}
+                            disabled={exportingPdf || exportButtonState.pdf.disabled}
+                            variant="outline"
+                            className="font-display font-semibold uppercase tracking-wide hover:bg-primary/10 hover:text-primary hover:border-primary/40 disabled:opacity-50 disabled:cursor-not-allowed disabled:pointer-events-none"
+                          >
+                            {exportingPdf ? (
+                              <Loader2 className="w-4 h-4 animate-spin" />
+                            ) : (
+                              <Stamp className="w-4 h-4" />
+                            )}
+                            {exportingPdf ? "Building PDF…" : "Export Marked PDF"}
+                          </Button>
+                          {exportButtonState.pdf.showPartialBadge && (
+                            <span className="absolute -top-1.5 -right-1.5 flex h-4 w-4 items-center justify-center rounded-full bg-yellow-400 text-[9px] font-bold text-yellow-900 shadow">
+                              !
                             </span>
-                          </TooltipTrigger>
-                          <TooltipContent>
-                            {isProcessingNow
-                              ? "Job is still processing — wait for extraction to finish before exporting"
-                              : noneArePlaced
-                              ? "Partial export — signs exist but none have floor plan locations. The PDF will have no markers."
-                              : someAreUnplaced
-                              ? `Partial export — ${unplacedCount} of ${pdfSigns.length} sign${pdfSigns.length !== 1 ? "s" : ""} ${unplacedCount !== 1 ? "are" : "is"} not placed on the floor plan and will be missing from the PDF.`
-                              : hasNoMapData
-                              ? "No signs have floor plan locations — nothing to mark on the PDF"
-                              : "Download the original PDF with sign markers drawn on each floor plan page"}
-                          </TooltipContent>
-                        </Tooltip>
-                      </TooltipProvider>
-                    );
-                  })()}
-                  {(() => {
-                    const hasNoSigns = extractedSigns.length === 0;
-                    const hasPartialData =
-                      (plaqueScheduleQuery.data?.plaques?.length ?? 0) > 0 ||
-                      (occupantLoadsQuery.data?.loads?.length ?? 0) > 0 ||
-                      (occupantLoadsQuery.data?.assemblyRooms?.length ?? 0) > 0;
-                    const showPartialNotice = hasNoSigns && hasPartialData;
-                    return (
-                      <TooltipProvider>
-                        <Tooltip>
-                          <TooltipTrigger asChild>
-                            <span className="relative inline-flex">
-                              <Button
-                                onClick={handleExport}
-                                disabled={exportDisabled}
-                                className="font-display font-semibold uppercase tracking-wide bg-accent text-accent-foreground hover:bg-accent/90 shadow-[0_0_15px_rgba(0,240,255,0.15)] disabled:opacity-50 disabled:cursor-not-allowed disabled:pointer-events-none"
-                              >
-                                <Download className="w-4 h-4" />
-                                Export XLSX
-                              </Button>
-                              {showPartialNotice && !exportDisabled && (
-                                <span className="absolute -top-1.5 -right-1.5 flex h-4 w-4 items-center justify-center rounded-full bg-yellow-400 text-[9px] font-bold text-yellow-900 shadow">
-                                  !
-                                </span>
-                              )}
+                          )}
+                        </span>
+                      </TooltipTrigger>
+                      <TooltipContent>{exportButtonState.pdf.tooltip}</TooltipContent>
+                    </Tooltip>
+                  </TooltipProvider>
+                  <TooltipProvider>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <span className="relative inline-flex">
+                          <Button
+                            onClick={handleExport}
+                            disabled={exportButtonState.xlsx.disabled}
+                            className="font-display font-semibold uppercase tracking-wide bg-accent text-accent-foreground hover:bg-accent/90 shadow-[0_0_15px_rgba(0,240,255,0.15)] disabled:opacity-50 disabled:cursor-not-allowed disabled:pointer-events-none"
+                          >
+                            <Download className="w-4 h-4" />
+                            Export XLSX
+                          </Button>
+                          {exportButtonState.xlsx.showPartialBadge && !exportButtonState.xlsx.disabled && (
+                            <span className="absolute -top-1.5 -right-1.5 flex h-4 w-4 items-center justify-center rounded-full bg-yellow-400 text-[9px] font-bold text-yellow-900 shadow">
+                              !
                             </span>
-                          </TooltipTrigger>
-                          <TooltipContent>
-                            {exportDisabled
-                              ? isProcessingNow
-                                ? "Job is still processing — wait for extraction to finish before exporting"
-                                : supplementalDataLoading
-                                ? "Loading data…"
-                                : "No sign, plaque, or occupant load data to export"
-                              : showPartialNotice
-                              ? "Partial export — no sign takeoff rows found. File will contain plaque/occupant load data only."
-                              : "Download sign takeoff data as an Excel spreadsheet"}
-                          </TooltipContent>
-                        </Tooltip>
-                      </TooltipProvider>
-                    );
-                  })()}
+                          )}
+                        </span>
+                      </TooltipTrigger>
+                      <TooltipContent>{exportButtonState.xlsx.tooltip}</TooltipContent>
+                    </Tooltip>
+                  </TooltipProvider>
                 </>
               )}
             </div>
