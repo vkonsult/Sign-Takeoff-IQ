@@ -437,6 +437,9 @@ function ProcessingTimeline({ steps }: { steps: ProcessingStep[] }) {
   );
 }
 
+type TabId = "table" | "sheets" | "summary" | "floorplans" | "signpages" | "specs" | "timeline" | "coords" | "ai_scans" | "compliance" | "plaque_schedule" | "occupant_loads";
+const VALID_TABS = new Set<TabId>(["table", "sheets", "summary", "floorplans", "signpages", "specs", "timeline", "coords", "ai_scans", "compliance", "plaque_schedule", "occupant_loads"]);
+
 export default function JobDetails() {
   const [, params] = useRoute("/jobs/:jobId");
   const jobId = params?.jobId || "";
@@ -451,9 +454,6 @@ export default function JobDetails() {
   const _initSortField = _urlParams.get("sort") || null;
   const _initSortDir = (_urlParams.get("dir") === "desc" ? "desc" : "asc") as "asc" | "desc";
   const _initSummaryFilter = _urlParams.get("filter") === "flagged" ? ("flagged" as const) : null;
-  const _validTabs = ["table","sheets","summary","floorplans","signpages","specs","timeline","coords","ai_scans","compliance","plaque_schedule","occupant_loads"] as const;
-  type ActiveTab = typeof _validTabs[number];
-  const _initActiveTab: ActiveTab = (_validTabs as readonly string[]).includes(_urlParams.get("tab") ?? "") ? (_urlParams.get("tab") as ActiveTab) : "table";
 
   const { data, isLoading, isError, error } = useJobDetails(jobId);
   const extractMutation = useStartExtraction();
@@ -554,7 +554,11 @@ export default function JobDetails() {
   const [sortField, setSortField] = useState<string | null>(_initSortField);
   const [sortDir, setSortDir] = useState<"asc" | "desc">(_initSortDir);
   const [summaryFilter, setSummaryFilter] = useState<null | "flagged">(_initSummaryFilter);
-  const [activeTab, setActiveTab] = useState<"table" | "sheets" | "summary" | "floorplans" | "signpages" | "specs" | "timeline" | "coords" | "ai_scans" | "compliance" | "plaque_schedule" | "occupant_loads">(_initActiveTab);
+  const tabFromUrl = new URLSearchParams(search).get("tab") as TabId | null;
+  const activeTab: TabId = tabFromUrl && VALID_TABS.has(tabFromUrl) ? tabFromUrl : "table";
+  const setActiveTab = (tab: TabId) => {
+    setLocation(`/jobs/${jobId}?tab=${tab}`);
+  };
   const [placeSignId, setPlaceSignId] = useState<string | null>(null);
   const [showAiHighlight, setShowAiHighlight] = useState(false);
   const [unlockingSignId, setUnlockingSignId] = useState<string | null>(null);
