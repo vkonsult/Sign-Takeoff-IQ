@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from "react";
-import { useRoute, useSearch } from "wouter";
+import { useRoute, useSearch, useLocation } from "wouter";
 import { useQueryClient } from "@tanstack/react-query";
 import { AppShell } from "@/components/layout/Shell";
 import { apiFetch, openPdfInNewTab } from "@/lib/apiClient";
@@ -440,7 +440,21 @@ function ProcessingTimeline({ steps }: { steps: ProcessingStep[] }) {
 export default function JobDetails() {
   const [, params] = useRoute("/jobs/:jobId");
   const jobId = params?.jobId || "";
-  
+  const search = useSearch();
+  const [, setLocation] = useLocation();
+
+  const _urlParams = new URLSearchParams(search);
+  const _initShowHidden = _urlParams.get("hidden") === "1";
+  const _initShowExceptions = _urlParams.get("exceptions") === "1";
+  const _initShowUnplacedOnly = _urlParams.get("unplaced") === "1";
+  const _initShowLockedOnly = _urlParams.get("locked") === "1";
+  const _initSortField = _urlParams.get("sort") || null;
+  const _initSortDir = (_urlParams.get("dir") === "desc" ? "desc" : "asc") as "asc" | "desc";
+  const _initSummaryFilter = _urlParams.get("filter") === "flagged" ? ("flagged" as const) : null;
+  const _validTabs = ["table","sheets","summary","floorplans","signpages","specs","timeline","coords","ai_scans","compliance","plaque_schedule","occupant_loads"] as const;
+  type ActiveTab = typeof _validTabs[number];
+  const _initActiveTab: ActiveTab = (_validTabs as readonly string[]).includes(_urlParams.get("tab") ?? "") ? (_urlParams.get("tab") as ActiveTab) : "table";
+
   const { data, isLoading, isError, error } = useJobDetails(jobId);
   const extractMutation = useStartExtraction();
   const queryClient = useQueryClient();
@@ -531,23 +545,16 @@ export default function JobDetails() {
     }
   };
 
-  const [showHidden, setShowHidden] = useState(false);
-  const [showExceptions, setShowExceptions] = useState(false);
-  const [showUnplacedOnly, setShowUnplacedOnly] = useState(false);
-  const [showLockedOnly, setShowLockedOnly] = useState(false);
+  const [showHidden, setShowHidden] = useState(_initShowHidden);
+  const [showExceptions, setShowExceptions] = useState(_initShowExceptions);
+  const [showUnplacedOnly, setShowUnplacedOnly] = useState(_initShowUnplacedOnly);
+  const [showLockedOnly, setShowLockedOnly] = useState(_initShowLockedOnly);
   const [signsUnlockingAll, setSignsUnlockingAll] = useState(false);
   const [showSignsConfirm, setShowSignsConfirm] = useState(false);
-  const [sortField, setSortField] = useState<string | null>(null);
-  const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
-  const [summaryFilter, setSummaryFilter] = useState<null | "flagged">(null);
-  const searchString = useSearch();
-  const initialTab = (() => {
-    const p = new URLSearchParams(searchString);
-    const t = p.get("tab");
-    const valid = ["table","sheets","summary","floorplans","signpages","specs","timeline","coords","ai_scans","compliance","plaque_schedule","occupant_loads"] as const;
-    return (valid as readonly string[]).includes(t ?? "") ? (t as typeof valid[number]) : "table";
-  })();
-  const [activeTab, setActiveTab] = useState<"table" | "sheets" | "summary" | "floorplans" | "signpages" | "specs" | "timeline" | "coords" | "ai_scans" | "compliance" | "plaque_schedule" | "occupant_loads">(initialTab);
+  const [sortField, setSortField] = useState<string | null>(_initSortField);
+  const [sortDir, setSortDir] = useState<"asc" | "desc">(_initSortDir);
+  const [summaryFilter, setSummaryFilter] = useState<null | "flagged">(_initSummaryFilter);
+  const [activeTab, setActiveTab] = useState<"table" | "sheets" | "summary" | "floorplans" | "signpages" | "specs" | "timeline" | "coords" | "ai_scans" | "compliance" | "plaque_schedule" | "occupant_loads">(_initActiveTab);
   const [showAiHighlight, setShowAiHighlight] = useState(false);
   const [unlockingSignId, setUnlockingSignId] = useState<string | null>(null);
 
@@ -595,6 +602,23 @@ export default function JobDetails() {
       setSortDir("asc");
     }
   };
+
+  useEffect(() => {
+    const p = new URLSearchParams(window.location.search);
+    if (showHidden) p.set("hidden", "1"); else p.delete("hidden");
+    if (showExceptions) p.set("exceptions", "1"); else p.delete("exceptions");
+    if (showUnplacedOnly) p.set("unplaced", "1"); else p.delete("unplaced");
+    if (showLockedOnly) p.set("locked", "1"); else p.delete("locked");
+    if (sortField) p.set("sort", sortField); else p.delete("sort");
+    if (sortDir === "desc") p.set("dir", "desc"); else p.delete("dir");
+    if (summaryFilter === "flagged") p.set("filter", "flagged"); else p.delete("filter");
+    if (activeTab !== "table") p.set("tab", activeTab); else p.delete("tab");
+    const qs = p.toString();
+    const newPath = window.location.pathname + (qs ? `?${qs}` : "");
+    if (window.location.search !== (qs ? `?${qs}` : "")) {
+      setLocation(newPath, { replace: true });
+    }
+  }, [showHidden, showExceptions, showUnplacedOnly, showLockedOnly, sortField, sortDir, summaryFilter, activeTab, setLocation]);
 
   const toggleHidden = async (signId: string, currentlyHidden: boolean) => {
     const next = !currentlyHidden;
