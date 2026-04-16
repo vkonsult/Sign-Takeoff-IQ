@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 import { apiFetch } from "@/lib/apiClient";
 import { Brain, Play, Loader2, CheckCircle2, AlertTriangle, Info, Cpu, Eye, EyeOff, ChevronDown, ChevronRight, BookOpen, Users, Pencil, Trash2, Plus, Check, X } from "lucide-react";
 
@@ -92,6 +92,27 @@ export function AiScansTab({
   const [editError, setEditError] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  const confirmRef = useRef<HTMLTableRowElement | null>(null);
+
+  useEffect(() => {
+    if (!confirmDeleteId) return;
+    const handleMouseDown = (e: MouseEvent) => {
+      if (confirmRef.current && !confirmRef.current.contains(e.target as Node)) {
+        setConfirmDeleteId(null);
+      }
+    };
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        setConfirmDeleteId(null);
+      }
+    };
+    document.addEventListener("mousedown", handleMouseDown);
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", handleMouseDown);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [confirmDeleteId]);
 
   useEffect(() => {
     setRegistryLoading(true);
@@ -814,6 +835,7 @@ export function AiScansTab({
                     return (
                       <tr
                         key={row.id}
+                        ref={confirmDeleteId === row.id ? confirmRef : null}
                         className={`border-b border-border/50 transition-colors group ${
                           isAssembly ? "bg-orange-500/8 hover:bg-orange-500/12" : "hover:bg-secondary/20"
                         } ${isDeleting ? "opacity-40" : ""}`}
