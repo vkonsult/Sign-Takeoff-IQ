@@ -533,6 +533,7 @@ export default function JobDetails() {
   const [showHidden, setShowHidden] = useState(false);
   const [showExceptions, setShowExceptions] = useState(false);
   const [signsUnlockingAll, setSignsUnlockingAll] = useState(false);
+  const [showSignsConfirm, setShowSignsConfirm] = useState(false);
   const [sortField, setSortField] = useState<string | null>(null);
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
   const [summaryFilter, setSummaryFilter] = useState<null | "flagged">(null);
@@ -1467,18 +1468,36 @@ export default function JobDetails() {
                       </span>
                     )}
                     {manuallyEditedSignsCount > 0 && (
-                      <button
-                        onClick={handleUnlockAllSigns}
-                        disabled={signsUnlockingAll}
-                        className="flex items-center gap-2 px-3 py-1 rounded-md text-[11px] font-display font-semibold uppercase tracking-wide border transition-all bg-secondary text-muted-foreground border-border hover:text-amber-600 hover:border-amber-500/40 disabled:opacity-50 disabled:cursor-not-allowed"
-                      >
-                        {signsUnlockingAll ? (
-                          <Loader2 className="w-3 h-3 animate-spin" />
-                        ) : (
-                          <RefreshCw className="w-3 h-3" />
-                        )}
-                        Unlock all ({manuallyEditedSignsCount})
-                      </button>
+                      showSignsConfirm ? (
+                        <div className="flex items-center gap-1.5">
+                          <span className="text-[11px] text-amber-400 whitespace-nowrap">Unlock all ({manuallyEditedSignsCount}) rows?</span>
+                          <button
+                            onClick={() => { setShowSignsConfirm(false); handleUnlockAllSigns(); }}
+                            className="flex items-center justify-center px-2 py-1 rounded text-[11px] font-medium text-white bg-amber-500 hover:bg-amber-400 transition-colors border border-amber-400/30"
+                          >
+                            Confirm
+                          </button>
+                          <button
+                            onClick={() => setShowSignsConfirm(false)}
+                            className="flex items-center justify-center px-2 py-1 rounded text-[11px] font-medium text-muted-foreground bg-secondary hover:text-foreground transition-colors border border-border"
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      ) : (
+                        <button
+                          onClick={() => setShowSignsConfirm(true)}
+                          disabled={signsUnlockingAll}
+                          className="flex items-center gap-2 px-3 py-1 rounded-md text-[11px] font-display font-semibold uppercase tracking-wide border transition-all bg-secondary text-muted-foreground border-border hover:text-amber-600 hover:border-amber-500/40 disabled:opacity-50 disabled:cursor-not-allowed"
+                        >
+                          {signsUnlockingAll ? (
+                            <Loader2 className="w-3 h-3 animate-spin" />
+                          ) : (
+                            <RefreshCw className="w-3 h-3" />
+                          )}
+                          Unlock all ({manuallyEditedSignsCount})
+                        </button>
+                      )
                     )}
                   </div>
                 )}
