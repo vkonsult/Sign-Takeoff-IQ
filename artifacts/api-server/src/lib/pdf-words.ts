@@ -677,10 +677,23 @@ export function classifyPageFromPhrases(phrases: PdfPhrase[]): ClassifyPageResul
     combined.includes(phrase.toLowerCase())
   );
 
-  // Priority 1: Exclusion veto — scoped only to candidate title phrases (those
-  // that individually contain an inclusion or sign-schedule keyword).  Incidental
-  // text elsewhere in the corner zone (notes, legend entries, annotations) must
-  // not veto the page just because it happens to mention "fire" or "site".
+  // Priority 1: Exclusion veto.
+  // Primary check: scan candidate phrases (those containing an fp/ss keyword) so that
+  // incidental notes elsewhere in the corner zone cannot veto the page.
+  // Secondary check: scan ALL title-block phrases for unambiguous multi-word discipline
+  // identifiers — these are safe to detect anywhere in the zone because they would not
+  // appear incidentally in a legitimate architectural floor plan title strip.
+  // Single-word veto terms (fire, water, site…) are intentionally excluded from the
+  // secondary list because they appear routinely in floor-plan body notes and disclaimers.
+  const HARD_DISCIPLINE_IDENTIFIERS = [
+    "framing plan",
+    "reflected ceiling plan",
+    "demolition plan",
+    "attic plan",
+    "roof framing",
+    "structural plan",
+  ] as const;
+
   const candidatePhrases = titleBlockPhrases.filter((p) => {
     const lower = p.text.toLowerCase();
     return (
@@ -690,9 +703,10 @@ export function classifyPageFromPhrases(phrases: PdfPhrase[]): ClassifyPageResul
     );
   });
   const candidateCombined = candidatePhrases.map((p) => p.text).join(" ").toLowerCase();
-  const hasExclusion = FLOOR_PLAN_EXCLUSION_PHRASES.some((phrase) =>
-    candidateCombined.includes(phrase.toLowerCase())
-  );
+  const allTitleBlockCombined = titleBlockPhrases.map((p) => p.text).join(" ").toLowerCase();
+  const hasExclusion =
+    FLOOR_PLAN_EXCLUSION_PHRASES.some((phrase) => candidateCombined.includes(phrase.toLowerCase())) ||
+    HARD_DISCIPLINE_IDENTIFIERS.some((id) => allTitleBlockCombined.includes(id));
   if (hasExclusion) return { type: "unknown", titlePhrases: [] };
 
   let type: SpatialPageType;
