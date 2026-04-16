@@ -1,10 +1,10 @@
 import { describe, it, expect } from "vitest";
 import {
   getSignColor,
-  normalizedToMediaBox,
   sanitizeFileName,
   SIGN_TYPE_COLORS,
 } from "./exportMarkedupPdf";
+import { normalizedToMediaBox } from "./pdfCoords";
 
 // ── getSignColor ─────────────────────────────────────────────────────────────
 
