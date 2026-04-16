@@ -555,10 +555,24 @@ export default function JobDetails() {
   const [sortDir, setSortDir] = useState<"asc" | "desc">(_initSortDir);
   const [summaryFilter, setSummaryFilter] = useState<null | "flagged">(_initSummaryFilter);
   const tabFromUrl = new URLSearchParams(search).get("tab") as TabId | null;
-  const activeTab: TabId = tabFromUrl && VALID_TABS.has(tabFromUrl) ? tabFromUrl : "table";
+  const _storedTab = jobId
+    ? (localStorage.getItem(`lastTab:${jobId}`) as TabId | null)
+    : null;
+  const activeTab: TabId =
+    tabFromUrl && VALID_TABS.has(tabFromUrl)
+      ? tabFromUrl
+      : _storedTab && VALID_TABS.has(_storedTab)
+        ? _storedTab
+        : "table";
   const setActiveTab = (tab: TabId) => {
     setLocation(`/jobs/${jobId}?tab=${tab}`);
   };
+
+  useEffect(() => {
+    if (jobId && activeTab) {
+      localStorage.setItem(`lastTab:${jobId}`, activeTab);
+    }
+  }, [jobId, activeTab]);
   const [placeSignId, setPlaceSignId] = useState<string | null>(null);
   const [showAiHighlight, setShowAiHighlight] = useState(false);
   const [unlockingSignId, setUnlockingSignId] = useState<string | null>(null);

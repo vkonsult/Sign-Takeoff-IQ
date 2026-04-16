@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 import { Link } from "wouter";
 
+const VALID_JOB_TABS = new Set(["table", "sheets", "summary", "floorplans", "signpages", "specs", "timeline", "coords", "ai_scans", "compliance", "plaque_schedule", "occupant_loads"]);
 
 interface RecentUser {
   userName: string;
@@ -394,6 +395,11 @@ export default function JobsList() {
                 const plaqueCount = Number(job.plaqueCount ?? 0);
                 const occupantLoadCount = Number(job.occupantLoadCount ?? 0);
                 const unplacedCount = Number(job.unplacedCount ?? 0);
+                const _storedTab = localStorage.getItem(`lastTab:${job.id}`);
+                const _validStoredTab = _storedTab && VALID_JOB_TABS.has(_storedTab) ? _storedTab : null;
+                const jobHref = _validStoredTab
+                  ? `/jobs/${job.id}?tab=${_validStoredTab}`
+                  : `/jobs/${job.id}`;
 
                 return (
                   <div key={job.id} className="flex flex-col">
@@ -414,7 +420,7 @@ export default function JobsList() {
                     </button>
 
                     {/* Clickable link area */}
-                    <Link href={`/jobs/${job.id}`} className="contents outline-none">
+                    <Link href={jobHref} className="contents outline-none">
                       {/* Job name cell — with inline PDF icon(s) */}
                       <div className="min-w-0 py-4 flex items-center gap-2">
                         <div className="min-w-0 flex-1">
