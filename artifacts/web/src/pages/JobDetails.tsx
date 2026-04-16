@@ -557,6 +557,9 @@ export default function JobDetails() {
     (plaqueScheduleQuery.data?.plaques?.length ?? 0) === 0 &&
     (occupantLoadsQuery.data?.loads?.length ?? 0) === 0;
   const exportDisabled = supplementalDataLoading || hasNoData;
+  const hasNoMapData =
+    isJobCompleted &&
+    (data?.extractedSigns ?? []).filter((s: { pageNumber?: number | null }) => s.pageNumber != null).length === 0;
 
   const handleSort = (field: string) => {
     if (sortField === field) {
@@ -916,21 +919,27 @@ export default function JobDetails() {
                   <TooltipProvider>
                     <Tooltip>
                       <TooltipTrigger asChild>
-                        <Button
-                          onClick={handleExportMarkedPdf}
-                          disabled={exportingPdf}
-                          variant="outline"
-                          className="font-display font-semibold uppercase tracking-wide hover:bg-primary/10 hover:text-primary hover:border-primary/40"
-                        >
-                          {exportingPdf ? (
-                            <Loader2 className="w-4 h-4 animate-spin" />
-                          ) : (
-                            <Stamp className="w-4 h-4" />
-                          )}
-                          {exportingPdf ? "Building PDF…" : "Export Marked PDF"}
-                        </Button>
+                        <span>
+                          <Button
+                            onClick={handleExportMarkedPdf}
+                            disabled={exportingPdf || hasNoMapData}
+                            variant="outline"
+                            className="font-display font-semibold uppercase tracking-wide hover:bg-primary/10 hover:text-primary hover:border-primary/40 disabled:opacity-50 disabled:cursor-not-allowed disabled:pointer-events-none"
+                          >
+                            {exportingPdf ? (
+                              <Loader2 className="w-4 h-4 animate-spin" />
+                            ) : (
+                              <Stamp className="w-4 h-4" />
+                            )}
+                            {exportingPdf ? "Building PDF…" : "Export Marked PDF"}
+                          </Button>
+                        </span>
                       </TooltipTrigger>
-                      <TooltipContent>Download the original PDF with sign markers drawn on each floor plan page</TooltipContent>
+                      <TooltipContent>
+                        {hasNoMapData
+                          ? "No signs have floor plan locations — nothing to mark on the PDF"
+                          : "Download the original PDF with sign markers drawn on each floor plan page"}
+                      </TooltipContent>
                     </Tooltip>
                   </TooltipProvider>
                   <TooltipProvider>
