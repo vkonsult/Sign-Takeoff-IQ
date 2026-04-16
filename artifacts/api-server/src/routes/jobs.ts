@@ -2445,5 +2445,129 @@ router.get("/jobs/:jobId/plaque-schedule", async (req, res) => {
   }
 });
 
+// ── Plaque Schedule Create ────────────────────────────────────────────────────
+
+const PlaqueScheduleCreateSchema = z.object({
+  typeId: z.string().min(1),
+  name: z.string().nullable().optional(),
+  braille: z.boolean().nullable().optional(),
+  letterHeight: z.string().nullable().optional(),
+  trigger: z.string().nullable().optional(),
+});
+
+router.post("/jobs/:jobId/plaque-schedule", async (req, res) => {
+  const jobId = req.params.jobId;
+  if (!jobId) { res.status(400).json({ error: "Job ID required" }); return; }
+
+  const parsed = PlaqueScheduleCreateSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: "Invalid request body", details: parsed.error.issues });
+    return;
+  }
+
+  try {
+    const job = await getJobWithOrgCheck(req, res, jobId);
+    if (!job) return;
+
+    const [created] = await db
+      .insert(plaqueSchedulesTable)
+      .values({
+        jobId,
+        typeId: parsed.data.typeId,
+        name: parsed.data.name ?? null,
+        braille: parsed.data.braille ?? null,
+        letterHeight: parsed.data.letterHeight ?? null,
+        trigger: parsed.data.trigger ?? null,
+      })
+      .returning();
+
+    res.status(201).json({ plaque: created });
+  } catch (err) {
+    req.log.error({ err, jobId }, "plaque-schedule create failed");
+    res.status(500).json({ error: "Failed to create plaque schedule row" });
+  }
+});
+
+// ── Plaque Schedule Update ────────────────────────────────────────────────────
+
+const PlaqueScheduleUpdateSchema = z.object({
+  typeId: z.string().min(1).optional(),
+  name: z.string().nullable().optional(),
+  braille: z.boolean().nullable().optional(),
+  letterHeight: z.string().nullable().optional(),
+  trigger: z.string().nullable().optional(),
+});
+
+router.put("/jobs/:jobId/plaque-schedule/:id", async (req, res) => {
+  const { jobId, id } = req.params;
+  if (!jobId || !id) { res.status(400).json({ error: "Job ID and row ID required" }); return; }
+
+  const parsed = PlaqueScheduleUpdateSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: "Invalid request body", details: parsed.error.issues });
+    return;
+  }
+
+  try {
+    const job = await getJobWithOrgCheck(req, res, jobId);
+    if (!job) return;
+
+    const updateData: Record<string, unknown> = {};
+    if (parsed.data.typeId !== undefined) updateData.typeId = parsed.data.typeId;
+    if (parsed.data.name !== undefined) updateData.name = parsed.data.name;
+    if (parsed.data.braille !== undefined) updateData.braille = parsed.data.braille;
+    if (parsed.data.letterHeight !== undefined) updateData.letterHeight = parsed.data.letterHeight;
+    if (parsed.data.trigger !== undefined) updateData.trigger = parsed.data.trigger;
+
+    if (Object.keys(updateData).length === 0) {
+      res.status(400).json({ error: "No fields provided to update" });
+      return;
+    }
+
+    const [updated] = await db
+      .update(plaqueSchedulesTable)
+      .set(updateData)
+      .where(and(eq(plaqueSchedulesTable.id, id), eq(plaqueSchedulesTable.jobId, jobId)))
+      .returning();
+
+    if (!updated) {
+      res.status(404).json({ error: "Plaque schedule row not found" });
+      return;
+    }
+
+    res.json({ plaque: updated });
+  } catch (err) {
+    req.log.error({ err, jobId, id }, "plaque-schedule update failed");
+    res.status(500).json({ error: "Failed to update plaque schedule row" });
+  }
+});
+
+// ── Plaque Schedule Delete ────────────────────────────────────────────────────
+
+router.delete("/jobs/:jobId/plaque-schedule/:id", async (req, res) => {
+  const { jobId, id } = req.params;
+  if (!jobId || !id) { res.status(400).json({ error: "Job ID and row ID required" }); return; }
+
+  try {
+    const job = await getJobWithOrgCheck(req, res, jobId);
+    if (!job) return;
+
+    const [deleted] = await db
+      .delete(plaqueSchedulesTable)
+      .where(and(eq(plaqueSchedulesTable.id, id), eq(plaqueSchedulesTable.jobId, jobId)))
+      .returning();
+
+    if (!deleted) {
+      res.status(404).json({ error: "Plaque schedule row not found" });
+      return;
+    }
+
+    res.json({ success: true });
+  } catch (err) {
+    req.log.error({ err, jobId, id }, "plaque-schedule delete failed");
+    res.status(500).json({ error: "Failed to delete plaque schedule row" });
+  }
+});
+
 export default router;
 

@@ -84,6 +84,13 @@ export function AiScansTab({
   const [occupantRows, setOccupantRows] = useState<OccupantLoadRow[]>([]);
   const [occupantLoading, setOccupantLoading] = useState(true);
 
+  // Plaque Schedule inline-editing state
+  const [plaqueEditingId, setPlaqueEditingId] = useState<string | null>(null);
+  const [plaqueEditDraft, setPlaqueEditDraft] = useState<{ typeId: string; name: string; braille: string; letterHeight: string; trigger: string }>({ typeId: "", name: "", braille: "", letterHeight: "", trigger: "" });
+  const [plaqueEditSaving, setPlaqueEditSaving] = useState(false);
+  const [plaqueEditError, setPlaqueEditError] = useState<string | null>(null);
+  const [plaqueDeletingId, setPlaqueDeletingId] = useState<string | null>(null);
+
   // Occupant Loads inline-editing state
   // editingId: id of the row being edited, or "__new__" for a new unsaved row
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -257,6 +264,104 @@ export function AiScansTab({
     } catch (err) {
       setPlaqueError(String(err));
       setPlaqueStatus("error");
+    }
+  };
+
+  const handleEditPlaqueRow = (row: PlaqueRow) => {
+    setPlaqueEditingId(row.id);
+    setPlaqueEditDraft({
+      typeId: row.typeId,
+      name: row.name ?? "",
+      braille: row.braille === true ? "true" : row.braille === false ? "false" : "",
+      letterHeight: row.letterHeight ?? "",
+      trigger: row.trigger ?? "",
+    });
+    setPlaqueEditError(null);
+  };
+
+  const handleAddPlaqueRow = () => {
+    setPlaqueEditingId("__new__");
+    setPlaqueEditDraft({ typeId: "", name: "", braille: "", letterHeight: "", trigger: "" });
+    setPlaqueEditError(null);
+  };
+
+  const handleCancelPlaqueEdit = () => {
+    setPlaqueEditingId(null);
+    setPlaqueEditDraft({ typeId: "", name: "", braille: "", letterHeight: "", trigger: "" });
+    setPlaqueEditError(null);
+  };
+
+  const handleSavePlaqueRow = async () => {
+    if (!plaqueEditDraft.typeId.trim()) {
+      setPlaqueEditError("Type ID is required.");
+      return;
+    }
+    setPlaqueEditSaving(true);
+    setPlaqueEditError(null);
+
+    const brailleVal = plaqueEditDraft.braille === "true" ? true : plaqueEditDraft.braille === "false" ? false : null;
+
+    const body = {
+      typeId: plaqueEditDraft.typeId.trim(),
+      name: plaqueEditDraft.name.trim() || null,
+      braille: brailleVal,
+      letterHeight: plaqueEditDraft.letterHeight.trim() || null,
+      trigger: plaqueEditDraft.trigger.trim() || null,
+    };
+
+    try {
+      if (plaqueEditingId === "__new__") {
+        const res = await apiFetch(`/api/jobs/${jobId}/plaque-schedule`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          setPlaqueEditError(data.error ?? "Failed to create row");
+          return;
+        }
+        setPlaqueRows((prev) => [...prev, data.plaque as PlaqueRow]);
+      } else {
+        const res = await apiFetch(`/api/jobs/${jobId}/plaque-schedule/${plaqueEditingId}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          setPlaqueEditError(data.error ?? "Failed to update row");
+          return;
+        }
+        setPlaqueRows((prev) => prev.map((r) => r.id === plaqueEditingId ? (data.plaque as PlaqueRow) : r));
+      }
+      setPlaqueEditingId(null);
+      setPlaqueEditDraft({ typeId: "", name: "", braille: "", letterHeight: "", trigger: "" });
+    } catch (err) {
+      setPlaqueEditError(String(err));
+    } finally {
+      setPlaqueEditSaving(false);
+    }
+  };
+
+  const handleDeletePlaqueRow = async (id: string) => {
+    setPlaqueDeletingId(id);
+    setPlaqueEditError(null);
+    try {
+      const res = await apiFetch(`/api/jobs/${jobId}/plaque-schedule/${id}`, { method: "DELETE" });
+      if (!res.ok) {
+        const data = await res.json();
+        setPlaqueEditError(data.error ?? "Failed to delete row.");
+        return;
+      }
+      setPlaqueRows((prev) => prev.filter((r) => r.id !== id));
+      if (plaqueEditingId === id) {
+        setPlaqueEditingId(null);
+      }
+    } catch (err) {
+      setPlaqueEditError(String(err));
+    } finally {
+      setPlaqueDeletingId(null);
     }
   };
 
@@ -643,44 +748,239 @@ export function AiScansTab({
           <div className="flex items-center gap-2 px-3 py-4 text-xs text-muted-foreground">
             <Loader2 className="w-3.5 h-3.5 animate-spin" /> Loading plaque schedule…
           </div>
-        ) : plaqueLoadError ? null : plaqueRows.length === 0 ? (
-          <div className="px-3 py-4 text-[11px] text-muted-foreground">
-            No plaque types extracted yet. Run the extraction above.
-          </div>
-        ) : (
+        ) : plaqueLoadError ? null : (
           <div className="overflow-x-auto">
-            <table className="w-full text-[11px]">
-              <thead>
-                <tr className="border-b border-border bg-secondary/30">
-                  <th className="px-3 py-2 text-left font-medium text-muted-foreground">Type ID</th>
-                  <th className="px-3 py-2 text-left font-medium text-muted-foreground">Name</th>
-                  <th className="px-3 py-2 text-left font-medium text-muted-foreground">Braille</th>
-                  <th className="px-3 py-2 text-left font-medium text-muted-foreground">Letter Height</th>
-                  <th className="px-3 py-2 text-left font-medium text-muted-foreground">Trigger</th>
-                </tr>
-              </thead>
-              <tbody>
-                {plaqueRows.map((row) => (
-                  <tr key={row.id} className="border-b border-border/50 hover:bg-secondary/20 transition-colors">
-                    <td className="px-3 py-2 font-mono text-amber-400">{row.typeId}</td>
-                    <td className="px-3 py-2 text-foreground">{row.name ?? <span className="text-muted-foreground/50">—</span>}</td>
-                    <td className="px-3 py-2">
-                      {row.braille === true ? (
-                        <span className="text-emerald-400">Yes</span>
-                      ) : row.braille === false ? (
-                        <span className="text-muted-foreground">No</span>
-                      ) : (
-                        <span className="text-muted-foreground/50">—</span>
-                      )}
-                    </td>
-                    <td className="px-3 py-2 text-foreground">{row.letterHeight ?? <span className="text-muted-foreground/50">—</span>}</td>
-                    <td className="px-3 py-2 text-foreground">{row.trigger ?? <span className="text-muted-foreground/50">—</span>}</td>
+            {plaqueRows.length === 0 && plaqueEditingId !== "__new__" && (
+              <div className="px-3 py-4 text-[11px] text-muted-foreground">
+                No plaque types extracted yet. Run the extraction above or add rows manually.
+              </div>
+            )}
+
+            {(plaqueRows.length > 0 || plaqueEditingId === "__new__") && (
+              <table className="w-full text-[11px]">
+                <thead>
+                  <tr className="border-b border-border bg-secondary/30">
+                    <th className="px-3 py-2 text-left font-medium text-muted-foreground">Type ID</th>
+                    <th className="px-3 py-2 text-left font-medium text-muted-foreground">Name</th>
+                    <th className="px-3 py-2 text-left font-medium text-muted-foreground">Braille</th>
+                    <th className="px-3 py-2 text-left font-medium text-muted-foreground">Letter Height</th>
+                    <th className="px-3 py-2 text-left font-medium text-muted-foreground">Trigger</th>
+                    <th className="px-3 py-2 w-16" />
                   </tr>
-                ))}
-              </tbody>
-            </table>
-            <div className="px-3 py-2 text-[10px] text-muted-foreground border-t border-border/50">
-              {plaqueRows.length} plaque type{plaqueRows.length !== 1 ? "s" : ""} extracted
+                </thead>
+                <tbody>
+                  {plaqueRows.map((row) => {
+                    const isEditing = plaqueEditingId === row.id;
+                    const isDeleting = plaqueDeletingId === row.id;
+
+                    if (isEditing) {
+                      return (
+                        <tr key={row.id} className="border-b border-amber-500/20 bg-amber-500/5">
+                          <td className="px-2 py-1.5">
+                            <input
+                              autoFocus
+                              value={plaqueEditDraft.typeId}
+                              onChange={(e) => setPlaqueEditDraft((d) => ({ ...d, typeId: e.target.value }))}
+                              placeholder="e.g. P-1"
+                              className="w-full bg-background border border-border rounded px-2 py-1 text-[11px] text-foreground focus:outline-none focus:border-amber-500/60 font-mono"
+                            />
+                          </td>
+                          <td className="px-2 py-1.5">
+                            <input
+                              value={plaqueEditDraft.name}
+                              onChange={(e) => setPlaqueEditDraft((d) => ({ ...d, name: e.target.value }))}
+                              placeholder="Sign name"
+                              className="w-full bg-background border border-border rounded px-2 py-1 text-[11px] text-foreground focus:outline-none focus:border-amber-500/60"
+                            />
+                          </td>
+                          <td className="px-2 py-1.5">
+                            <select
+                              value={plaqueEditDraft.braille}
+                              onChange={(e) => setPlaqueEditDraft((d) => ({ ...d, braille: e.target.value }))}
+                              className="w-full bg-background border border-border rounded px-2 py-1 text-[11px] text-foreground focus:outline-none focus:border-amber-500/60"
+                            >
+                              <option value="">—</option>
+                              <option value="true">Yes</option>
+                              <option value="false">No</option>
+                            </select>
+                          </td>
+                          <td className="px-2 py-1.5">
+                            <input
+                              value={plaqueEditDraft.letterHeight}
+                              onChange={(e) => setPlaqueEditDraft((d) => ({ ...d, letterHeight: e.target.value }))}
+                              placeholder='e.g. 5/8"'
+                              className="w-full bg-background border border-border rounded px-2 py-1 text-[11px] text-foreground focus:outline-none focus:border-amber-500/60"
+                            />
+                          </td>
+                          <td className="px-2 py-1.5">
+                            <input
+                              value={plaqueEditDraft.trigger}
+                              onChange={(e) => setPlaqueEditDraft((d) => ({ ...d, trigger: e.target.value }))}
+                              placeholder="Trigger condition"
+                              className="w-full bg-background border border-border rounded px-2 py-1 text-[11px] text-foreground focus:outline-none focus:border-amber-500/60"
+                            />
+                          </td>
+                          <td className="px-2 py-1.5">
+                            <div className="flex items-center gap-1">
+                              <button
+                                onClick={handleSavePlaqueRow}
+                                disabled={plaqueEditSaving}
+                                className="flex items-center justify-center w-6 h-6 rounded text-emerald-400 hover:bg-emerald-500/15 transition-colors disabled:opacity-50"
+                                title="Save"
+                              >
+                                {plaqueEditSaving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Check className="w-3.5 h-3.5" />}
+                              </button>
+                              <button
+                                onClick={handleCancelPlaqueEdit}
+                                disabled={plaqueEditSaving}
+                                className="flex items-center justify-center w-6 h-6 rounded text-muted-foreground hover:bg-secondary/60 transition-colors disabled:opacity-50"
+                                title="Cancel"
+                              >
+                                <X className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    }
+
+                    return (
+                      <tr
+                        key={row.id}
+                        className={`border-b border-border/50 hover:bg-secondary/20 transition-colors group ${isDeleting ? "opacity-40" : ""}`}
+                      >
+                        <td className="px-3 py-2 font-mono text-amber-400">{row.typeId}</td>
+                        <td className="px-3 py-2 text-foreground">{row.name ?? <span className="text-muted-foreground/50">—</span>}</td>
+                        <td className="px-3 py-2">
+                          {row.braille === true ? (
+                            <span className="text-emerald-400">Yes</span>
+                          ) : row.braille === false ? (
+                            <span className="text-muted-foreground">No</span>
+                          ) : (
+                            <span className="text-muted-foreground/50">—</span>
+                          )}
+                        </td>
+                        <td className="px-3 py-2 text-foreground">{row.letterHeight ?? <span className="text-muted-foreground/50">—</span>}</td>
+                        <td className="px-3 py-2 text-foreground">{row.trigger ?? <span className="text-muted-foreground/50">—</span>}</td>
+                        <td className="px-2 py-2">
+                          <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                            <button
+                              onClick={() => handleEditPlaqueRow(row)}
+                              disabled={plaqueEditingId !== null || plaqueDeletingId !== null}
+                              className="flex items-center justify-center w-6 h-6 rounded text-muted-foreground hover:text-amber-400 hover:bg-amber-500/10 transition-colors disabled:opacity-30"
+                              title="Edit row"
+                            >
+                              <Pencil className="w-3 h-3" />
+                            </button>
+                            <button
+                              onClick={() => handleDeletePlaqueRow(row.id)}
+                              disabled={plaqueEditingId !== null || plaqueDeletingId !== null}
+                              className="flex items-center justify-center w-6 h-6 rounded text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors disabled:opacity-30"
+                              title="Delete row"
+                            >
+                              {isDeleting ? <Loader2 className="w-3 h-3 animate-spin" /> : <Trash2 className="w-3 h-3" />}
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+
+                  {/* New row being added */}
+                  {plaqueEditingId === "__new__" && (
+                    <tr className="border-b border-amber-500/20 bg-amber-500/5">
+                      <td className="px-2 py-1.5">
+                        <input
+                          autoFocus
+                          value={plaqueEditDraft.typeId}
+                          onChange={(e) => setPlaqueEditDraft((d) => ({ ...d, typeId: e.target.value }))}
+                          placeholder="e.g. P-1"
+                          className="w-full bg-background border border-border rounded px-2 py-1 text-[11px] text-foreground focus:outline-none focus:border-amber-500/60 font-mono"
+                        />
+                      </td>
+                      <td className="px-2 py-1.5">
+                        <input
+                          value={plaqueEditDraft.name}
+                          onChange={(e) => setPlaqueEditDraft((d) => ({ ...d, name: e.target.value }))}
+                          placeholder="Sign name"
+                          className="w-full bg-background border border-border rounded px-2 py-1 text-[11px] text-foreground focus:outline-none focus:border-amber-500/60"
+                        />
+                      </td>
+                      <td className="px-2 py-1.5">
+                        <select
+                          value={plaqueEditDraft.braille}
+                          onChange={(e) => setPlaqueEditDraft((d) => ({ ...d, braille: e.target.value }))}
+                          className="w-full bg-background border border-border rounded px-2 py-1 text-[11px] text-foreground focus:outline-none focus:border-amber-500/60"
+                        >
+                          <option value="">—</option>
+                          <option value="true">Yes</option>
+                          <option value="false">No</option>
+                        </select>
+                      </td>
+                      <td className="px-2 py-1.5">
+                        <input
+                          value={plaqueEditDraft.letterHeight}
+                          onChange={(e) => setPlaqueEditDraft((d) => ({ ...d, letterHeight: e.target.value }))}
+                          placeholder='e.g. 5/8"'
+                          className="w-full bg-background border border-border rounded px-2 py-1 text-[11px] text-foreground focus:outline-none focus:border-amber-500/60"
+                        />
+                      </td>
+                      <td className="px-2 py-1.5">
+                        <input
+                          value={plaqueEditDraft.trigger}
+                          onChange={(e) => setPlaqueEditDraft((d) => ({ ...d, trigger: e.target.value }))}
+                          placeholder="Trigger condition"
+                          className="w-full bg-background border border-border rounded px-2 py-1 text-[11px] text-foreground focus:outline-none focus:border-amber-500/60"
+                        />
+                      </td>
+                      <td className="px-2 py-1.5">
+                        <div className="flex items-center gap-1">
+                          <button
+                            onClick={handleSavePlaqueRow}
+                            disabled={plaqueEditSaving}
+                            className="flex items-center justify-center w-6 h-6 rounded text-emerald-400 hover:bg-emerald-500/15 transition-colors disabled:opacity-50"
+                            title="Save"
+                          >
+                            {plaqueEditSaving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Check className="w-3.5 h-3.5" />}
+                          </button>
+                          <button
+                            onClick={handleCancelPlaqueEdit}
+                            disabled={plaqueEditSaving}
+                            className="flex items-center justify-center w-6 h-6 rounded text-muted-foreground hover:bg-secondary/60 transition-colors disabled:opacity-50"
+                            title="Cancel"
+                          >
+                            <X className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            )}
+
+            {plaqueEditError && (
+              <div className="flex items-center gap-2 px-3 py-2 text-[11px] text-destructive border-t border-border/50">
+                <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0" />
+                {plaqueEditError}
+              </div>
+            )}
+
+            <div className="px-3 py-2 text-[10px] text-muted-foreground border-t border-border/50 flex items-center gap-3">
+              <button
+                onClick={handleAddPlaqueRow}
+                disabled={plaqueEditingId !== null || plaqueDeletingId !== null}
+                className="flex items-center gap-1 text-amber-400 hover:text-amber-300 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+              >
+                <Plus className="w-3 h-3" />
+                Add row
+              </button>
+              {plaqueRows.length > 0 && (
+                <>
+                  <span className="text-border">·</span>
+                  <span>{plaqueRows.length} plaque type{plaqueRows.length !== 1 ? "s" : ""}</span>
+                </>
+              )}
             </div>
           </div>
         )}
