@@ -320,6 +320,30 @@ function EditPanel({
     }
   };
 
+  const handleUnlock = async () => {
+    setUnlocking(true);
+    setUnlockError(null);
+    try {
+      const res = await apiFetch(`/api/extracted-signs/${activeSign.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ manuallyEdited: false }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: "Unknown error" }));
+        throw new Error((err as { error?: string }).error ?? "Unlock failed");
+      }
+      const data = await res.json() as { sign: ExtractedSign };
+      setLocalSigns((prev) => prev.map((s) => s.id === activeSign.id ? data.sign : s));
+      setActiveSign(data.sign);
+      onSaved?.(data.sign);
+    } catch (err) {
+      setUnlockError(String(err instanceof Error ? err.message : err));
+    } finally {
+      setUnlocking(false);
+    }
+  };
+
   const handleDeleteSign = async (signId: string) => {
     if (onDeleteCommit) {
       onDeleteCommit(signId);
@@ -341,15 +365,14 @@ function EditPanel({
   return (
     <div className="w-[380px] flex-shrink-0 flex flex-col bg-background overflow-hidden border-l border-border">
       <div className="flex-none px-5 py-3 border-b border-border bg-card flex items-center justify-between">
-        <div>
-          <div className="flex items-center gap-2">
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 flex-wrap">
             <h2 className="text-sm font-display font-bold uppercase tracking-wider text-foreground">
               Edit Sign Data
             </h2>
             {activeSign.manuallyEdited && (
-              <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-amber-100 text-amber-700 border border-amber-300">
-                <Lock className="w-2.5 h-2.5" />
-                Manually Locked
+              <span className="flex items-center gap-1 text-[10px] font-display font-bold uppercase tracking-wider border px-2 py-0.5 rounded" style={{ color: "#f59e0b", borderColor: "#f59e0b55", background: "#f59e0b10" }}>
+                <Lock className="w-3 h-3" />Manually Locked
               </span>
             )}
           </div>
@@ -425,7 +448,7 @@ function EditPanel({
             Save Changes
           </button>
         </div>
-        {activeSign.manuallyEdited && onUnlock && (
+        {activeSign.manuallyEdited && (
           <>
             {unlockError && (
               <div className="text-xs text-destructive bg-destructive/10 border border-destructive/20 rounded px-3 py-2 flex items-center gap-2">
@@ -435,29 +458,14 @@ function EditPanel({
               </div>
             )}
             <button
-              onClick={async () => {
-                setUnlocking(true);
-                setUnlockError(null);
-                try {
-                  const ok = await onUnlock(activeSign.id);
-                  if (ok) {
-                    setLocalSigns((prev) => prev.map((s) => s.id === activeSign.id ? { ...s, manuallyEdited: false } : s));
-                    setActiveSign({ ...activeSign, manuallyEdited: false });
-                  } else {
-                    setUnlockError("Failed to unlock this row. Please try again.");
-                  }
-                } catch {
-                  setUnlockError("Failed to unlock this row. Please try again.");
-                } finally {
-                  setUnlocking(false);
-                }
-              }}
+              onClick={handleUnlock}
               disabled={unlocking || saving}
               title="Remove manual-edit lock — allow AI to update this row again"
-              className="w-full flex items-center justify-center gap-2 px-4 py-2 text-xs font-display font-semibold uppercase tracking-wide rounded-lg text-amber-400 border border-amber-400/30 bg-amber-400/5 hover:bg-amber-400/15 transition-colors disabled:opacity-40"
+              className="w-full flex items-center justify-center gap-2 px-4 py-2 text-xs font-display font-semibold uppercase tracking-wide rounded-lg border transition-colors disabled:opacity-40"
+              style={{ color: "#f59e0b", borderColor: "#f59e0b55", background: "#f59e0b0a" }}
             >
               {unlocking ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <LockOpen className="w-3.5 h-3.5" />}
-              Unlock for AI
+              Remove Protection for This Sign
             </button>
           </>
         )}
