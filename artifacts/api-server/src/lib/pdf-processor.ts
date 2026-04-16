@@ -217,7 +217,26 @@ export async function runPdfProcessor(jobId: string): Promise<void> {
                   }
                 } else {
                   // No bookmark covers this page — fall back to phrase-based classification.
-                  spatialType = classifyPageFromPhrases(pageWords.phrases).type;
+                  // For floor-plan candidates, additionally require that a valid floor level
+                  // name can be extracted. Without a level name, an incidental "floor plan"
+                  // reference in a legend or callout is too ambiguous to classify the page
+                  // as a floor plan — downgrade to unknown.
+                  const phraseResult = classifyPageFromPhrases(pageWords.phrases);
+                  if (phraseResult.type === "floor_plan" || phraseResult.type === "both") {
+                    const levelName = extractFloorLevelName(pageWords.phrases);
+                    if (levelName) {
+                      spatialType = phraseResult.type;
+                    } else if (phraseResult.type === "both") {
+                      // Floor plan evidence is unconfirmed (no level extractable) but
+                      // sign-schedule evidence is still valid — keep sign_schedule.
+                      spatialType = "sign_schedule";
+                    } else {
+                      // Pure floor-plan candidate with no level: downgrade to unknown.
+                      spatialType = "unknown";
+                    }
+                  } else {
+                    spatialType = phraseResult.type;
+                  }
                 }
 
                 spatialPageTypes!.set(pageNum, spatialType);
@@ -530,11 +549,23 @@ export async function runPdfProcessor(jobId: string): Promise<void> {
         const rejectedSet = new Set(existingRejectedPages);
         const filterRejected = (pages: number[]) => pages.filter((p) => !rejectedSet.has(p));
 
+        // Build the classified-page sets so otherPages can exclude any page that is
+        // already accounted for in a specific classification bucket.  Using the raw
+        // text-extraction otherPages directly would include pages that the spatial
+        // pre-pass reclassified as floor_plan / sign_schedule / both, causing a page
+        // to appear in two contradictory buckets simultaneously.
+        const classifiedPageSet = new Set([
+          ...finalFloorPlanPages,
+          ...finalSignSchedulePages,
+          ...finalBothPages,
+        ]);
+        const dedupedOtherPages = otherPages.filter((p) => !classifiedPageSet.has(p));
+
         const pageStats = {
           floorPlanPages: filterRejected(finalFloorPlanPages),
           signSchedulePages: filterRejected(finalSignSchedulePages),
           bothPages: filterRejected(finalBothPages),
-          otherPages: filterRejected(otherPages),
+          otherPages: filterRejected(dedupedOtherPages),
           ...(existingRejectedPages.length > 0 ? { rejectedPageNumbers: existingRejectedPages } : {}),
           ...(pageImagePathsRelative ? { pageImagePaths: pageImagePathsRelative } : {}),
           ...(floorPageLevels ? { floorPageLevels } : {}),
