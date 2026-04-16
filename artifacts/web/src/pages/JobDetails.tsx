@@ -801,6 +801,13 @@ export default function JobDetails() {
   const exceptionSigns = extractedSigns.filter((s) => s.reviewFlag && s.exceptionReason);
   const manuallyEditedSignsCount = extractedSigns.filter((s) => (s as Record<string, unknown>).manuallyEdited).length;
 
+  // Unplaced-sign counts used by both the PDF button badge and the canvas banner.
+  const _placedCount = extractedSigns.filter((s) => s.pageNumber != null).length;
+  const unplacedCount = extractedSigns.length - _placedCount;
+  const noneArePlaced = extractedSigns.length > 0 && _placedCount === 0;
+  const someAreUnplaced = extractedSigns.length > 0 && unplacedCount > 0 && _placedCount > 0;
+  const showUnplacedWarning = !isProcessingNow && (noneArePlaced || someAreUnplaced);
+
   // Derive a source sort key matching the SourceBadge priority order
   function sourceKey(s: typeof extractedSigns[number]): string {
     const r = s as Record<string, unknown>;
@@ -1281,17 +1288,42 @@ export default function JobDetails() {
               </div>
 
               {activeTab === "floorplans" ? (
-                <div className="flex-1 min-h-0">
-                  <UnifiedPlanViewer
-                    mode="tab"
-                    jobId={jobId}
-                    files={files}
-                    signs={extractedSigns}
-                    showAiHighlight={showAiHighlight}
-                    onSignAdded={handleSignAdded}
-                    onSignUpdated={handleSignUpdated}
-                    onEditSign={(s) => setReviewSign(s as SignRow)}
-                  />
+                <div className="flex-1 min-h-0 flex flex-col">
+                  {showUnplacedWarning && (
+                    <div className="flex items-center gap-2 px-3 py-2 bg-yellow-500/10 border-b border-yellow-500/30 text-yellow-300 text-xs shrink-0">
+                      <AlertTriangle className="w-3.5 h-3.5 text-yellow-400 shrink-0" />
+                      <span className="flex-1">
+                        {noneArePlaced
+                          ? `${extractedSigns.length} sign${extractedSigns.length !== 1 ? "s" : ""} have no floor plan location — the exported PDF will have no markers.`
+                          : `${unplacedCount} of ${extractedSigns.length} sign${extractedSigns.length !== 1 ? "s" : ""} ${unplacedCount !== 1 ? "are" : "is"} not placed on the floor plan and will be missing from the PDF.`}
+                      </span>
+                      <button
+                        onClick={() => {
+                          const firstUnplaced = document.querySelector<HTMLElement>("[data-unplaced='true']");
+                          if (firstUnplaced) {
+                            firstUnplaced.scrollIntoView({ behavior: "smooth", block: "center" });
+                            firstUnplaced.classList.add("ring-2", "ring-yellow-400", "ring-inset");
+                            setTimeout(() => firstUnplaced.classList.remove("ring-2", "ring-yellow-400", "ring-inset"), 2000);
+                          }
+                        }}
+                        className="whitespace-nowrap underline underline-offset-2 hover:text-yellow-200 transition-colors"
+                      >
+                        Show unplaced signs
+                      </button>
+                    </div>
+                  )}
+                  <div className="flex-1 min-h-0">
+                    <UnifiedPlanViewer
+                      mode="tab"
+                      jobId={jobId}
+                      files={files}
+                      signs={extractedSigns}
+                      showAiHighlight={showAiHighlight}
+                      onSignAdded={handleSignAdded}
+                      onSignUpdated={handleSignUpdated}
+                      onEditSign={(s) => setReviewSign(s as SignRow)}
+                    />
+                  </div>
                 </div>
               ) : activeTab === "signpages" ? (
                 <div className="flex-1 min-h-0">
@@ -1490,7 +1522,9 @@ export default function JobDetails() {
                         const isAiRow = showAiHighlight && ((sign as Record<string, unknown>).dataSource === "ai" || (sign as Record<string, unknown>).aiBbox === true);
                         return (
                         <tr 
-                          key={sign.id} 
+                          key={sign.id}
+                          data-sign-id={sign.id}
+                          data-unplaced={sign.pageNumber == null ? "true" : undefined}
                           className={`
                             hover:bg-secondary/40 transition-colors
                             ${sign.reviewFlag ? 'bg-primary/5' : ''}
