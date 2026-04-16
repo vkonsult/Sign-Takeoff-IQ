@@ -473,6 +473,74 @@ describe("DELETE /jobs/:jobId/plaque-schedule/:id", () => {
     expect(res.status).toBe(404);
     expect(res.body.error).toMatch(/not found/i);
   });
+
+  it("returns 404 when the plaque row belongs to a different job", async () => {
+    // The DELETE handler uses WHERE and(eq(id,...), eq(jobId,...)), so attempting
+    // to delete a row that belongs to a different job yields no match → 404.
+    // We verify both the HTTP response and that db.delete was actually invoked
+    // (i.e., the request reached the deletion stage, not an earlier guard).
+    deleteReturningResult = [];
+    const { db } = await import("@workspace/db");
+    const dbTyped = db as { delete: ReturnType<typeof vi.fn> };
+    dbTyped.delete.mockClear();
+    const res = await supertest(app).delete("/jobs/job-111/plaque-schedule/plaque-from-other-job");
+    expect(res.status).toBe(404);
+    expect(res.body.error).toMatch(/not found/i);
+    expect(dbTyped.delete).toHaveBeenCalledOnce();
+  });
+});
+
+describe("DELETE /jobs/:jobId/occupant-loads/:id", () => {
+  let app: express.Express;
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    jobQueryResult = [FAKE_JOB];
+    deleteReturningResult = [FAKE_LOADS[0]];
+    app = await buildApp();
+  });
+
+  it("returns 400 when jobId is missing/empty", async () => {
+    const emptyIdApp = await buildEmptyJobIdApp();
+    const res = await supertest(emptyIdApp).delete("/jobs/_EMPTY_/occupant-loads/load-1");
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/job id.*load id required/i);
+  });
+
+  it("returns 200 with success:true on happy path", async () => {
+    const res = await supertest(app).delete("/jobs/job-111/occupant-loads/load-1");
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+  });
+
+  it("returns 404 when the occupant load row does not exist", async () => {
+    deleteReturningResult = [];
+    const res = await supertest(app).delete("/jobs/job-111/occupant-loads/nonexistent");
+    expect(res.status).toBe(404);
+    expect(res.body.error).toMatch(/not found/i);
+  });
+
+  it("returns 404 when the occupant load row belongs to a different job", async () => {
+    // The DELETE handler uses WHERE and(eq(id,...), eq(jobId,...)), so a cross-job
+    // row yields no match → 404, preventing silent cross-org deletion.
+    // We verify both the HTTP response and that db.delete was actually invoked
+    // (i.e., the request reached the deletion stage, not an earlier guard).
+    deleteReturningResult = [];
+    const { db } = await import("@workspace/db");
+    const dbTyped = db as { delete: ReturnType<typeof vi.fn> };
+    dbTyped.delete.mockClear();
+    const res = await supertest(app).delete("/jobs/job-111/occupant-loads/load-from-other-job");
+    expect(res.status).toBe(404);
+    expect(res.body.error).toMatch(/not found/i);
+    expect(dbTyped.delete).toHaveBeenCalledOnce();
+  });
+
+  it("returns 404 when the job does not exist", async () => {
+    jobQueryResult = [];
+    const res = await supertest(app).delete("/jobs/nonexistent-job/occupant-loads/load-1");
+    expect(res.status).toBe(404);
+    expect(res.body.error).toMatch(/not found/i);
+  });
 });
 
 describe("PUT /jobs/:jobId/occupant-loads/:id (unlock)", () => {
