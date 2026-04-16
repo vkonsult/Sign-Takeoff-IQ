@@ -533,6 +533,7 @@ export default function JobDetails() {
 
   const [showHidden, setShowHidden] = useState(false);
   const [showExceptions, setShowExceptions] = useState(false);
+  const [showUnplacedOnly, setShowUnplacedOnly] = useState(false);
   const [signsUnlockingAll, setSignsUnlockingAll] = useState(false);
   const [showSignsConfirm, setShowSignsConfirm] = useState(false);
   const [sortField, setSortField] = useState<string | null>(null);
@@ -817,9 +818,15 @@ export default function JobDetails() {
     return "3_text";
   }
 
-  const filteredSigns = summaryFilter === "flagged"
-    ? extractedSigns.filter((s) => (s as Record<string, unknown>).reviewFlag === true)
-    : extractedSigns;
+  const filteredSigns = (() => {
+    let signs = summaryFilter === "flagged"
+      ? extractedSigns.filter((s) => (s as Record<string, unknown>).reviewFlag === true)
+      : extractedSigns;
+    if (showUnplacedOnly) {
+      signs = signs.filter((s) => s.pageNumber == null);
+    }
+    return signs;
+  })();
 
   const sortedSigns = sortField
     ? [...filteredSigns].sort((a, b) => {
@@ -1426,9 +1433,22 @@ export default function JobDetails() {
                 <>
                   {/* Data Table Container */}
                   <div className="flex-1 overflow-auto bg-card border-t border-border">
-                {/* Filter bar — exceptions toggle + hidden toggle + unlock all */}
-                {(hiddenSigns.length > 0 || exceptionSigns.length > 0 || manuallyEditedSignsCount > 0) && (
+                {/* Filter bar — exceptions toggle + hidden toggle + unlock all + unplaced filter */}
+                {(hiddenSigns.length > 0 || exceptionSigns.length > 0 || manuallyEditedSignsCount > 0 || unplacedCount > 0 || showUnplacedOnly) && (
                   <div className="flex items-center gap-3 px-4 py-2 bg-secondary/60 border-b border-border/60">
+                    {(unplacedCount > 0 || showUnplacedOnly) && (
+                      <button
+                        onClick={() => setShowUnplacedOnly((v) => !v)}
+                        className={`flex items-center gap-2 px-3 py-1 rounded-md text-[11px] font-display font-semibold uppercase tracking-wide border transition-all ${
+                          showUnplacedOnly
+                            ? "bg-blue-500/15 text-blue-500 border-blue-500/40"
+                            : "bg-secondary text-muted-foreground border-border hover:text-blue-500 hover:border-blue-500/40"
+                        }`}
+                      >
+                        <MapPin className="w-3 h-3" />
+                        {showUnplacedOnly ? `Show all signs (${unplacedCount} unplaced)` : `Unplaced only (${unplacedCount})`}
+                      </button>
+                    )}
                     {exceptionSigns.length > 0 && (
                       <button
                         onClick={() => setShowExceptions((v) => !v)}
@@ -1683,6 +1703,19 @@ export default function JobDetails() {
                         </tr>
                       ))}
 
+                      {showUnplacedOnly && displaySigns.length === 0 && (
+                        <tr>
+                          <td colSpan={12} className="p-8 text-center text-muted-foreground">
+                            All signs have been placed.{" "}
+                            <button
+                              onClick={() => setShowUnplacedOnly(false)}
+                              className="underline hover:text-foreground transition-colors"
+                            >
+                              Show all signs
+                            </button>
+                          </td>
+                        </tr>
+                      )}
                       {extractedSigns.length === 0 && hiddenSigns.length === 0 && (
                         <tr>
                           <td colSpan={12} className="p-8 text-center text-muted-foreground">
