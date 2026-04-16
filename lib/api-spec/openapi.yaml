@@ -471,6 +471,9 @@ components:
         occupantLoadCount:
           type: integer
           description: Number of occupant load entries extracted for this job
+        unplacedCount:
+          type: integer
+          description: Number of signs with no floor-plan placement (pageNumber is null)
         createdAt:
           type: string
           format: date-time

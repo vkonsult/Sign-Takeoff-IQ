@@ -9,7 +9,7 @@ import { Button } from "@/components/ui/button";
 import {
   FolderOpen, Eye, FileText, CheckCircle2, Cpu,
   AlertTriangle, Trash2, X, Square, CheckSquare, MinusSquare,
-  Archive, EyeOff, Layers, Users, ArrowUp, ArrowDown, ArrowUpDown,
+  Archive, EyeOff, Layers, Users, ArrowUp, ArrowDown, ArrowUpDown, MapPinOff,
 } from "lucide-react";
 import { Link, useLocation } from "wouter";
 
@@ -281,6 +281,7 @@ export default function JobsList() {
                 const jobFiles: { id: string; originalName: string }[] = job.files ?? [];
                 const plaqueCount = Number(job.plaqueCount ?? 0);
                 const occupantLoadCount = Number(job.occupantLoadCount ?? 0);
+                const unplacedCount = Number(job.unplacedCount ?? 0);
 
                 return (
                   <div key={job.id} className="flex flex-col">
@@ -355,6 +356,15 @@ export default function JobsList() {
                                 <Users className="w-2.5 h-2.5" />
                                 {occupantLoadCount} occ. load{occupantLoadCount !== 1 ? "s" : ""}
                               </button>
+                            )}
+                            {unplacedCount > 0 && (
+                              <span
+                                className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-orange-500/10 text-orange-400 border border-orange-500/20"
+                                title={`${unplacedCount} sign${unplacedCount !== 1 ? "s" : ""} not yet placed on a floor plan`}
+                              >
+                                <MapPinOff className="w-2.5 h-2.5" />
+                                {unplacedCount} unplaced
+                              </span>
                             )}
                           </div>
                         </div>

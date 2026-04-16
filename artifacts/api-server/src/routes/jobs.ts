@@ -135,11 +135,12 @@ router.get("/jobs", async (req, res) => {
       }
     }
 
-    // Batch-count plaque schedule entries and occupant load entries per job.
+    // Batch-count plaque schedule entries, occupant load entries, and unplaced signs per job.
     const plaqueCounts = new Map<string, number>();
     const occupantLoadCounts = new Map<string, number>();
+    const unplacedCounts = new Map<string, number>();
     if (jobIds.length > 0) {
-      const [plaqueRows, occupantRows] = await Promise.all([
+      const [plaqueRows, occupantRows, unplacedRows] = await Promise.all([
         db
           .select({ jobId: plaqueSchedulesTable.jobId, count: sql<number>`COUNT(*)::int` })
           .from(plaqueSchedulesTable)
@@ -150,12 +151,20 @@ router.get("/jobs", async (req, res) => {
           .from(occupantLoadsTable)
           .where(inArray(occupantLoadsTable.jobId, jobIds))
           .groupBy(occupantLoadsTable.jobId),
+        db
+          .select({ jobId: extractedSignsTable.jobId, count: sql<number>`COUNT(*)::int` })
+          .from(extractedSignsTable)
+          .where(and(inArray(extractedSignsTable.jobId, jobIds), isNull(extractedSignsTable.pageNumber)))
+          .groupBy(extractedSignsTable.jobId),
       ]);
       for (const r of plaqueRows) {
         if (r.jobId) plaqueCounts.set(r.jobId, r.count);
       }
       for (const r of occupantRows) {
         if (r.jobId) occupantLoadCounts.set(r.jobId, r.count);
+      }
+      for (const r of unplacedRows) {
+        if (r.jobId) unplacedCounts.set(r.jobId, r.count);
       }
     }
 
@@ -167,6 +176,7 @@ router.get("/jobs", async (req, res) => {
         recentUsers: users.map((u) => ({ userName: u.userName, userInitials: u.userInitials, at: u.at, eventType: u.eventType })),
         plaqueCount: plaqueCounts.get(j.id) ?? 0,
         occupantLoadCount: occupantLoadCounts.get(j.id) ?? 0,
+        unplacedCount: unplacedCounts.get(j.id) ?? 0,
       };
     });
 

@@ -26,6 +26,8 @@ export interface JobSummary {
   plaqueCount?: number;
   /** Number of occupant load entries extracted for this job */
   occupantLoadCount?: number;
+  /** Number of signs with no floor-plan placement (pageNumber is null) */
+  unplacedCount?: number;
   createdAt: Date;
   updatedAt: Date;
 }
