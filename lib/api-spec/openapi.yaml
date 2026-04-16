@@ -199,6 +199,48 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
 
+  /jobs/{jobId}/plaque-schedule/{id}:
+    delete:
+      operationId: deletePlaqueScheduleRow
+      tags: [jobs]
+      summary: Delete a single plaque schedule row
+      description: Permanently removes a single plaque type row from the job's plaque schedule by its ID.
+      parameters:
+        - name: jobId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Row deleted successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+        "404":
+          description: Job or plaque row not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Deletion failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
   /jobs/{jobId}/plaque-schedule:
     get:
       operationId: getPlaqueSchedule

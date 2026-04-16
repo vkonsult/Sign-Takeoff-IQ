@@ -90,6 +90,7 @@ export function AiScansTab({
   const [plaqueEditSaving, setPlaqueEditSaving] = useState(false);
   const [plaqueEditError, setPlaqueEditError] = useState<string | null>(null);
   const [plaqueDeletingId, setPlaqueDeletingId] = useState<string | null>(null);
+  const [plaqueConfirmDeleteId, setPlaqueConfirmDeleteId] = useState<string | null>(null);
 
   // Occupant Loads inline-editing state
   // editingId: id of the row being edited, or "__new__" for a new unsaved row
@@ -268,6 +269,7 @@ export function AiScansTab({
   };
 
   const handleEditPlaqueRow = (row: PlaqueRow) => {
+    setPlaqueConfirmDeleteId(null);
     setPlaqueEditingId(row.id);
     setPlaqueEditDraft({
       typeId: row.typeId,
@@ -280,6 +282,7 @@ export function AiScansTab({
   };
 
   const handleAddPlaqueRow = () => {
+    setPlaqueConfirmDeleteId(null);
     setPlaqueEditingId("__new__");
     setPlaqueEditDraft({ typeId: "", name: "", braille: "", letterHeight: "", trigger: "" });
     setPlaqueEditError(null);
@@ -474,6 +477,24 @@ export function AiScansTab({
       setEditError(String(err));
     } finally {
       setEditSaving(false);
+    }
+  };
+
+  const handleDeletePlaqueRow = async (id: string) => {
+    setPlaqueDeletingId(id);
+    setPlaqueDeleteError(null);
+    try {
+      const res = await apiFetch(`/api/jobs/${jobId}/plaque-schedule/${id}`, { method: "DELETE" });
+      if (!res.ok) {
+        const data = await res.json();
+        setPlaqueDeleteError(data.error ?? "Failed to delete row.");
+        return;
+      }
+      setPlaqueRows((prev) => prev.filter((r) => r.id !== id));
+    } catch (err) {
+      setPlaqueDeleteError(String(err));
+    } finally {
+      setPlaqueDeletingId(null);
     }
   };
 
@@ -863,24 +884,46 @@ export function AiScansTab({
                         <td className="px-3 py-2 text-foreground">{row.letterHeight ?? <span className="text-muted-foreground/50">—</span>}</td>
                         <td className="px-3 py-2 text-foreground">{row.trigger ?? <span className="text-muted-foreground/50">—</span>}</td>
                         <td className="px-2 py-2">
-                          <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                            <button
-                              onClick={() => handleEditPlaqueRow(row)}
-                              disabled={plaqueEditingId !== null || plaqueDeletingId !== null}
-                              className="flex items-center justify-center w-6 h-6 rounded text-muted-foreground hover:text-amber-400 hover:bg-amber-500/10 transition-colors disabled:opacity-30"
-                              title="Edit row"
-                            >
-                              <Pencil className="w-3 h-3" />
-                            </button>
-                            <button
-                              onClick={() => handleDeletePlaqueRow(row.id)}
-                              disabled={plaqueEditingId !== null || plaqueDeletingId !== null}
-                              className="flex items-center justify-center w-6 h-6 rounded text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors disabled:opacity-30"
-                              title="Delete row"
-                            >
-                              {isDeleting ? <Loader2 className="w-3 h-3 animate-spin" /> : <Trash2 className="w-3 h-3" />}
-                            </button>
-                          </div>
+                          {plaqueConfirmDeleteId === row.id ? (
+                            <div className="flex items-center gap-1">
+                              <span className="text-[10px] text-destructive whitespace-nowrap mr-1">Delete?</span>
+                              <button
+                                onClick={() => { setPlaqueConfirmDeleteId(null); handleDeletePlaqueRow(row.id); }}
+                                disabled={isDeleting}
+                                className="flex items-center justify-center px-1.5 h-5 rounded text-[10px] font-medium text-white bg-destructive hover:bg-destructive/80 transition-colors disabled:opacity-50"
+                                title="Confirm delete"
+                              >
+                                {isDeleting ? <Loader2 className="w-3 h-3 animate-spin" /> : "Yes"}
+                              </button>
+                              <button
+                                onClick={() => setPlaqueConfirmDeleteId(null)}
+                                disabled={isDeleting}
+                                className="flex items-center justify-center px-1.5 h-5 rounded text-[10px] font-medium text-muted-foreground bg-secondary hover:text-foreground transition-colors disabled:opacity-50"
+                                title="Cancel"
+                              >
+                                No
+                              </button>
+                            </div>
+                          ) : (
+                            <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                              <button
+                                onClick={() => handleEditPlaqueRow(row)}
+                                disabled={plaqueEditingId !== null || plaqueDeletingId !== null || plaqueConfirmDeleteId !== null}
+                                className="flex items-center justify-center w-6 h-6 rounded text-muted-foreground hover:text-amber-400 hover:bg-amber-500/10 transition-colors disabled:opacity-30"
+                                title="Edit row"
+                              >
+                                <Pencil className="w-3 h-3" />
+                              </button>
+                              <button
+                                onClick={() => setPlaqueConfirmDeleteId(row.id)}
+                                disabled={plaqueEditingId !== null || plaqueDeletingId !== null || plaqueConfirmDeleteId !== null}
+                                className="flex items-center justify-center w-6 h-6 rounded text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors disabled:opacity-30"
+                                title="Delete row"
+                              >
+                                <Trash2 className="w-3 h-3" />
+                              </button>
+                            </div>
+                          )}
                         </td>
                       </tr>
                     );
@@ -969,7 +1012,7 @@ export function AiScansTab({
             <div className="px-3 py-2 text-[10px] text-muted-foreground border-t border-border/50 flex items-center gap-3">
               <button
                 onClick={handleAddPlaqueRow}
-                disabled={plaqueEditingId !== null || plaqueDeletingId !== null}
+                disabled={plaqueEditingId !== null || plaqueDeletingId !== null || plaqueConfirmDeleteId !== null}
                 className="flex items-center gap-1 text-amber-400 hover:text-amber-300 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
               >
                 <Plus className="w-3 h-3" />

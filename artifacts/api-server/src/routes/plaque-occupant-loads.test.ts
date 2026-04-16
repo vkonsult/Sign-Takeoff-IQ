@@ -60,6 +60,8 @@ let filesQueryResult: unknown[] = FAKE_FILES;
 let plaqueQueryResult: unknown[] = FAKE_PLAQUES;
 let loadsQueryResult: unknown[] = FAKE_LOADS;
 let signsQueryResult: unknown[] = [];
+// Result returned by delete().where().returning() — default is the first plaque (success)
+let deleteReturningResult: unknown[] = [FAKE_PLAQUES[0]];
 
 // Track which table was queried so tests can inspect behaviour
 let lastQueriedTable: unknown = null;
@@ -97,7 +99,11 @@ vi.mock("@workspace/db", () => {
 
   const db = {
     select: vi.fn().mockImplementation(() => ({ from: vi.fn().mockImplementation(makeSelectChain) })),
-    delete: vi.fn().mockImplementation(() => ({ where: vi.fn().mockResolvedValue(undefined) })),
+    delete: vi.fn().mockImplementation(() => ({
+      where: vi.fn().mockReturnValue({
+        returning: vi.fn().mockImplementation(() => Promise.resolve(deleteReturningResult)),
+      }),
+    })),
     insert: vi.fn().mockImplementation(() => ({ values: vi.fn().mockResolvedValue(undefined) })),
   };
 
@@ -417,6 +423,44 @@ describe("POST /jobs/:jobId/extract-plaque-schedule", () => {
   it("returns 404 when job does not exist", async () => {
     jobQueryResult = [];
     const res = await supertest(app).post("/jobs/nonexistent-job/extract-plaque-schedule");
+    expect(res.status).toBe(404);
+    expect(res.body.error).toMatch(/not found/i);
+  });
+});
+
+describe("DELETE /jobs/:jobId/plaque-schedule/:id", () => {
+  let app: express.Express;
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    jobQueryResult = [FAKE_JOB];
+    deleteReturningResult = [FAKE_PLAQUES[0]];
+    app = await buildApp();
+  });
+
+  it("returns 400 when jobId is missing/empty", async () => {
+    const emptyIdApp = await buildEmptyJobIdApp();
+    const res = await supertest(emptyIdApp).delete("/jobs/_EMPTY_/plaque-schedule/plaque-1");
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/job id.*plaque id required/i);
+  });
+
+  it("returns 200 with success:true on happy path", async () => {
+    const res = await supertest(app).delete("/jobs/job-111/plaque-schedule/plaque-1");
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+  });
+
+  it("returns 404 when plaque row does not exist", async () => {
+    deleteReturningResult = [];
+    const res = await supertest(app).delete("/jobs/job-111/plaque-schedule/nonexistent");
+    expect(res.status).toBe(404);
+    expect(res.body.error).toMatch(/not found/i);
+  });
+
+  it("returns 404 when job does not exist", async () => {
+    jobQueryResult = [];
+    const res = await supertest(app).delete("/jobs/nonexistent-job/plaque-schedule/plaque-1");
     expect(res.status).toBe(404);
     expect(res.body.error).toMatch(/not found/i);
   });

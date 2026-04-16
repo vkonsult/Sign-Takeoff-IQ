@@ -2423,6 +2423,33 @@ router.delete("/jobs/:jobId/occupant-loads/:id", async (req, res) => {
   }
 });
 
+// ── Plaque Schedule Delete ────────────────────────────────────────────────────
+
+router.delete("/jobs/:jobId/plaque-schedule/:id", async (req, res) => {
+  const { jobId, id } = req.params;
+  if (!jobId || !id) { res.status(400).json({ error: "Job ID and plaque ID required" }); return; }
+
+  try {
+    const job = await getJobWithOrgCheck(req, res, jobId);
+    if (!job) return;
+
+    const [deleted] = await db
+      .delete(plaqueSchedulesTable)
+      .where(and(eq(plaqueSchedulesTable.id, id), eq(plaqueSchedulesTable.jobId, jobId)))
+      .returning();
+
+    if (!deleted) {
+      res.status(404).json({ error: "Plaque schedule row not found" });
+      return;
+    }
+
+    res.json({ success: true });
+  } catch (err) {
+    req.log.error({ err, jobId, id }, "plaque-schedule delete failed");
+    res.status(500).json({ error: "Failed to delete plaque schedule row" });
+  }
+});
+
 // ── Plaque Schedule Query ─────────────────────────────────────────────────────
 
 router.get("/jobs/:jobId/plaque-schedule", async (req, res) => {
