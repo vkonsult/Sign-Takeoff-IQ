@@ -2015,7 +2015,25 @@ router.post("/jobs/:jobId/compliance-scan", async (req, res) => {
       ...applyEvacMapRules(stairs),
     ];
 
-    // 5. Build summary
+    // 5. Build coverage index from extracted signs
+    // roomNumber in compliance entries == extracted_signs.location.toUpperCase()
+    // signType matching is case-insensitive
+    const coverageKeys = new Set<string>();
+    for (const row of rows) {
+      if (row.location && row.signType) {
+        coverageKeys.add(
+          `${row.location.toUpperCase().trim()}||${row.signType.toLowerCase().trim()}`
+        );
+      }
+    }
+
+    function isCovered(roomNumber: string, signType: string): boolean {
+      return coverageKeys.has(
+        `${roomNumber.toUpperCase().trim()}||${signType.toLowerCase().trim()}`
+      );
+    }
+
+    // 6. Build summary
     const byRule: Record<string, number> = {};
     const byLevel: Record<string, number> = {};
     for (const e of allEntries) {
@@ -2023,8 +2041,10 @@ router.post("/jobs/:jobId/compliance-scan", async (req, res) => {
       byLevel[e.level] = (byLevel[e.level] ?? 0) + e.qty;
     }
     const totalSigns = allEntries.reduce((sum, e) => sum + e.qty, 0);
+    const coveredCount = allEntries.reduce((sum, e) => isCovered(e.roomNumber, e.signType) ? sum + e.qty : sum, 0);
+    const missingCount = totalSigns - coveredCount;
 
-    // 6. Persist to compliance_entries (replace previous scan for this job)
+    // 7. Persist to compliance_entries (replace previous scan for this job)
     await db
       .delete(complianceEntriesTable)
       .where(eq(complianceEntriesTable.jobId, jobId));
@@ -2055,8 +2075,11 @@ router.post("/jobs/:jobId/compliance-scan", async (req, res) => {
     );
 
     res.json({
-      entries: allEntries,
-      summary: { totalSigns, byRule, byLevel },
+      entries: allEntries.map((e) => ({
+        ...e,
+        covered: isCovered(e.roomNumber, e.signType),
+      })),
+      summary: { totalSigns, byRule, byLevel, coveredCount, missingCount },
       generatedAt: new Date().toISOString(),
     });
   } catch (err) {

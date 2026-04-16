@@ -9,7 +9,7 @@ import type { ExtractedSign as SignMarker } from "@/components/UnifiedPlanViewer
 import { SignSpecModal } from "@/components/SignSpecModal";
 import { AiScansTab } from "@/components/AiScansTab";
 import { SignSpecsTab } from "@/components/SignSpecsTab";
-import { ComplianceScanTab } from "@/components/ComplianceScanTab";
+import { ComplianceTab } from "@/components/ComplianceTab";
 import { getGetJobQueryKey } from "@workspace/api-client-react";
 import { 
   FileText, 
@@ -1174,7 +1174,7 @@ export default function JobDetails() {
                 </div>
               ) : activeTab === "compliance" ? (
                 <div className="flex-1 flex flex-col min-h-0 bg-card border-t border-border overflow-hidden">
-                  <ComplianceScanTab jobId={jobId} />
+                  <ComplianceTab jobId={jobId} />
                 </div>
               ) : (
                 <>
