@@ -560,8 +560,9 @@ export default function JobDetails() {
     (occupantLoadsQuery.data?.loads?.length ?? 0) === 0;
   const exportDisabled = supplementalDataLoading || hasNoData;
   const hasNoMapData =
-    isJobCompleted &&
-    (data?.extractedSigns ?? []).filter((s: { pageNumber?: number | null }) => s.pageNumber != null).length === 0;
+    isProcessingNow ||
+    (isJobCompleted &&
+    (data?.extractedSigns ?? []).filter((s: { pageNumber?: number | null }) => s.pageNumber != null).length === 0);
 
   const handleSort = (field: string) => {
     if (sortField === field) {
@@ -964,7 +965,9 @@ export default function JobDetails() {
                         </span>
                       </TooltipTrigger>
                       <TooltipContent>
-                        {hasNoMapData
+                        {isProcessingNow
+                          ? "Job is still processing — wait for extraction to finish before exporting"
+                          : hasNoMapData
                           ? "No signs have floor plan locations — nothing to mark on the PDF"
                           : "Download the original PDF with sign markers drawn on each floor plan page"}
                       </TooltipContent>
