@@ -1,7 +1,7 @@
 /** Shared type for a sign record used across the web app. */
 export interface ExtractedSign {
   id: string;
-  jobId?: string;
+  jobId?: string | null;
   jobFileId?: string | null;
   sheetNumber?: string | null;
   detailReference?: string | null;

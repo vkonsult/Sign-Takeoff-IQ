@@ -30,6 +30,10 @@ args = "web-unit-tests"
 task = "workflow.run"
 args = "api-server-tests"
 
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "web-typecheck"
+
 [[workflows.workflow]]
 name = "web-unit-tests"
 author = "agent"
@@ -51,6 +55,17 @@ args = "pnpm --filter @workspace/api-server test"
 
 [workflows.workflow.metadata]
 isValidation = true
+
+[[workflows.workflow]]
+name = "web-typecheck"
+author = "agent"
+
+[workflows.workflow.metadata]
+isValidation = true
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "pnpm --filter @workspace/api-client-react exec tsc -p tsconfig.json && pnpm --filter @workspace/web typecheck"
 
 [agent]
 stack = "PNPM_WORKSPACE"

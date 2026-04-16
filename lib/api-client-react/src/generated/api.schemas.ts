@@ -107,6 +107,8 @@ export interface PageStats {
   otherPages: number[];
   /** PDF page numbers classified as both floor plan and sign schedule */
   bothPages?: number[];
+  /** PDF page numbers explicitly rejected by the user from their classification */
+  rejectedPageNumbers?: number[];
   /** PDF logical page labels (e.g. "A1.1") indexed by page number (0-based) */
   pageLabels?: (string | null)[];
   /** Top-level PDF outline (bookmark) sections with classified page ranges */
@@ -128,6 +130,8 @@ export interface JobFile {
 
 export interface ExtractedSign {
   id: string;
+  /** Job this sign belongs to */
+  jobId?: string | null;
   jobFileId?: string | null;
   sheetNumber?: string | null;
   detailReference?: string | null;
@@ -150,36 +154,36 @@ export interface ExtractedSign {
   reviewFlag: boolean;
   /** Reason this sign was flagged as an exception (set when reviewFlag is true and AI found an exception condition) */
   exceptionReason?: string | null;
-  /** PDF page number where this sign was placed on the floor plan */
-  pageNumber?: number | null;
   /** How this sign was extracted: "text" for text-based extraction, "image" for visual/AI bbox detection */
   extractionMethod?: string | null;
   /** ID of the paired text sign when this is the image-only counterpart (or vice versa) */
   pairedSignId?: string | null;
-  /** Data source identifier used for AI-highlight display */
-  dataSource?: "pdf" | "ai" | "manual" | null;
-  /** True if this sign was placed via AI bounding-box detection */
-  aiBbox?: boolean | null;
-  /** X coordinate of the AI bounding box on the floor plan page */
-  aiBboxX?: number | null;
-  /** Y coordinate of the AI bounding box on the floor plan page */
-  aiBboxY?: number | null;
-  /** Width of the AI bounding box on the floor plan page */
-  aiBboxW?: number | null;
-  /** Height of the AI bounding box on the floor plan page */
-  aiBboxH?: number | null;
-  /** X coordinate of the sign placement on the floor plan page */
-  xPos?: number | null;
-  /** Y coordinate of the sign placement on the floor plan page */
-  yPos?: number | null;
-  /** Source of the placement (e.g. "word_match", "manual") */
-  placementSource?: string | null;
   /** True if this sign was manually placed by the user (not AI-extracted) */
   manuallyAdded?: boolean;
   /** True if the user has manually edited this sign; protected from AI re-run overwrites */
   manuallyEdited?: boolean | null;
   /** True if the user has saved/confirmed this sign entry; preserved across re-extractions */
   userVerified?: boolean;
+  /** PDF page number where this sign is placed (1-indexed); null means unplaced */
+  pageNumber?: number | null;
+  /** Horizontal position on the page (0–1 fraction) */
+  xPos?: number | null;
+  /** Vertical position on the page (0–1 fraction) */
+  yPos?: number | null;
+  /** How the sign was placed: "pdf" = auto, "ai" = AI-detected, "manual" = user-placed */
+  placementSource?: string | null;
+  /** Data source classification */
+  dataSource?: "pdf" | "ai" | "manual" | null;
+  /** Whether AI bounding box was used for placement */
+  aiBbox?: boolean | null;
+  /** AI bounding box X coordinate (fraction) */
+  aiBboxX?: number | null;
+  /** AI bounding box Y coordinate (fraction) */
+  aiBboxY?: number | null;
+  /** AI bounding box width (fraction) */
+  aiBboxW?: number | null;
+  /** AI bounding box height (fraction) */
+  aiBboxH?: number | null;
   createdAt: string;
 }
 
