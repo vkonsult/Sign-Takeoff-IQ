@@ -9,6 +9,7 @@ import type { ExtractedSign as SignMarker } from "@/components/UnifiedPlanViewer
 import { SignSpecModal } from "@/components/SignSpecModal";
 import { AiScansTab } from "@/components/AiScansTab";
 import { SignSpecsTab } from "@/components/SignSpecsTab";
+import { ComplianceScanTab } from "@/components/ComplianceScanTab";
 import { getGetJobQueryKey } from "@workspace/api-client-react";
 import { 
   FileText, 
@@ -506,7 +507,7 @@ export default function JobDetails() {
   const [sortField, setSortField] = useState<string | null>(null);
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
   const [summaryFilter, setSummaryFilter] = useState<null | "flagged">(null);
-  const [activeTab, setActiveTab] = useState<"table" | "sheets" | "summary" | "floorplans" | "signpages" | "specs" | "timeline" | "coords" | "ai_scans">("table");
+  const [activeTab, setActiveTab] = useState<"table" | "sheets" | "summary" | "floorplans" | "signpages" | "specs" | "timeline" | "coords" | "ai_scans" | "compliance">("table");
   const [showAiHighlight, setShowAiHighlight] = useState(false);
 
   const PROCESSING_TIMEOUT_SECONDS = 5 * 60;
@@ -1080,6 +1081,19 @@ export default function JobDetails() {
                       AI Scans
                     </button>
                   )}
+                  {(isCompleted || isFailed) && (
+                    <button
+                      onClick={() => setActiveTab("compliance")}
+                      className={`flex items-center gap-1.5 px-3 py-2 text-[10px] font-display font-semibold uppercase tracking-wider border-b-2 transition-all ${
+                        activeTab === "compliance"
+                          ? "border-emerald-500 text-emerald-400"
+                          : "border-transparent text-muted-foreground hover:text-foreground"
+                      }`}
+                    >
+                      <ShieldCheck className="w-3.5 h-3.5" />
+                      Compliance
+                    </button>
+                  )}
                 </div>
               </div>
 
@@ -1157,6 +1171,10 @@ export default function JobDetails() {
                       queryClient.invalidateQueries({ queryKey: getGetJobQueryKey(jobId) });
                     }}
                   />
+                </div>
+              ) : activeTab === "compliance" ? (
+                <div className="flex-1 flex flex-col min-h-0 bg-card border-t border-border overflow-hidden">
+                  <ComplianceScanTab jobId={jobId} />
                 </div>
               ) : (
                 <>

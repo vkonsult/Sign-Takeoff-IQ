@@ -1892,6 +1892,62 @@ router.patch("/jobs/:jobId/files/:fileId/rejected-pages", async (req: Request, r
 });
 
 // ── Compliance scan (R1–R15 rules engine) ─────────────────────────────────────
+
+// GET last persisted scan results for a job
+router.get("/jobs/:jobId/compliance-scan", async (req, res) => {
+  const { jobId } = req.params;
+  if (!jobId) {
+    res.status(400).json({ error: "Job ID required" });
+    return;
+  }
+  try {
+    const job = await getJobWithOrgCheck(req, res, jobId);
+    if (!job) return;
+
+    const rows = await db
+      .select()
+      .from(complianceEntriesTable)
+      .where(eq(complianceEntriesTable.jobId, jobId))
+      .orderBy(complianceEntriesTable.ruleRef);
+
+    if (rows.length === 0) {
+      res.json({ entries: null, summary: null, generatedAt: null });
+      return;
+    }
+
+    const entries = rows.map((r) => ({
+      signType: r.signType,
+      qty: r.qty,
+      ruleRef: r.ruleRef,
+      color: r.color,
+      plaqueTypeId: r.plaqueTypeId ?? undefined,
+      roomNumber: r.roomNumber,
+      roomName: r.roomName,
+      level: r.level,
+      pageNumber: r.pageNumber,
+      coords: r.coordsJson ?? undefined,
+    }));
+
+    const byRule: Record<string, number> = {};
+    const byLevel: Record<string, number> = {};
+    for (const e of entries) {
+      byRule[e.ruleRef] = (byRule[e.ruleRef] ?? 0) + e.qty;
+      byLevel[e.level] = (byLevel[e.level] ?? 0) + e.qty;
+    }
+    const totalSigns = entries.reduce((sum, e) => sum + e.qty, 0);
+    const generatedAt = rows[0].createdAt.toISOString();
+
+    res.json({
+      entries,
+      summary: { totalSigns, byRule, byLevel },
+      generatedAt,
+    });
+  } catch (err) {
+    req.log.error({ err, jobId }, "Failed to load compliance scan results");
+    res.status(500).json({ error: "Failed to load compliance scan results" });
+  }
+});
+
 router.post("/jobs/:jobId/compliance-scan", async (req, res) => {
   const { jobId } = req.params;
   if (!jobId) {
