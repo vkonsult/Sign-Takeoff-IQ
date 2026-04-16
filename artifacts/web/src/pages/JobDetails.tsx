@@ -910,6 +910,12 @@ export default function JobDetails() {
                   </button>
                 )}
                 <StatusBadge status={job.status} />
+                {unplacedCount > 0 && (
+                  <span className="inline-flex items-center gap-1 text-xs font-semibold px-2 py-0.5 rounded-full bg-orange-500/15 text-orange-400 border border-orange-500/25 flex-shrink-0">
+                    <MapPin className="w-3 h-3 flex-shrink-0" />
+                    {unplacedCount} unplaced
+                  </span>
+                )}
               </div>
               <div className="flex items-center flex-wrap gap-x-3 gap-y-1">
                 <p className="text-sm text-muted-foreground font-mono">
