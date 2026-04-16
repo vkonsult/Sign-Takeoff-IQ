@@ -558,6 +558,11 @@ export default function JobDetails() {
   const [showAiHighlight, setShowAiHighlight] = useState(false);
   const [unlockingSignId, setUnlockingSignId] = useState<string | null>(null);
 
+  // Reset sign-table filter toggles whenever the active tab changes.
+  // IMPORTANT for future "Remember filter settings" work: if filter state is
+  // ever persisted (e.g. in localStorage or URL params), it must be stored
+  // under a per-tab key (e.g. `filters:${jobId}:${activeTab}`) so that
+  // restoring filters for one tab does not bleed into another tab.
   useEffect(() => {
     setShowHidden(false);
     setShowExceptions(false);
