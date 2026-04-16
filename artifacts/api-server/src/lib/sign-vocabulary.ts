@@ -184,6 +184,14 @@ export const CANONICAL_LEVEL_NAMES = [
   "lower level",
   "main level",
   "upper level",
+  "first floor",
+  "second floor",
+  "third floor",
+  "fourth floor",
+  "fifth floor",
+  "ground floor",
+  "basement",
+  "mezzanine",
   "attic",
 ] as const;
 
