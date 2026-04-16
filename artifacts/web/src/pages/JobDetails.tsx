@@ -546,6 +546,18 @@ export default function JobDetails() {
     return () => clearInterval(id);
   }, [isProcessingNow]);
 
+  const isJobCompleted = data?.job?.status === "completed";
+  const supplementalDataLoading =
+    isJobCompleted &&
+    (plaqueScheduleQuery.isLoading || occupantLoadsQuery.isLoading);
+  const hasNoData =
+    isJobCompleted &&
+    !supplementalDataLoading &&
+    (data?.extractedSigns?.length ?? 0) === 0 &&
+    (plaqueScheduleQuery.data?.plaques?.length ?? 0) === 0 &&
+    (occupantLoadsQuery.data?.loads?.length ?? 0) === 0;
+  const exportDisabled = supplementalDataLoading || hasNoData;
+
   const handleSort = (field: string) => {
     if (sortField === field) {
       setSortDir((d) => (d === "asc" ? "desc" : "asc"));
@@ -921,13 +933,29 @@ export default function JobDetails() {
                       <TooltipContent>Download the original PDF with sign markers drawn on each floor plan page</TooltipContent>
                     </Tooltip>
                   </TooltipProvider>
-                  <Button
-                    onClick={handleExport}
-                    className="font-display font-semibold uppercase tracking-wide bg-accent text-accent-foreground hover:bg-accent/90 shadow-[0_0_15px_rgba(0,240,255,0.15)]"
-                  >
-                    <Download className="w-4 h-4" />
-                    Export XLSX
-                  </Button>
+                  <TooltipProvider>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <span>
+                          <Button
+                            onClick={handleExport}
+                            disabled={exportDisabled}
+                            className="font-display font-semibold uppercase tracking-wide bg-accent text-accent-foreground hover:bg-accent/90 shadow-[0_0_15px_rgba(0,240,255,0.15)] disabled:opacity-50 disabled:cursor-not-allowed disabled:pointer-events-none"
+                          >
+                            <Download className="w-4 h-4" />
+                            Export XLSX
+                          </Button>
+                        </span>
+                      </TooltipTrigger>
+                      {exportDisabled && (
+                        <TooltipContent>
+                          {supplementalDataLoading
+                            ? "Loading data…"
+                            : "No sign, plaque, or occupant load data to export"}
+                        </TooltipContent>
+                      )}
+                    </Tooltip>
+                  </TooltipProvider>
                 </>
               )}
             </div>
