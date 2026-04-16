@@ -922,6 +922,35 @@ export default function JobDetails() {
   const isPending = job.status === "pending";
   const isFailed = job.status === "failed";
 
+  const handleTabListKeyDown = useCallback((e: React.KeyboardEvent<HTMLDivElement>) => {
+    const tablist = e.currentTarget;
+    const tabs = Array.from(tablist.querySelectorAll<HTMLButtonElement>('[role="tab"]'));
+    if (tabs.length === 0) return;
+    const focused = tabs.findIndex((t) => t === document.activeElement);
+    if (focused === -1) return;
+    let next = focused;
+    if (e.key === "ArrowRight") {
+      e.preventDefault();
+      next = (focused + 1) % tabs.length;
+    } else if (e.key === "ArrowLeft") {
+      e.preventDefault();
+      next = (focused - 1 + tabs.length) % tabs.length;
+    } else if (e.key === "Home") {
+      e.preventDefault();
+      next = 0;
+    } else if (e.key === "End") {
+      e.preventDefault();
+      next = tabs.length - 1;
+    } else if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      tabs[focused].click();
+      return;
+    } else {
+      return;
+    }
+    tabs[next].focus();
+  }, []);
+
   return (
     <AppShell>
       <div className="flex flex-col h-screen overflow-hidden">
@@ -1194,7 +1223,12 @@ export default function JobDetails() {
               
               {/* View tabs */}
               <div className="flex-none flex items-center border-b border-border bg-secondary/20">
-                <div role="tablist" className="flex items-center px-4 gap-0">
+                <div
+                  role="tablist"
+                  aria-label="Job views"
+                  className="flex items-center px-4 gap-0"
+                  onKeyDown={handleTabListKeyDown}
+                >
                   <button
                     id="tab-table"
                     role="tab"
