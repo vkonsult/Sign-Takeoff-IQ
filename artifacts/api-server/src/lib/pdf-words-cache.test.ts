@@ -86,6 +86,9 @@ describe("getOrOpenPdfjsDoc — concurrent first-touch deduplication", () => {
     expect(doc1).toBeDefined();
     expect(doc2).toBeDefined();
 
+    // Both callers must get the exact same document object (shared promise, not two separate parses)
+    expect(doc1).toBe(doc2);
+
     // The Promise stored in the cache means only one readFile should have been issued
     expect(mockReadFile).toHaveBeenCalledTimes(1);
   });
