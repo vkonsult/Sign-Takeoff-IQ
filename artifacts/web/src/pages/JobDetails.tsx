@@ -1547,11 +1547,11 @@ export default function JobDetails() {
                               </span>
                               {sign.manuallyEdited && (
                                 <span
-                                  title="This row was manually edited and will not be overwritten by AI re-runs"
+                                  title="Manually locked — this row will not be overwritten by AI re-runs"
                                   className="inline-flex items-center gap-0.5 px-1 py-0.5 rounded text-[9px] font-medium bg-amber-500/10 text-amber-400 border border-amber-500/20 cursor-default"
                                 >
-                                  <Pencil className="w-2.5 h-2.5" />
-                                  edited
+                                  <Lock className="w-2.5 h-2.5" />
+                                  locked
                                 </span>
                               )}
                             </span>
