@@ -4,6 +4,7 @@ import { logger } from "@/lib/logger";
 import { useQueryClient } from "@tanstack/react-query";
 import { AppShell } from "@/components/layout/Shell";
 import { apiFetch, openPdfInNewTab } from "@/lib/apiClient";
+import { logger } from "@/lib/logger";
 import { useJobDetails, useStartExtraction, downloadExport, useUpdateJobName } from "@/hooks/use-takeoff";
 import { useExportButtonState } from "@/hooks/useExportButtonState";
 import { useToast } from "@/hooks/use-toast";

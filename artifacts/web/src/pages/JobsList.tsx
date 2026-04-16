@@ -4,6 +4,7 @@ import { logger } from "@/lib/logger";
 import { AppShell } from "@/components/layout/Shell";
 import { useJobsList } from "@/hooks/use-takeoff";
 import { apiFetch, openPdfInNewTab } from "@/lib/apiClient";
+import { logger } from "@/lib/logger";
 import { useQueryClient } from "@tanstack/react-query";
 import { getListJobsQueryKey, type JobSummary } from "@workspace/api-client-react";
 import { format, formatDistanceToNow } from "date-fns";
