@@ -555,6 +555,7 @@ export default function JobDetails() {
   const [sortDir, setSortDir] = useState<"asc" | "desc">(_initSortDir);
   const [summaryFilter, setSummaryFilter] = useState<null | "flagged">(_initSummaryFilter);
   const [activeTab, setActiveTab] = useState<"table" | "sheets" | "summary" | "floorplans" | "signpages" | "specs" | "timeline" | "coords" | "ai_scans" | "compliance" | "plaque_schedule" | "occupant_loads">(_initActiveTab);
+  const [placeSignId, setPlaceSignId] = useState<string | null>(null);
   const [showAiHighlight, setShowAiHighlight] = useState(false);
   const [unlockingSignId, setUnlockingSignId] = useState<string | null>(null);
 
@@ -1377,9 +1378,24 @@ export default function JobDetails() {
                       files={files}
                       signs={extractedSigns}
                       showAiHighlight={showAiHighlight}
+                      placeSignId={placeSignId}
                       onSignAdded={handleSignAdded}
                       onSignUpdated={handleSignUpdated}
                       onEditSign={(s) => setReviewSign(s as SignRow)}
+                      onPlaceComplete={(signId, xPos, yPos, pageNum, fileId) => {
+                        setPlaceSignId(null);
+                        queryClient.setQueryData(getGetJobQueryKey(jobId), (old: typeof data) => {
+                          if (!old) return old;
+                          return {
+                            ...old,
+                            extractedSigns: old.extractedSigns.map((s) =>
+                              s.id === signId
+                                ? { ...s, xPos, yPos, pageNumber: pageNum, jobFileId: fileId, placementSource: "manual" }
+                                : s
+                            ),
+                          };
+                        });
+                      }}
                     />
                   </div>
                 </div>
@@ -1682,6 +1698,16 @@ export default function JobDetails() {
                           </td>
                           <td className="data-cell text-center">
                             <div className="flex items-center justify-center gap-1.5">
+                              {sign.pageNumber == null && (
+                                <button
+                                  onClick={() => { setPlaceSignId(sign.id); setActiveTab("floorplans"); }}
+                                  title="Switch to Floor Plans and click to place this sign"
+                                  className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-display font-semibold uppercase tracking-wide bg-yellow-500/10 hover:bg-yellow-500/20 text-yellow-500 border border-yellow-500/30 hover:border-yellow-500/50 transition-all"
+                                >
+                                  <MapPin className="w-3 h-3" />
+                                  Place
+                                </button>
+                              )}
                               <button
                                 onClick={() => setReviewSign(sign)}
                                 className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-display font-semibold uppercase tracking-wide bg-secondary hover:bg-primary/20 hover:text-primary border border-border hover:border-primary/40 text-muted-foreground transition-all"

@@ -69,6 +69,7 @@ export interface UnifiedPlanViewerProps {
   signs?: ExtractedSign[];
   allSigns?: ExtractedSign[];
   initialSignId?: string;
+  placeSignId?: string | null;
   showAiHighlight?: boolean;
   showMarkers?: boolean;
   pageType?: "floor_plan" | "sign_schedule";
@@ -79,6 +80,7 @@ export interface UnifiedPlanViewerProps {
   onSignDeleted?: (signId: string) => void;
   onEditSign?: (sign: ExtractedSign) => void;
   onUnlock?: (signId: string) => Promise<boolean>;
+  onPlaceComplete?: (signId: string, xPos: number, yPos: number, pageNumber: number, jobFileId: string) => void;
 }
 
 // ── Internal Types ────────────────────────────────────────────────────────────
@@ -505,6 +507,8 @@ interface PageViewerProps {
   showAiHighlight?: boolean;
   showMarkers?: boolean;
   pagePrefix?: string;
+  placeSignId?: string | null;
+  onPlaceDone?: (nx: number, ny: number) => void;
   // Undo / Redo / Save — modal toolbar only
   canUndo?: boolean;
   canRedo?: boolean;
@@ -537,6 +541,8 @@ function PageViewer({
   showAiHighlight,
   showMarkers = true,
   pagePrefix = "Floor plan",
+  placeSignId,
+  onPlaceDone,
   canUndo,
   canRedo,
   onUndo,
@@ -1292,6 +1298,20 @@ function PageViewer({
               Edit Markers
             </button>
           )}
+
+          {/* Place-existing-sign mode banner */}
+          {placeSignId && pageReady && (() => {
+            const signToPlace = localSigns.find((s) => s.id === placeSignId);
+            const label = signToPlace?.signIdentifier || signToPlace?.signType || "sign";
+            return (
+              <div className="flex items-center gap-2 px-3 py-1 rounded border animate-pulse" style={{ background: "#eab30820", color: "#eab308", borderColor: "#eab30860" }}>
+                <MapPin className="w-3.5 h-3.5 shrink-0" />
+                <span className="text-[10px] font-display font-semibold uppercase tracking-wide whitespace-nowrap">
+                  Click to place <span className="font-mono">{label}</span>
+                </span>
+              </div>
+            );
+          })()}
         </div>
 
       </div>
@@ -1604,13 +1624,14 @@ function PageViewer({
                     position: "absolute", top: 0, left: 0, width: renderedW, height: renderedH, zIndex: 6,
                     cursor: dragState?.isDragging ? "grabbing"
                       : isPanning ? "grabbing"
+                      : placeSignId ? "crosshair"
                       : addMode ? (pendingNewMarker ? "default" : "crosshair")
                       : drawMode ? (hoveredMarkerId ? "pointer" : "crosshair")
                       : hoveredMarkerId ? "pointer"
                       : "grab",
                   }}
                   onPointerDown={(e) => {
-                    if (addMode || drawMode) return;
+                    if (addMode || drawMode || placeSignId) return;
                     const rect = e.currentTarget.getBoundingClientRect();
                     const nx = (e.clientX - rect.left) / renderedW;
                     const ny = (e.clientY - rect.top) / renderedH;
@@ -1722,6 +1743,7 @@ function PageViewer({
                     const nx = (e.clientX - rect.left) / renderedW!;
                     const ny = (e.clientY - rect.top) / renderedH!;
 
+                    if (placeSignId) { onPlaceDone?.(nx, ny); return; }
                     if (addMode) { if (!pendingNewMarker) setPendingNewMarker({ nx, ny }); return; }
                     if (drawMode) {
                       if (hoveredMarkerId) {
@@ -1790,6 +1812,7 @@ export function UnifiedPlanViewer({
   signs,
   allSigns: allSignsProp,
   initialSignId,
+  placeSignId,
   showAiHighlight,
   showMarkers = true,
   pageType = "floor_plan",
@@ -1800,6 +1823,7 @@ export function UnifiedPlanViewer({
   onSignDeleted,
   onEditSign,
   onUnlock,
+  onPlaceComplete,
 }: UnifiedPlanViewerProps) {
   const sourceSigns = (allSignsProp ?? signs ?? []) as ExtractedSign[];
   const [localSigns, setLocalSigns] = useState<ExtractedSign[]>(sourceSigns);
@@ -2104,6 +2128,28 @@ export function UnifiedPlanViewer({
   const hasPrev = currentIdx > 0;
   const hasNext = currentIdx >= 0 && currentIdx < localSigns.length - 1;
 
+  // ── Place existing sign ─────────────────────────────────────────────────────
+  const handlePlaceDone = useCallback(async (nx: number, ny: number) => {
+    if (!placeSignId) return;
+    const fileId = selectedFileId;
+    const page = pageNumber;
+    setLocalSigns((prev) => prev.map((s) =>
+      s.id === placeSignId ? { ...s, xPos: nx, yPos: ny, pageNumber: page, jobFileId: fileId, placementSource: "user_drag" } : s
+    ));
+    try {
+      await apiFetch(`/api/extracted-signs/${placeSignId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ xPos: nx, yPos: ny, pageNumber: page, jobFileId: fileId, placementSource: "user_drag" }),
+      });
+      onPlaceComplete?.(placeSignId, nx, ny, page, fileId);
+    } catch {
+      setLocalSigns((prev) => prev.map((s) =>
+        s.id === placeSignId ? { ...s, xPos: null, yPos: null, pageNumber: null, jobFileId: null, placementSource: null } : s
+      ));
+    }
+  }, [placeSignId, selectedFileId, pageNumber, onPlaceComplete]);
+
   // ── Confidence ─────────────────────────────────────────────────────────────
   const confidence = activeSign ? Math.round(activeSign.confidenceScore * 100) : 0;
   const confColor = confidence >= 80 ? "text-accent" : confidence >= 60 ? "text-primary" : "text-destructive";
@@ -2168,6 +2214,8 @@ export function UnifiedPlanViewer({
       showAiHighlight={showAiHighlight}
       showMarkers={showMarkers}
       pagePrefix={pageType === "sign_schedule" ? "Sign page" : "Floor plan"}
+      placeSignId={placeSignId}
+      onPlaceDone={handlePlaceDone}
       canUndo={historyStack.length > 0}
       canRedo={redoStack.length > 0}
       onUndo={handleUndo}
