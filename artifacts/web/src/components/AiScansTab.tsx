@@ -92,6 +92,7 @@ export function AiScansTab({
   const [plaqueDeletingId, setPlaqueDeletingId] = useState<string | null>(null);
   const [plaqueConfirmDeleteId, setPlaqueConfirmDeleteId] = useState<string | null>(null);
   const [showPlaqueConfirm, setShowPlaqueConfirm] = useState(false);
+  const plaqueConfirmRef = useRef<HTMLTableRowElement | null>(null);
 
   // Occupant Loads inline-editing state
   // editingId: id of the row being edited, or "__new__" for a new unsaved row
@@ -122,6 +123,26 @@ export function AiScansTab({
       document.removeEventListener("keydown", handleKeyDown);
     };
   }, [confirmDeleteId]);
+
+  useEffect(() => {
+    if (!plaqueConfirmDeleteId) return;
+    const handleMouseDown = (e: MouseEvent) => {
+      if (plaqueConfirmRef.current && !plaqueConfirmRef.current.contains(e.target as Node)) {
+        setPlaqueConfirmDeleteId(null);
+      }
+    };
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        setPlaqueConfirmDeleteId(null);
+      }
+    };
+    document.addEventListener("mousedown", handleMouseDown);
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", handleMouseDown);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [plaqueConfirmDeleteId]);
 
   useEffect(() => {
     if (!showPlaqueConfirm) return;
@@ -902,6 +923,7 @@ export function AiScansTab({
                     return (
                       <tr
                         key={row.id}
+                        ref={plaqueConfirmDeleteId === row.id ? plaqueConfirmRef : null}
                         className={`border-b border-border/50 hover:bg-secondary/20 transition-colors group ${isDeleting ? "opacity-40" : ""}`}
                       >
                         <td className="px-3 py-2 font-mono text-amber-400">{row.typeId}</td>
