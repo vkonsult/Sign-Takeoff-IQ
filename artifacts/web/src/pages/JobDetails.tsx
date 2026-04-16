@@ -459,7 +459,7 @@ export default function JobDetails() {
   const extractMutation = useStartExtraction();
   const queryClient = useQueryClient();
 
-  type SignRow = NonNullable<typeof data>["extractedSigns"][number];
+  type SignRow = SignMarker;
   const [reviewSign, setReviewSign] = useState<SignRow | null>(null);
 
   type SpecViewer = { fileId: string; fileName: string; specPages: number[] } | null;
@@ -526,7 +526,7 @@ export default function JobDetails() {
     if (!data || exportingPdf) return;
     setExportingPdf(true);
     try {
-      const allSigns = data.extractedSigns as unknown as MarkerSign[];
+      const allSigns = (data.extractedSigns as SignMarker[]) as MarkerSign[];
       const markedSigns = allSigns.filter(
         (s) => s.pageNumber != null
       );
@@ -605,10 +605,10 @@ export default function JobDetails() {
   const hasNoMapData =
     isProcessingNow ||
     (isJobCompleted &&
-    (data?.extractedSigns ?? []).filter((s: { pageNumber?: number | null }) => s.pageNumber != null).length === 0);
+    ((data?.extractedSigns as SignMarker[] | undefined) ?? []).filter((s) => s.pageNumber != null).length === 0);
 
   const exportButtonState = useExportButtonState({
-    extractedSigns: data?.extractedSigns ?? [],
+    extractedSigns: (data?.extractedSigns as SignMarker[] | undefined) ?? [],
     plaqueCount: plaqueScheduleQuery.data?.plaques?.length ?? 0,
     loadsCount: occupantLoadsQuery.data?.loads?.length ?? 0,
     assemblyRoomsCount: occupantLoadsQuery.data?.assemblyRooms?.length ?? 0,
@@ -860,8 +860,8 @@ export default function JobDetails() {
 
   // Show all signs: text, manual, and image-only (visual-only finds).
   // Paired image signs are excluded by the API (their data is in the paired text row).
-  const extractedSigns = data.extractedSigns;
-  const hiddenSigns = (data as typeof data & { hiddenSigns?: typeof data.extractedSigns }).hiddenSigns ?? [];
+  const extractedSigns = data.extractedSigns as SignMarker[];
+  const hiddenSigns = ((data as typeof data & { hiddenSigns?: SignMarker[] }).hiddenSigns) ?? [];
   const exceptionSigns = extractedSigns.filter((s) => s.reviewFlag && s.exceptionReason);
   const manuallyEditedSignsCount = extractedSigns.filter((s) => s.manuallyEdited).length;
   const lockedSigns = extractedSigns.filter((s) => s.manuallyEdited);
@@ -874,10 +874,11 @@ export default function JobDetails() {
   const showUnplacedWarning = !isProcessingNow && (noneArePlaced || someAreUnplaced);
 
   // Derive a source sort key matching the SourceBadge priority order
-  function sourceKey(s: typeof extractedSigns[number]): string {
+  function sourceKey(s: SignMarker): string {
+    const r = s as SignMarker & Record<string, unknown>;
     if (s.manuallyAdded) return "0_manual";
-    if (s.extractionMethod === "text" && s.pairedSignId) return "1_both";
-    if (s.extractionMethod === "image" && !s.pairedSignId) return "2_visual";
+    if (r.extractionMethod === "text" && r.pairedSignId) return "1_both";
+    if (r.extractionMethod === "image" && !r.pairedSignId) return "2_visual";
     return "3_text";
   }
 
@@ -904,12 +905,8 @@ export default function JobDetails() {
             bv = b.signIdentifier ?? "";
             break;
           case "codeText": {
-            const aId = a.signIdentifier ?? "";
-            const aLoc = a.location ?? "";
-            av = [aId, aLoc].filter(Boolean).join(" ");
-            const bId = b.signIdentifier ?? "";
-            const bLoc = b.location ?? "";
-            bv = [bId, bLoc].filter(Boolean).join(" ");
+            av = [a.signIdentifier, a.location].filter(Boolean).join(" ");
+            bv = [b.signIdentifier, b.location].filter(Boolean).join(" ");
             break;
           }
           case "signType":   av = a.signType ?? ""; bv = b.signType ?? ""; break;
@@ -2028,32 +2025,27 @@ function CoordinatesTable({
     }
   };
 
-  const coordExceptionCount = signs.filter((s) => s["reviewFlag"] && s["exceptionReason"]).length;
-  const sorted = [...(showCoordExceptions ? signs.filter((s) => s["reviewFlag"] && s["exceptionReason"]) : signs)].sort((a, b) => {
-    // eslint-disable-next-line no-useless-assignment
+  const coordExceptionCount = signs.filter((s) => s.reviewFlag && s.exceptionReason).length;
+  const sorted = [...(showCoordExceptions ? signs.filter((s) => s.reviewFlag && s.exceptionReason) : signs)].sort((a, b) => {
     let av: string | number = "";
     // eslint-disable-next-line no-useless-assignment
     let bv: string | number = "";
     switch (coordSortField) {
       case "code":
-        av = (a.signIdentifier as string | null) ?? "";
-        bv = (b.signIdentifier as string | null) ?? "";
+        av = a.signIdentifier ?? "";
+        bv = b.signIdentifier ?? "";
         break;
       case "codeText": {
-        const aId = (a.signIdentifier as string | null) ?? "";
-        const aLoc = (a.location as string | null) ?? "";
-        av = [aId, aLoc].filter(Boolean).join(" ");
-        const bId = (b.signIdentifier as string | null) ?? "";
-        const bLoc = (b.location as string | null) ?? "";
-        bv = [bId, bLoc].filter(Boolean).join(" ");
+        av = [a.signIdentifier, a.location].filter(Boolean).join(" ");
+        bv = [b.signIdentifier, b.location].filter(Boolean).join(" ");
         break;
       }
       default: {
-        const pageA = (a.pageNumber as number | null) ?? 0;
-        const pageB = (b.pageNumber as number | null) ?? 0;
+        const pageA = a.pageNumber ?? 0;
+        const pageB = b.pageNumber ?? 0;
         if (pageA !== pageB) return pageA - pageB;
-        const idA = (a.signIdentifier as string | null) ?? "";
-        const idB = (b.signIdentifier as string | null) ?? "";
+        const idA = a.signIdentifier ?? "";
+        const idB = b.signIdentifier ?? "";
         return idA.localeCompare(idB);
       }
     }
@@ -2309,17 +2301,17 @@ type SignSummaryRow = {
   sheets: string[];
 };
 
-type AnySign = ApiSign;
+type AnySign = SignMarker;
 
 function buildSignSummary(signs: AnySign[]): SignSummaryRow[] {
   const map = new Map<string, SignSummaryRow>();
   for (const sign of signs) {
-    const st = ((sign.signType as string) || "Unknown").trim();
-    const dim = ((sign.dimensions as string) || "—").trim();
+    const st = (sign.signType || "Unknown").trim();
+    const dim = (sign.dimensions || "—").trim();
     const key = `${st}||${dim}`;
     const ex = map.get(key);
-    const qty = (sign.quantity as number) ?? 1;
-    const sheet = (sign.sheetNumber as string) || null;
+    const qty = sign.quantity ?? 1;
+    const sheet = sign.sheetNumber || null;
     if (ex) {
       ex.qty += qty;
       if (sheet && !ex.sheets.includes(sheet)) ex.sheets.push(sheet);
@@ -2824,9 +2816,10 @@ function SheetsPanel({
 
 // ─── SOURCE BADGE ─────────────────────────────────────────────────────────────
 
-function SourceBadge({ sign }: { sign: AnySign }) {
-  const method = sign.extractionMethod;
-  const paired = sign.pairedSignId;
+function SourceBadge({ sign }: { sign: SignMarker }) {
+  const r = sign as SignMarker & Record<string, unknown>;
+  const method = r.extractionMethod as string | null | undefined;
+  const paired = r.pairedSignId as string | null | undefined;
   const manual = sign.manuallyAdded;
   const dataSource = sign.dataSource;
 
