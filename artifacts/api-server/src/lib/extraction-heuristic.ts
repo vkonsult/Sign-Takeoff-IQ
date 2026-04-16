@@ -18,14 +18,6 @@ import { extractPagePhrases, getPdfPageCount, classifyPageFromPhrases, type PdfP
 import { getRoomLabelMap, isCodeOnlyLocation, type CanonicalBuildingType } from "./sign-vocabulary";
 import { logger } from "./logger";
 
-// Module-level effective map — updated at the start of each extraction run
-// so that vocabulary-overrides.json changes are picked up without a server restart.
-
-// ── Regex patterns (ported from Python) ──────────────────────────────────────
-// (Residential unit detection removed — residential floor plan text flows through the
-//  general institutional extraction path like any other building type.)
-
-
 // ── Institutional/church floor plan room-pair extraction ──────────────────────
 
 /**
@@ -118,16 +110,6 @@ function lookupRoomLabelMap(text: string, labelMap: Record<string, string>): str
 }
 
 /**
- * Return true if the phrase is a useful companion (not a match in ROOM_LABEL_MAP itself
- * but contains at least one alphabetic character or is a room code identifier).
- * Threshold is ≥1 alpha so that two-letter prefix codes like BS2-3 and AS1-3 qualify.
- */
-function isValidCompanion(text: string): boolean {
-  const alphaCount = (text.match(/[a-zA-Z]/g) || []).length;
-  return alphaCount >= 1 || isRoomCode(text);
-}
-
-/**
  * Proximity threshold (normalised page units) for title-word exclusion.
  * A hit whose centroid is within this radius of any detected title-phrase
  * centroid is excluded as being part of the title block.
@@ -136,23 +118,38 @@ function isValidCompanion(text: string): boolean {
 const TITLE_PROXIMITY_THRESHOLD = 0.09;
 
 /**
+ * Stable record key for deduplication / claimed-anchor tracking.
+ */
+function phraseKey(r: PhraseRecord): string {
+  return `${r.text.toLowerCase().trim()}:${Math.round(r.cx_pts / 10)}:${Math.round(r.cy_pts / 10)}`;
+}
+
+/**
  * Extract institutional/church room sign pairs from floor plan pages using
- * spatial proximity matching.
+ * code-first spatial proximity matching.
  *
- * Strategy:
+ * Strategy (revised):
  * 1. Work at the phrase level (not individual words) to preserve multi-word labels.
- * 2. Apply drawing-area filter: exclude hits that are spatially close to the
- *    detected floor plan title words (titlePhrases).  Falls back to a blanket
- *    zone exclusion when no title phrase coordinates are available.
- * 3. For each phrase whose token(s) match the label map (anchor), search for a
- *    companion phrase within the proximity window.
- * 4. Combine anchor + companion into one sign row, or emit anchor alone.
+ * 2. Apply drawing-area filter: exclude hits spatially close to the detected floor
+ *    plan title words.  Falls back to a blanket zone exclusion when no title phrase
+ *    coordinates are available.
+ * 3. Pass 1 — code-first: for each room code phrase, search for the nearest
+ *    non-code usable phrase (the anchor) within the proximity window (≤80 pts
+ *    horizontal, ≤90 pts vertical).  If an anchor is found → emit the pair with
+ *    the code as signIdentifier and the anchor text as location.  If no anchor is
+ *    found nearby → discard the code entirely (it is a direction/wayfinding callout,
+ *    not a room sign).
+ * 4. Pass 2 — anchor fallback: for every non-code usable phrase NOT claimed as an
+ *    anchor in Pass 1, apply the original vocabulary / exception logic and emit a
+ *    row using the anchor text as the signIdentifier.  This preserves rooms labeled
+ *    by name only (e.g. "OFFICE" with no number).
+ * 5. Page-wide deduplication: collect all rows from both passes and deduplicate by
+ *    signIdentifier, keeping the row with the higher confidenceScore.
  *
  * @param titlePhrases  Phrases from the title-block zone that matched during
  *                      classification.  When provided (non-empty), exclusion is
- *                      proximity-based: only hits within TITLE_PROXIMITY_THRESHOLD
- *                      of a title phrase are dropped.  When empty, falls back to
- *                      the legacy blanket zone exclusion.
+ *                      proximity-based.  When empty, falls back to the legacy
+ *                      blanket zone exclusion.
  * @param labelMap      Building-type-aware room label map from getRoomLabelMap().
  */
 function extractInstitutionalRoomsFromPhrases(
@@ -187,9 +184,7 @@ function extractInstitutionalRoomsFromPhrases(
    *
    * Fallback (no title centroids): apply the legacy blanket zone filter —
    * exclude the bottom strip (ny >= 0.85) OR the bottom-right quadrant
-   * (nx > 0.65 AND ny > 0.65).  This is identical to the original filter
-   * (cy_norm < 0.85 AND NOT (cx_norm > 0.65 AND cy_norm > 0.65)) and
-   * does NOT add any right-strip blanket exclusion.
+   * (nx > 0.65 AND ny > 0.65).
    */
   function isInTitleZone(r: PhraseRecord): boolean {
     if (titleCentroids.length > 0) {
@@ -199,71 +194,167 @@ function extractInstitutionalRoomsFromPhrases(
           TITLE_PROXIMITY_THRESHOLD,
       );
     }
-    // Fallback: exact legacy blanket zone — bottom strip (ny >= 0.85) OR
-    // bottom-right quadrant (nx > 0.65 AND ny > 0.65).
-    // Matches the original filter: cy_norm < 0.85 AND NOT (cx_norm > 0.65 AND cy_norm > 0.65).
     return r.ny >= 0.85 || (r.nx > 0.65 && r.ny > 0.65);
   }
 
   const drawingArea = records.filter((r) => !isInTitleZone(r));
 
-  // Collect numeric room-code phrases separately (2–4 digits).
-  // These are filtered from `usable` by isNoisyPhrase but are valid sign identifiers.
+  // Room-code phrases: all drawing-area phrases that look like room codes.
   const roomCodePhrases = drawingArea.filter((r) => isRoomCode(r.text));
 
-  // Apply noise filter for anchor/companion matching.
+  // Usable phrases: drawing-area phrases that pass the noise filter.
   const usable = drawingArea.filter((r) => !isNoisyPhrase(r.text));
 
+  // Anchor candidates: usable phrases that are NOT themselves room codes.
+  // These are the only phrases that can serve as location anchors.
+  const anchorCandidates = usable.filter((r) => !isRoomCode(r.text));
+
   /**
-   * For a given anchor, find the closest numeric room code within the
+   * For a given room code, find the nearest anchor candidate within the
    * proximity window (≤80 pts horizontal, ≤90 pts vertical).
-   * Returns the code string or null if none found nearby.
+   * Returns the closest candidate or null if none found.
    */
-  function findNearbyRoomCode(anchor: PhraseRecord): string | null {
-    let best: { code: string; dist: number } | null = null;
-    for (const rc of roomCodePhrases) {
-      const dx = Math.abs(rc.cx_pts - anchor.cx_pts);
-      const dy = Math.abs(rc.cy_pts - anchor.cy_pts);
+  function findNearestAnchor(code: PhraseRecord): PhraseRecord | null {
+    let best: { rec: PhraseRecord; dist: number } | null = null;
+    for (const candidate of anchorCandidates) {
+      const dx = Math.abs(candidate.cx_pts - code.cx_pts);
+      const dy = Math.abs(candidate.cy_pts - code.cy_pts);
       if (dx > 80 || dy > 90) continue;
       const dist = Math.sqrt(dx * dx + dy * dy);
       if (best === null || dist < best.dist) {
-        best = { code: rc.text, dist };
+        best = { rec: candidate, dist };
       }
     }
-    return best?.code ?? null;
+    return best?.rec ?? null;
   }
 
   const rows: HeuristicSignInsert[] = [];
-  const usedKeys = new Set<string>(); // deduplicate by normalized text + grid-rounded position
 
-  for (let i = 0; i < usable.length; i++) {
-    const anchor = usable[i]!;
+  // Track which anchor candidates were claimed in Pass 1.
+  const claimedAnchorKeys = new Set<string>();
 
-    const dedupeKey = `${anchor.text.toLowerCase().trim()}:${Math.round(anchor.cx_pts / 10)}:${Math.round(anchor.cy_pts / 10)}`;
-    if (usedKeys.has(dedupeKey)) continue;
+  // ── Pass 1: code-first matching ─────────────────────────────────────────────
+  // Primary key is the room code.  Each code must have a nearby anchor phrase to
+  // be emitted.  Codes with no nearby anchor are silently discarded (they are
+  // direction/wayfinding callouts, not room signs).
+  for (const code of roomCodePhrases) {
+    const anchor = findNearestAnchor(code);
+    if (!anchor) {
+      logger.debug(
+        { pageNum, code: code.text },
+        "Code-first: no nearby anchor found — discarding code",
+      );
+      continue;
+    }
 
-    // Step A: check if this phrase is an anchor (matches label map).
+    // Mark anchor as claimed so Pass 2 skips it.
+    claimedAnchorKeys.add(phraseKey(anchor));
+
+    // Gate: anchor must have at least one alphabetic character.
+    const alphaCount = (anchor.text.match(/[a-zA-Z]/g) || []).length;
+    if (alphaCount < 1) continue;
+
+    // Gate: anchor must not be a code-only string (e.g. architectural callout "A302").
+    if (isCodeOnlyLocation(anchor.text)) continue;
+
     const anchorSignType = lookupRoomLabelMap(anchor.text, labelMap);
 
-    if (!anchorSignType) {
-      // Stage 6 exception: phrase is not in vocabulary but passed noise filter.
-      // Capture it with reviewFlag so nothing is silently dropped.
-      // Require at least 1 alphabetic character — only zero-alpha tokens (pure symbols
-      // like "#5", "@2") are hard-dropped here; everything else becomes an exception row.
-      const alphaCount = (anchor.text.match(/[a-zA-Z]/g) || []).length;
-      if (alphaCount < 1) continue;
+    if (anchorSignType) {
+      rows.push({
+        sheetNumber: null,
+        detailReference: null,
+        signType: anchorSignType,
+        signIdentifier: code.text,
+        quantity: 1,
+        location: anchor.text,
+        dimensions: null,
+        mountingType: null,
+        finishColor: null,
+        illumination: null,
+        materials: null,
+        messageContent: null,
+        notes: "Institutional room label (spatial proximity)",
+        pageNumber: pageNum,
+        xPos: code.nx,
+        yPos: code.ny,
+        placementSource: "heuristic",
+        confidenceScore: 0.6,
+        reviewFlag: true,
+        extractionMethod: "heuristic",
+        rawJson: { anchorText: anchor.text, codeText: code.text },
+      });
+    } else {
+      // Non-vocabulary anchor near a valid code → flagged for review.
+      rows.push({
+        sheetNumber: null,
+        detailReference: null,
+        signType: "ROOM ID SIGN",
+        signIdentifier: code.text,
+        quantity: 1,
+        location: anchor.text,
+        dimensions: null,
+        mountingType: null,
+        finishColor: null,
+        illumination: null,
+        materials: null,
+        messageContent: null,
+        notes: "Exception: not in vocabulary",
+        pageNumber: pageNum,
+        xPos: code.nx,
+        yPos: code.ny,
+        placementSource: "heuristic",
+        confidenceScore: 0.3,
+        reviewFlag: true,
+        exceptionReason: "not in vocabulary",
+        extractionMethod: "heuristic",
+        rawJson: { anchorText: anchor.text, codeText: code.text, exception: true },
+      });
+    }
+  }
 
-      // Suppress architectural drawing callout codes (e.g. A302, A503, A413) and other
-      // code-only tokens.  These are cross-reference identifiers on section/elevation
-      // callout bubbles, not room labels, and should never become sign markers.
-      // isCodeOnlyLocation returns true when every token in the string is a code pattern
-      // (pure digits, letter+digit combos, or short all-caps without vowels) and no
-      // token qualifies as a real room-name word (length ≥ 3 with at least one vowel).
-      if (isCodeOnlyLocation(anchor.text)) continue;
+  // ── Pass 2: anchor fallback for code-less rooms ─────────────────────────────
+  // For every anchor candidate that was NOT claimed by a room code in Pass 1,
+  // apply the vocabulary / exception logic.  The anchor text is used as the
+  // signIdentifier (current fallback behavior for name-only rooms like "OFFICE").
+  for (const anchor of anchorCandidates) {
+    if (claimedAnchorKeys.has(phraseKey(anchor))) continue;
 
-      const nearbyCode = findNearbyRoomCode(anchor);
-      const signIdentifier = nearbyCode ?? anchor.text.toUpperCase().replace(/\s+/g, "_").slice(0, 40);
-      usedKeys.add(dedupeKey);
+    // Gate: require at least one alphabetic character.
+    const alphaCount = (anchor.text.match(/[a-zA-Z]/g) || []).length;
+    if (alphaCount < 1) continue;
+
+    // Gate: suppress code-only anchors (architectural callout codes).
+    if (isCodeOnlyLocation(anchor.text)) continue;
+
+    const anchorSignType = lookupRoomLabelMap(anchor.text, labelMap);
+    const signIdentifier = anchor.text.toUpperCase().replace(/\s+/g, "_").slice(0, 40);
+
+    if (anchorSignType) {
+      rows.push({
+        sheetNumber: null,
+        detailReference: null,
+        signType: anchorSignType,
+        signIdentifier,
+        quantity: 1,
+        location: anchor.text,
+        dimensions: null,
+        mountingType: null,
+        finishColor: null,
+        illumination: null,
+        materials: null,
+        messageContent: null,
+        notes: "Institutional room label (spatial proximity)",
+        pageNumber: pageNum,
+        xPos: anchor.nx,
+        yPos: anchor.ny,
+        placementSource: "heuristic",
+        confidenceScore: 0.6,
+        reviewFlag: true,
+        extractionMethod: "heuristic",
+        rawJson: { anchorText: anchor.text, codeText: null },
+      });
+    } else {
+      // Exception path: not in vocabulary but passed all gates.
       rows.push({
         sheetNumber: null,
         detailReference: null,
@@ -286,133 +377,34 @@ function extractInstitutionalRoomsFromPhrases(
         reviewFlag: true,
         exceptionReason: "not in vocabulary",
         extractionMethod: "heuristic",
-        rawJson: { anchorText: anchor.text, companionText: null, exception: true },
+        rawJson: { anchorText: anchor.text, codeText: null, exception: true },
       });
-      continue;
     }
-
-    // Step B: companion scan — search for a nearby phrase.
-    let bestCompanion: PhraseRecord | null = null;
-    let bestCompanionSignType: string | null = null;
-
-    for (let j = 0; j < usable.length; j++) {
-      if (i === j) continue;
-      const candidate = usable[j]!;
-      const dx = Math.abs(candidate.cx_pts - anchor.cx_pts);
-      const dy = Math.abs(candidate.cy_pts - anchor.cy_pts);
-
-      // Proximity window: stacked vertically (widened) or side by side (widened tolerance)
-      const isStacked = dy < 65 && dx < 120;
-      const isSideBySide = dy < 25 && dx < 200;
-      if (!isStacked && !isSideBySide) continue;
-
-      // Check companion quality
-      const companionSignType = lookupRoomLabelMap(candidate.text, labelMap);
-      if (companionSignType || isValidCompanion(candidate.text)) {
-        bestCompanion = candidate;
-        bestCompanionSignType = companionSignType;
-        break;
-      }
-    }
-
-    // Step C: pair or standalone
-    let finalSignType: string;
-    let locationLabel: string;
-
-    if (bestCompanion) {
-      finalSignType = bestCompanionSignType ?? anchorSignType;
-      // Join in reading order: stacked (dy > dx) → top-to-bottom; side-by-side → left-to-right
-      const jdx = Math.abs(bestCompanion.cx_pts - anchor.cx_pts);
-      const jdy = Math.abs(bestCompanion.cy_pts - anchor.cy_pts);
-      let first: PhraseRecord;
-      let second: PhraseRecord;
-      if (jdy > jdx) {
-        // Stacked: order by cy_pts (top first — smaller cy = higher on page)
-        [first, second] = anchor.cy_pts <= bestCompanion.cy_pts
-          ? [anchor, bestCompanion]
-          : [bestCompanion, anchor];
-      } else {
-        // Side by side: order by cx_pts (left first)
-        [first, second] = anchor.cx_pts <= bestCompanion.cx_pts
-          ? [anchor, bestCompanion]
-          : [bestCompanion, anchor];
-      }
-      locationLabel = `${first.text} ${second.text}`;
-
-      // Mark companion as used too
-      const companionKey = `${bestCompanion.text.toLowerCase().trim()}:${Math.round(bestCompanion.cx_pts / 10)}:${Math.round(bestCompanion.cy_pts / 10)}`;
-      usedKeys.add(companionKey);
-    } else {
-      finalSignType = anchorSignType;
-      locationLabel = anchor.text;
-    }
-
-    // Stage 8 exception: location label has no qualifying real-word token.
-    // Instead of discarding, emit with reviewFlag so the entry is reviewable.
-    if (isCodeOnlyLocation(locationLabel)) {
-      const nearbyCode = findNearbyRoomCode(anchor);
-      const signIdentifier = nearbyCode ?? anchor.text.toUpperCase().replace(/\s+/g, "_").slice(0, 40);
-      usedKeys.add(dedupeKey);
-      rows.push({
-        sheetNumber: null,
-        detailReference: null,
-        signType: finalSignType,
-        signIdentifier,
-        quantity: 1,
-        location: locationLabel,
-        dimensions: null,
-        mountingType: null,
-        finishColor: null,
-        illumination: null,
-        materials: null,
-        messageContent: null,
-        notes: "Exception: no qualifying word in location",
-        pageNumber: pageNum,
-        xPos: anchor.nx,
-        yPos: anchor.ny,
-        placementSource: "heuristic",
-        confidenceScore: 0.3,
-        reviewFlag: true,
-        exceptionReason: "no qualifying word",
-        extractionMethod: "heuristic",
-        rawJson: { anchorText: anchor.text, companionText: bestCompanion?.text ?? null, exception: true },
-      });
-      continue;
-    }
-
-    // Step D: find the numeric room code sitting near this anchor (e.g. "101" under "OFFICE").
-    // If found, use it as the sign identifier; fall back to a cleaned slug of the label.
-    const nearbyCode = findNearbyRoomCode(anchor);
-    const signIdentifier = nearbyCode ?? anchor.text.toUpperCase().replace(/\s+/g, "_").slice(0, 40);
-
-    usedKeys.add(dedupeKey);
-
-    rows.push({
-      sheetNumber: null,
-      detailReference: null,
-      signType: finalSignType,
-      signIdentifier,
-      quantity: 1,
-      location: locationLabel,
-      dimensions: null,
-      mountingType: null,
-      finishColor: null,
-      illumination: null,
-      materials: null,
-      messageContent: null,
-      notes: "Institutional room label (spatial proximity)",
-      pageNumber: pageNum,
-      xPos: anchor.nx,
-      yPos: anchor.ny,
-      placementSource: "heuristic",
-      confidenceScore: 0.6,
-      reviewFlag: true,
-      extractionMethod: "heuristic",
-      rawJson: { anchorText: anchor.text, companionText: bestCompanion?.text ?? null },
-    });
   }
 
-  return rows;
+  // ── Page-wide identifier deduplication ─────────────────────────────────────
+  // When two rows share the same signIdentifier, keep the one with the higher
+  // confidenceScore (vocabulary match at 0.6 beats exception at 0.3).
+  const deduped = new Map<string, HeuristicSignInsert>();
+  for (const row of rows) {
+    const existing = deduped.get(row.signIdentifier);
+    if (!existing) {
+      deduped.set(row.signIdentifier, row);
+    } else if (row.confidenceScore > existing.confidenceScore) {
+      logger.debug(
+        { pageNum, signIdentifier: row.signIdentifier, kept: row.confidenceScore, discarded: existing.confidenceScore },
+        "Dedup: replaced lower-confidence duplicate identifier",
+      );
+      deduped.set(row.signIdentifier, row);
+    } else {
+      logger.debug(
+        { pageNum, signIdentifier: row.signIdentifier },
+        "Dedup: discarded duplicate identifier (lower or equal confidence)",
+      );
+    }
+  }
+
+  return Array.from(deduped.values());
 }
 
 // ── Public row type (compatible with InsertExtractedSign minus job IDs) ───────
