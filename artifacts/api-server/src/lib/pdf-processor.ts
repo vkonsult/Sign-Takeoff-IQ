@@ -343,6 +343,13 @@ export async function runPdfProcessor(jobId: string): Promise<void> {
 
         const finalBothPages = spatialBoth.length > 0 ? spatialBoth : bothPages;
 
+        // Re-sync fileFloorPlanPages with the fallback-aware final sets so that
+        // heuristic and code-proximity extraction run on all correctly-identified
+        // floor plan pages (spatial pre-pass alone may return empty if the page
+        // title block doesn't match floor-plan keywords, while text extraction
+        // classifies those same pages correctly).
+        fileFloorPlanPages.set(file.id, new Set([...finalFloorPlanPages, ...finalBothPages]));
+
         recordStep(`text_extraction_${file.id}`,
           filesToProcess.length > 1 ? `Text extraction — ${file.originalName}` : "Text extraction",
           t_text,
