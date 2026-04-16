@@ -1194,8 +1194,13 @@ export default function JobDetails() {
               
               {/* View tabs */}
               <div className="flex-none flex items-center border-b border-border bg-secondary/20">
-                <div className="flex items-center px-4 gap-0">
+                <div role="tablist" className="flex items-center px-4 gap-0">
                   <button
+                    id="tab-table"
+                    role="tab"
+                    aria-selected={activeTab === "table"}
+                    aria-controls="tabpanel-main"
+                    tabIndex={activeTab === "table" ? 0 : -1}
                     onClick={() => setActiveTab("table")}
                     className={`flex items-center gap-1.5 px-3 py-2 text-[10px] font-display font-semibold uppercase tracking-wider border-b-2 transition-all ${
                       activeTab === "table"
@@ -1207,6 +1212,11 @@ export default function JobDetails() {
                     Sign Table
                   </button>
                   <button
+                    id="tab-sheets"
+                    role="tab"
+                    aria-selected={activeTab === "sheets"}
+                    aria-controls="tabpanel-main"
+                    tabIndex={activeTab === "sheets" ? 0 : -1}
                     onClick={() => setActiveTab("sheets")}
                     className={`flex items-center gap-1.5 px-3 py-2 text-[10px] font-display font-semibold uppercase tracking-wider border-b-2 transition-all ${
                       activeTab === "sheets"
@@ -1218,6 +1228,11 @@ export default function JobDetails() {
                     Sheets Analysis
                   </button>
                   <button
+                    id="tab-summary"
+                    role="tab"
+                    aria-selected={activeTab === "summary"}
+                    aria-controls="tabpanel-main"
+                    tabIndex={activeTab === "summary" ? 0 : -1}
                     onClick={() => setActiveTab("summary")}
                     className={`flex items-center gap-1.5 px-3 py-2 text-[10px] font-display font-semibold uppercase tracking-wider border-b-2 transition-all ${
                       activeTab === "summary"
@@ -1229,6 +1244,11 @@ export default function JobDetails() {
                     Sign Type Summary
                   </button>
                   <button
+                    id="tab-floorplans"
+                    role="tab"
+                    aria-selected={activeTab === "floorplans"}
+                    aria-controls="tabpanel-main"
+                    tabIndex={activeTab === "floorplans" ? 0 : -1}
                     onClick={() => setActiveTab("floorplans")}
                     className={`flex items-center gap-1.5 px-3 py-2 text-[10px] font-display font-semibold uppercase tracking-wider border-b-2 transition-all ${
                       activeTab === "floorplans"
@@ -1240,6 +1260,11 @@ export default function JobDetails() {
                     Floor Plans
                   </button>
                   <button
+                    id="tab-signpages"
+                    role="tab"
+                    aria-selected={activeTab === "signpages"}
+                    aria-controls="tabpanel-main"
+                    tabIndex={activeTab === "signpages" ? 0 : -1}
                     onClick={() => setActiveTab("signpages")}
                     className={`flex items-center gap-1.5 px-3 py-2 text-[10px] font-display font-semibold uppercase tracking-wider border-b-2 transition-all ${
                       activeTab === "signpages"
@@ -1251,6 +1276,11 @@ export default function JobDetails() {
                     Sign Pages
                   </button>
                   <button
+                    id="tab-specs"
+                    role="tab"
+                    aria-selected={activeTab === "specs"}
+                    aria-controls="tabpanel-main"
+                    tabIndex={activeTab === "specs" ? 0 : -1}
                     onClick={() => setActiveTab("specs")}
                     className={`flex items-center gap-1.5 px-3 py-2 text-[10px] font-display font-semibold uppercase tracking-wider border-b-2 transition-all ${
                       activeTab === "specs"
@@ -1262,6 +1292,11 @@ export default function JobDetails() {
                     Sign Specs
                   </button>
                   <button
+                    id="tab-timeline"
+                    role="tab"
+                    aria-selected={activeTab === "timeline"}
+                    aria-controls="tabpanel-main"
+                    tabIndex={activeTab === "timeline" ? 0 : -1}
                     onClick={() => setActiveTab("timeline")}
                     className={`flex items-center gap-1.5 px-3 py-2 text-[10px] font-display font-semibold uppercase tracking-wider border-b-2 transition-all ${
                       activeTab === "timeline"
@@ -1274,6 +1309,11 @@ export default function JobDetails() {
                   </button>
                   {(isCompleted || isFailed) && (
                     <button
+                      id="tab-coords"
+                      role="tab"
+                      aria-selected={activeTab === "coords"}
+                      aria-controls="tabpanel-main"
+                      tabIndex={activeTab === "coords" ? 0 : -1}
                       onClick={() => setActiveTab("coords")}
                       className={`flex items-center gap-1.5 px-3 py-2 text-[10px] font-display font-semibold uppercase tracking-wider border-b-2 transition-all ${
                         activeTab === "coords"
@@ -1287,6 +1327,11 @@ export default function JobDetails() {
                   )}
                   {(isCompleted || isFailed) && (
                     <button
+                      id="tab-ai_scans"
+                      role="tab"
+                      aria-selected={activeTab === "ai_scans"}
+                      aria-controls="tabpanel-main"
+                      tabIndex={activeTab === "ai_scans" ? 0 : -1}
                       onClick={() => setActiveTab("ai_scans")}
                       className={`flex items-center gap-1.5 px-3 py-2 text-[10px] font-display font-semibold uppercase tracking-wider border-b-2 transition-all ${
                         activeTab === "ai_scans"
@@ -1300,6 +1345,11 @@ export default function JobDetails() {
                   )}
                   {(isCompleted || isFailed) && (
                     <button
+                      id="tab-compliance"
+                      role="tab"
+                      aria-selected={activeTab === "compliance"}
+                      aria-controls="tabpanel-main"
+                      tabIndex={activeTab === "compliance" ? 0 : -1}
                       onClick={() => setActiveTab("compliance")}
                       className={`flex items-center gap-1.5 px-3 py-2 text-[10px] font-display font-semibold uppercase tracking-wider border-b-2 transition-all ${
                         activeTab === "compliance"
@@ -1313,6 +1363,11 @@ export default function JobDetails() {
                   )}
                   {(isCompleted || isFailed) && (
                     <button
+                      id="tab-plaque_schedule"
+                      role="tab"
+                      aria-selected={activeTab === "plaque_schedule"}
+                      aria-controls="tabpanel-main"
+                      tabIndex={activeTab === "plaque_schedule" ? 0 : -1}
                       onClick={() => setActiveTab("plaque_schedule")}
                       className={`flex items-center gap-1.5 px-3 py-2 text-[10px] font-display font-semibold uppercase tracking-wider border-b-2 transition-all ${
                         activeTab === "plaque_schedule"
@@ -1331,6 +1386,11 @@ export default function JobDetails() {
                   )}
                   {(isCompleted || isFailed) && (
                     <button
+                      id="tab-occupant_loads"
+                      role="tab"
+                      aria-selected={activeTab === "occupant_loads"}
+                      aria-controls="tabpanel-main"
+                      tabIndex={activeTab === "occupant_loads" ? 0 : -1}
                       onClick={() => setActiveTab("occupant_loads")}
                       className={`flex items-center gap-1.5 px-3 py-2 text-[10px] font-display font-semibold uppercase tracking-wider border-b-2 transition-all ${
                         activeTab === "occupant_loads"
@@ -1350,6 +1410,7 @@ export default function JobDetails() {
                 </div>
               </div>
 
+              <div id="tabpanel-main" role="tabpanel" aria-labelledby={`tab-${activeTab}`} className="flex-1 flex flex-col min-h-0">
               {activeTab === "floorplans" ? (
                 <div className="flex-1 min-h-0 flex flex-col">
                   {showUnplacedWarning && (
@@ -1830,6 +1891,7 @@ export default function JobDetails() {
               </div>
                 </>
               )}
+              </div>
             </div>
           ) : (
             <div className="flex-1 p-8 max-w-3xl mx-auto w-full">
