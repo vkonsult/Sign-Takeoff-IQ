@@ -47,15 +47,47 @@ const STATUS_ORDER: Record<string, number> = {
 };
 
 
+const SORT_STORAGE_KEY = "jobsList:sortPreference";
+
+function loadSortPreference(): { sortBy: SortBy; sortDir: SortDir } | null {
+  try {
+    const raw = localStorage.getItem(SORT_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    const sortBy = (VALID_SORT_COLS as string[]).includes(parsed.sortBy)
+      ? (parsed.sortBy as SortBy)
+      : null;
+    const sortDir: SortDir | null =
+      parsed.sortDir === "asc" || parsed.sortDir === "desc" ? parsed.sortDir : null;
+    if (!sortBy || !sortDir) return null;
+    return { sortBy, sortDir };
+  } catch {
+    return null;
+  }
+}
+
+function saveSortPreference(sortBy: SortBy, sortDir: SortDir): void {
+  try {
+    localStorage.setItem(SORT_STORAGE_KEY, JSON.stringify({ sortBy, sortDir }));
+  } catch {
+  }
+}
+
 function parseSortParams(search: string): { sortBy: SortBy; sortDir: SortDir } {
   const params = new URLSearchParams(search);
   const rawBy = params.get("sortBy") ?? "";
   const rawDir = params.get("sortDir") ?? "";
-  const sortBy = (VALID_SORT_COLS as string[]).includes(rawBy)
-    ? (rawBy as SortBy)
-    : DEFAULT_SORT_BY;
-  const sortDir: SortDir = rawDir === "asc" || rawDir === "desc" ? rawDir : DEFAULT_SORT_DIR;
-  return { sortBy, sortDir };
+  const hasUrlSort = rawBy !== "" || rawDir !== "";
+  if (hasUrlSort) {
+    const sortBy = (VALID_SORT_COLS as string[]).includes(rawBy)
+      ? (rawBy as SortBy)
+      : DEFAULT_SORT_BY;
+    const sortDir: SortDir = rawDir === "asc" || rawDir === "desc" ? rawDir : DEFAULT_SORT_DIR;
+    return { sortBy, sortDir };
+  }
+  const stored = loadSortPreference();
+  if (stored) return stored;
+  return { sortBy: DEFAULT_SORT_BY, sortDir: DEFAULT_SORT_DIR };
 }
 
 function SortIcon({ col, active, dir }: { col: string; active: string; dir: SortDir }) {
@@ -98,6 +130,7 @@ export default function JobsList() {
       col === sortBy
         ? (sortDir === "desc" ? "asc" : "desc")
         : col === "name" ? "asc" : DEFAULT_SORT_DIR;
+    saveSortPreference(col, newDir);
     const params = new URLSearchParams(search);
     params.set("sortBy", col);
     params.set("sortDir", newDir);
