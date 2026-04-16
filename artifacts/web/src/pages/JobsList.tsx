@@ -30,10 +30,10 @@ const ACTION_LABELS: Record<string, string> = {
   pdf_exported: "exported PDF for",
 };
 
-type SortBy = "createdAt" | "updatedAt" | "plaqueCount" | "occupantLoadCount";
+type SortBy = "name" | "createdAt" | "updatedAt" | "plaqueCount" | "occupantLoadCount";
 type SortDir = "asc" | "desc";
 
-const VALID_SORT_COLS: SortBy[] = ["createdAt", "updatedAt", "plaqueCount", "occupantLoadCount"];
+const VALID_SORT_COLS: SortBy[] = ["name", "createdAt", "updatedAt", "plaqueCount", "occupantLoadCount"];
 const DEFAULT_SORT_BY: SortBy = "createdAt";
 const DEFAULT_SORT_DIR: SortDir = "desc";
 
@@ -85,7 +85,9 @@ export default function JobsList() {
 
   const setSort = (col: SortBy) => {
     const newDir: SortDir =
-      col === sortBy ? (sortDir === "desc" ? "asc" : "desc") : DEFAULT_SORT_DIR;
+      col === sortBy
+        ? (sortDir === "desc" ? "asc" : "desc")
+        : col === "name" ? "asc" : DEFAULT_SORT_DIR;
     const params = new URLSearchParams(search);
     params.set("sortBy", col);
     params.set("sortDir", newDir);
@@ -121,6 +123,12 @@ export default function JobsList() {
       result = result.filter((j) => Number(j.unplacedCount ?? 0) > 0);
     }
     return [...result].sort((a, b) => {
+      if (sortBy === "name") {
+        const aName = (a.name ?? "").toLowerCase();
+        const bName = (b.name ?? "").toLowerCase();
+        const cmp = aName.localeCompare(bName);
+        return sortDir === "asc" ? cmp : -cmp;
+      }
       let aVal: number;
       let bVal: number;
       if (sortBy === "plaqueCount") {
@@ -315,7 +323,7 @@ export default function JobsList() {
                     ? <MinusSquare className="w-4 h-4 text-primary" />
                     : <Square className="w-4 h-4" />}
               </button>
-              <div className="text-xs font-display font-semibold uppercase tracking-wider text-muted-foreground">Job Name</div>
+              <SortHeader col="name" label="Job Name" />
               <div className="text-center text-xs font-display font-semibold uppercase tracking-wider text-muted-foreground">Status</div>
               <div className="text-center text-xs font-display font-semibold uppercase tracking-wider text-muted-foreground" title="Last active user">User</div>
               <div className="flex justify-end">
