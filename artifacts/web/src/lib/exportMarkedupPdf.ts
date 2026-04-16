@@ -19,7 +19,7 @@ export interface FileEntry {
 }
 
 // ── Sign type color palette (matches FloorPlanViewer) ────────────────────────
-const SIGN_TYPE_COLORS: Record<string, [number, number, number]> = {
+export const SIGN_TYPE_COLORS: Record<string, [number, number, number]> = {
   wayfinding:          [0.231, 0.510, 0.965],
   directional:         [0.063, 0.725, 0.506],
   informational:       [0.024, 0.714, 0.831],
@@ -40,7 +40,7 @@ const SIGN_TYPE_COLORS: Record<string, [number, number, number]> = {
   "building sign":     [0.388, 0.400, 0.945],
 };
 
-function getSignColor(signType: string | null | undefined): [number, number, number] {
+export function getSignColor(signType: string | null | undefined): [number, number, number] {
   if (!signType) return [0.420, 0.447, 0.502];
   const key = signType.toLowerCase();
   for (const [k, v] of Object.entries(SIGN_TYPE_COLORS)) {
@@ -54,7 +54,7 @@ function getSignColor(signType: string | null | undefined): [number, number, num
  * ny ∈ [0,1] top→bottom in viewport / screen space) to pdf-lib drawing
  * coordinates (x, y in MediaBox space: origin bottom-left, y upward).
  */
-function normalizedToMediaBox(
+export function normalizedToMediaBox(
   nx: number,
   ny: number,
   W: number,
@@ -196,6 +196,6 @@ function triggerDownload(bytes: Uint8Array, fileName: string) {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
-function sanitizeFileName(name: string): string {
+export function sanitizeFileName(name: string): string {
   return name.replace(/[^a-z0-9_\-. ]/gi, "_").replace(/\s+/g, "_").slice(0, 80);
 }
