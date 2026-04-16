@@ -85,9 +85,12 @@ const OTHER_DRAWING_NUMBER_PATTERNS: RegExp[] = [
 ];
 
 // Drawing number patterns that indicate a floor plan sheet.
-// Matches: A1.1, A0.2, A-111, A - 111, A111, A1-1
+// Matches: A1.1, A0.2, A-101, A-001, A101, A001, A1-1
+// Restricted to the architectural floor plan range (A0xx / A1xx).
+// Sheets numbered A2xx and above (e.g. A700, A500) are signage/detail sheets
+// and must NOT be treated as floor plan drawing numbers.
 const FLOOR_PLAN_DRAWING_NUMBER_PATTERNS: RegExp[] = [
-  /\bA\s*[-.]?\s*\d{1,4}(?:[-./]\d{1,4})?\b/i,
+  /\bA\s*[-.]?\s*[01]\d{0,3}(?:[-./]\d{1,4})?\b/i,
 ];
 
 // Drawing number patterns that indicate a sign schedule / signage sheet.
@@ -215,10 +218,17 @@ function detectTitleBlock(text: string): TitleBlockType {
 
   const hasExclusion = FLOOR_PLAN_EXCLUSION_PHRASES.some((kw) => upper.includes(kw.toUpperCase()));
 
-  const hasFpTitle = hasFpTitleAny && !hasExclusionNearTitle;
+  // Compute hasSignScheduleTitle BEFORE hasFpTitle so we can suppress false fp-title
+  // signals caused by floor-level phrases (e.g. "First Floor", "Second Floor") that
+  // appear in sign schedule body text.  When a sign schedule title is already confirmed,
+  // floor-level phrases in the page body are incidental context, not a floor plan title.
+  const hasSignScheduleTitle = SIGN_SCHEDULE_TITLE_KEYWORDS.some((kw) => upper.includes(kw.toUpperCase()));
+
+  // Guard: do not let body-text floor-level phrases trigger hasFpTitle when we already
+  // have a confirmed sign schedule title (Bug 2 fix).
+  const hasFpTitle = hasFpTitleAny && !hasExclusionNearTitle && !hasSignScheduleTitle;
   const hasOtherNumber = OTHER_DRAWING_NUMBER_PATTERNS.some((p) => p.test(text));
   const hasAnyNumber = hasFpNumber || hasOtherNumber;
-  const hasSignScheduleTitle = SIGN_SCHEDULE_TITLE_KEYWORDS.some((kw) => upper.includes(kw.toUpperCase()));
   const hasSignScheduleNumber = !hasExclusion && SIGN_SCHEDULE_DRAWING_NUMBER_PATTERNS.some((p) => p.test(text));
 
   // 0. High-confidence "other" title keywords — veto that always wins.
