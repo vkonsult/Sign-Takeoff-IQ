@@ -204,6 +204,7 @@ export default function JobsList() {
     try {
       const res = await apiFetch(`/api/jobs/${jobId}`, { method: "DELETE" });
       if (!res.ok) throw new Error("Delete failed");
+      localStorage.removeItem(`lastTab:${jobId}`);
       await queryClient.invalidateQueries({ queryKey: getListJobsQueryKey() });
       setSelected((prev) => { const n = new Set(prev); n.delete(jobId); return n; });
     } catch (err) {
@@ -233,6 +234,7 @@ export default function JobsList() {
         body: JSON.stringify({ jobIds: Array.from(selected) }),
       });
       if (!res.ok) throw new Error("Batch delete failed");
+      for (const jobId of selected) localStorage.removeItem(`lastTab:${jobId}`);
       await queryClient.invalidateQueries({ queryKey: getListJobsQueryKey() });
       setSelected(new Set());
       setBulkConfirming(false);
