@@ -1,5 +1,7 @@
 import { vi, describe, it, expect, beforeEach } from "vitest";
 
+const mockDestroy = vi.fn();
+
 vi.mock("fs/promises", () => ({
   default: {
     readFile: vi.fn(),
@@ -10,7 +12,7 @@ vi.mock("pdfjs-dist/legacy/build/pdf.mjs", () => ({
   getDocument: vi.fn(() => ({
     promise: Promise.resolve({
       numPages: 1,
-      destroy: vi.fn(),
+      destroy: mockDestroy,
       getPage: vi.fn(),
     }),
   })),
@@ -18,12 +20,20 @@ vi.mock("pdfjs-dist/legacy/build/pdf.mjs", () => ({
 }));
 
 import fs from "fs/promises";
-import { getOrOpenPdfjsDoc } from "./pdf-words";
+import {
+  getOrOpenPdfjsDoc,
+  __pdfjsDocCache,
+  __PDFJS_DOC_CACHE_MAX,
+  __resetPdfjsLibForTesting,
+} from "./pdf-words";
 
 const mockReadFile = vi.mocked(fs.readFile);
 
 beforeEach(() => {
   mockReadFile.mockReset();
+  mockDestroy.mockReset();
+  __pdfjsDocCache.clear();
+  __resetPdfjsLibForTesting();
 });
 
 describe("getOrOpenPdfjsDoc — cache recovery on failure", () => {
@@ -78,5 +88,54 @@ describe("getOrOpenPdfjsDoc — concurrent first-touch deduplication", () => {
 
     // The Promise stored in the cache means only one readFile should have been issued
     expect(mockReadFile).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("getOrOpenPdfjsDoc — LRU eviction when cache is full", () => {
+  it("keeps cache size at PDFJS_DOC_CACHE_MAX after opening one more than the limit", async () => {
+    mockReadFile.mockResolvedValue(Buffer.from([0x25, 0x50, 0x44, 0x46]));
+
+    const paths: string[] = [];
+    for (let i = 0; i < __PDFJS_DOC_CACHE_MAX + 1; i++) {
+      paths.push(`/pdf/file-${i}.pdf`);
+    }
+
+    for (const path of paths) {
+      await getOrOpenPdfjsDoc(path);
+    }
+
+    expect(__pdfjsDocCache.size).toBe(__PDFJS_DOC_CACHE_MAX);
+  });
+
+  it("evicts the oldest (first-inserted) entry when the cache overflows", async () => {
+    mockReadFile.mockResolvedValue(Buffer.from([0x25, 0x50, 0x44, 0x46]));
+
+    const paths: string[] = [];
+    for (let i = 0; i < __PDFJS_DOC_CACHE_MAX + 1; i++) {
+      paths.push(`/pdf/file-${i}.pdf`);
+    }
+
+    const earliestPath = paths[0];
+    const latestPath = paths[paths.length - 1];
+
+    for (const path of paths) {
+      await getOrOpenPdfjsDoc(path);
+    }
+
+    expect(__pdfjsDocCache.has(earliestPath)).toBe(false);
+    expect(__pdfjsDocCache.has(latestPath)).toBe(true);
+  });
+
+  it("calls destroy() exactly once — on the evicted document", async () => {
+    mockReadFile.mockResolvedValue(Buffer.from([0x25, 0x50, 0x44, 0x46]));
+
+    for (let i = 0; i < __PDFJS_DOC_CACHE_MAX + 1; i++) {
+      await getOrOpenPdfjsDoc(`/pdf/file-${i}.pdf`);
+    }
+
+    // Let the asynchronous destroy() call resolve
+    await vi.waitFor(() => expect(mockDestroy).toHaveBeenCalledTimes(1), {
+      timeout: 200,
+    });
   });
 });
