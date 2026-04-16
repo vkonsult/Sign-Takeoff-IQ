@@ -677,23 +677,12 @@ export function classifyPageFromPhrases(phrases: PdfPhrase[]): ClassifyPageResul
     combined.includes(phrase.toLowerCase())
   );
 
-  // Priority 1: Exclusion veto.
-  // Primary check: scan candidate phrases (those containing an fp/ss keyword) so that
-  // incidental notes elsewhere in the corner zone cannot veto the page.
-  // Secondary check: scan ALL title-block phrases for unambiguous multi-word discipline
-  // identifiers — these are safe to detect anywhere in the zone because they would not
-  // appear incidentally in a legitimate architectural floor plan title strip.
-  // Single-word veto terms (fire, water, site…) are intentionally excluded from the
-  // secondary list because they appear routinely in floor-plan body notes and disclaimers.
-  const HARD_DISCIPLINE_IDENTIFIERS = [
-    "framing plan",
-    "reflected ceiling plan",
-    "demolition plan",
-    "attic plan",
-    "roof framing",
-    "structural plan",
-  ] as const;
-
+  // Priority 1: Exclusion veto — scanned against ALL title-block phrases.
+  // A drawing title like "S2.1 STAGE FRAMING PLAN" may live in a separate text
+  // element from the inclusion keyword, so we check the full title-block zone
+  // rather than only the candidate (inclusion-matching) phrases.
+  // The veto only fires when hasFpPhrase is true — pure sign_schedule pages
+  // are not blocked by floor-plan exclusion terms.
   const candidatePhrases = titleBlockPhrases.filter((p) => {
     const lower = p.text.toLowerCase();
     return (
@@ -704,10 +693,11 @@ export function classifyPageFromPhrases(phrases: PdfPhrase[]): ClassifyPageResul
   });
   const candidateCombined = candidatePhrases.map((p) => p.text).join(" ").toLowerCase();
   const allTitleBlockCombined = titleBlockPhrases.map((p) => p.text).join(" ").toLowerCase();
-  const hasExclusion =
-    FLOOR_PLAN_EXCLUSION_PHRASES.some((phrase) => candidateCombined.includes(phrase.toLowerCase())) ||
-    HARD_DISCIPLINE_IDENTIFIERS.some((id) => allTitleBlockCombined.includes(id));
-  if (hasExclusion) return { type: "unknown", titlePhrases: [] };
+  const hasExclusion = FLOOR_PLAN_EXCLUSION_PHRASES.some((phrase) =>
+    candidateCombined.includes(phrase.toLowerCase()) ||
+    allTitleBlockCombined.includes(phrase.toLowerCase())
+  );
+  if (hasExclusion && hasFpPhrase) return { type: "unknown", titlePhrases: [] };
 
   let type: SpatialPageType;
   if (hasFpPhrase && hasSsPhrase) type = "both";
