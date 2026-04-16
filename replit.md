@@ -142,6 +142,26 @@ Five tables in PostgreSQL:
 - `raw_json` jsonb
 - `created_at` timestamp
 
+### `plaque_schedules` (Task #135)
+- `id` UUID (PK)
+- `job_id` UUID (FK → jobs, cascade delete)
+- `type_id` text (e.g. "A", "B")
+- `name`, `insert_size`, `letter_height`, `trigger`, `maps_to_column` text (nullable)
+- `braille`, `insert` boolean (nullable)
+- `general_notes` json (whole-schedule notes from Gemini)
+- `raw_json` json (raw Gemini row object)
+- `source_page` int (page number the schedule was found on)
+- `created_at` timestamp
+
+### `occupant_loads` (Task #135)
+- `id` UUID (PK)
+- `job_id` UUID (FK → jobs, cascade delete)
+- `room_num` text NOT NULL
+- `room_name`, `occupancy_group` text (nullable)
+- `occupant_load` real (nullable)
+- `source_page` int (nullable)
+- `created_at` timestamp
+
 ## API Endpoints
 
 All prefixed `/api`:
@@ -154,6 +174,11 @@ All prefixed `/api`:
 | GET | `/jobs/:jobId` | Job status + extracted signs |
 | GET | `/jobs/:jobId/export` | Download XLSX |
 | GET | `/jobs` | List all jobs |
+| POST | `/jobs/:jobId/ai-scan` | Run targeted Gemini AI scan (project_info, floor_plan_text, bbox_detection, vision_fallback, title_block_vision, sign_schedule_enrich) |
+| POST | `/jobs/:jobId/extract-plaque-schedule` | Gemini extraction of plaque type definitions from sign schedule page (Step 3) |
+| POST | `/jobs/:jobId/extract-occupant-loads` | Gemini extraction of occupant loads from egress sheets (Step 4b) |
+| GET | `/jobs/:jobId/plaque-schedule` | Retrieve stored plaque schedule data |
+| GET | `/jobs/:jobId/occupant-loads` | Retrieve stored occupant loads; response includes `assemblyRooms` (load ≥ 50) |
 | POST | `/knowledge/ingest` | Ingest knowledge files into ChromaDB (optional `collection` + `file_path` body params) |
 | POST | `/knowledge/query` | Semantic search against ChromaDB (required `text`, optional `nResults`, `jurisdiction`, `doc_type`) |
 

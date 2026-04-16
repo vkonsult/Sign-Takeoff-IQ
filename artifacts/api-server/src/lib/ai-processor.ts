@@ -21,8 +21,10 @@ import { extractPagePhrases, classifyPageFromPhrases, CANONICAL_LEVEL_NAMES } fr
 import path from "path";
 import { db } from "@workspace/db";
 import { eq } from "drizzle-orm";
-import { signTypeSpecsTable, jobFilesTable } from "@workspace/db";
+import { signTypeSpecsTable, jobFilesTable, plaqueSchedulesTable, occupantLoadsTable } from "@workspace/db";
 import { enrichWithGemini } from "./signage-schedule-parser";
+import { getPdfPageCount } from "./pdf-words";
+import type { StoredOccupantLoad } from "./room-inventory.js";
 
 // ── AI Call Type ──────────────────────────────────────────────────────────────
 
@@ -32,7 +34,9 @@ export type AiCallType =
   | "floor_plan_text"
   | "vision_fallback"
   | "bbox_detection"
-  | "title_block_vision";
+  | "title_block_vision"
+  | "plaque_schedule"
+  | "occupant_loads";
 
 // ── AI Call Registry ──────────────────────────────────────────────────────────
 
@@ -139,6 +143,43 @@ Return ONLY the level name as a single lowercase phrase from this list if it mat
 - "attic"
 If none match, return "none".
 Do not include any other text or explanation.`,
+  },
+  {
+    type: "plaque_schedule",
+    name: "Plaque Schedule Extraction (Step 3)",
+    description: "Reads the first sign schedule or 'both' page at 200 DPI and extracts every plaque type defined in the architectural plaque/signage schedule. Results (type_id, name, braille, letter height, trigger, etc.) are stored in the plaque_schedules table and used to map sign callouts to physical plaque specifications.",
+    prompt: `You are reading an architectural signage/plaque schedule sheet.
+Extract every plaque type shown. Return ONLY valid JSON:
+{
+  "plaques": [{
+    "type_id": "A",
+    "name": "Room Name Sign",
+    "braille": true,
+    "insert": false,
+    "insert_size": null,
+    "letter_height": "5/8\\" cap",
+    "trigger": "Default room ID for occupied rooms",
+    "maps_to_column": "Room ID"
+  }],
+  "general_notes": {
+    "code_citation": "521 CMR 41 MAAB",
+    "mounting_height_sheet": "A-000",
+    "fallback_mounting": "nearest adjacent wall"
+  }
+}`,
+  },
+  {
+    type: "occupant_loads",
+    name: "Occupant Loads Extraction (Step 4b)",
+    description: "Scans pages classified as 'other' that contain egress/life-safety keywords at 200 DPI, then extracts occupant load and occupancy group for every room listed in the egress drawing's Occupant Loads table. Results are stored in the occupant_loads table and used to recompute isAssembly flags for rooms with occupantLoad >= 50.",
+    prompt: `You are reading an architectural egress drawing with an Occupant Loads table.
+Extract the occupant load and occupancy group for every room listed.
+Return ONLY valid JSON:
+{
+  "rooms": [
+    { "room_num": "138", "room_name": "TRAINING/COMMUNITY", "occupant_load": 240, "occupancy_group": "A-2" }
+  ]
+}`,
   },
 ];
 
@@ -454,4 +495,401 @@ export async function runSignScheduleEnrich(jobId: string): Promise<SignSchedule
   }
 
   return { enrichedCount, skippedCount: specs.length - enrichedCount, specResults };
+}
+
+// ── Gemini Vision Helper ───────────────────────────────────────────────────────
+
+type GeminiAi = typeof ai;
+
+async function callGeminiWithImage(
+  aiClient: GeminiAi,
+  imagePath: string,
+  prompt: string,
+  maxOutputTokens = 2048,
+): Promise<{ text: string; inputTokens: number; outputTokens: number }> {
+  const pngBuffer = await fs.readFile(imagePath);
+  const base64 = pngBuffer.toString("base64");
+
+  const response = await (aiClient as {
+    models: {
+      generateContent: (opts: {
+        model: string;
+        contents: { role: string; parts: ({ text: string } | { inlineData: { mimeType: string; data: string } })[] }[];
+        config?: { maxOutputTokens?: number; temperature?: number; thinkingConfig?: { thinkingBudget: number } };
+      }) => Promise<{ text: string | undefined; usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number } }>;
+    };
+  }).models.generateContent({
+    model: "gemini-2.5-flash",
+    contents: [
+      {
+        role: "user",
+        parts: [
+          { inlineData: { mimeType: "image/png", data: base64 } },
+          { text: prompt },
+        ],
+      },
+    ],
+    config: { maxOutputTokens, temperature: 0.1, thinkingConfig: { thinkingBudget: 0 } },
+  });
+
+  const inputTokens = response.usageMetadata?.promptTokenCount ?? 0;
+  const outputTokens = response.usageMetadata?.candidatesTokenCount ?? 0;
+  return { text: response.text ?? "", inputTokens, outputTokens };
+}
+
+function extractJsonFromText(text: string): unknown {
+  const fenceMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  const jsonStr = fenceMatch ? fenceMatch[1].trim() : text.trim();
+  return JSON.parse(jsonStr);
+}
+
+// ── Plaque Schedule Extraction ────────────────────────────────────────────────
+
+const PLAQUE_SCHEDULE_PROMPT = `You are reading an architectural signage/plaque schedule sheet.
+Extract every plaque type shown. Return ONLY valid JSON:
+{
+  "plaques": [{
+    "type_id": "A",
+    "name": "Room Name Sign",
+    "braille": true,
+    "insert": false,
+    "insert_size": null,
+    "letter_height": "5/8\\" cap",
+    "trigger": "Default room ID for occupied rooms",
+    "maps_to_column": "Room ID"
+  }],
+  "general_notes": {
+    "code_citation": "521 CMR 41 MAAB",
+    "mounting_height_sheet": "A-000",
+    "fallback_mounting": "nearest adjacent wall"
+  }
+}`;
+
+export interface PlaqueType {
+  type_id: string;
+  name?: string | null;
+  braille?: boolean | null;
+  insert?: boolean | null;
+  insert_size?: string | null;
+  letter_height?: string | null;
+  trigger?: string | null;
+  maps_to_column?: string | null;
+}
+
+export interface PlaqueScheduleExtractionResult {
+  plaques: PlaqueType[];
+  generalNotes: Record<string, unknown> | null;
+  sourcePage: number | null;
+  inputTokens: number;
+  outputTokens: number;
+  skipped?: boolean;
+  skipReason?: string;
+}
+
+/**
+ * Runs plaque schedule extraction for a job file.
+ * Finds the first page classified as sign_schedule or both, renders it at 200 DPI,
+ * sends to Gemini, and stores the extracted plaque types in plaque_schedules table.
+ */
+export async function runPlaqueScheduleExtraction(
+  jobId: string,
+  file: { id: string; storedPath: string; pageStats?: { signSchedulePages?: number[]; bothPages?: number[] } | null },
+): Promise<PlaqueScheduleExtractionResult> {
+  const pageStats = file.pageStats;
+  const signSchedulePages = [
+    ...(pageStats?.signSchedulePages ?? []),
+    ...(pageStats?.bothPages ?? []),
+  ];
+
+  // If no classified pages, dynamically scan to find sign schedule pages
+  let targetPages = signSchedulePages;
+  if (targetPages.length === 0) {
+    const numPages = await getPdfPageCount(file.storedPath);
+    for (let pageNum = 1; pageNum <= numPages; pageNum++) {
+      try {
+        const pageWords = await extractPagePhrases(file.storedPath, file.id, pageNum);
+        const { type } = classifyPageFromPhrases(pageWords.phrases);
+        if (type === "sign_schedule" || type === "both") {
+          targetPages.push(pageNum);
+        }
+      } catch {
+        // skip pages that fail classification
+      }
+    }
+  }
+
+  if (targetPages.length === 0) {
+    return {
+      plaques: [],
+      generalNotes: null,
+      sourcePage: null,
+      inputTokens: 0,
+      outputTokens: 0,
+      skipped: true,
+      skipReason: "No sign schedule pages found",
+    };
+  }
+
+  // Render the first sign schedule page at 200 DPI (scale = 200/72)
+  const sourcePage = targetPages[0];
+  const outputDir = getFilePageImagesDir(file.id);
+  const DPI_200_SCALE = 200 / 72;
+  const rendered = await renderFloorPlanPages(file.storedPath, [sourcePage], outputDir, DPI_200_SCALE);
+  const imagePath = rendered.get(sourcePage);
+
+  if (!imagePath) {
+    return {
+      plaques: [],
+      generalNotes: null,
+      sourcePage,
+      inputTokens: 0,
+      outputTokens: 0,
+      skipped: true,
+      skipReason: "Failed to render sign schedule page",
+    };
+  }
+
+  const { text, inputTokens, outputTokens } = await callGeminiWithImage(ai, imagePath, PLAQUE_SCHEDULE_PROMPT, 1024);
+
+  let plaques: PlaqueType[] = [];
+  let generalNotes: Record<string, unknown> | null = null;
+
+  try {
+    const parsed = extractJsonFromText(text) as { plaques?: unknown; general_notes?: unknown };
+    if (Array.isArray(parsed?.plaques)) {
+      plaques = parsed.plaques as PlaqueType[];
+    }
+    if (parsed?.general_notes && typeof parsed.general_notes === "object") {
+      generalNotes = parsed.general_notes as Record<string, unknown>;
+    }
+  } catch (err) {
+    logger.warn({ err, jobId, fileId: file.id, rawText: text.slice(0, 500) }, "runPlaqueScheduleExtraction: failed to parse Gemini JSON");
+  }
+
+  logger.info({ jobId, fileId: file.id, plaqueCount: plaques.length, sourcePage, inputTokens, outputTokens }, "runPlaqueScheduleExtraction: complete");
+
+  return { plaques, generalNotes, sourcePage, inputTokens, outputTokens };
+}
+
+/**
+ * Persists plaque schedule data for a job (delete-then-insert at job level).
+ * Call once after collecting results across all files.
+ */
+export async function persistPlaqueSchedule(
+  jobId: string,
+  plaques: PlaqueType[],
+  generalNotes: Record<string, unknown> | null,
+  sourcePage: number | null,
+): Promise<void> {
+  await db.delete(plaqueSchedulesTable).where(eq(plaqueSchedulesTable.jobId, jobId));
+  if (plaques.length > 0) {
+    await db.insert(plaqueSchedulesTable).values(
+      plaques.map((p) => ({
+        jobId,
+        typeId: String(p.type_id ?? ""),
+        name: p.name ?? null,
+        braille: p.braille ?? null,
+        insert: p.insert ?? null,
+        insertSize: p.insert_size ?? null,
+        letterHeight: p.letter_height ?? null,
+        trigger: p.trigger ?? null,
+        mapsToColumn: p.maps_to_column ?? null,
+        generalNotes,
+        rawJson: p as unknown as Record<string, unknown>,
+        sourcePage,
+      })),
+    );
+  }
+  logger.info({ jobId, plaqueCount: plaques.length }, "persistPlaqueSchedule: stored");
+}
+
+// ── Occupant Loads Extraction ─────────────────────────────────────────────────
+
+const OCCUPANT_LOADS_PROMPT = `You are reading an architectural egress drawing with an Occupant Loads table.
+Extract the occupant load and occupancy group for every room listed.
+Return ONLY valid JSON:
+{
+  "rooms": [
+    { "room_num": "138", "room_name": "TRAINING/COMMUNITY", "occupant_load": 240, "occupancy_group": "A-2" }
+  ]
+}`;
+
+const EGRESS_KEYWORDS = ["egress", "occupant load", "life safety", "occupancy group"];
+
+export interface OccupantLoadRoom {
+  room_num: string;
+  room_name?: string | null;
+  occupant_load?: number | null;
+  occupancy_group?: string | null;
+}
+
+export interface OccupantLoadsExtractionResult {
+  rooms: OccupantLoadRoom[];
+  sourcePages: number[];
+  inputTokens: number;
+  outputTokens: number;
+  skipped?: boolean;
+  skipReason?: string;
+}
+
+/**
+ * Normalises a room number for fuzzy matching:
+ * strips leading zeros and lowercases (e.g. "001" → "1", "A-001" → "a-1").
+ */
+export function normaliseRoomNum(roomNum: string): string {
+  return roomNum
+    .toLowerCase()
+    .replace(/\b0+(\d)/g, "$1");
+}
+
+/**
+ * Runs occupant loads extraction for a job file.
+ * Finds pages classified as "other" that contain egress-related keywords,
+ * renders each at 200 DPI, sends to Gemini, and stores extracted occupant loads.
+ */
+export async function runOccupantLoadsExtraction(
+  jobId: string,
+  file: { id: string; storedPath: string; pageStats?: { otherPages?: number[] } | null },
+): Promise<OccupantLoadsExtractionResult> {
+  const pageStats = file.pageStats;
+  const otherPages = pageStats?.otherPages ?? [];
+
+  // Dynamically find egress pages among "other" pages
+  let numPages = otherPages.length > 0 ? 0 : await getPdfPageCount(file.storedPath);
+  const candidatePages = otherPages.length > 0 ? otherPages : Array.from({ length: numPages }, (_, i) => i + 1);
+
+  const egressPages: number[] = [];
+  for (const pageNum of candidatePages) {
+    try {
+      const pageWords = await extractPagePhrases(file.storedPath, file.id, pageNum);
+      const pageText = pageWords.phrases.map((p) => p.text).join(" ").toLowerCase();
+      const hasEgressKeyword = EGRESS_KEYWORDS.some((kw) => pageText.includes(kw));
+      if (hasEgressKeyword) {
+        egressPages.push(pageNum);
+      }
+    } catch {
+      // skip pages that fail text extraction
+    }
+  }
+
+  if (egressPages.length === 0) {
+    return {
+      rooms: [],
+      sourcePages: [],
+      inputTokens: 0,
+      outputTokens: 0,
+      skipped: true,
+      skipReason: "No egress/occupant load pages found",
+    };
+  }
+
+  const outputDir = getFilePageImagesDir(file.id);
+  const DPI_200_SCALE = 200 / 72;
+  const rendered = await renderFloorPlanPages(file.storedPath, egressPages, outputDir, DPI_200_SCALE);
+
+  const allRooms: OccupantLoadRoom[] = [];
+  let totalInputTokens = 0;
+  let totalOutputTokens = 0;
+  const successPages: number[] = [];
+
+  for (const pageNum of egressPages) {
+    const imagePath = rendered.get(pageNum);
+    if (!imagePath) continue;
+
+    try {
+      const { text, inputTokens, outputTokens } = await callGeminiWithImage(ai, imagePath, OCCUPANT_LOADS_PROMPT, 2048);
+      totalInputTokens += inputTokens;
+      totalOutputTokens += outputTokens;
+
+      const parsed = extractJsonFromText(text) as { rooms?: unknown };
+      if (Array.isArray(parsed?.rooms)) {
+        allRooms.push(...(parsed.rooms as OccupantLoadRoom[]));
+        successPages.push(pageNum);
+      }
+    } catch (err) {
+      logger.warn({ err, jobId, fileId: file.id, pageNum }, "runOccupantLoadsExtraction: failed to parse Gemini JSON for page — skipping");
+    }
+  }
+
+  // Deduplicate by room_num (keep first occurrence)
+  const seen = new Set<string>();
+  const dedupedRooms: OccupantLoadRoom[] = [];
+  for (const room of allRooms) {
+    const key = normaliseRoomNum(String(room.room_num ?? ""));
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    dedupedRooms.push(room);
+  }
+
+  logger.info({ jobId, fileId: file.id, roomCount: dedupedRooms.length, sourcePages: successPages, totalInputTokens, totalOutputTokens }, "runOccupantLoadsExtraction: complete");
+
+  return {
+    rooms: dedupedRooms,
+    sourcePages: successPages,
+    inputTokens: totalInputTokens,
+    outputTokens: totalOutputTokens,
+  };
+}
+
+/**
+ * Persists occupant-load rows for a job (delete-then-insert at job level).
+ * Deduplicates across all collected rooms before writing.
+ * Call once after collecting results across all files.
+ */
+export async function persistOccupantLoads(
+  jobId: string,
+  rooms: OccupantLoadRoom[],
+  sourcePage: number | null = null,
+): Promise<void> {
+  // Deduplicate across all files by normalised room number
+  const seen = new Set<string>();
+  const dedupedRooms: OccupantLoadRoom[] = [];
+  for (const room of rooms) {
+    const key = normaliseRoomNum(String(room.room_num ?? ""));
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    dedupedRooms.push(room);
+  }
+
+  await db.delete(occupantLoadsTable).where(eq(occupantLoadsTable.jobId, jobId));
+
+  if (dedupedRooms.length > 0) {
+    await db.insert(occupantLoadsTable).values(
+      dedupedRooms.map((r) => ({
+        jobId,
+        roomNum: String(r.room_num ?? ""),
+        roomName: r.room_name ?? null,
+        occupantLoad: typeof r.occupant_load === "number" ? r.occupant_load : null,
+        occupancyGroup: r.occupancy_group ?? null,
+        sourcePage,
+      })),
+    );
+  }
+  logger.info({ jobId, roomCount: dedupedRooms.length }, "persistOccupantLoads: stored");
+}
+
+// ── Compliance-scan DB helpers ────────────────────────────────────────────────
+
+/**
+ * Fetches stored occupant-load rows for a job from the `occupant_loads` table.
+ *
+ * Used by the compliance-scan endpoint (Task 2) to enrich RoomInventory objects
+ * before evaluating R9/R10 assembly rules.  Returns an empty array (null fallback)
+ * when no occupant-load extraction has been run for this job yet.
+ *
+ * @param jobId  The job UUID.
+ * @returns      Array of StoredOccupantLoad rows (may be empty).
+ */
+export async function fetchOccupantLoadsForJob(jobId: string): Promise<StoredOccupantLoad[]> {
+  const rows = await db
+    .select()
+    .from(occupantLoadsTable)
+    .where(eq(occupantLoadsTable.jobId, jobId));
+
+  return rows.map((r) => ({
+    roomNum: r.roomNum,
+    roomName: r.roomName ?? null,
+    occupantLoad: r.occupantLoad ?? null,
+    occupancyGroup: r.occupancyGroup ?? null,
+  }));
 }

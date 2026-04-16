@@ -5,3 +5,4 @@ export * from "./extracted-signs";
 export * from "./activity-logs";
 export * from "./sign-schedule";
 export * from "./compliance-entries";
+export * from "./plaque-schedules";

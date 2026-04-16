@@ -4,7 +4,7 @@
  *
  * This is the data foundation consumed by the rules engine (Task 2) and the
  * occupant-loads enrichment step (Task 3).  occupantLoad / occupancyGroup are
- * intentionally left null here and filled in by Task 3.
+ * intentionally left null here and filled in by mergeOccupantLoads().
  */
 
 import type { HeuristicSignInsert } from "./extraction-heuristic.js";
@@ -185,6 +185,135 @@ export function buildRoomInventory(
       occupantLoad,
       occupancyGroup,
       flags: deriveFlags(row.location, occupantLoad, occupancyGroup),
+    };
+  });
+}
+
+// ── DB-sign → RoomInventory bridge ───────────────────────────────────────────
+
+/**
+ * Minimal shape from extractedSignsTable rows needed to build a RoomInventory.
+ * This allows the compliance-scan endpoint (and extract-occupant-loads) to
+ * demonstrate the full merge pipeline without re-running heuristic extraction.
+ */
+export interface ExtractedSignForInventory {
+  signIdentifier?: string | null;
+  location?: string | null;
+  pageNumber?: number | null;
+  xPos?: number | null;
+  yPos?: number | null;
+}
+
+/**
+ * Converts stored extracted-sign rows (from the `extracted_signs` table) into
+ * RoomInventory objects with null occupantLoad/occupancyGroup.
+ *
+ * Deduplicates by signIdentifier so that one RoomInventory entry exists per
+ * unique room number across all sign entries.  Call `mergeOccupantLoads` after
+ * this to enrich with stored occupant-load data and recompute isAssembly.
+ */
+export function buildRoomInventoryFromExtractedSigns(
+  signs: ExtractedSignForInventory[],
+  level = "",
+): RoomInventory[] {
+  const seen = new Set<string>();
+  const rooms: RoomInventory[] = [];
+
+  for (const sign of signs) {
+    const roomNumber = (sign.signIdentifier ?? "").trim();
+    if (!roomNumber || seen.has(roomNumber)) continue;
+    seen.add(roomNumber);
+
+    const roomName = sign.location ?? "";
+    const occupantLoad: number | null = null;
+    const occupancyGroup: string | null = null;
+
+    rooms.push({
+      roomNumber,
+      roomName,
+      level,
+      sheetId: "",
+      pdfPage: sign.pageNumber ?? 0,
+      coords: {
+        x: Math.round((sign.xPos ?? 0) * 1000),
+        y: Math.round((sign.yPos ?? 0) * 1000),
+      },
+      occupantLoad,
+      occupancyGroup,
+      flags: deriveFlags(roomName, occupantLoad, occupancyGroup),
+    });
+  }
+
+  return rooms;
+}
+
+// ── Occupant-load merge ───────────────────────────────────────────────────────
+
+/**
+ * A stored occupant-load row from the `occupant_loads` table (or equivalent).
+ * Only the fields consumed by mergeOccupantLoads are required.
+ */
+export interface StoredOccupantLoad {
+  roomNum: string;
+  roomName?: string | null;
+  occupantLoad?: number | null;
+  occupancyGroup?: string | null;
+}
+
+/**
+ * Normalises a room-number string for fuzzy matching:
+ * - lowercases the string
+ * - strips leading zeros from each numeric token (e.g. "001" → "1", "A-001" → "a-1")
+ *
+ * This handles the common variations seen in egress drawings vs. floor plan labels,
+ * such as "101", "0101", "A-101", "A-0101".
+ */
+function normaliseRoomNum(roomNum: string): string {
+  return roomNum
+    .toLowerCase()
+    .replace(/\b0+(\d)/g, "$1");
+}
+
+/**
+ * Merges stored occupant-load rows into a RoomInventory array.
+ *
+ * Matching is done by normalised room number (strips leading zeros, lowercases).
+ * For each matched room the following fields are updated in-place and flags
+ * are recomputed so that `isAssembly` reflects the actual occupant load:
+ *   - occupantLoad  ← storedRow.occupantLoad
+ *   - occupancyGroup ← storedRow.occupancyGroup
+ *   - flags  ← recomputed via deriveFlags()
+ *
+ * Rooms with no matching stored row are left unchanged (null occupantLoad).
+ *
+ * @param rooms        The RoomInventory array produced by buildRoomInventory().
+ * @param storedLoads  Rows fetched from the occupant_loads DB table.
+ * @returns            A new array with updated occupant-load data.
+ */
+export function mergeOccupantLoads(
+  rooms: RoomInventory[],
+  storedLoads: StoredOccupantLoad[],
+): RoomInventory[] {
+  // Build a lookup map keyed by normalised room number
+  const loadByNormNum = new Map<string, StoredOccupantLoad>();
+  for (const row of storedLoads) {
+    if (!row.roomNum) continue;
+    loadByNormNum.set(normaliseRoomNum(row.roomNum), row);
+  }
+
+  return rooms.map((room) => {
+    const norm = normaliseRoomNum(room.roomNumber);
+    const stored = loadByNormNum.get(norm);
+    if (!stored) return room;
+
+    const occupantLoad = stored.occupantLoad ?? null;
+    const occupancyGroup = stored.occupancyGroup ?? null;
+
+    return {
+      ...room,
+      occupantLoad,
+      occupancyGroup,
+      flags: deriveFlags(room.roomName, occupantLoad, occupancyGroup),
     };
   });
 }

@@ -10,6 +10,8 @@ import {
   signTypeSpecsTable,
   signageScheduleEntriesTable,
   complianceEntriesTable,
+  plaqueSchedulesTable,
+  occupantLoadsTable,
 } from "@workspace/db";
 import {
   applyRules,
@@ -19,11 +21,12 @@ import {
   buildRoomInventory,
 } from "../lib/rules-engine";
 import { buildExcelExport } from "../lib/export";
+import { buildRoomInventoryFromExtractedSigns, mergeOccupantLoads } from "../lib/room-inventory";
 import { getJobExportPath, PAGES_DIR } from "../lib/storage";
 import { processJob, deduplicateSignRows } from "../lib/process-job";
 import { extractSignsFromPdfImage, extractSignsFromPdf, visualLocateDoors } from "../lib/extraction";
 import { ai } from "@workspace/integrations-gemini-ai";
-import { AI_CALL_REGISTRY, type AiCallType, runProjectInfoExtraction, runFloorPlanTextExtraction, runBboxDetection, runVisionFallback, runTitleBlockVision, runSignScheduleEnrich } from "../lib/ai-processor";
+import { AI_CALL_REGISTRY, type AiCallType, runProjectInfoExtraction, runFloorPlanTextExtraction, runBboxDetection, runVisionFallback, runTitleBlockVision, runSignScheduleEnrich, runPlaqueScheduleExtraction, persistPlaqueSchedule, runOccupantLoadsExtraction, persistOccupantLoads, fetchOccupantLoadsForJob } from "../lib/ai-processor";
 import { extractPagePhrases, matchLocationToCoords, type SpatialPageType } from "../lib/pdf-words";
 import fs from "fs/promises";
 import fsSync from "fs";
@@ -1327,7 +1330,7 @@ router.get("/jobs/:jobId/ai-calls", async (req, res) => {
 
 // ── AI Scan Endpoint ─────────────────────────────────────────────────────────
 const aiScanSchema = z.object({
-  callTypes: z.array(z.enum(["sign_schedule_enrich", "project_info", "floor_plan_text", "vision_fallback", "bbox_detection", "title_block_vision"])),
+  callTypes: z.array(z.enum(["sign_schedule_enrich", "project_info", "floor_plan_text", "vision_fallback", "bbox_detection", "title_block_vision", "plaque_schedule", "occupant_loads"])),
 });
 
 router.post("/jobs/:jobId/ai-scan", async (req, res) => {
@@ -1462,12 +1465,74 @@ router.post("/jobs/:jobId/ai-scan", async (req, res) => {
                 specs: enrichResult.specResults,
               };
             }
+          } else if (callType === "plaque_schedule") {
+            // Job-level operation: only run on the first file that has sign schedule pages.
+            // Persistence (delete+insert) is deferred to after the file loop via a flag.
+            if (!(results as Record<string, unknown>)["plaque_schedule_done"]) {
+              const filePageStats = file.pageStats as {
+                signSchedulePages?: number[];
+                bothPages?: number[];
+                otherPages?: number[];
+              } | null;
+              const plaqueResult = await runPlaqueScheduleExtraction(jobId, {
+                id: file.id,
+                storedPath: file.storedPath,
+                pageStats: filePageStats,
+              });
+              results[`${callType}_${file.id}`] = {
+                plaqueCount: plaqueResult.plaques.length,
+                sourcePage: plaqueResult.sourcePage,
+                skipped: plaqueResult.skipped ?? false,
+                skipReason: plaqueResult.skipReason ?? null,
+                inputTokens: plaqueResult.inputTokens,
+                outputTokens: plaqueResult.outputTokens,
+              };
+              if (plaqueResult.plaques.length > 0) {
+                await persistPlaqueSchedule(jobId, plaqueResult.plaques, plaqueResult.generalNotes, plaqueResult.sourcePage);
+                (results as Record<string, unknown>)["plaque_schedule_done"] = true;
+              }
+            }
+          } else if (callType === "occupant_loads") {
+            // Accumulated across all files; persistence happens after the file loop.
+            const filePageStats = file.pageStats as { otherPages?: number[] } | null;
+            const occupantResult = await runOccupantLoadsExtraction(jobId, {
+              id: file.id,
+              storedPath: file.storedPath,
+              pageStats: filePageStats,
+            });
+            const priorRooms = ((results as Record<string, unknown>)["_occupant_rooms_all"] as typeof occupantResult.rooms | undefined) ?? [];
+            (results as Record<string, unknown>)["_occupant_rooms_all"] = [...priorRooms, ...occupantResult.rooms];
+            const priorPage = ((results as Record<string, unknown>)["_occupant_first_page"] as number | null | undefined) ?? null;
+            if (priorPage === null && occupantResult.sourcePages.length > 0) {
+              (results as Record<string, unknown>)["_occupant_first_page"] = occupantResult.sourcePages[0];
+            }
+            results[`${callType}_${file.id}`] = {
+              roomCount: occupantResult.rooms.length,
+              sourcePages: occupantResult.sourcePages,
+              skipped: occupantResult.skipped ?? false,
+              skipReason: occupantResult.skipReason ?? null,
+              inputTokens: occupantResult.inputTokens,
+              outputTokens: occupantResult.outputTokens,
+            };
           }
         } catch (callErr) {
           req.log.error({ callErr, callType, fileId: file.id }, "AI scan call failed");
           results[`${callType}_${file.id}_error`] = String(callErr);
         }
       }
+    }
+
+    // If occupant_loads was one of the call types, persist all collected rooms now
+    // (rooms were accumulated across all files in results["_occupant_rooms_all"]).
+    if (callTypes.includes("occupant_loads")) {
+      const allRooms = ((results as Record<string, unknown>)["_occupant_rooms_all"] as import("../lib/ai-processor").OccupantLoadRoom[] | undefined) ?? [];
+      const firstPage = ((results as Record<string, unknown>)["_occupant_first_page"] as number | null | undefined) ?? null;
+      await persistOccupantLoads(jobId, allRooms, firstPage);
+      delete (results as Record<string, unknown>)["_occupant_rooms_all"];
+      delete (results as Record<string, unknown>)["_occupant_first_page"];
+    }
+    if (callTypes.includes("plaque_schedule")) {
+      delete (results as Record<string, unknown>)["plaque_schedule_done"];
     }
 
     // After AI sign insertion, run coordinate matching for any signs missing coordinates
@@ -1941,6 +2006,233 @@ router.post("/jobs/:jobId/compliance-scan", async (req, res) => {
   } catch (err) {
     req.log.error({ err, jobId }, "Compliance scan failed");
     res.status(500).json({ error: "Compliance scan failed", details: String(err) });
+  }
+});
+
+// ── Extract Plaque Schedule ───────────────────────────────────────────────────
+
+router.post("/jobs/:jobId/extract-plaque-schedule", async (req, res) => {
+  const jobId = req.params.jobId;
+  if (!jobId) { res.status(400).json({ error: "Job ID required" }); return; }
+
+  try {
+    const job = await getJobWithOrgCheck(req, res, jobId);
+    if (!job) return;
+
+    const files = await db.select().from(jobFilesTable).where(eq(jobFilesTable.jobId, jobId));
+    if (files.length === 0) {
+      res.status(404).json({ error: "No files found for this job" });
+      return;
+    }
+
+    const results: Record<string, unknown> = {};
+    let totalInputTokens = 0;
+    let totalOutputTokens = 0;
+    let finalPlaques: import("../lib/ai-processor").PlaqueType[] = [];
+    let finalGeneralNotes: Record<string, unknown> | null = null;
+    let finalSourcePage: number | null = null;
+
+    // Process files until we find plaque schedule data; stop at first success
+    for (const file of files) {
+      const pageStats = file.pageStats as {
+        signSchedulePages?: number[];
+        bothPages?: number[];
+        otherPages?: number[];
+      } | null;
+
+      const result = await runPlaqueScheduleExtraction(jobId, {
+        id: file.id,
+        storedPath: file.storedPath,
+        pageStats,
+      });
+
+      totalInputTokens += result.inputTokens;
+      totalOutputTokens += result.outputTokens;
+      results[file.id] = {
+        plaqueCount: result.plaques.length,
+        sourcePage: result.sourcePage,
+        skipped: result.skipped ?? false,
+        skipReason: result.skipReason ?? null,
+        inputTokens: result.inputTokens,
+        outputTokens: result.outputTokens,
+      };
+
+      // Stop at first file that yields plaques; persist once for the whole job
+      if (result.plaques.length > 0) {
+        finalPlaques = result.plaques;
+        finalGeneralNotes = result.generalNotes;
+        finalSourcePage = result.sourcePage;
+        break;
+      }
+    }
+
+    // Single delete+insert for the whole job
+    await persistPlaqueSchedule(jobId, finalPlaques, finalGeneralNotes, finalSourcePage);
+
+    recordActivity(req, "ai_scan_run", jobId);
+
+    res.json({
+      success: true,
+      jobId,
+      totalPlaques: finalPlaques.length,
+      totalInputTokens,
+      totalOutputTokens,
+      details: results,
+    });
+  } catch (err) {
+    req.log.error({ err, jobId }, "extract-plaque-schedule failed");
+    res.status(500).json({ error: "Plaque schedule extraction failed", details: String(err) });
+  }
+});
+
+// ── Extract Occupant Loads ────────────────────────────────────────────────────
+
+router.post("/jobs/:jobId/extract-occupant-loads", async (req, res) => {
+  const jobId = req.params.jobId;
+  if (!jobId) { res.status(400).json({ error: "Job ID required" }); return; }
+
+  try {
+    const job = await getJobWithOrgCheck(req, res, jobId);
+    if (!job) return;
+
+    const files = await db.select().from(jobFilesTable).where(eq(jobFilesTable.jobId, jobId));
+    if (files.length === 0) {
+      res.status(404).json({ error: "No files found for this job" });
+      return;
+    }
+
+    const results: Record<string, unknown> = {};
+    let totalInputTokens = 0;
+    let totalOutputTokens = 0;
+    // Collect rooms from ALL files before persisting (fixes multi-file overwrite)
+    const allCollectedRooms: import("../lib/ai-processor").OccupantLoadRoom[] = [];
+    let firstSourcePage: number | null = null;
+
+    for (const file of files) {
+      const pageStats = file.pageStats as { otherPages?: number[] } | null;
+
+      const result = await runOccupantLoadsExtraction(jobId, {
+        id: file.id,
+        storedPath: file.storedPath,
+        pageStats,
+      });
+
+      totalInputTokens += result.inputTokens;
+      totalOutputTokens += result.outputTokens;
+      allCollectedRooms.push(...result.rooms);
+      if (firstSourcePage === null && result.sourcePages.length > 0) {
+        firstSourcePage = result.sourcePages[0];
+      }
+      results[file.id] = {
+        roomCount: result.rooms.length,
+        sourcePages: result.sourcePages,
+        skipped: result.skipped ?? false,
+        skipReason: result.skipReason ?? null,
+        inputTokens: result.inputTokens,
+        outputTokens: result.outputTokens,
+      };
+    }
+
+    // Single delete+insert for the whole job (deduplicated inside persistOccupantLoads)
+    await persistOccupantLoads(jobId, allCollectedRooms, firstSourcePage);
+
+    // ── Wire occupant loads into RoomInventory (compliance-scan integration) ───
+    // Fetch stored occupant loads and merge into a room inventory built from the
+    // job's extracted signs.  This is the same pipeline the compliance-scan
+    // endpoint (Task 2) uses to evaluate R9/R10 assembly rules.
+    const storedLoads = await fetchOccupantLoadsForJob(jobId);
+    const extractedSigns = await db
+      .select({
+        signIdentifier: extractedSignsTable.signIdentifier,
+        location: extractedSignsTable.location,
+        pageNumber: extractedSignsTable.pageNumber,
+        xPos: extractedSignsTable.xPos,
+        yPos: extractedSignsTable.yPos,
+      })
+      .from(extractedSignsTable)
+      .where(eq(extractedSignsTable.jobId, jobId));
+
+    const roomInventory = buildRoomInventoryFromExtractedSigns(extractedSigns);
+    const enrichedInventory = mergeOccupantLoads(roomInventory, storedLoads);
+    const assemblyRooms = enrichedInventory
+      .filter((r) => r.flags.isAssembly)
+      .map((r) => ({
+        roomNumber: r.roomNumber,
+        roomName: r.roomName,
+        occupantLoad: r.occupantLoad,
+        occupancyGroup: r.occupancyGroup,
+        isAssembly: true,
+      }));
+
+    recordActivity(req, "ai_scan_run", jobId);
+
+    res.json({
+      success: true,
+      jobId,
+      totalRooms: allCollectedRooms.length,
+      totalInputTokens,
+      totalOutputTokens,
+      assemblyRoomCount: assemblyRooms.length,
+      assemblyRooms,
+      details: results,
+    });
+  } catch (err) {
+    req.log.error({ err, jobId }, "extract-occupant-loads failed");
+    res.status(500).json({ error: "Occupant loads extraction failed", details: String(err) });
+  }
+});
+
+// ── Occupant Loads Query ──────────────────────────────────────────────────────
+
+router.get("/jobs/:jobId/occupant-loads", async (req, res) => {
+  const jobId = req.params.jobId;
+  if (!jobId) { res.status(400).json({ error: "Job ID required" }); return; }
+
+  try {
+    const job = await getJobWithOrgCheck(req, res, jobId);
+    if (!job) return;
+
+    const loads = await db
+      .select()
+      .from(occupantLoadsTable)
+      .where(eq(occupantLoadsTable.jobId, jobId));
+
+    const assemblyRooms = loads
+      .filter((r) => typeof r.occupantLoad === "number" && r.occupantLoad >= 50)
+      .map((r) => ({
+        roomNum: r.roomNum,
+        roomName: r.roomName,
+        occupantLoad: r.occupantLoad,
+        occupancyGroup: r.occupancyGroup,
+        isAssembly: true,
+      }));
+
+    res.json({ jobId, loads, assemblyRooms });
+  } catch (err) {
+    req.log.error({ err, jobId }, "occupant-loads fetch failed");
+    res.status(500).json({ error: "Failed to fetch occupant loads" });
+  }
+});
+
+// ── Plaque Schedule Query ─────────────────────────────────────────────────────
+
+router.get("/jobs/:jobId/plaque-schedule", async (req, res) => {
+  const jobId = req.params.jobId;
+  if (!jobId) { res.status(400).json({ error: "Job ID required" }); return; }
+
+  try {
+    const job = await getJobWithOrgCheck(req, res, jobId);
+    if (!job) return;
+
+    const plaques = await db
+      .select()
+      .from(plaqueSchedulesTable)
+      .where(eq(plaqueSchedulesTable.jobId, jobId));
+
+    res.json({ jobId, plaques });
+  } catch (err) {
+    req.log.error({ err, jobId }, "plaque-schedule fetch failed");
+    res.status(500).json({ error: "Failed to fetch plaque schedule" });
   }
 });
 
