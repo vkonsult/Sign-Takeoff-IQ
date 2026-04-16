@@ -250,6 +250,14 @@ function extractInstitutionalRoomsFromPhrases(
       const alphaCount = (anchor.text.match(/[a-zA-Z]/g) || []).length;
       if (alphaCount < 1) continue;
 
+      // Suppress architectural drawing callout codes (e.g. A302, A503, A413) and other
+      // code-only tokens.  These are cross-reference identifiers on section/elevation
+      // callout bubbles, not room labels, and should never become sign markers.
+      // isCodeOnlyLocation returns true when every token in the string is a code pattern
+      // (pure digits, letter+digit combos, or short all-caps without vowels) and no
+      // token qualifies as a real room-name word (length ≥ 3 with at least one vowel).
+      if (isCodeOnlyLocation(anchor.text)) continue;
+
       const nearbyCode = findNearbyRoomCode(anchor);
       const signIdentifier = nearbyCode ?? anchor.text.toUpperCase().replace(/\s+/g, "_").slice(0, 40);
       usedKeys.add(dedupeKey);
