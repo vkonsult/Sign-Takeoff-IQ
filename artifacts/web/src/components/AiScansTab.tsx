@@ -1,6 +1,6 @@
 import { useState, useCallback, useEffect, useRef } from "react";
 import { apiFetch } from "@/lib/apiClient";
-import { Brain, Play, Loader2, CheckCircle2, AlertTriangle, Info, Cpu, Eye, EyeOff, ChevronDown, ChevronRight, BookOpen, Users, Pencil, Trash2, Plus, Check, X, Lock } from "lucide-react";
+import { Brain, Play, Loader2, CheckCircle2, AlertTriangle, Info, Cpu, Eye, EyeOff, ChevronDown, ChevronRight, BookOpen, Users, Pencil, Trash2, Plus, Check, X, Lock, LockOpen } from "lucide-react";
 
 export interface AiCallDescriptor {
   type: string;
@@ -93,6 +93,7 @@ export function AiScansTab({
   const [plaqueEditError, setPlaqueEditError] = useState<string | null>(null);
   const [plaqueDeletingId, setPlaqueDeletingId] = useState<string | null>(null);
   const [plaqueUnlockingId, setPlaqueUnlockingId] = useState<string | null>(null);
+  const [plaqueUnlockingAll, setPlaqueUnlockingAll] = useState(false);
   const [plaqueConfirmDeleteId, setPlaqueConfirmDeleteId] = useState<string | null>(null);
   const [showPlaqueConfirm, setShowPlaqueConfirm] = useState(false);
   const plaqueConfirmRef = useRef<HTMLTableRowElement | null>(null);
@@ -106,6 +107,7 @@ export function AiScansTab({
   const [editError, setEditError] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [unlockingId, setUnlockingId] = useState<string | null>(null);
+  const [unlockingAll, setUnlockingAll] = useState(false);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const confirmRef = useRef<HTMLTableRowElement | null>(null);
 
@@ -435,6 +437,41 @@ export function AiScansTab({
     }
   };
 
+  const handleUnlockAllPlaqueRows = async () => {
+    const lockedIds = plaqueRows.filter((r) => r.manuallyEdited).map((r) => r.id);
+    if (lockedIds.length === 0) return;
+    setPlaqueUnlockingAll(true);
+    setPlaqueEditError(null);
+    try {
+      const results = await Promise.all(
+        lockedIds.map(async (id) => {
+          try {
+            const res = await apiFetch(`/api/jobs/${jobId}/plaque-schedule/${id}`, {
+              method: "PUT",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ manuallyEdited: false }),
+            });
+            return { id, ok: res.ok };
+          } catch {
+            return { id, ok: false };
+          }
+        })
+      );
+      const unlockedIds = new Set(results.filter((r) => r.ok).map((r) => r.id));
+      const failedCount = results.filter((r) => !r.ok).length;
+      if (unlockedIds.size > 0) {
+        setPlaqueRows((prev) => prev.map((r) => unlockedIds.has(r.id) ? { ...r, manuallyEdited: false } : r));
+      }
+      if (failedCount > 0) {
+        setPlaqueEditError(`${failedCount} row${failedCount !== 1 ? "s" : ""} could not be unlocked. Please try again.`);
+      }
+    } catch (err) {
+      setPlaqueEditError(String(err));
+    } finally {
+      setPlaqueUnlockingAll(false);
+    }
+  };
+
   const handleExtractOccupantLoads = async () => {
     setOccupantStatus("running");
     setOccupantError(null);
@@ -587,6 +624,41 @@ export function AiScansTab({
       setEditError(String(err));
     } finally {
       setUnlockingId(null);
+    }
+  };
+
+  const handleUnlockAllOccupantRows = async () => {
+    const lockedIds = occupantRows.filter((r) => r.manuallyEdited).map((r) => r.id);
+    if (lockedIds.length === 0) return;
+    setUnlockingAll(true);
+    setEditError(null);
+    try {
+      const results = await Promise.all(
+        lockedIds.map(async (id) => {
+          try {
+            const res = await apiFetch(`/api/jobs/${jobId}/occupant-loads/${id}`, {
+              method: "PUT",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ manuallyEdited: false }),
+            });
+            return { id, ok: res.ok };
+          } catch {
+            return { id, ok: false };
+          }
+        })
+      );
+      const unlockedIds = new Set(results.filter((r) => r.ok).map((r) => r.id));
+      const failedCount = results.filter((r) => !r.ok).length;
+      if (unlockedIds.size > 0) {
+        setOccupantRows((prev) => prev.map((r) => unlockedIds.has(r.id) ? { ...r, manuallyEdited: false } : r));
+      }
+      if (failedCount > 0) {
+        setEditError(`${failedCount} row${failedCount !== 1 ? "s" : ""} could not be unlocked. Please try again.`);
+      }
+    } catch (err) {
+      setEditError(String(err));
+    } finally {
+      setUnlockingAll(false);
     }
   };
 
@@ -793,58 +865,71 @@ export function AiScansTab({
               </p>
             </div>
           </div>
-          {showPlaqueConfirm ? (
-            <div className="flex-shrink-0 flex items-center gap-1.5">
-              <span className="text-[11px] text-amber-400 whitespace-nowrap">Replace existing rows?</span>
+          <div className="flex-shrink-0 flex items-center gap-2">
+            {plaqueRows.some((r) => r.manuallyEdited) && !showPlaqueConfirm && (
               <button
-                onClick={() => { setShowPlaqueConfirm(false); handleExtractPlaqueSchedule(); }}
-                className="flex items-center justify-center px-2 py-1 rounded text-[11px] font-medium text-white bg-amber-500 hover:bg-amber-400 transition-colors border border-amber-400/30"
+                onClick={handleUnlockAllPlaqueRows}
+                disabled={plaqueUnlockingAll || plaqueEditingId !== null || plaqueDeletingId !== null || plaqueUnlockingId !== null || plaqueConfirmDeleteId !== null}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded text-[11px] font-medium border transition-all disabled:opacity-50 disabled:cursor-not-allowed bg-amber-500/10 text-amber-400 border-amber-500/20 hover:bg-amber-500/20"
+                title="Remove the manually-edited lock from all rows, allowing AI to update them again"
               >
-                Continue
+                {plaqueUnlockingAll ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <LockOpen className="w-3.5 h-3.5" />}
+                Unlock all
               </button>
+            )}
+            {showPlaqueConfirm ? (
+              <div className="flex items-center gap-1.5">
+                <span className="text-[11px] text-amber-400 whitespace-nowrap">Replace existing rows?</span>
+                <button
+                  onClick={() => { setShowPlaqueConfirm(false); handleExtractPlaqueSchedule(); }}
+                  className="flex items-center justify-center px-2 py-1 rounded text-[11px] font-medium text-white bg-amber-500 hover:bg-amber-400 transition-colors border border-amber-400/30"
+                >
+                  Continue
+                </button>
+                <button
+                  onClick={() => setShowPlaqueConfirm(false)}
+                  className="flex items-center justify-center px-2 py-1 rounded text-[11px] font-medium text-muted-foreground bg-secondary hover:text-foreground transition-colors border border-border"
+                >
+                  Cancel
+                </button>
+              </div>
+            ) : (
               <button
-                onClick={() => setShowPlaqueConfirm(false)}
-                className="flex items-center justify-center px-2 py-1 rounded text-[11px] font-medium text-muted-foreground bg-secondary hover:text-foreground transition-colors border border-border"
+                onClick={() => {
+                  if (plaqueRows.length > 0) {
+                    setShowPlaqueConfirm(true);
+                  } else {
+                    handleExtractPlaqueSchedule();
+                  }
+                }}
+                disabled={plaqueStatus === "running" || plaqueUnlockingAll}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded text-[11px] font-medium border transition-all disabled:opacity-50 disabled:cursor-not-allowed ${
+                  plaqueStatus === "success"
+                    ? "bg-amber-500/10 text-amber-400 border-amber-500/20 hover:bg-amber-500/20"
+                    : plaqueStatus === "error"
+                    ? "bg-destructive/10 text-destructive border-destructive/20 hover:bg-destructive/20"
+                    : "bg-secondary text-muted-foreground border-border hover:text-foreground"
+                }`}
               >
-                Cancel
-              </button>
-            </div>
-          ) : (
-            <button
-              onClick={() => {
-                if (plaqueRows.length > 0) {
-                  setShowPlaqueConfirm(true);
-                } else {
-                  handleExtractPlaqueSchedule();
-                }
-              }}
-              disabled={plaqueStatus === "running"}
-              className={`flex-shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded text-[11px] font-medium border transition-all disabled:opacity-50 disabled:cursor-not-allowed ${
-                plaqueStatus === "success"
-                  ? "bg-amber-500/10 text-amber-400 border-amber-500/20 hover:bg-amber-500/20"
+                {plaqueStatus === "running" ? (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                ) : plaqueStatus === "success" ? (
+                  <CheckCircle2 className="w-3.5 h-3.5" />
+                ) : plaqueStatus === "error" ? (
+                  <AlertTriangle className="w-3.5 h-3.5" />
+                ) : (
+                  <Play className="w-3.5 h-3.5" />
+                )}
+                {plaqueStatus === "running"
+                  ? "Running…"
+                  : plaqueStatus === "success"
+                  ? "Re-run"
                   : plaqueStatus === "error"
-                  ? "bg-destructive/10 text-destructive border-destructive/20 hover:bg-destructive/20"
-                  : "bg-secondary text-muted-foreground border-border hover:text-foreground"
-              }`}
-            >
-              {plaqueStatus === "running" ? (
-                <Loader2 className="w-3.5 h-3.5 animate-spin" />
-              ) : plaqueStatus === "success" ? (
-                <CheckCircle2 className="w-3.5 h-3.5" />
-              ) : plaqueStatus === "error" ? (
-                <AlertTriangle className="w-3.5 h-3.5" />
-              ) : (
-                <Play className="w-3.5 h-3.5" />
-              )}
-              {plaqueStatus === "running"
-                ? "Running…"
-                : plaqueStatus === "success"
-                ? "Re-run"
-                : plaqueStatus === "error"
-                ? "Retry"
-                : "Run"}
-            </button>
-          )}
+                  ? "Retry"
+                  : "Run"}
+              </button>
+            )}
+          </div>
         </div>
 
         {plaqueError && (
@@ -1173,58 +1258,71 @@ export function AiScansTab({
               </p>
             </div>
           </div>
-          {showOccupantConfirm ? (
-            <div className="flex-shrink-0 flex items-center gap-1.5">
-              <span className="text-[11px] text-sky-400 whitespace-nowrap">Replace existing rows?</span>
+          <div className="flex-shrink-0 flex items-center gap-2">
+            {occupantRows.some((r) => r.manuallyEdited) && !showOccupantConfirm && (
               <button
-                onClick={() => { setShowOccupantConfirm(false); handleExtractOccupantLoads(); }}
-                className="flex items-center justify-center px-2 py-1 rounded text-[11px] font-medium text-white bg-sky-500 hover:bg-sky-400 transition-colors border border-sky-400/30"
+                onClick={handleUnlockAllOccupantRows}
+                disabled={unlockingAll || editingId !== null || deletingId !== null || unlockingId !== null || confirmDeleteId !== null}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded text-[11px] font-medium border transition-all disabled:opacity-50 disabled:cursor-not-allowed bg-sky-500/10 text-sky-400 border-sky-500/20 hover:bg-sky-500/20"
+                title="Remove the manually-edited lock from all rows, allowing AI to update them again"
               >
-                Continue
+                {unlockingAll ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <LockOpen className="w-3.5 h-3.5" />}
+                Unlock all
               </button>
+            )}
+            {showOccupantConfirm ? (
+              <div className="flex items-center gap-1.5">
+                <span className="text-[11px] text-sky-400 whitespace-nowrap">Replace existing rows?</span>
+                <button
+                  onClick={() => { setShowOccupantConfirm(false); handleExtractOccupantLoads(); }}
+                  className="flex items-center justify-center px-2 py-1 rounded text-[11px] font-medium text-white bg-sky-500 hover:bg-sky-400 transition-colors border border-sky-400/30"
+                >
+                  Continue
+                </button>
+                <button
+                  onClick={() => setShowOccupantConfirm(false)}
+                  className="flex items-center justify-center px-2 py-1 rounded text-[11px] font-medium text-muted-foreground bg-secondary hover:text-foreground transition-colors border border-border"
+                >
+                  Cancel
+                </button>
+              </div>
+            ) : (
               <button
-                onClick={() => setShowOccupantConfirm(false)}
-                className="flex items-center justify-center px-2 py-1 rounded text-[11px] font-medium text-muted-foreground bg-secondary hover:text-foreground transition-colors border border-border"
+                onClick={() => {
+                  if (occupantRows.length > 0) {
+                    setShowOccupantConfirm(true);
+                  } else {
+                    handleExtractOccupantLoads();
+                  }
+                }}
+                disabled={occupantStatus === "running" || unlockingAll}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded text-[11px] font-medium border transition-all disabled:opacity-50 disabled:cursor-not-allowed ${
+                  occupantStatus === "success"
+                    ? "bg-sky-500/10 text-sky-400 border-sky-500/20 hover:bg-sky-500/20"
+                    : occupantStatus === "error"
+                    ? "bg-destructive/10 text-destructive border-destructive/20 hover:bg-destructive/20"
+                    : "bg-secondary text-muted-foreground border-border hover:text-foreground"
+                }`}
               >
-                Cancel
-              </button>
-            </div>
-          ) : (
-            <button
-              onClick={() => {
-                if (occupantRows.length > 0) {
-                  setShowOccupantConfirm(true);
-                } else {
-                  handleExtractOccupantLoads();
-                }
-              }}
-              disabled={occupantStatus === "running"}
-              className={`flex-shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded text-[11px] font-medium border transition-all disabled:opacity-50 disabled:cursor-not-allowed ${
-                occupantStatus === "success"
-                  ? "bg-sky-500/10 text-sky-400 border-sky-500/20 hover:bg-sky-500/20"
+                {occupantStatus === "running" ? (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                ) : occupantStatus === "success" ? (
+                  <CheckCircle2 className="w-3.5 h-3.5" />
+                ) : occupantStatus === "error" ? (
+                  <AlertTriangle className="w-3.5 h-3.5" />
+                ) : (
+                  <Play className="w-3.5 h-3.5" />
+                )}
+                {occupantStatus === "running"
+                  ? "Running…"
+                  : occupantStatus === "success"
+                  ? "Re-run"
                   : occupantStatus === "error"
-                  ? "bg-destructive/10 text-destructive border-destructive/20 hover:bg-destructive/20"
-                  : "bg-secondary text-muted-foreground border-border hover:text-foreground"
-              }`}
-            >
-              {occupantStatus === "running" ? (
-                <Loader2 className="w-3.5 h-3.5 animate-spin" />
-              ) : occupantStatus === "success" ? (
-                <CheckCircle2 className="w-3.5 h-3.5" />
-              ) : occupantStatus === "error" ? (
-                <AlertTriangle className="w-3.5 h-3.5" />
-              ) : (
-                <Play className="w-3.5 h-3.5" />
-              )}
-              {occupantStatus === "running"
-                ? "Running…"
-                : occupantStatus === "success"
-                ? "Re-run"
-                : occupantStatus === "error"
-                ? "Retry"
-                : "Run"}
-            </button>
-          )}
+                  ? "Retry"
+                  : "Run"}
+              </button>
+            )}
+          </div>
         </div>
 
         {occupantError && (
