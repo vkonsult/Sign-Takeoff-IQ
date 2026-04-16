@@ -558,7 +558,7 @@ export default function JobDetails() {
     (data?.extractedSigns?.length ?? 0) === 0 &&
     (plaqueScheduleQuery.data?.plaques?.length ?? 0) === 0 &&
     (occupantLoadsQuery.data?.loads?.length ?? 0) === 0;
-  const exportDisabled = supplementalDataLoading || hasNoData;
+  const exportDisabled = isProcessingNow || supplementalDataLoading || hasNoData;
   const hasNoMapData =
     isProcessingNow ||
     (isJobCompleted &&
@@ -1019,7 +1019,9 @@ export default function JobDetails() {
                           </TooltipTrigger>
                           <TooltipContent>
                             {exportDisabled
-                              ? supplementalDataLoading
+                              ? isProcessingNow
+                                ? "Job is still processing — wait for extraction to finish before exporting"
+                                : supplementalDataLoading
                                 ? "Loading data…"
                                 : "No sign, plaque, or occupant load data to export"
                               : showPartialNotice
