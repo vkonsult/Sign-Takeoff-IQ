@@ -1564,6 +1564,15 @@ export default function JobDetails() {
                           </td>
                           <td className="data-cell text-center">
                             <div className="flex flex-col gap-1 items-center">
+                              {sign.pageNumber == null && (
+                                <span
+                                  title="This sign has not been placed on a floor plan yet"
+                                  className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider bg-yellow-500/10 text-yellow-500 border border-yellow-500/25 cursor-default"
+                                >
+                                  <MapPin className="w-3 h-3 mr-1" />
+                                  Unplaced
+                                </span>
+                              )}
                               {sign.userVerified && (
                                 <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider" style={{ background: "#22c55e15", color: "#22c55e", border: "1px solid #22c55e44" }}>
                                   <CheckCircle2 className="w-3 h-3 mr-1" />
