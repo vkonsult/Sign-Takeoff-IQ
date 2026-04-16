@@ -365,14 +365,27 @@ export async function extractPagePhrases(
     const vyMin = Math.min(...group.map((e) => e.vp.vy0));
     const vyMax = Math.max(...group.map((e) => e.vp.vy1));
 
-    // Reconstruct text: insert a space whenever the visual gap before an item
-    // exceeds 30 % of the previous item's visual width — this preserves word
-    // boundaries lost because pdfjs discards whitespace-only items.
+    // Reconstruct text: insert a space between items to preserve word boundaries
+    // lost because pdfjs discards whitespace-only items.
+    //
+    // Rule: when BOTH the previous item and the current item each have more than
+    // 1 character, always insert a space regardless of visual gap — this prevents
+    // separate CAD label words from being fused (e.g. "100H"+"OFFICE"→"100H OFFICE").
+    // When either item is a single character, fall back to the gap-based rule so
+    // that single-glyph fragments continue to merge without spaces
+    // (e.g. "U"+"N"+"I"+"T"→"UNIT").
     let text = group[0]!.vp.item.str;
     for (let gi = 1; gi < group.length; gi++) {
       const entry = group[gi]!;
+      const prevStr = group[gi - 1]!.vp.item.str;
       const prevVpW = group[gi - 1]!.vp.vx1 - group[gi - 1]!.vp.vx0 || 8;
-      if (entry.gapPts > prevVpW * 0.3) text += " ";
+      const prevIsMultiChar = prevStr.trim().length > 1;
+      const currIsMultiChar = entry.vp.item.str.trim().length > 1;
+      if (prevIsMultiChar && currIsMultiChar) {
+        text += " ";
+      } else if (entry.gapPts > prevVpW * 0.3) {
+        text += " ";
+      }
       text += entry.vp.item.str;
     }
     text = text.trim().replace(/  +/g, " ");

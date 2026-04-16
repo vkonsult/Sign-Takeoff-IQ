@@ -79,6 +79,18 @@ function isNoisyPhrase(text: string): boolean {
   if (!/[A-Za-z0-9]/.test(t)) return true;
   // Area measurement strings (e.g. 217.75 sq ft, 100 sqft, 50 sf, 200 square feet)
   if (/[0-9]\s*(?:sq\.?\s*ft\.?|sqft|sf|square\s+f(?:eet|oot))/i.test(t)) return true;
+  // Copyright notices — any string containing the © symbol
+  if (t.includes('©')) {
+    logger.debug({ phrase: t }, 'isNoisyPhrase: rejected — contains © symbol');
+    return true;
+  }
+  // Firm-name suffixes — strings ending with Inc./LLC./Corp./Ltd./Co. (with optional punctuation)
+  // are copyright/attribution lines, never room labels.
+  const lastWord = t.replace(/[.,!?]+$/, '').split(/\s+/).pop()?.toLowerCase() ?? '';
+  if (['inc', 'llc', 'corp', 'ltd', 'co'].includes(lastWord)) {
+    logger.debug({ phrase: t, lastWord }, 'isNoisyPhrase: rejected — firm-name suffix');
+    return true;
+  }
   return false;
 }
 
