@@ -75,6 +75,14 @@ export const GetJobResponse = zod.object({
       .describe(
         "2-letter state code extracted from the plan (e.g. CA, TX, NY)",
       ),
+    plaqueCount: zod
+      .number()
+      .optional()
+      .describe("Number of plaque schedule entries extracted for this job"),
+    occupantLoadCount: zod
+      .number()
+      .optional()
+      .describe("Number of occupant load entries extracted for this job"),
     createdAt: zod.date(),
     updatedAt: zod.date(),
   }),
@@ -170,6 +178,12 @@ export const GetJobResponse = zod.object({
         .describe(
           "True if this sign was manually placed by the user (not AI-extracted)",
         ),
+      manuallyEdited: zod
+        .boolean()
+        .nullish()
+        .describe(
+          "True if the user has manually edited this sign; protected from AI re-run overwrites",
+        ),
       userVerified: zod
         .boolean()
         .optional()
@@ -182,6 +196,8 @@ export const GetJobResponse = zod.object({
   totalSigns: zod.number(),
   flaggedCount: zod.number(),
   highConfidenceCount: zod.number(),
+  plaqueCount: zod.number(),
+  occupantLoadCount: zod.number(),
 });
 
 /**
@@ -223,6 +239,14 @@ export const ListJobsResponse = zod.object({
         .describe(
           "2-letter state code extracted from the plan (e.g. CA, TX, NY)",
         ),
+      plaqueCount: zod
+        .number()
+        .optional()
+        .describe("Number of plaque schedule entries extracted for this job"),
+      occupantLoadCount: zod
+        .number()
+        .optional()
+        .describe("Number of occupant load entries extracted for this job"),
       createdAt: zod.date(),
       updatedAt: zod.date(),
     }),
@@ -283,6 +307,19 @@ export const ExtractPlaqueScheduleResponse = zod
       .describe("Per-file extraction details keyed by file UUID"),
   })
   .describe("Result of a plaque schedule extraction run");
+
+/**
+ * Permanently removes a single plaque type row from the job's plaque schedule by its ID.
+ * @summary Delete a single plaque schedule row
+ */
+export const DeletePlaqueScheduleRowParams = zod.object({
+  jobId: zod.coerce.string().uuid(),
+  id: zod.coerce.string().uuid(),
+});
+
+export const DeletePlaqueScheduleRowResponse = zod.object({
+  success: zod.boolean().optional(),
+});
 
 /**
  * Returns the stored plaque schedule data extracted from the job's PDF files.

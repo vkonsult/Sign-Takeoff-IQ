@@ -3,7 +3,7 @@ import { AppShell } from "@/components/layout/Shell";
 import { useJobsList } from "@/hooks/use-takeoff";
 import { apiFetch, openPdfInNewTab } from "@/lib/apiClient";
 import { useQueryClient } from "@tanstack/react-query";
-import { getListJobsQueryKey } from "@workspace/api-client-react";
+import { getListJobsQueryKey, type JobSummary } from "@workspace/api-client-react";
 import { format, formatDistanceToNow } from "date-fns";
 import { Button } from "@/components/ui/button";
 import {
@@ -61,18 +61,13 @@ export default function JobsList() {
   const [deletingSingle, setDeletingSingle] = useState<string | null>(null);
   const [bulkConfirming, setBulkConfirming] = useState(false);
   const [bulkDeleting, setBulkDeleting] = useState(false);
-  const jobs = (data?.jobs ?? []) as Array<{
-    id: string;
+  type JobSummaryListItem = JobSummary & {
     name?: string | null;
-    status: string;
-    fileCount: number;
-    createdAt: string;
     updatedAt?: string | null;
     recentUsers?: RecentUser[];
     files?: { id: string; originalName: string }[];
-    plaqueCount?: number | null;
-    occupantLoadCount?: number | null;
-  }>;
+  };
+  const jobs = (data?.jobs ?? []) as JobSummaryListItem[];
   const allIds = jobs.map((j) => j.id);
   const allSelected = allIds.length > 0 && allIds.every((id) => selected.has(id));
   const someSelected = selected.size > 0 && !allSelected;
@@ -230,14 +225,8 @@ export default function JobsList() {
 
               {jobs.map((job) => {
                 const isChecked = selected.has(job.id);
-                const jobAny = job as typeof job & {
-                  recentUsers?: RecentUser[];
-                  lastActivityAt?: string | null;
-                  lastActivityType?: string | null;
-                  files?: { id: string; originalName: string }[];
-                };
-                const recentUsers: RecentUser[] = jobAny.recentUsers ?? [];
-                const jobFiles: { id: string; originalName: string }[] = jobAny.files ?? [];
+                const recentUsers: RecentUser[] = job.recentUsers ?? [];
+                const jobFiles: { id: string; originalName: string }[] = job.files ?? [];
                 const plaqueCount = Number(job.plaqueCount ?? 0);
                 const occupantLoadCount = Number(job.occupantLoadCount ?? 0);
 

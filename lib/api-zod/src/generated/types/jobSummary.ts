@@ -22,6 +22,10 @@ export interface JobSummary {
   projectCity?: string | null;
   /** 2-letter state code extracted from the plan (e.g. CA, TX, NY) */
   projectState?: string | null;
+  /** Number of plaque schedule entries extracted for this job */
+  plaqueCount?: number;
+  /** Number of occupant load entries extracted for this job */
+  occupantLoadCount?: number;
   createdAt: Date;
   updatedAt: Date;
 }

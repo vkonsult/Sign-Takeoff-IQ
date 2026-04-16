@@ -465,6 +465,12 @@ components:
           type: string
           nullable: true
           description: 2-letter state code extracted from the plan (e.g. CA, TX, NY)
+        plaqueCount:
+          type: integer
+          description: Number of plaque schedule entries extracted for this job
+        occupantLoadCount:
+          type: integer
+          description: Number of occupant load entries extracted for this job
         createdAt:
           type: string
           format: date-time

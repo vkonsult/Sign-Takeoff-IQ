@@ -17,6 +17,7 @@ import type {
 } from "@tanstack/react-query";
 
 import type {
+  DeletePlaqueScheduleRow200,
   ErrorResponse,
   ExtractOccupantLoadsResponse,
   ExtractPlaqueScheduleResponse,
@@ -607,6 +608,95 @@ export const useExtractPlaqueSchedule = <
   TContext
 > => {
   return useMutation(getExtractPlaqueScheduleMutationOptions(options));
+};
+
+/**
+ * Permanently removes a single plaque type row from the job's plaque schedule by its ID.
+ * @summary Delete a single plaque schedule row
+ */
+export const getDeletePlaqueScheduleRowUrl = (jobId: string, id: string) => {
+  return `/api/jobs/${jobId}/plaque-schedule/${id}`;
+};
+
+export const deletePlaqueScheduleRow = async (
+  jobId: string,
+  id: string,
+  options?: RequestInit,
+): Promise<DeletePlaqueScheduleRow200> => {
+  return customFetch<DeletePlaqueScheduleRow200>(
+    getDeletePlaqueScheduleRowUrl(jobId, id),
+    {
+      ...options,
+      method: "DELETE",
+    },
+  );
+};
+
+export const getDeletePlaqueScheduleRowMutationOptions = <
+  TError = ErrorType<ErrorResponse>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof deletePlaqueScheduleRow>>,
+    TError,
+    { jobId: string; id: string },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof deletePlaqueScheduleRow>>,
+  TError,
+  { jobId: string; id: string },
+  TContext
+> => {
+  const mutationKey = ["deletePlaqueScheduleRow"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof deletePlaqueScheduleRow>>,
+    { jobId: string; id: string }
+  > = (props) => {
+    const { jobId, id } = props ?? {};
+
+    return deletePlaqueScheduleRow(jobId, id, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type DeletePlaqueScheduleRowMutationResult = NonNullable<
+  Awaited<ReturnType<typeof deletePlaqueScheduleRow>>
+>;
+
+export type DeletePlaqueScheduleRowMutationError = ErrorType<ErrorResponse>;
+
+/**
+ * @summary Delete a single plaque schedule row
+ */
+export const useDeletePlaqueScheduleRow = <
+  TError = ErrorType<ErrorResponse>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof deletePlaqueScheduleRow>>,
+    TError,
+    { jobId: string; id: string },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof deletePlaqueScheduleRow>>,
+  TError,
+  { jobId: string; id: string },
+  TContext
+> => {
+  return useMutation(getDeletePlaqueScheduleRowMutationOptions(options));
 };
 
 /**

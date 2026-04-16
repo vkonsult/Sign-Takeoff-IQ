@@ -135,12 +135,38 @@ router.get("/jobs", async (req, res) => {
       }
     }
 
+    // Batch-count plaque schedule entries and occupant load entries per job.
+    const plaqueCounts = new Map<string, number>();
+    const occupantLoadCounts = new Map<string, number>();
+    if (jobIds.length > 0) {
+      const [plaqueRows, occupantRows] = await Promise.all([
+        db
+          .select({ jobId: plaqueSchedulesTable.jobId, count: sql<number>`COUNT(*)::int` })
+          .from(plaqueSchedulesTable)
+          .where(inArray(plaqueSchedulesTable.jobId, jobIds))
+          .groupBy(plaqueSchedulesTable.jobId),
+        db
+          .select({ jobId: occupantLoadsTable.jobId, count: sql<number>`COUNT(*)::int` })
+          .from(occupantLoadsTable)
+          .where(inArray(occupantLoadsTable.jobId, jobIds))
+          .groupBy(occupantLoadsTable.jobId),
+      ]);
+      for (const r of plaqueRows) {
+        if (r.jobId) plaqueCounts.set(r.jobId, r.count);
+      }
+      for (const r of occupantRows) {
+        if (r.jobId) occupantLoadCounts.set(r.jobId, r.count);
+      }
+    }
+
     const enriched = jobs.map((j) => {
       const users = recentUsersByJob.get(j.id) ?? [];
       return {
         ...j,
         files: filesByJob.get(j.id) ?? [],
         recentUsers: users.map((u) => ({ userName: u.userName, userInitials: u.userInitials, at: u.at, eventType: u.eventType })),
+        plaqueCount: plaqueCounts.get(j.id) ?? 0,
+        occupantLoadCount: occupantLoadCounts.get(j.id) ?? 0,
       };
     });
 
