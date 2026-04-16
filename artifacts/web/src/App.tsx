@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Switch, Route, Redirect, useLocation, Router as WouterRouter } from "wouter";
+import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { QueryClient, QueryClientProvider, useQueryClient, useQuery } from "@tanstack/react-query";
 import { ClerkProvider, SignIn, SignUp, Show, useClerk, useUser } from "@clerk/react";
 import { Toaster } from "@/components/ui/toaster";
@@ -342,9 +343,11 @@ function ClerkProviderWithRoutes() {
 
 function App() {
   return (
-    <WouterRouter base={basePath}>
-      <ClerkProviderWithRoutes />
-    </WouterRouter>
+    <ErrorBoundary>
+      <WouterRouter base={basePath}>
+        <ClerkProviderWithRoutes />
+      </WouterRouter>
+    </ErrorBoundary>
   );
 }
 
