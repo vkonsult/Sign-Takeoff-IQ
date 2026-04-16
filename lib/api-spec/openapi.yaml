@@ -662,6 +662,10 @@ components:
           type: integer
         highConfidenceCount:
           type: integer
+        plaqueCount:
+          type: integer
+        occupantLoadCount:
+          type: integer
       required:
         - job
         - files
@@ -669,6 +673,8 @@ components:
         - totalSigns
         - flaggedCount
         - highConfidenceCount
+        - plaqueCount
+        - occupantLoadCount
 
     KnowledgeIngestRequest:
       type: object

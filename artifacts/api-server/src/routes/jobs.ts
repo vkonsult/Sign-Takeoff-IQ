@@ -309,6 +309,13 @@ router.get("/jobs/:jobId", async (req, res) => {
     const flaggedCount = extractedSigns.filter((s) => s.reviewFlag).length;
     const highConfidenceCount = extractedSigns.filter((s) => s.confidenceScore >= 0.8).length;
 
+    const [plaqueRows, occupantLoadRows] = await Promise.all([
+      db.select({ id: plaqueSchedulesTable.id }).from(plaqueSchedulesTable).where(eq(plaqueSchedulesTable.jobId, jobId)),
+      db.select({ id: occupantLoadsTable.id }).from(occupantLoadsTable).where(eq(occupantLoadsTable.jobId, jobId)),
+    ]);
+    const plaqueCount = plaqueRows.length;
+    const occupantLoadCount = occupantLoadRows.length;
+
     // Unified processing cost: combines text-pass tokens + visual-scan tokens
     const COST_INPUT = 0.15 / 1_000_000;
     const COST_OUTPUT = 0.60 / 1_000_000;
@@ -356,6 +363,8 @@ router.get("/jobs/:jobId", async (req, res) => {
       totalSigns,
       flaggedCount,
       highConfidenceCount,
+      plaqueCount,
+      occupantLoadCount,
       processingCost: {
         inputTokens: combinedInputTokens,
         outputTokens: combinedOutputTokens,

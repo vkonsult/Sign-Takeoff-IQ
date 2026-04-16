@@ -777,7 +777,7 @@ export default function JobDetails() {
     );
   }
 
-  const { job, files, totalSigns, flaggedCount, highConfidenceCount } = data;
+  const { job, files, totalSigns, flaggedCount, highConfidenceCount, plaqueCount, occupantLoadCount } = data;
   const dataAny = data as typeof data & {
     lastScan?: { at: string; userName: string; userInitials: string } | null;
     lastEdit?: { at: string; userName: string; userInitials: string } | null;
@@ -1111,7 +1111,7 @@ export default function JobDetails() {
             </div>
           ) : (isCompleted || isFailed) ? (
             <div className="flex flex-col h-full">
-              <div className="flex-none px-4 pt-3 pb-2 max-w-7xl mx-auto w-full grid grid-cols-2 md:grid-cols-4 gap-3">
+              <div className="flex-none px-4 pt-3 pb-2 max-w-7xl mx-auto w-full grid grid-cols-2 md:grid-cols-3 gap-3">
                 <SummaryCard 
                   title="Total Signs Extracted" 
                   value={totalSigns} 
@@ -1132,6 +1132,18 @@ export default function JobDetails() {
                   accent="primary"
                   onClick={() => setSummaryFilter("flagged")}
                   isActive={summaryFilter === "flagged"}
+                />
+                <SummaryCard
+                  title="Plaque Items"
+                  value={plaqueCount ?? 0}
+                  icon={<Stamp className="w-4 h-4 text-muted-foreground" />}
+                  onClick={() => setActiveTab("plaque_schedule")}
+                />
+                <SummaryCard
+                  title="Occupant Load Entries"
+                  value={occupantLoadCount ?? 0}
+                  icon={<Users className="w-4 h-4 text-muted-foreground" />}
+                  onClick={() => setActiveTab("occupant_loads")}
                 />
                 <CostCard 
                   inputTokens={(data as Record<string, unknown> & { processingCost?: { inputTokens?: number } }).processingCost?.inputTokens ?? (job.inputTokens ?? 0)}
@@ -1384,7 +1396,10 @@ export default function JobDetails() {
                     isLoading={plaqueScheduleQuery.isLoading}
                     isExtracting={extractPlaqueMutation.isPending}
                     onExtract={() => extractPlaqueMutation.mutate({ jobId }, {
-                      onSuccess: () => plaqueScheduleQuery.refetch(),
+                      onSuccess: () => {
+                        plaqueScheduleQuery.refetch();
+                        queryClient.invalidateQueries({ queryKey: getGetJobQueryKey(jobId) });
+                      },
                     })}
                   />
                 </div>
@@ -1397,7 +1412,10 @@ export default function JobDetails() {
                     isLoading={occupantLoadsQuery.isLoading}
                     isExtracting={extractOccupantMutation.isPending}
                     onExtract={() => extractOccupantMutation.mutate({ jobId }, {
-                      onSuccess: () => occupantLoadsQuery.refetch(),
+                      onSuccess: () => {
+                        occupantLoadsQuery.refetch();
+                        queryClient.invalidateQueries({ queryKey: getGetJobQueryKey(jobId) });
+                      },
                     })}
                   />
                 </div>

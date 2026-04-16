@@ -16,4 +16,6 @@ export interface JobDetails {
   totalSigns: number;
   flaggedCount: number;
   highConfidenceCount: number;
+  plaqueCount: number;
+  occupantLoadCount: number;
 }
