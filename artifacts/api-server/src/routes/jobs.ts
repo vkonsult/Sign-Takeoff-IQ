@@ -9,7 +9,15 @@ import {
   activityLogsTable,
   signTypeSpecsTable,
   signageScheduleEntriesTable,
+  complianceEntriesTable,
 } from "@workspace/db";
+import {
+  applyRules,
+  applyStairRules,
+  applyElevatorRules,
+  applyEvacMapRules,
+  buildRoomInventory,
+} from "../lib/rules-engine";
 import { buildExcelExport } from "../lib/export";
 import { getJobExportPath, PAGES_DIR } from "../lib/storage";
 import { processJob, deduplicateSignRows } from "../lib/process-job";
@@ -1815,6 +1823,124 @@ router.patch("/jobs/:jobId/files/:fileId/rejected-pages", async (req: Request, r
   } catch (err) {
     req.log.error({ err, jobId, fileId }, "Failed to toggle rejected page");
     res.status(500).json({ error: "Failed to toggle rejected page" });
+  }
+});
+
+// ── Compliance scan (R1–R15 rules engine) ─────────────────────────────────────
+router.post("/jobs/:jobId/compliance-scan", async (req, res) => {
+  const { jobId } = req.params;
+  if (!jobId) {
+    res.status(400).json({ error: "Job ID required" });
+    return;
+  }
+
+  try {
+    const job = await getJobWithOrgCheck(req, res, jobId);
+    if (!job) return;
+
+    // 1. Load extracted signs for this job (all rows — not filtered by hidden)
+    const rows = await db
+      .select({
+        location: extractedSignsTable.location,
+        signType: extractedSignsTable.signType,
+        signIdentifier: extractedSignsTable.signIdentifier,
+        pageNumber: extractedSignsTable.pageNumber,
+        xPos: extractedSignsTable.xPos,
+        yPos: extractedSignsTable.yPos,
+        sheetNumber: extractedSignsTable.sheetNumber,
+        messageContent: extractedSignsTable.messageContent,
+        notes: extractedSignsTable.notes,
+        quantity: extractedSignsTable.quantity,
+      })
+      .from(extractedSignsTable)
+      .where(eq(extractedSignsTable.jobId, jobId));
+
+    if (rows.length === 0) {
+      res.status(422).json({
+        error: "No extracted signs found for this job. Run a scan first.",
+      });
+      return;
+    }
+
+    // 2. Convert rows → RoomInventory[]
+    const inventory = buildRoomInventory(rows);
+
+    // 3. Separate special room types
+    const stairs = inventory.filter((r) => r.isStairwell);
+    const elevators = inventory.filter((r) => r.isElevator);
+    const regularRooms = inventory.filter(
+      (r) => !r.isStairwell && !r.isElevator
+    );
+    const uniqueLevels = [...new Set(inventory.map((r) => r.level))].sort();
+
+    // buildRoomInventory groups by (location, level), so `stairs` contains one
+    // entry per stairwell per floor. applyStairRules expects unique stairwell
+    // identities × levels (cross-product). Deduplicate to unique room numbers
+    // before calling it; applyEvacMapRules receives the full per-level list so
+    // its own level-dedup logic works correctly.
+    const uniqueStairsByNumber = new Map<string, (typeof stairs)[number]>();
+    for (const stair of stairs) {
+      if (!uniqueStairsByNumber.has(stair.roomNumber)) {
+        uniqueStairsByNumber.set(stair.roomNumber, stair);
+      }
+    }
+    const uniqueStairs = [...uniqueStairsByNumber.values()];
+
+    // 4. Apply rules
+    const allEntries = [
+      ...regularRooms.flatMap((room) => applyRules(room)),
+      ...applyStairRules(uniqueStairs, uniqueLevels),
+      ...applyElevatorRules(elevators),
+      ...applyEvacMapRules(stairs),
+    ];
+
+    // 5. Build summary
+    const byRule: Record<string, number> = {};
+    const byLevel: Record<string, number> = {};
+    for (const e of allEntries) {
+      byRule[e.ruleRef] = (byRule[e.ruleRef] ?? 0) + e.qty;
+      byLevel[e.level] = (byLevel[e.level] ?? 0) + e.qty;
+    }
+    const totalSigns = allEntries.reduce((sum, e) => sum + e.qty, 0);
+
+    // 6. Persist to compliance_entries (replace previous scan for this job)
+    await db
+      .delete(complianceEntriesTable)
+      .where(eq(complianceEntriesTable.jobId, jobId));
+
+    if (allEntries.length > 0) {
+      await db.insert(complianceEntriesTable).values(
+        allEntries.map((e) => ({
+          jobId,
+          ruleRef: e.ruleRef,
+          signType: e.signType,
+          qty: e.qty,
+          roomNumber: e.roomNumber,
+          roomName: e.roomName,
+          level: e.level,
+          pageNumber: e.pageNumber,
+          coordsJson: e.coords ?? null,
+          color: e.color,
+          plaqueTypeId: e.plaqueTypeId ?? null,
+        }))
+      );
+    }
+
+    recordActivity(req, "scan_run", jobId);
+
+    req.log.info(
+      { jobId, totalSigns, ruleCount: Object.keys(byRule).length },
+      "Compliance scan complete"
+    );
+
+    res.json({
+      entries: allEntries,
+      summary: { totalSigns, byRule, byLevel },
+      generatedAt: new Date().toISOString(),
+    });
+  } catch (err) {
+    req.log.error({ err, jobId }, "Compliance scan failed");
+    res.status(500).json({ error: "Compliance scan failed", details: String(err) });
   }
 });
 
