@@ -1049,6 +1049,14 @@ function PageViewer({
         <button aria-label="Next page" disabled={!canNextPage} onClick={goNextPage} className="p-1.5 rounded hover:bg-secondary disabled:opacity-30 transition-colors">
           <ChevronRight className="w-4 h-4" />
         </button>
+        {mode === "modal" && (() => {
+          const lockedCount = signsOnCurrentPage.filter((s) => s.manuallyEdited).length;
+          return lockedCount > 0 ? (
+            <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded" style={{ backgroundColor: "#f59e0b22", color: "#f59e0b", border: "1px solid #f59e0b55" }}>
+              {lockedCount} locked
+            </span>
+          ) : null;
+        })()}
         <div className="w-px h-4 bg-border mx-0.5" />
 
         {/* Zoom */}
