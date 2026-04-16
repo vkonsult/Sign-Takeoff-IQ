@@ -59,3 +59,24 @@ describe("getOrOpenPdfjsDoc — cache recovery on failure", () => {
     expect(mockReadFile).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("getOrOpenPdfjsDoc — concurrent first-touch deduplication", () => {
+  it("issues only one readFile when two calls arrive simultaneously for the same path", async () => {
+    const pdfPath = "/tmp/test-concurrent.pdf";
+
+    mockReadFile.mockResolvedValue(Buffer.from([0x25, 0x50, 0x44, 0x46]));
+
+    // Fire both calls at the same time without awaiting the first
+    const [doc1, doc2] = await Promise.all([
+      getOrOpenPdfjsDoc(pdfPath),
+      getOrOpenPdfjsDoc(pdfPath),
+    ]);
+
+    // Both callers should receive a valid document
+    expect(doc1).toBeDefined();
+    expect(doc2).toBeDefined();
+
+    // The Promise stored in the cache means only one readFile should have been issued
+    expect(mockReadFile).toHaveBeenCalledTimes(1);
+  });
+});
