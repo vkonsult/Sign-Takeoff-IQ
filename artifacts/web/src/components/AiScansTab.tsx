@@ -1029,6 +1029,7 @@ export function AiScansTab({
                               )}
                               <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
                                 <button
+                                  data-testid={`plaque-edit-row-${row.id}`}
                                   onClick={() => handleEditPlaqueRow(row)}
                                   disabled={plaqueEditingId !== null || plaqueDeletingId !== null || plaqueUnlockingId !== null || plaqueConfirmDeleteId !== null}
                                   className="flex items-center justify-center w-6 h-6 rounded text-muted-foreground hover:text-amber-400 hover:bg-amber-500/10 transition-colors disabled:opacity-30"
@@ -1037,6 +1038,7 @@ export function AiScansTab({
                                   <Pencil className="w-3 h-3" />
                                 </button>
                                 <button
+                                  data-testid={`plaque-delete-row-${row.id}`}
                                   onClick={() => setPlaqueConfirmDeleteId(row.id)}
                                   disabled={plaqueEditingId !== null || plaqueDeletingId !== null || plaqueUnlockingId !== null || plaqueConfirmDeleteId !== null}
                                   className="flex items-center justify-center w-6 h-6 rounded text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors disabled:opacity-30"
@@ -1134,6 +1136,7 @@ export function AiScansTab({
 
             <div className="px-3 py-2 text-[10px] text-muted-foreground border-t border-border/50 flex items-center gap-3">
               <button
+                data-testid="plaque-add-row"
                 onClick={handleAddPlaqueRow}
                 disabled={plaqueEditingId !== null || plaqueDeletingId !== null || plaqueConfirmDeleteId !== null}
                 className="flex items-center gap-1 text-amber-400 hover:text-amber-300 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
@@ -1401,6 +1404,7 @@ export function AiScansTab({
                               )}
                               <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
                                 <button
+                                  data-testid={`occupant-edit-row-${row.id}`}
                                   onClick={() => handleEditRow(row)}
                                   disabled={editingId !== null || deletingId !== null || unlockingId !== null || confirmDeleteId !== null}
                                   className="flex items-center justify-center w-6 h-6 rounded text-muted-foreground hover:text-sky-400 hover:bg-sky-500/10 transition-colors disabled:opacity-30"
@@ -1409,6 +1413,7 @@ export function AiScansTab({
                                   <Pencil className="w-3 h-3" />
                                 </button>
                                 <button
+                                  data-testid={`occupant-delete-row-${row.id}`}
                                   onClick={() => setConfirmDeleteId(row.id)}
                                   disabled={editingId !== null || deletingId !== null || unlockingId !== null || confirmDeleteId !== null}
                                   className="flex items-center justify-center w-6 h-6 rounded text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors disabled:opacity-30"
@@ -1497,6 +1502,7 @@ export function AiScansTab({
 
             <div className="px-3 py-2 text-[10px] text-muted-foreground border-t border-border/50 flex items-center gap-3">
               <button
+                data-testid="occupant-add-row"
                 onClick={handleAddRow}
                 disabled={editingId !== null || deletingId !== null}
                 className="flex items-center gap-1 text-sky-400 hover:text-sky-300 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
