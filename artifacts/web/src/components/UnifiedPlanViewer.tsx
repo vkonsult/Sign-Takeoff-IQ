@@ -24,6 +24,7 @@ import {
   Undo2,
   Redo2,
   LockOpen,
+  Lock,
 } from "lucide-react";
 
 import type { ExtractedSign } from "@/types/sign";
@@ -341,9 +342,17 @@ function EditPanel({
     <div className="w-[380px] flex-shrink-0 flex flex-col bg-background overflow-hidden border-l border-border">
       <div className="flex-none px-5 py-3 border-b border-border bg-card flex items-center justify-between">
         <div>
-          <h2 className="text-sm font-display font-bold uppercase tracking-wider text-foreground">
-            Edit Sign Data
-          </h2>
+          <div className="flex items-center gap-2">
+            <h2 className="text-sm font-display font-bold uppercase tracking-wider text-foreground">
+              Edit Sign Data
+            </h2>
+            {activeSign.manuallyEdited && (
+              <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-amber-100 text-amber-700 border border-amber-300">
+                <Lock className="w-2.5 h-2.5" />
+                Manually Locked
+              </span>
+            )}
+          </div>
           <p className="text-xs text-muted-foreground mt-0.5">Correct any fields extracted by AI</p>
         </div>
         {showCloseButton && onClose && (
