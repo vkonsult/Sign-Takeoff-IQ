@@ -133,6 +133,10 @@ export async function buildExcelExport(
   const totalSigns = signs.reduce((acc, s) => acc + (s.quantity ?? 1), 0);
   const reviewCount = signs.filter((s) => s.reviewFlag).length;
   const highConfCount = signs.filter((s) => s.confidenceScore >= 0.8).length;
+  const assemblyRoomCount = occupantLoads.filter((r) => {
+    const group = (r.occupancyGroup ?? "").trim().toUpperCase();
+    return group.startsWith("A") || (r.occupantLoad != null && r.occupantLoad >= 50);
+  }).length;
 
   [
     { metric: "Job ID", value: jobId },
@@ -141,6 +145,9 @@ export async function buildExcelExport(
     { metric: "Total Sign Quantity", value: totalSigns },
     { metric: "High Confidence Items", value: highConfCount },
     { metric: "Items Flagged for Review", value: reviewCount },
+    { metric: "Plaque Types", value: plaques.length },
+    { metric: "Occupant Load Rooms", value: occupantLoads.length },
+    { metric: "Assembly Rooms", value: assemblyRoomCount },
   ].forEach((row) => {
     summarySheet.addRow(row);
   });
