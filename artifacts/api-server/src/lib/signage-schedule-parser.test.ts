@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { extractSignageData, phrasesToRawItems } from "./signage-schedule-parser";
 import type { RawTextItem } from "./signage-schedule-parser";
+import type { PdfPhrase } from "./pdf-words";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -311,16 +312,6 @@ describe("extractSignageData — sign type legend", () => {
 // ── extractSignageData — keynote legend ──────────────────────────────────────
 
 describe("extractSignageData — keynote legend", () => {
-  function buildPage(keynoteRows: RawTextItem[][], signRows: RawTextItem[][]): RawTextItem[] {
-    return [
-      ...row(["SIGNAGE SCHEDULE"], 10),
-      ...row(["101"], 30),
-      ...signRows.flat(),
-      ...row(["KEYNOTES"], 200),
-      ...keynoteRows.flat(),
-    ];
-  }
-
   it("parses a keynote row into the keynote map attached to specs", () => {
     // Include a sign type legend so specs are emitted and keynoteMap is populated
     const items = [
@@ -538,5 +529,167 @@ describe("extractSignageData — section header detection", () => {
     ];
     const { entries } = extractSignageData(items, 1, PAGE_W, PAGE_H);
     expect(entries[0]!.expandedComments).toBe("Coordinate with owner");
+  });
+});
+
+// ── phrasesToRawItems → extractSignageData integration ────────────────────────
+//
+// These tests exercise the full pipeline from raw PdfPhrase arrays (normalized
+// [0,1] coords as produced by the PDF extraction layer) through
+// phrasesToRawItems and into extractSignageData.  They catch regressions in the
+// coordinate normalization step — for example swapping x0/x1 would place items
+// at wrong horizontal positions, changing column order and producing incorrect
+// sign-code / quantity / text assignments; swapping y0/y1 would distort item
+// heights and top edges, potentially collapsing separate rows or misaligning the
+// vertical ordering of sections.
+
+describe("phrasesToRawItems → extractSignageData integration", () => {
+  const IW = 612;
+  const IH = 792;
+
+  /** Build a single PdfPhrase from normalized [0,1] coords. */
+  function phrase(text: string, x0: number, y0: number, x1: number, y1: number): PdfPhrase {
+    return { text, x0, y0, x1, y1 };
+  }
+
+  /**
+   * Build a row of phrases that all share the same y-band, placed side by side.
+   * cellW is a fraction of page width (default 0.10 ≈ 61 pt on a 612 pt page).
+   */
+  function phraseRow(
+    texts: string[],
+    y0: number,
+    y1: number,
+    startX = 0.02,
+    cellW = 0.10,
+  ): PdfPhrase[] {
+    return texts.map((text, i) =>
+      phrase(text, startX + i * cellW, y0, startX + i * cellW + cellW * 0.9, y1),
+    );
+  }
+
+  it("parses a minimal schedule end-to-end and returns the correct entry", () => {
+    // header → room heading → sign row, all supplied as PdfPhrase normalized coords
+    const phrases: PdfPhrase[] = [
+      ...phraseRow(["SIGNAGE SCHEDULE"], 0.01, 0.025),
+      ...phraseRow(["101"],              0.04, 0.055),
+      ...phraseRow(["1A", "2", "ENTRY SIGN"], 0.07, 0.085),
+    ];
+
+    const items = phrasesToRawItems(phrases, IW, IH);
+    const { entries } = extractSignageData(items, 1, IW, IH);
+
+    expect(entries).toHaveLength(1);
+    const e = entries[0]!;
+    expect(e.roomNumber).toBe("101");
+    expect(e.signTypeCode).toBe("1A");
+    expect(e.quantity).toBe(2);
+    expect(e.signageText).toBe("ENTRY SIGN");
+  });
+
+  it("assigns columns left-to-right so sign-code, qty, and text are not transposed", () => {
+    // Items are spread across a wide x range with clear gaps between columns.
+    // If x0/x1 were swapped in phrasesToRawItems, each item's x coordinate would
+    // shift right by its own width, changing the sort order within the row and
+    // causing the parser to mis-read which token is the sign code, quantity, or text.
+    const phrases: PdfPhrase[] = [
+      ...phraseRow(["SIGNAGE SCHEDULE"], 0.01, 0.025),
+      ...phraseRow(["C303"],             0.04, 0.055),
+      phrase("3C",         0.02, 0.07, 0.10, 0.085), // leftmost  → sign code
+      phrase("4",          0.15, 0.07, 0.20, 0.085), // middle    → quantity
+      phrase("STAIR SIGN", 0.25, 0.07, 0.55, 0.085), // rightmost → signage text
+    ];
+
+    const items = phrasesToRawItems(phrases, IW, IH);
+    const { entries } = extractSignageData(items, 1, IW, IH);
+
+    expect(entries).toHaveLength(1);
+    const e = entries[0]!;
+    expect(e.signTypeCode).toBe("3C");
+    expect(e.quantity).toBe(4);
+    expect(e.signageText).toBe("STAIR SIGN");
+  });
+
+  it("keeps rows on separate y-bands as distinct parsed lines", () => {
+    // Two sign rows at y-bands 0.07 and 0.11 — far enough apart (>3 pt) to be
+    // separate lines.  If y0/y1 were swapped in phrasesToRawItems the computed
+    // top-edge y of every item would shift, potentially mis-ordering sections so
+    // the room heading falls below the sign rows and the parser ignores them.
+    const phrases: PdfPhrase[] = [
+      ...phraseRow(["SIGNAGE SCHEDULE"], 0.01, 0.025),
+      ...phraseRow(["B202"],             0.04, 0.055),
+      ...phraseRow(["1A", "1", "CORRIDOR"],   0.07, 0.085),
+      ...phraseRow(["2B", "3", "LOBBY SIGN"], 0.11, 0.125),
+    ];
+
+    const items = phrasesToRawItems(phrases, IW, IH);
+    const { entries } = extractSignageData(items, 1, IW, IH);
+
+    expect(entries).toHaveLength(2);
+    expect(entries[0]!.signTypeCode).toBe("1A");
+    expect(entries[1]!.signTypeCode).toBe("2B");
+    // Both entries inherit the room heading from the same room section
+    expect(entries[0]!.roomNumber).toBe("B202");
+    expect(entries[1]!.roomNumber).toBe("B202");
+  });
+
+  it("parses a type legend end-to-end and returns the spec with dimensions", () => {
+    const phrases: PdfPhrase[] = [
+      ...phraseRow(["SIGN TYPE LEGEND"], 0.01, 0.025),
+      phrase("2A",       0.02, 0.04, 0.10, 0.055),
+      phrase('12"',      0.12, 0.04, 0.22, 0.055),
+      phrase("x",        0.23, 0.04, 0.26, 0.055),
+      phrase('18"',      0.27, 0.04, 0.37, 0.055),
+      phrase("Aluminum", 0.38, 0.04, 0.55, 0.055),
+    ];
+
+    const items = phrasesToRawItems(phrases, IW, IH);
+    const { specs } = extractSignageData(items, 1, IW, IH);
+
+    expect(specs).toHaveLength(1);
+    const s = specs[0]!;
+    expect(s.typeCode).toBe("2A");
+    expect(s.material).toBe("Aluminum");
+    expect(s.dimensions).not.toBeNull();
+  });
+
+  it("links legend specs to schedule entries so material and dimensions are backfilled", () => {
+    // Legend followed by schedule — verifies that the full pipeline preserves
+    // enough spatial information for the backfill pass to match specs to entries.
+    const phrases: PdfPhrase[] = [
+      ...phraseRow(["SIGN TYPE LEGEND"], 0.01, 0.025),
+      phrase("1A",      0.02, 0.04, 0.08, 0.055),
+      phrase('6"',      0.09, 0.04, 0.17, 0.055),
+      phrase("x",       0.18, 0.04, 0.21, 0.055),
+      phrase('8"',      0.22, 0.04, 0.30, 0.055),
+      phrase("Acrylic", 0.31, 0.04, 0.48, 0.055),
+      ...phraseRow(["SIGNAGE SCHEDULE"], 0.08, 0.095),
+      ...phraseRow(["101"],              0.11, 0.125),
+      ...phraseRow(["1A", "1", "ROOM ID"], 0.14, 0.155),
+    ];
+
+    const items = phrasesToRawItems(phrases, IW, IH);
+    const { entries, specs } = extractSignageData(items, 1, IW, IH);
+
+    expect(specs).toHaveLength(1);
+    expect(entries).toHaveLength(1);
+    expect(entries[0]!.material).toBe("Acrylic");
+    expect(entries[0]!.dimensions).not.toBeNull();
+  });
+
+  it("expands keynote comments via the full phrase pipeline", () => {
+    const phrases: PdfPhrase[] = [
+      ...phraseRow(["SIGNAGE SCHEDULE"],       0.01, 0.025),
+      ...phraseRow(["101"],                    0.04, 0.055),
+      ...phraseRow(["1A", "1", "LABEL", "A"], 0.07, 0.085),
+      ...phraseRow(["KEYNOTES"],               0.30, 0.315),
+      ...phraseRow(["A", "Verify field dimensions"], 0.33, 0.345),
+    ];
+
+    const items = phrasesToRawItems(phrases, IW, IH);
+    const { entries } = extractSignageData(items, 1, IW, IH);
+
+    expect(entries).toHaveLength(1);
+    expect(entries[0]!.expandedComments).toBe("Verify field dimensions");
   });
 });

@@ -66,7 +66,7 @@ let deleteReturningResult: unknown[] = [FAKE_PLAQUES[0]];
 let updateReturningResult: unknown[] = [{ ...FAKE_LOADS[0], manuallyEdited: false }];
 
 // Track which table was queried so tests can inspect behaviour
-let lastQueriedTable: unknown = null;
+let _lastQueriedTable: unknown = null;
 
 // ── Module mocks ──────────────────────────────────────────────────────────────
 
@@ -83,7 +83,7 @@ vi.mock("@workspace/db", () => {
   const organizationMembershipsTable = Symbol("organizationMembershipsTable");
 
   const makeSelectChain = (table: unknown) => {
-    lastQueriedTable = table;
+    _lastQueriedTable = table;
     let result: unknown[];
     if (table === jobsTable) result = jobQueryResult;
     else if (table === jobFilesTable) result = filesQueryResult;
