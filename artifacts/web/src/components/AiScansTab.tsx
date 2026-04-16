@@ -1148,6 +1148,12 @@ export function AiScansTab({
                 <>
                   <span className="text-border">·</span>
                   <span>{plaqueRows.length} plaque type{plaqueRows.length !== 1 ? "s" : ""}</span>
+                  {plaqueRows.filter((r) => r.manuallyEdited).length > 0 && (
+                    <>
+                      <span className="text-border">·</span>
+                      <span className="text-amber-400">{plaqueRows.filter((r) => r.manuallyEdited).length} manually protected</span>
+                    </>
+                  )}
                 </>
               )}
             </div>
@@ -1518,6 +1524,12 @@ export function AiScansTab({
                     <span className="text-orange-400">
                       · {occupantRows.filter((r) => typeof r.occupantLoad === "number" && r.occupantLoad >= 50).length} assembly room{occupantRows.filter((r) => typeof r.occupantLoad === "number" && r.occupantLoad >= 50).length !== 1 ? "s" : ""}
                     </span>
+                  )}
+                  {occupantRows.filter((r) => r.manuallyEdited).length > 0 && (
+                    <>
+                      <span className="text-border">·</span>
+                      <span className="text-sky-400">{occupantRows.filter((r) => r.manuallyEdited).length} manually protected</span>
+                    </>
                   )}
                 </>
               )}
