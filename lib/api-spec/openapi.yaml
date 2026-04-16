@@ -478,6 +478,12 @@ components:
         unplacedCount:
           type: integer
           description: Number of signs with no floor-plan placement (pageNumber is null)
+        processingLog:
+          type: array
+          nullable: true
+          description: Ordered list of processing steps recorded during job execution
+          items:
+            $ref: "#/components/schemas/ProcessingStep"
         createdAt:
           type: string
           format: date-time
@@ -492,6 +498,34 @@ components:
         - outputTokens
         - createdAt
         - updatedAt
+
+    ProcessingStep:
+      type: object
+      description: A single recorded step in the job processing pipeline
+      properties:
+        step:
+          type: string
+          description: Machine-readable step identifier
+        label:
+          type: string
+          description: Human-readable step label
+        durationMs:
+          type: number
+          description: Duration of this step in milliseconds
+        startedAt:
+          type: string
+          format: date-time
+          description: ISO timestamp when this step started
+        details:
+          type: object
+          nullable: true
+          description: Optional step-specific metadata
+          additionalProperties: {}
+      required:
+        - step
+        - label
+        - durationMs
+        - startedAt
 
     PdfOutlineSection:
       type: object

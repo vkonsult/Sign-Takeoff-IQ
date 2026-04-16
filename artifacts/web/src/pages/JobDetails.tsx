@@ -19,7 +19,7 @@ import {
   useExtractPlaqueSchedule,
   useExtractOccupantLoads,
 } from "@workspace/api-client-react";
-import type { PlaqueScheduleEntry, OccupantLoadEntry, AssemblyRoom, ExtractedSign } from "@workspace/api-client-react";
+import type { PlaqueScheduleEntry, OccupantLoadEntry, AssemblyRoom, ExtractedSign, ProcessingStep } from "@workspace/api-client-react";
 import { 
   FileText, 
   Cpu, 
@@ -59,14 +59,6 @@ import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger, TooltipProvider } from "@/components/ui/tooltip";
 
 // ── Processing Timeline ──────────────────────────────────────────────────────
-
-interface ProcessingStep {
-  step: string;
-  label: string;
-  durationMs: number;
-  startedAt: string;
-  details?: Record<string, unknown>;
-}
 
 function formatDuration(ms: number): string {
   if (ms < 1000) return `${ms}ms`;
@@ -284,7 +276,7 @@ function ProcessingTimeline({ steps }: { steps: ProcessingStep[] }) {
 
   function renderTopLevelRow(step: ProcessingStep) {
     const widthPct = Math.max(2, (step.durationMs / maxMs) * 100);
-    const detailStr = formatDetails(step.details);
+    const detailStr = formatDetails(step.details ?? undefined);
     // Generic: render sub-rows for any parent step that has per-file children
     const childFileIds = parentToFileIds.get(step.step) ?? [];
     const hasSubRows = childFileIds.length > 0;
@@ -1550,7 +1542,7 @@ export default function JobDetails() {
                       Processing Timeline
                     </div>
                     {(() => {
-                      const jobLog = (job as typeof job & { processingLog?: ProcessingStep[] | null }).processingLog;
+                      const jobLog = job.processingLog;
                       return jobLog && jobLog.length > 0 ? (
                         <ProcessingTimeline steps={jobLog} />
                       ) : (

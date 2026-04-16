@@ -46,6 +46,8 @@ export * from "./plaqueScheduleEntryRawJson";
 export * from "./plaqueScheduleFileDetail";
 export * from "./plaqueScheduleResponse";
 export * from "./processingCost";
+export * from "./processingStep";
+export * from "./processingStepDetails";
 export * from "./processResponse";
 export * from "./processResponseStatus";
 export * from "./uploadFilesBody";

@@ -6,6 +6,7 @@
  * OpenAPI spec version: 0.1.0
  */
 import type { JobSummaryStatus } from "./jobSummaryStatus";
+import type { ProcessingStep } from "./processingStep";
 
 export interface JobSummary {
   id: string;
@@ -30,6 +31,8 @@ export interface JobSummary {
   occupantLoadCount?: number;
   /** Number of signs with no floor-plan placement (pageNumber is null) */
   unplacedCount?: number;
+  /** Ordered list of processing steps recorded during job execution */
+  processingLog?: ProcessingStep[] | null;
   createdAt: Date;
   updatedAt: Date;
 }

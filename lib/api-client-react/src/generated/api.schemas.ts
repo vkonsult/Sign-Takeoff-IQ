@@ -42,6 +42,27 @@ export const JobSummaryStatus = {
   failed: "failed",
 } as const;
 
+/**
+ * Optional step-specific metadata
+ */
+export type ProcessingStepDetails = { [key: string]: unknown } | null;
+
+/**
+ * A single recorded step in the job processing pipeline
+ */
+export interface ProcessingStep {
+  /** Machine-readable step identifier */
+  step: string;
+  /** Human-readable step label */
+  label: string;
+  /** Duration of this step in milliseconds */
+  durationMs: number;
+  /** ISO timestamp when this step started */
+  startedAt: string;
+  /** Optional step-specific metadata */
+  details?: ProcessingStepDetails;
+}
+
 export interface JobSummary {
   id: string;
   /** Human-readable job name (editable by the user) */
@@ -65,6 +86,8 @@ export interface JobSummary {
   occupantLoadCount?: number;
   /** Number of signs with no floor-plan placement (pageNumber is null) */
   unplacedCount?: number;
+  /** Ordered list of processing steps recorded during job execution */
+  processingLog?: ProcessingStep[] | null;
   createdAt: string;
   updatedAt: string;
 }

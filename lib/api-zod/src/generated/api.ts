@@ -117,6 +117,29 @@ export const GetJobResponse = zod.object({
       .describe(
         "Number of signs with no floor-plan placement (pageNumber is null)",
       ),
+    processingLog: zod
+      .array(
+        zod
+          .object({
+            step: zod.string().describe("Machine-readable step identifier"),
+            label: zod.string().describe("Human-readable step label"),
+            durationMs: zod
+              .number()
+              .describe("Duration of this step in milliseconds"),
+            startedAt: zod
+              .date()
+              .describe("ISO timestamp when this step started"),
+            details: zod
+              .record(zod.string(), zod.unknown())
+              .nullish()
+              .describe("Optional step-specific metadata"),
+          })
+          .describe("A single recorded step in the job processing pipeline"),
+      )
+      .nullish()
+      .describe(
+        "Ordered list of processing steps recorded during job execution",
+      ),
     createdAt: zod.date(),
     updatedAt: zod.date(),
   }),
@@ -705,6 +728,29 @@ export const ListJobsResponse = zod.object({
         .optional()
         .describe(
           "Number of signs with no floor-plan placement (pageNumber is null)",
+        ),
+      processingLog: zod
+        .array(
+          zod
+            .object({
+              step: zod.string().describe("Machine-readable step identifier"),
+              label: zod.string().describe("Human-readable step label"),
+              durationMs: zod
+                .number()
+                .describe("Duration of this step in milliseconds"),
+              startedAt: zod
+                .date()
+                .describe("ISO timestamp when this step started"),
+              details: zod
+                .record(zod.string(), zod.unknown())
+                .nullish()
+                .describe("Optional step-specific metadata"),
+            })
+            .describe("A single recorded step in the job processing pipeline"),
+        )
+        .nullish()
+        .describe(
+          "Ordered list of processing steps recorded during job execution",
         ),
       createdAt: zod.date(),
       updatedAt: zod.date(),
