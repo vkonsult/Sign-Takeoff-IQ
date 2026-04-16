@@ -22,6 +22,7 @@ import OnboardingPage from "@/pages/OnboardingPage";
 import SettingsCompany from "@/pages/SettingsCompany";
 import SettingsUsers from "@/pages/SettingsUsers";
 import ActivityPage from "@/pages/ActivityPage";
+import { ErrorBoundary } from "@/components/ErrorBoundary";
 
 const clerkPubKey = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY as string;
 const clerkProxyUrl = import.meta.env.VITE_CLERK_PROXY_URL as string | undefined;
@@ -280,40 +281,88 @@ function Router() {
       <Route path="/sign-in/*?" component={SignInPage} />
       <Route path="/sign-up/*?" component={SignUpPage} />
       <Route path="/onboarding">
-        {() => <OnboardingRoute component={OnboardingPage} />}
+        {() => (
+          <ErrorBoundary routeName="Onboarding">
+            <OnboardingRoute component={OnboardingPage} />
+          </ErrorBoundary>
+        )}
       </Route>
       <Route path="/new-upload">
-        {() => <OnboardingGuard component={Home} />}
+        {() => (
+          <ErrorBoundary routeName="New Upload">
+            <OnboardingGuard component={Home} />
+          </ErrorBoundary>
+        )}
       </Route>
       <Route path="/jobs">
-        {() => <OnboardingGuard component={JobsList} />}
+        {() => (
+          <ErrorBoundary routeName="Jobs">
+            <OnboardingGuard component={JobsList} />
+          </ErrorBoundary>
+        )}
       </Route>
       <Route path="/jobs/:jobId">
-        {() => <OnboardingGuard component={JobDetails} />}
+        {() => (
+          <ErrorBoundary routeName="Job Details">
+            <OnboardingGuard component={JobDetails} />
+          </ErrorBoundary>
+        )}
       </Route>
       <Route path="/training">
-        {() => <OnboardingGuard component={Training} />}
+        {() => (
+          <ErrorBoundary routeName="Training">
+            <OnboardingGuard component={Training} />
+          </ErrorBoundary>
+        )}
       </Route>
       <Route path="/activity">
-        {() => <OnboardingGuard component={ActivityPage} />}
+        {() => (
+          <ErrorBoundary routeName="Activity">
+            <OnboardingGuard component={ActivityPage} />
+          </ErrorBoundary>
+        )}
       </Route>
       <Route path="/settings">
-        {() => <AdminRoute component={SettingsCompany} />}
+        {() => (
+          <ErrorBoundary routeName="Settings">
+            <AdminRoute component={SettingsCompany} />
+          </ErrorBoundary>
+        )}
       </Route>
       <Route path="/settings/users">
-        {() => <AdminRoute component={SettingsUsers} />}
+        {() => (
+          <ErrorBoundary routeName="Settings / Users">
+            <AdminRoute component={SettingsUsers} />
+          </ErrorBoundary>
+        )}
       </Route>
       <Route path="/admin">
-        {() => <SuperAdminRoute component={AdminDashboard} />}
+        {() => (
+          <ErrorBoundary routeName="Admin Dashboard">
+            <SuperAdminRoute component={AdminDashboard} />
+          </ErrorBoundary>
+        )}
       </Route>
       <Route path="/admin/organizations">
-        {() => <SuperAdminRoute component={AdminOrgs} />}
+        {() => (
+          <ErrorBoundary routeName="Admin / Organizations">
+            <SuperAdminRoute component={AdminOrgs} />
+          </ErrorBoundary>
+        )}
       </Route>
       <Route path="/admin/users">
-        {() => <SuperAdminRoute component={AdminUsers} />}
+        {() => (
+          <ErrorBoundary routeName="Admin / Users">
+            <SuperAdminRoute component={AdminUsers} />
+          </ErrorBoundary>
+        )}
       </Route>
       <Route path="/admin/vocabulary">
-        {() => <SuperAdminRoute component={AdminVocabulary} />}
+        {() => (
+          <ErrorBoundary routeName="Admin / Vocabulary">
+            <SuperAdminRoute component={AdminVocabulary} />
+          </ErrorBoundary>
+        )}
       </Route>
       <Route component={NotFound} />
     </Switch>
