@@ -391,7 +391,7 @@ function signTypeToFlags(signType: string): {
  */
 function classifyByVocabulary(locationUpper: string): ReturnType<typeof signTypeToFlags> {
   const tokens = locationUpper
-    .split(/[\s,;/\-]+/)
+    .split(/[\s,;/-]+/)
     .map((t) => t.toLowerCase())
     .filter((t) => t.length > 0);
 

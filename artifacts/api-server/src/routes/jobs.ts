@@ -31,7 +31,7 @@ import { extractPagePhrases, matchLocationToCoords, type SpatialPageType } from 
 import fs from "fs/promises";
 import fsSync from "fs";
 import { z } from "zod/v4";
-import { requireRole } from "../middlewares/authMiddleware";
+
 import { recordActivity } from "../lib/record-activity";
 
 const router: IRouter = Router();
@@ -1862,7 +1862,7 @@ router.get("/jobs/:jobId/schedule-entries", async (req: Request, res: Response) 
       .orderBy(signTypeSpecsTable.typeCode);
 
     res.json({ entries, specs });
-  } catch (err) {
+  } catch {
     res.status(500).json({ error: "Failed to fetch schedule entries" });
   }
 });

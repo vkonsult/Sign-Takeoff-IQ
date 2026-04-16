@@ -858,7 +858,7 @@ function hasNonArchAncestor(ancestors: string[]): boolean {
  * "Signage") and compound titles ("Main Floor Plan and Signs",
  * "Level 2 Signage Plan").
  */
-function isSignageLeaf(title: string): boolean {
+function _isSignageLeaf(title: string): boolean {
   const lower = title.toLowerCase();
   return lower.includes("signs") || lower.includes("signage");
 }
@@ -932,7 +932,7 @@ export async function extractPdfMetadata(
 
   const numPages = doc.numPages;
   let pageLabels: (string | null)[] = [];
-  let outlineSections: PdfOutlineSection[] = [];
+  const outlineSections: PdfOutlineSection[] = [];
 
   try {
     const labels = await doc.getPageLabels();
@@ -1136,7 +1136,7 @@ export function extractFloorPlanTextCandidates(
     // Drop pure numeric / punctuation
     if (/^[0-9\s\-_/().,'"]+$/.test(t)) return false;
     // Drop dimension strings
-    if (/['"\/]/.test(t) && /[0-9]/.test(t)) return false;
+    if (/['"/]/.test(t) && /[0-9]/.test(t)) return false;
     // Drop drawing reference codes: single uppercase letter + 2-3 digits (e.g. A123, E4)
     if (/^[A-Z][0-9]{1,3}$/.test(t)) return false;
 
@@ -1305,7 +1305,7 @@ export function extractCodeProximityPairs(
     // Valid text label: strictly >4 chars (5+), OR known 3-char abbreviation
     const len = text.length;
     const isNumericOrPunct = /^[0-9\s\-_/().,'"]+$/.test(text);
-    const isDimension = /['"\/]/.test(text) && /[0-9]/.test(text);
+    const isDimension = /['"/]/.test(text) && /[0-9]/.test(text);
     const isRefCode = /^[A-Z][0-9]{1,3}$/.test(upper);
     if (isNumericOrPunct || isDimension || isRefCode) continue;
 

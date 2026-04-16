@@ -119,7 +119,7 @@ function getSheetHeaders(sheet: ExcelJS.Worksheet): string[] {
   return headers;
 }
 
-function getRowValues(row: ExcelJS.Row): unknown[] {
+function _getRowValues(row: ExcelJS.Row): unknown[] {
   const vals: unknown[] = [];
   row.eachCell({ includeEmpty: true }, (cell) => {
     vals.push(cell.value);

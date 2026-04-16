@@ -602,7 +602,7 @@ export async function runPlaqueScheduleExtraction(
   ];
 
   // If no classified pages, dynamically scan to find sign schedule pages
-  let targetPages = signSchedulePages;
+  const targetPages = signSchedulePages;
   if (targetPages.length === 0) {
     const numPages = await getPdfPageCount(file.storedPath);
     for (let pageNum = 1; pageNum <= numPages; pageNum++) {
@@ -808,7 +808,7 @@ export async function runOccupantLoadsExtraction(
   const otherPages = pageStats?.otherPages ?? [];
 
   // Dynamically find egress pages among "other" pages
-  let numPages = otherPages.length > 0 ? 0 : await getPdfPageCount(file.storedPath);
+  const numPages = otherPages.length > 0 ? 0 : await getPdfPageCount(file.storedPath);
   const candidatePages = otherPages.length > 0 ? otherPages : Array.from({ length: numPages }, (_, i) => i + 1);
 
   const egressPages: number[] = [];

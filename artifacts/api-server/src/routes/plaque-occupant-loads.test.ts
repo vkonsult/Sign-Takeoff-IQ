@@ -66,7 +66,7 @@ let deleteReturningResult: unknown[] = [FAKE_PLAQUES[0]];
 let updateReturningResult: unknown[] = [{ ...FAKE_LOADS[0], manuallyEdited: false }];
 
 // Track which table was queried so tests can inspect behaviour
-let lastQueriedTable: unknown = null;
+const _lastQueriedTable: unknown = null;
 
 // ── Module mocks ──────────────────────────────────────────────────────────────
 

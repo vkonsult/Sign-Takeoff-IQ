@@ -27,7 +27,7 @@ export function isCodeOnlyLocation(location: string): boolean {
   if (!location || !location.trim()) return true;
 
   // Split on whitespace and common separator characters (including em-dash U+2014)
-  const tokens = location.trim().split(/[\s\u2014\-\/,]+/).filter((t) => t.length > 0);
+  const tokens = location.trim().split(/[\s\u2014\-/,]+/).filter((t) => t.length > 0);
   if (tokens.length === 0) return true;
 
   for (const token of tokens) {
@@ -35,7 +35,7 @@ export function isCodeOnlyLocation(location: string): boolean {
     if (/^\d+$/.test(token)) continue;
 
     // Skip letter+digit combos: "A103", "G12", "B205", "AE-4", "AS1-4"
-    if (/^[A-Za-z]{1,3}\d[\d\-]*$/.test(token)) continue;
+    if (/^[A-Za-z]{1,3}\d[\d-]*$/.test(token)) continue;
 
     // Skip short all-caps with no vowels (≤4 chars): "GHK", "SVC"
     if (token.length <= 4 && /^[A-Z]+$/.test(token) && !/[AEIOU]/.test(token)) continue;

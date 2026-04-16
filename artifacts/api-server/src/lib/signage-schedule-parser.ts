@@ -11,8 +11,6 @@
  *   - Sign type diagram regions (for optional Gemini enrichment)
  */
 
-import path from "path";
-import fs from "fs/promises";
 import { logger as rootLogger } from "./logger";
 
 const logger = rootLogger.child({ module: "signage-schedule-parser" });
@@ -82,7 +80,7 @@ const ROOM_NUMBER_RE = /^([A-Za-z]{0,2}-?\d{2,4}[A-Za-z]?|[A-Za-z]\d{2,3}[A-Za-z
 const QUANTITY_RE = /^(\d{1,3})$/;
 
 /** Dimension pattern: numbers with inches/feet marks */
-const DIMENSION_TOKEN_RE = /[\d\/][\d\s\/]*["'′″]/;
+const DIMENSION_TOKEN_RE = /[\d/][\d\s/]*["'′″]/;
 
 /** Keynote letter codes (single uppercase letters or short strings) */
 const KEYNOTE_CODE_RE = /^[A-Z]$/;
@@ -253,7 +251,7 @@ function parseSignRow(line: TextLine): {
 
   const signTypeCode = first;
   let quantity: number | null = null;
-  let signageText: string | null = null;
+  let signageText: string | null;
   let glassBacker: boolean | null = null;
   let rawComments: string | null = null;
 
@@ -321,17 +319,16 @@ function parseLegendRow(line: TextLine): {
   // Look for dimension pattern: token(s) containing × or x with numbers and inch marks
   let dimEnd = -1;
   for (let i = 0; i < rest.length; i++) {
-    const t = rest[i]!;
     // Combine up to 3 tokens to find a "W x H" dimension
     const combined3 = rest.slice(i, i + 3).join(" ");
-    if (/\d[\d\s\/]*[x×]\s*\d/.test(combined3) || DIMENSION_TOKEN_RE.test(combined3)) {
+    if (/\d[\d\s/]*[x×]\s*\d/.test(combined3) || DIMENSION_TOKEN_RE.test(combined3)) {
       // Find where this dimension ends
       // A typical dimension is like `6 1/2" x 8 1/4"` which is 5 tokens
       // Greedily consume tokens that look like dimension parts
       let end = i;
       while (end < rest.length) {
         const tok = rest[end]!;
-        if (/^[\dx×\s\/\-"'′″½¼¾]+$/.test(tok) || /[x×]/.test(tok) || /\d/.test(tok)) {
+        if (/^[\dx×\s/\-"'′″½¼¾]+$/.test(tok) || /[x×]/.test(tok) || /\d/.test(tok)) {
           end++;
         } else {
           break;
@@ -669,7 +666,7 @@ function parseColumnItems(
       return Math.abs(itX - cx) <= radius && Math.abs(itY - cy) <= radius;
     });
     const hasMeasurements = nearbyItems.filter((it) =>
-      DIMENSION_TOKEN_RE.test(it.text) || /[\d]+[\s\/]*["'′″]/.test(it.text)
+      DIMENSION_TOKEN_RE.test(it.text) || /[\d]+[\s/]*["'′″]/.test(it.text)
     ).length > 5;
 
     spec.hasDrawing = hasMeasurements;
