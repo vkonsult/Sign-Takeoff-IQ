@@ -254,6 +254,11 @@ export function AiScansTab({
   }, [confirmRunAll, callRegistry, completedCallTypes]);
 
   useEffect(() => {
+    if (!confirmRunOneType) return;
+    if (!completedCallTypes.has(confirmRunOneType)) setConfirmRunOneType(null);
+  }, [confirmRunOneType, completedCallTypes]);
+
+  useEffect(() => {
     setRegistryLoading(true);
     apiFetch(`/api/jobs/${jobId}/ai-calls`)
       .then((res) => res.json())
