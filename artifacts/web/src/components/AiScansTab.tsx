@@ -242,6 +242,18 @@ export function AiScansTab({
   }, [confirmRunAll]);
 
   useEffect(() => {
+    if (!confirmRunSelected) return;
+    const hasExisting = Array.from(selectedTypes).some((t) => completedCallTypes.has(t));
+    if (!hasExisting) setConfirmRunSelected(false);
+  }, [confirmRunSelected, selectedTypes, completedCallTypes]);
+
+  useEffect(() => {
+    if (!confirmRunAll) return;
+    const hasExisting = callRegistry.some((d) => completedCallTypes.has(d.type));
+    if (!hasExisting) setConfirmRunAll(false);
+  }, [confirmRunAll, callRegistry, completedCallTypes]);
+
+  useEffect(() => {
     setRegistryLoading(true);
     apiFetch(`/api/jobs/${jobId}/ai-calls`)
       .then((res) => res.json())
