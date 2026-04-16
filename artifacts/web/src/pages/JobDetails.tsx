@@ -970,29 +970,46 @@ export default function JobDetails() {
                       </TooltipContent>
                     </Tooltip>
                   </TooltipProvider>
-                  <TooltipProvider>
-                    <Tooltip>
-                      <TooltipTrigger asChild>
-                        <span>
-                          <Button
-                            onClick={handleExport}
-                            disabled={exportDisabled}
-                            className="font-display font-semibold uppercase tracking-wide bg-accent text-accent-foreground hover:bg-accent/90 shadow-[0_0_15px_rgba(0,240,255,0.15)] disabled:opacity-50 disabled:cursor-not-allowed disabled:pointer-events-none"
-                          >
-                            <Download className="w-4 h-4" />
-                            Export XLSX
-                          </Button>
-                        </span>
-                      </TooltipTrigger>
-                      {exportDisabled && (
-                        <TooltipContent>
-                          {supplementalDataLoading
-                            ? "Loading data…"
-                            : "No sign, plaque, or occupant load data to export"}
-                        </TooltipContent>
-                      )}
-                    </Tooltip>
-                  </TooltipProvider>
+                  {(() => {
+                    const hasNoSigns = extractedSigns.length === 0;
+                    const hasPartialData =
+                      (plaqueScheduleQuery.data?.plaques?.length ?? 0) > 0 ||
+                      (occupantLoadsQuery.data?.loads?.length ?? 0) > 0 ||
+                      (occupantLoadsQuery.data?.assemblyRooms?.length ?? 0) > 0;
+                    const showPartialNotice = hasNoSigns && hasPartialData;
+                    return (
+                      <TooltipProvider>
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <span className="relative inline-flex">
+                              <Button
+                                onClick={handleExport}
+                                disabled={exportDisabled}
+                                className="font-display font-semibold uppercase tracking-wide bg-accent text-accent-foreground hover:bg-accent/90 shadow-[0_0_15px_rgba(0,240,255,0.15)] disabled:opacity-50 disabled:cursor-not-allowed disabled:pointer-events-none"
+                              >
+                                <Download className="w-4 h-4" />
+                                Export XLSX
+                              </Button>
+                              {showPartialNotice && !exportDisabled && (
+                                <span className="absolute -top-1.5 -right-1.5 flex h-4 w-4 items-center justify-center rounded-full bg-yellow-400 text-[9px] font-bold text-yellow-900 shadow">
+                                  !
+                                </span>
+                              )}
+                            </span>
+                          </TooltipTrigger>
+                          <TooltipContent>
+                            {exportDisabled
+                              ? supplementalDataLoading
+                                ? "Loading data…"
+                                : "No sign, plaque, or occupant load data to export"
+                              : showPartialNotice
+                              ? "Partial export — no sign takeoff rows found. File will contain plaque/occupant load data only."
+                              : "Download sign takeoff data as an Excel spreadsheet"}
+                          </TooltipContent>
+                        </Tooltip>
+                      </TooltipProvider>
+                    );
+                  })()}
                 </>
               )}
             </div>
