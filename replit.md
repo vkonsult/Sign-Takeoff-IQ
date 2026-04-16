@@ -52,3 +52,6 @@ Sign TakeOff IQ is built as a pnpm workspace monorepo using TypeScript.
 | Variable | Where set | Purpose |
 |---|---|---|
 | `VITE_SENTRY_DSN` | Replit secret | Sentry DSN for frontend error reporting. Create a project at sentry.io and paste the DSN here. Sentry is disabled when unset. |
+| `SENTRY_AUTH_TOKEN` | Replit secret | Sentry auth token used by `@sentry/vite-plugin` to upload source maps during production builds. Generate one at https://sentry.io/settings/auth-tokens/ with `project:releases` and `org:read` scopes. Source map upload is skipped when unset. |
+| `SENTRY_ORG` | Replit secret | Sentry organisation slug (visible in your Sentry URL: `https://sentry.io/organizations/<slug>/`). Required alongside `SENTRY_AUTH_TOKEN` for source map uploads. |
+| `SENTRY_PROJECT` | Replit secret | Sentry project slug for this application. Required alongside `SENTRY_AUTH_TOKEN` for source map uploads. |
