@@ -654,12 +654,6 @@ export function classifyPageFromPhrases(phrases: PdfPhrase[]): ClassifyPageResul
 
   const combined = titleBlockPhrases.map((p) => p.text).join(" ").toLowerCase();
 
-  // Priority 1: Exclusion veto — always wins.
-  const hasExclusion = FLOOR_PLAN_EXCLUSION_PHRASES.some((phrase) =>
-    combined.includes(phrase.toLowerCase())
-  );
-  if (hasExclusion) return { type: "unknown", titlePhrases: [] };
-
   // Priority 2+: Check inclusion/sign phrases.
   const LEVEL_PLAN_RE = /\b\w+ level plan\b/;
   const hasFpPhrase =
@@ -670,18 +664,11 @@ export function classifyPageFromPhrases(phrases: PdfPhrase[]): ClassifyPageResul
     combined.includes(phrase.toLowerCase())
   );
 
-  let type: SpatialPageType;
-  if (hasFpPhrase && hasSsPhrase) type = "both";
-  else if (hasSsPhrase) type = "sign_schedule";
-  else if (hasFpPhrase) type = "floor_plan";
-  else return { type: "unknown", titlePhrases: [] };
-
-  // Collect only the phrases whose text individually contributed to the classification.
-  // If no single phrase contains a matching keyword (e.g. the match was assembled
-  // from text concatenated across phrase boundaries), return an empty array so the
-  // heuristic extractor's fallback blanket-zone logic is used instead of a
-  // proximity check against non-title phrases.
-  const matchingPhrases = titleBlockPhrases.filter((p) => {
+  // Priority 1: Exclusion veto — scoped only to candidate title phrases (those
+  // that individually contain an inclusion or sign-schedule keyword).  Incidental
+  // text elsewhere in the corner zone (notes, legend entries, annotations) must
+  // not veto the page just because it happens to mention "fire" or "site".
+  const candidatePhrases = titleBlockPhrases.filter((p) => {
     const lower = p.text.toLowerCase();
     return (
       FLOOR_PLAN_INCLUSION_PHRASES.some((ph) => lower.includes(ph.toLowerCase()))
@@ -689,8 +676,23 @@ export function classifyPageFromPhrases(phrases: PdfPhrase[]): ClassifyPageResul
       || LEVEL_PLAN_RE.test(lower)
     );
   });
+  const candidateCombined = candidatePhrases.map((p) => p.text).join(" ").toLowerCase();
+  const hasExclusion = FLOOR_PLAN_EXCLUSION_PHRASES.some((phrase) =>
+    candidateCombined.includes(phrase.toLowerCase())
+  );
+  if (hasExclusion) return { type: "unknown", titlePhrases: [] };
 
-  return { type, titlePhrases: matchingPhrases };
+  let type: SpatialPageType;
+  if (hasFpPhrase && hasSsPhrase) type = "both";
+  else if (hasSsPhrase) type = "sign_schedule";
+  else if (hasFpPhrase) type = "floor_plan";
+  else return { type: "unknown", titlePhrases: [] };
+
+  // candidatePhrases (computed above) already contains exactly the phrases whose
+  // text individually contributed to the classification.  Re-use them here so the
+  // heuristic extractor's proximity check targets real title text, not incidental
+  // corner annotations.
+  return { type, titlePhrases: candidatePhrases };
 }
 
 /**
