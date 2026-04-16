@@ -1332,7 +1332,7 @@ router.get("/jobs/:jobId/ai-calls", async (req, res) => {
   try {
     const job = await getJobWithOrgCheck(req, res, jobId);
     if (!job) return;
-    res.json({ callTypes: AI_CALL_REGISTRY });
+    res.json({ callTypes: AI_CALL_REGISTRY, completedCallTypes: job.completedCallTypes ?? [] });
   } catch (err) {
     req.log.error({ err, jobId }, "ai-calls registry error");
     res.status(500).json({ error: "Internal server error" });
@@ -1549,10 +1549,25 @@ router.post("/jobs/:jobId/ai-scan", async (req, res) => {
     // After AI sign insertion, run coordinate matching for any signs missing coordinates
     await assignMissingCoordinates(jobId, files);
 
+    // Persist which call types have now been completed so the frontend can warn
+    // before overwriting on subsequent re-runs. Only mark a call type completed
+    // if it produced at least one successful result key (i.e. a results entry
+    // without an "_error" suffix), so failed-only calls don't trigger prompts.
+    const resultKeys = Object.keys(results);
+    const successfullyCompleted = callTypes.filter((ct) =>
+      resultKeys.some((k) => k.startsWith(`${ct}_`) && !k.endsWith("_error"))
+    );
+    if (successfullyCompleted.length > 0) {
+      const existingCompleted = job.completedCallTypes ?? [];
+      const merged = Array.from(new Set([...existingCompleted, ...successfullyCompleted]));
+      await db.update(jobsTable).set({ completedCallTypes: merged, updatedAt: new Date() }).where(eq(jobsTable.id, jobId));
+    }
+
     res.json({
       success: true,
       jobId,
       callTypes,
+      successfulCallTypes: successfullyCompleted,
       newSignsCreated: totalNewSigns,
       signsUpdated: totalUpdatedSigns,
       details: results,

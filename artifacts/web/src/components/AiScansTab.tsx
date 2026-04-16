@@ -14,6 +14,7 @@ interface AiScanResult {
   newSignsCreated: number;
   signsUpdated: number;
   details: Record<string, unknown>;
+  successfulCallTypes?: string[];
   error?: string;
 }
 
@@ -68,6 +69,7 @@ export function AiScansTab({
   const [registryError, setRegistryError] = useState<string | null>(null);
 
   const [callStates, setCallStates] = useState<Record<string, CallState>>({});
+  const [completedCallTypes, setCompletedCallTypes] = useState<Set<string>>(new Set());
   const [runAllState, setRunAllState] = useState<"idle" | "running" | "done">("idle");
   const [selectedTypes, setSelectedTypes] = useState<Set<string>>(new Set());
   const [expandedPrompts, setExpandedPrompts] = useState<Set<string>>(new Set());
@@ -98,6 +100,7 @@ export function AiScansTab({
   const [showPlaqueConfirm, setShowPlaqueConfirm] = useState(false);
   const plaqueConfirmRef = useRef<HTMLTableRowElement | null>(null);
   const [showOccupantConfirm, setShowOccupantConfirm] = useState(false);
+  const [confirmRunOneType, setConfirmRunOneType] = useState<string | null>(null);
 
   // Occupant Loads inline-editing state
   // editingId: id of the row being edited, or "__new__" for a new unsaved row
@@ -170,13 +173,23 @@ export function AiScansTab({
   }, [showOccupantConfirm]);
 
   useEffect(() => {
+    if (!confirmRunOneType) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setConfirmRunOneType(null);
+    };
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, [confirmRunOneType]);
+
+  useEffect(() => {
     setRegistryLoading(true);
     apiFetch(`/api/jobs/${jobId}/ai-calls`)
       .then((res) => res.json())
-      .then((data: { callTypes: AiCallDescriptor[] }) => {
+      .then((data: { callTypes: AiCallDescriptor[]; completedCallTypes?: string[] }) => {
         const registry = data.callTypes ?? [];
         setCallRegistry(registry);
         setRegistryError(null);
+        setCompletedCallTypes(new Set(data.completedCallTypes ?? []));
         setSelectedTypes((prev) =>
           prev.size === 0 ? new Set(registry.map((c: AiCallDescriptor) => c.type)) : prev
         );
@@ -246,6 +259,7 @@ export function AiScansTab({
       const data: AiScanResult = await res.json();
       if (res.ok && data.success) {
         callTypes.forEach((type) => setStatus(type, "success", data));
+        setCompletedCallTypes((prev) => new Set([...prev, ...(data.successfulCallTypes ?? callTypes)]));
         onScansComplete();
       } else {
         callTypes.forEach((type) => setStatus(type, "error", { ...data, error: data.error ?? "Scan failed" }));
@@ -818,34 +832,59 @@ export function AiScansTab({
                   </div>
 
                   {/* Run button */}
-                  <button
-                    onClick={() => handleRunOne(call.type)}
-                    disabled={anyRunning}
-                    className={`flex-shrink-0 flex items-center gap-1 px-2 py-1 rounded text-[10px] font-medium border transition-all disabled:opacity-50 disabled:cursor-not-allowed ${
-                      state?.status === "success"
-                        ? "bg-violet-500/10 text-violet-400 border-violet-500/20 hover:bg-violet-500/20"
+                  {confirmRunOneType === call.type ? (
+                    <div className="flex-shrink-0 flex items-center gap-1.5">
+                      <span className="text-[11px] text-amber-400 whitespace-nowrap">Replace existing results?</span>
+                      <button
+                        onClick={() => { setConfirmRunOneType(null); handleRunOne(call.type); }}
+                        disabled={anyRunning}
+                        className="flex items-center justify-center px-2 py-1 rounded text-[11px] font-medium text-white bg-amber-500 hover:bg-amber-400 transition-colors border border-amber-400/30 disabled:opacity-50 disabled:cursor-not-allowed"
+                      >
+                        Continue
+                      </button>
+                      <button
+                        onClick={() => setConfirmRunOneType(null)}
+                        className="flex items-center justify-center px-2 py-1 rounded text-[11px] font-medium text-muted-foreground bg-secondary hover:text-foreground transition-colors border border-border"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      onClick={() => {
+                        if (completedCallTypes.has(call.type)) {
+                          setConfirmRunOneType(call.type);
+                        } else {
+                          handleRunOne(call.type);
+                        }
+                      }}
+                      disabled={anyRunning}
+                      className={`flex-shrink-0 flex items-center gap-1 px-2 py-1 rounded text-[10px] font-medium border transition-all disabled:opacity-50 disabled:cursor-not-allowed ${
+                        state?.status === "success"
+                          ? "bg-violet-500/10 text-violet-400 border-violet-500/20 hover:bg-violet-500/20"
+                          : state?.status === "error"
+                          ? "bg-destructive/10 text-destructive border-destructive/20 hover:bg-destructive/20"
+                          : "bg-secondary text-muted-foreground border-border hover:text-foreground hover:border-border/80"
+                      }`}
+                    >
+                      {isRunning(call.type) ? (
+                        <Loader2 className="w-3 h-3 animate-spin" />
+                      ) : state?.status === "success" ? (
+                        <CheckCircle2 className="w-3 h-3" />
+                      ) : state?.status === "error" ? (
+                        <AlertTriangle className="w-3 h-3" />
+                      ) : (
+                        <Play className="w-3 h-3" />
+                      )}
+                      {isRunning(call.type)
+                        ? "Running…"
+                        : state?.status === "success"
+                        ? "Re-run"
                         : state?.status === "error"
-                        ? "bg-destructive/10 text-destructive border-destructive/20 hover:bg-destructive/20"
-                        : "bg-secondary text-muted-foreground border-border hover:text-foreground hover:border-border/80"
-                    }`}
-                  >
-                    {isRunning(call.type) ? (
-                      <Loader2 className="w-3 h-3 animate-spin" />
-                    ) : state?.status === "success" ? (
-                      <CheckCircle2 className="w-3 h-3" />
-                    ) : state?.status === "error" ? (
-                      <AlertTriangle className="w-3 h-3" />
-                    ) : (
-                      <Play className="w-3 h-3" />
-                    )}
-                    {isRunning(call.type)
-                      ? "Running…"
-                      : state?.status === "success"
-                      ? "Re-run"
-                      : state?.status === "error"
-                      ? "Retry"
-                      : "Run"}
-                  </button>
+                        ? "Retry"
+                        : "Run"}
+                    </button>
+                  )}
                 </div>
               </div>
             );
