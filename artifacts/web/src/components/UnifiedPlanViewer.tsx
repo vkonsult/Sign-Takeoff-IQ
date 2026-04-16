@@ -81,6 +81,7 @@ export interface UnifiedPlanViewerProps {
   onEditSign?: (sign: ExtractedSign) => void;
   onUnlock?: (signId: string) => Promise<boolean>;
   onPlaceComplete?: (signId: string, xPos: number, yPos: number, pageNumber: number, jobFileId: string) => void;
+  onPlaceCancel?: () => void;
 }
 
 // ── Internal Types ────────────────────────────────────────────────────────────
@@ -510,6 +511,7 @@ interface PageViewerProps {
   pagePrefix?: string;
   placeSignId?: string | null;
   onPlaceDone?: (nx: number, ny: number) => void;
+  onPlaceCancel?: () => void;
   // Undo / Redo / Save — modal toolbar only
   canUndo?: boolean;
   canRedo?: boolean;
@@ -544,6 +546,7 @@ function PageViewer({
   pagePrefix = "Floor plan",
   placeSignId,
   onPlaceDone,
+  onPlaceCancel,
   canUndo,
   canRedo,
   onUndo,
@@ -641,6 +644,16 @@ function PageViewer({
     return () => ro.disconnect();
   }, []);
   useEffect(() => { setMeasuredPageSize(null); }, [pageNumber, file.id]);
+
+  // Escape key cancels placement mode
+  useEffect(() => {
+    if (!placeSignId) return;
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "Escape") { e.preventDefault(); onPlaceCancel?.(); }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [placeSignId, onPlaceCancel]);
 
   const renderedW = nativeSize ? nativeSize.w * scale : (measuredPageSize?.w ?? null);
   const renderedH = nativeSize ? nativeSize.h * scale : (measuredPageSize?.h ?? null);
@@ -1310,6 +1323,14 @@ function PageViewer({
                 <span className="text-[10px] font-display font-semibold uppercase tracking-wide whitespace-nowrap">
                   Click to place <span className="font-mono">{label}</span>
                 </span>
+                <button
+                  onClick={onPlaceCancel}
+                  className="ml-1 text-[10px] font-display font-semibold uppercase tracking-wide px-2 py-0.5 rounded border transition-colors hover:bg-yellow-500/20"
+                  style={{ color: "#eab308", borderColor: "#eab30880", animationPlayState: "paused" }}
+                  title="Cancel placement (Esc)"
+                >
+                  Cancel
+                </button>
               </div>
             );
           })()}
@@ -1825,6 +1846,7 @@ export function UnifiedPlanViewer({
   onEditSign,
   onUnlock,
   onPlaceComplete,
+  onPlaceCancel,
 }: UnifiedPlanViewerProps) {
   const sourceSigns = (allSignsProp ?? signs ?? []) as ExtractedSign[];
   const [localSigns, setLocalSigns] = useState<ExtractedSign[]>(sourceSigns);
@@ -2228,6 +2250,7 @@ export function UnifiedPlanViewer({
       pagePrefix={pageType === "sign_schedule" ? "Sign page" : "Floor plan"}
       placeSignId={placeSignId}
       onPlaceDone={handlePlaceDone}
+      onPlaceCancel={onPlaceCancel}
       canUndo={historyStack.length > 0}
       canRedo={redoStack.length > 0}
       onUndo={handleUndo}

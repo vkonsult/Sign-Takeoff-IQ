@@ -1481,6 +1481,7 @@ export default function JobDetails() {
                       onSignAdded={handleSignAdded}
                       onSignUpdated={handleSignUpdated}
                       onEditSign={(s) => setReviewSign(s as SignRow)}
+                      onPlaceCancel={() => setPlaceSignId(null)}
                       onPlaceComplete={(signId, xPos, yPos, pageNum, fileId) => {
                         setPlaceSignId(null);
                         queryClient.setQueryData(getGetJobQueryKey(jobId), (old: typeof data) => {
