@@ -53,6 +53,58 @@ describe("phrasesToRawItems", () => {
   it("returns empty array for empty input", () => {
     expect(phrasesToRawItems([], PAGE_W, PAGE_H)).toEqual([]);
   });
+
+  it("swaps inverted x coordinates so w is always non-negative", () => {
+    const phrases = [
+      { text: "RTL", x0: 0.4, y0: 0.1, x1: 0.2, y1: 0.2 },
+    ] as Parameters<typeof phrasesToRawItems>[0];
+
+    const [result] = phrasesToRawItems(phrases, PAGE_W, PAGE_H);
+
+    expect(result!.x).toBeCloseTo(0.2 * PAGE_W);
+    expect(result!.w).toBeCloseTo((0.4 - 0.2) * PAGE_W);
+    expect(result!.w).toBeGreaterThan(0);
+  });
+
+  it("swaps inverted y coordinates so h is always non-negative", () => {
+    const phrases = [
+      { text: "FLIP", x0: 0.1, y0: 0.5, x1: 0.3, y1: 0.2 },
+    ] as Parameters<typeof phrasesToRawItems>[0];
+
+    const [result] = phrasesToRawItems(phrases, PAGE_W, PAGE_H);
+
+    expect(result!.y).toBeCloseTo(0.2 * PAGE_H);
+    expect(result!.h).toBeCloseTo((0.5 - 0.2) * PAGE_H);
+    expect(result!.h).toBeGreaterThan(0);
+  });
+
+  it("clamps coordinates that exceed [0, 1] before scaling", () => {
+    const phrases = [
+      { text: "OVERFLOW", x0: -0.1, y0: -0.05, x1: 1.2, y1: 1.1 },
+    ] as Parameters<typeof phrasesToRawItems>[0];
+
+    const [result] = phrasesToRawItems(phrases, PAGE_W, PAGE_H);
+
+    expect(result!.x).toBe(0);
+    expect(result!.y).toBe(0);
+    expect(result!.w).toBeCloseTo(PAGE_W);
+    expect(result!.h).toBeCloseTo(PAGE_H);
+  });
+
+  it("clamps and swaps when coordinates are both inverted and out of range", () => {
+    const phrases = [
+      { text: "BAD", x0: 1.5, y0: 0.8, x1: -0.2, y1: 0.3 },
+    ] as Parameters<typeof phrasesToRawItems>[0];
+
+    const [result] = phrasesToRawItems(phrases, PAGE_W, PAGE_H);
+
+    expect(result!.x).toBe(0);
+    expect(result!.w).toBeCloseTo(PAGE_W);
+    expect(result!.y).toBeCloseTo(0.3 * PAGE_H);
+    expect(result!.h).toBeCloseTo((0.8 - 0.3) * PAGE_H);
+    expect(result!.w).toBeGreaterThan(0);
+    expect(result!.h).toBeGreaterThan(0);
+  });
 });
 
 // ── extractSignageData — empty / trivial inputs ───────────────────────────────
