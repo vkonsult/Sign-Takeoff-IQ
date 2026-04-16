@@ -52,7 +52,7 @@ args = "codegen-sync"
 
 [[workflows.workflow.tasks]]
 task = "workflow.run"
-args = "api-typecheck"
+args = "api-server-typecheck"
 
 [[workflows.workflow]]
 name = "web-unit-tests"
@@ -132,15 +132,15 @@ args = "pnpm codegen && git diff --exit-code lib/api-client-react/src/generated 
 isValidation = true
 
 [[workflows.workflow]]
-name = "api-typecheck"
+name = "api-server-typecheck"
 author = "agent"
+
+[workflows.workflow.metadata]
+isValidation = true
 
 [[workflows.workflow.tasks]]
 task = "shell.exec"
 args = "pnpm --filter @workspace/api-server typecheck"
-
-[workflows.workflow.metadata]
-isValidation = true
 
 [agent]
 stack = "PNPM_WORKSPACE"
