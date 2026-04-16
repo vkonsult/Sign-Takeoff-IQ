@@ -64,6 +64,9 @@ export class ErrorBoundary extends Component<Props, State> {
               <Button variant="ghost" size="sm" onClick={() => history.back()}>
                 Go back
               </Button>
+              <Button variant="ghost" size="sm" onClick={() => window.location.reload()}>
+                Reload page
+              </Button>
             </div>
           </div>
         </div>
