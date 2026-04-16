@@ -967,7 +967,20 @@ export function AiScansTab({
                         ref={plaqueConfirmDeleteId === row.id ? plaqueConfirmRef : null}
                         className={`border-b border-border/50 hover:bg-secondary/20 transition-colors group ${isDeleting || isPlaqueUnlocking ? "opacity-40" : ""}`}
                       >
-                        <td className="px-3 py-2 font-mono text-amber-400">{row.typeId}</td>
+                        <td className="px-3 py-2 font-mono text-amber-400">
+                          <span className="flex items-center gap-1.5">
+                            {row.typeId}
+                            {row.manuallyEdited && (
+                              <span
+                                title="This row was manually edited and will not be overwritten by AI re-runs"
+                                className="inline-flex items-center gap-0.5 px-1 py-0.5 rounded text-[9px] font-medium bg-amber-500/10 text-amber-400 border border-amber-500/20 cursor-default"
+                              >
+                                <Pencil className="w-2.5 h-2.5" />
+                                edited
+                              </span>
+                            )}
+                          </span>
+                        </td>
                         <td className="px-3 py-2 text-foreground">{row.name ?? <span className="text-muted-foreground/50">—</span>}</td>
                         <td className="px-3 py-2">
                           {row.braille === true ? (
@@ -1318,7 +1331,20 @@ export function AiScansTab({
                           isAssembly ? "bg-orange-500/8 hover:bg-orange-500/12" : "hover:bg-secondary/20"
                         } ${isDeleting || isUnlocking ? "opacity-40" : ""}`}
                       >
-                        <td className="px-3 py-2 font-mono text-sky-400">{row.roomNum}</td>
+                        <td className="px-3 py-2 font-mono text-sky-400">
+                          <span className="flex items-center gap-1.5">
+                            {row.roomNum}
+                            {row.manuallyEdited && (
+                              <span
+                                title="This row was manually edited and will not be overwritten by AI re-runs"
+                                className="inline-flex items-center gap-0.5 px-1 py-0.5 rounded text-[9px] font-medium bg-sky-500/10 text-sky-400 border border-sky-500/20 cursor-default"
+                              >
+                                <Pencil className="w-2.5 h-2.5" />
+                                edited
+                              </span>
+                            )}
+                          </span>
+                        </td>
                         <td className="px-3 py-2 text-foreground">
                           {row.roomName ?? <span className="text-muted-foreground/50">—</span>}
                         </td>
