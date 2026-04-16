@@ -980,11 +980,14 @@ export default function JobDetails() {
                   </TooltipProvider>
                   {(() => {
                     const pdfSigns = data?.extractedSigns ?? [];
+                    const placedCount = pdfSigns.filter((s: { pageNumber?: number | null }) => s.pageNumber != null).length;
+                    const unplacedCount = pdfSigns.length - placedCount;
+                    const noneArePlaced = pdfSigns.length > 0 && placedCount === 0;
+                    const someAreUnplaced = pdfSigns.length > 0 && unplacedCount > 0 && placedCount > 0;
                     const showPdfPartialNotice =
-                      hasNoMapData &&
-                      pdfSigns.length > 0 &&
                       !exportingPdf &&
-                      !isProcessingNow;
+                      !isProcessingNow &&
+                      (noneArePlaced || someAreUnplaced);
                     return (
                       <TooltipProvider>
                         <Tooltip>
@@ -1013,8 +1016,10 @@ export default function JobDetails() {
                           <TooltipContent>
                             {isProcessingNow
                               ? "Job is still processing — wait for extraction to finish before exporting"
-                              : showPdfPartialNotice
+                              : noneArePlaced
                               ? "Partial export — signs exist but none have floor plan locations. The PDF will have no markers."
+                              : someAreUnplaced
+                              ? `Partial export — ${unplacedCount} of ${pdfSigns.length} sign${pdfSigns.length !== 1 ? "s" : ""} ${unplacedCount !== 1 ? "are" : "is"} not placed on the floor plan and will be missing from the PDF.`
                               : hasNoMapData
                               ? "No signs have floor plan locations — nothing to mark on the PDF"
                               : "Download the original PDF with sign markers drawn on each floor plan page"}
