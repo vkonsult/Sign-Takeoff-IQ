@@ -154,7 +154,14 @@ router.get("/jobs", async (req, res) => {
         db
           .select({ jobId: extractedSignsTable.jobId, count: sql<number>`COUNT(*)::int` })
           .from(extractedSignsTable)
-          .where(and(inArray(extractedSignsTable.jobId, jobIds), isNull(extractedSignsTable.pageNumber)))
+          .where(
+            and(
+              inArray(extractedSignsTable.jobId, jobIds),
+              isNull(extractedSignsTable.xPos),
+              isNull(extractedSignsTable.yPos),
+              sql`${extractedSignsTable.hidden} = false`,
+            )
+          )
           .groupBy(extractedSignsTable.jobId),
       ]);
       for (const r of plaqueRows) {

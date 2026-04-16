@@ -93,6 +93,7 @@ export default function JobsList() {
   };
 
   const [showArchived, setShowArchived] = useState(false);
+  const [showNeedsPlacement, setShowNeedsPlacement] = useState(false);
   const { data, isLoading } = useJobsList(showArchived);
   const queryClient = useQueryClient();
 
@@ -109,12 +110,17 @@ export default function JobsList() {
     files?: { id: string; originalName: string }[];
     plaqueCount?: number | null;
     occupantLoadCount?: number | null;
+    unplacedCount?: number;
   };
 
   const rawJobs = (data?.jobs ?? []) as JobSummaryListItem[];
 
   const jobs = useMemo(() => {
-    return [...rawJobs].sort((a, b) => {
+    let result = rawJobs;
+    if (showNeedsPlacement) {
+      result = result.filter((j) => Number(j.unplacedCount ?? 0) > 0);
+    }
+    return [...result].sort((a, b) => {
       let aVal: number;
       let bVal: number;
       if (sortBy === "plaqueCount") {
@@ -132,7 +138,7 @@ export default function JobsList() {
       }
       return sortDir === "asc" ? aVal - bVal : bVal - aVal;
     });
-  }, [rawJobs, sortBy, sortDir]);
+  }, [rawJobs, sortBy, sortDir, showNeedsPlacement]);
 
   const allIds = jobs.map((j) => j.id);
   const allSelected = allIds.length > 0 && allIds.every((id) => selected.has(id));
@@ -251,6 +257,17 @@ export default function JobsList() {
           </div>
           <div className="flex items-center gap-3">
             <button
+              onClick={() => setShowNeedsPlacement((prev) => !prev)}
+              className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium border transition-colors
+                ${showNeedsPlacement
+                  ? "bg-orange-500/10 text-orange-400 border-orange-500/30 hover:bg-orange-500/20"
+                  : "bg-secondary text-muted-foreground border-border hover:text-foreground"
+                }`}
+            >
+              <MapPinOff className="w-4 h-4" />
+              {showNeedsPlacement ? "Clear Filter" : "Needs Placement"}
+            </button>
+            <button
               onClick={() => {
                 setShowArchived((prev) => !prev);
                 setSelected(new Set());
@@ -339,7 +356,11 @@ export default function JobsList() {
 
             <div className="divide-y divide-border">
               {jobs.length === 0 && (
-                <div className="p-8 text-center text-muted-foreground">No jobs found.</div>
+                <div className="p-8 text-center text-muted-foreground">
+                  {showNeedsPlacement
+                    ? "No jobs with unplaced signs."
+                    : "No jobs found."}
+                </div>
               )}
 
               {jobs.map((job) => {
