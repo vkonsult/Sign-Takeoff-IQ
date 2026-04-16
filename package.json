@@ -7,6 +7,7 @@
     "build": "pnpm run typecheck && pnpm -r --if-present run build",
     "typecheck:libs": "tsc --build",
     "typecheck": "pnpm run typecheck:libs && pnpm -r --filter \"./artifacts/**\" --filter \"./scripts\" --if-present run typecheck",
+    "build:db": "pnpm --filter @workspace/db build",
     "codegen": "pnpm --filter @workspace/api-spec run codegen && tsc --build lib/api-client-react lib/api-zod"
   },
   "private": true,
