@@ -10,7 +10,8 @@ import { Button } from "@/components/ui/button";
 import {
   FolderOpen, Eye, FileText, CheckCircle2, Cpu,
   AlertTriangle, Trash2, X, Square, CheckSquare, MinusSquare,
-  Archive, EyeOff, Layers, Users, ChevronUp, ChevronDown, ChevronsUpDown, MapPinOff,
+  Archive, EyeOff, Layers, Users, ChevronUp, ChevronDown, ChevronsUpDown,
+  MapPinOff,
 } from "lucide-react";
 import { Link } from "wouter";
 

@@ -10,6 +10,7 @@ export * from "./assemblyRoom";
 export * from "./deletePlaqueScheduleRow200";
 export * from "./errorResponse";
 export * from "./extractedSign";
+export * from "./extractedSignDataSource";
 export * from "./extractOccupantLoadsResponse";
 export * from "./extractOccupantLoadsResponseDetails";
 export * from "./extractPlaqueScheduleResponse";

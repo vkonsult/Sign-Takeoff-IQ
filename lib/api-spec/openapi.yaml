@@ -439,6 +439,10 @@ components:
         id:
           type: string
           format: uuid
+        name:
+          type: string
+          nullable: true
+          description: Human-readable job name (editable by the user)
         status:
           type: string
           enum: [pending, processing, completed, failed]
@@ -548,6 +552,12 @@ components:
           items:
             $ref: '#/components/schemas/PdfOutlineSection'
           description: Top-level PDF outline (bookmark) sections with classified page ranges
+        rejectedPageNumbers:
+          type: array
+          nullable: true
+          items:
+            type: integer
+          description: PDF page numbers explicitly rejected by the user from their classification
         pageImagePaths:
           type: object
           nullable: true
@@ -588,6 +598,11 @@ components:
         id:
           type: string
           format: uuid
+        jobId:
+          type: string
+          format: uuid
+          nullable: true
+          description: Job this sign belongs to
         jobFileId:
           type: string
           format: uuid
@@ -637,12 +652,70 @@ components:
           maximum: 1
         reviewFlag:
           type: boolean
+        exceptionReason:
+          type: string
+          nullable: true
+          description: Reason this sign was flagged as an exception (set when reviewFlag is true and AI found an exception condition)
+        extractionMethod:
+          type: string
+          nullable: true
+          description: 'How this sign was extracted: "text" for text-based extraction, "image" for visual/AI bbox detection'
+        pairedSignId:
+          type: string
+          format: uuid
+          nullable: true
+          description: ID of the paired text sign when this is the image-only counterpart (or vice versa)
         manuallyAdded:
           type: boolean
           description: True if this sign was manually placed by the user (not AI-extracted)
+        manuallyEdited:
+          type: boolean
+          nullable: true
+          description: True if the user has manually edited this sign; protected from AI re-run overwrites
         userVerified:
           type: boolean
           description: True if the user has saved/confirmed this sign entry; preserved across re-extractions
+        pageNumber:
+          type: integer
+          nullable: true
+          description: PDF page number where this sign is placed (1-indexed); null means unplaced
+        xPos:
+          type: number
+          nullable: true
+          description: Horizontal position on the page (0–1 fraction)
+        yPos:
+          type: number
+          nullable: true
+          description: Vertical position on the page (0–1 fraction)
+        placementSource:
+          type: string
+          nullable: true
+          description: 'How the sign was placed: "pdf" = auto, "ai" = AI-detected, "manual" = user-placed'
+        dataSource:
+          type: string
+          enum: [pdf, ai, manual]
+          nullable: true
+          description: Data source classification
+        aiBbox:
+          type: boolean
+          nullable: true
+          description: Whether AI bounding box was used for placement
+        aiBboxX:
+          type: number
+          nullable: true
+          description: AI bounding box X coordinate (fraction)
+        aiBboxY:
+          type: number
+          nullable: true
+          description: AI bounding box Y coordinate (fraction)
+        aiBboxW:
+          type: number
+          nullable: true
+          description: AI bounding box width (fraction)
+        aiBboxH:
+          type: number
+          nullable: true
+          description: AI bounding box height (fraction)
         createdAt:
           type: string
           format: date-time

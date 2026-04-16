@@ -107,16 +107,14 @@ export interface PageStats {
   otherPages: number[];
   /** PDF page numbers classified as both floor plan and sign schedule */
   bothPages?: number[];
-  /** PDF page numbers explicitly rejected by the user from their classification */
-  rejectedPageNumbers?: number[];
   /** PDF logical page labels (e.g. "A1.1") indexed by page number (0-based) */
-  pageLabels?: (string | null)[];
+  pageLabels?: (string | null)[] | null;
   /** Top-level PDF outline (bookmark) sections with classified page ranges */
   outlineSections?: PdfOutlineSection[] | null;
+  /** PDF page numbers explicitly rejected by the user from their classification */
+  rejectedPageNumbers?: number[] | null;
   /** Map of page number (as string key) to server-relative path of pre-rendered PNG image (resolved server-side; not exposed to clients) */
   pageImagePaths?: PageStatsPageImagePaths;
-  /** Page numbers that have been manually rejected/excluded from detection results */
-  rejectedPageNumbers?: number[];
 }
 
 export interface JobFile {
@@ -127,6 +125,19 @@ export interface JobFile {
   pageStats?: PageStats | null;
   createdAt: string;
 }
+
+/**
+ * Data source classification
+ */
+export type ExtractedSignDataSource =
+  | (typeof ExtractedSignDataSource)[keyof typeof ExtractedSignDataSource]
+  | null;
+
+export const ExtractedSignDataSource = {
+  pdf: "pdf",
+  ai: "ai",
+  manual: "manual",
+} as const;
 
 export interface ExtractedSign {
   id: string;
@@ -173,7 +184,7 @@ export interface ExtractedSign {
   /** How the sign was placed: "pdf" = auto, "ai" = AI-detected, "manual" = user-placed */
   placementSource?: string | null;
   /** Data source classification */
-  dataSource?: "pdf" | "ai" | "manual" | null;
+  dataSource?: ExtractedSignDataSource;
   /** Whether AI bounding box was used for placement */
   aiBbox?: boolean | null;
   /** AI bounding box X coordinate (fraction) */

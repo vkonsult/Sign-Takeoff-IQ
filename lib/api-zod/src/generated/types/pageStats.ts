@@ -21,6 +21,8 @@ export interface PageStats {
   pageLabels?: (string | null)[] | null;
   /** Top-level PDF outline (bookmark) sections with classified page ranges */
   outlineSections?: PdfOutlineSection[] | null;
+  /** PDF page numbers explicitly rejected by the user from their classification */
+  rejectedPageNumbers?: number[] | null;
   /** Map of page number (as string key) to server-relative path of pre-rendered PNG image (resolved server-side; not exposed to clients) */
   pageImagePaths?: PageStatsPageImagePaths;
 }

@@ -9,6 +9,8 @@ import type { JobSummaryStatus } from "./jobSummaryStatus";
 
 export interface JobSummary {
   id: string;
+  /** Human-readable job name (editable by the user) */
+  name?: string | null;
   status: JobSummaryStatus;
   fileCount: number;
   error?: string | null;

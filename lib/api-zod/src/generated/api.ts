@@ -52,6 +52,10 @@ export const getJobResponseExtractedSignsItemConfidenceScoreMax = 1;
 export const GetJobResponse = zod.object({
   job: zod.object({
     id: zod.string().uuid(),
+    name: zod
+      .string()
+      .nullish()
+      .describe("Human-readable job name (editable by the user)"),
     status: zod.enum(["pending", "processing", "completed", "failed"]),
     fileCount: zod.number(),
     error: zod.string().nullish(),
@@ -83,6 +87,12 @@ export const GetJobResponse = zod.object({
       .number()
       .optional()
       .describe("Number of occupant load entries extracted for this job"),
+    unplacedCount: zod
+      .number()
+      .optional()
+      .describe(
+        "Number of signs with no floor-plan placement (pageNumber is null)",
+      ),
     createdAt: zod.date(),
     updatedAt: zod.date(),
   }),
@@ -138,6 +148,12 @@ export const GetJobResponse = zod.object({
             .describe(
               "Top-level PDF outline (bookmark) sections with classified page ranges",
             ),
+          rejectedPageNumbers: zod
+            .array(zod.number())
+            .nullish()
+            .describe(
+              "PDF page numbers explicitly rejected by the user from their classification",
+            ),
           pageImagePaths: zod
             .record(zod.string(), zod.string())
             .nullish()
@@ -153,6 +169,7 @@ export const GetJobResponse = zod.object({
   extractedSigns: zod.array(
     zod.object({
       id: zod.string().uuid(),
+      jobId: zod.string().uuid().nullish().describe("Job this sign belongs to"),
       jobFileId: zod.string().uuid().nullish(),
       sheetNumber: zod.string().nullish(),
       detailReference: zod.string().nullish(),
@@ -172,6 +189,25 @@ export const GetJobResponse = zod.object({
         .min(getJobResponseExtractedSignsItemConfidenceScoreMin)
         .max(getJobResponseExtractedSignsItemConfidenceScoreMax),
       reviewFlag: zod.boolean(),
+      exceptionReason: zod
+        .string()
+        .nullish()
+        .describe(
+          "Reason this sign was flagged as an exception (set when reviewFlag is true and AI found an exception condition)",
+        ),
+      extractionMethod: zod
+        .string()
+        .nullish()
+        .describe(
+          'How this sign was extracted: \"text\" for text-based extraction, \"image\" for visual\/AI bbox detection',
+        ),
+      pairedSignId: zod
+        .string()
+        .uuid()
+        .nullish()
+        .describe(
+          "ID of the paired text sign when this is the image-only counterpart (or vice versa)",
+        ),
       manuallyAdded: zod
         .boolean()
         .optional()
@@ -190,6 +226,50 @@ export const GetJobResponse = zod.object({
         .describe(
           "True if the user has saved\/confirmed this sign entry; preserved across re-extractions",
         ),
+      pageNumber: zod
+        .number()
+        .nullish()
+        .describe(
+          "PDF page number where this sign is placed (1-indexed); null means unplaced",
+        ),
+      xPos: zod
+        .number()
+        .nullish()
+        .describe("Horizontal position on the page (0–1 fraction)"),
+      yPos: zod
+        .number()
+        .nullish()
+        .describe("Vertical position on the page (0–1 fraction)"),
+      placementSource: zod
+        .string()
+        .nullish()
+        .describe(
+          'How the sign was placed: \"pdf\" = auto, \"ai\" = AI-detected, \"manual\" = user-placed',
+        ),
+      dataSource: zod
+        .enum(["pdf", "ai", "manual"])
+        .nullish()
+        .describe("Data source classification"),
+      aiBbox: zod
+        .boolean()
+        .nullish()
+        .describe("Whether AI bounding box was used for placement"),
+      aiBboxX: zod
+        .number()
+        .nullish()
+        .describe("AI bounding box X coordinate (fraction)"),
+      aiBboxY: zod
+        .number()
+        .nullish()
+        .describe("AI bounding box Y coordinate (fraction)"),
+      aiBboxW: zod
+        .number()
+        .nullish()
+        .describe("AI bounding box width (fraction)"),
+      aiBboxH: zod
+        .number()
+        .nullish()
+        .describe("AI bounding box height (fraction)"),
       createdAt: zod.date(),
     }),
   ),
@@ -216,6 +296,10 @@ export const ListJobsResponse = zod.object({
   jobs: zod.array(
     zod.object({
       id: zod.string().uuid(),
+      name: zod
+        .string()
+        .nullish()
+        .describe("Human-readable job name (editable by the user)"),
       status: zod.enum(["pending", "processing", "completed", "failed"]),
       fileCount: zod.number(),
       error: zod.string().nullish(),
@@ -247,6 +331,12 @@ export const ListJobsResponse = zod.object({
         .number()
         .optional()
         .describe("Number of occupant load entries extracted for this job"),
+      unplacedCount: zod
+        .number()
+        .optional()
+        .describe(
+          "Number of signs with no floor-plan placement (pageNumber is null)",
+        ),
       createdAt: zod.date(),
       updatedAt: zod.date(),
     }),

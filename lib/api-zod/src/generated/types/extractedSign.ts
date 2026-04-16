@@ -5,9 +5,12 @@
  * Sign Takeoff Portal API
  * OpenAPI spec version: 0.1.0
  */
+import type { ExtractedSignDataSource } from "./extractedSignDataSource";
 
 export interface ExtractedSign {
   id: string;
+  /** Job this sign belongs to */
+  jobId?: string | null;
   jobFileId?: string | null;
   sheetNumber?: string | null;
   detailReference?: string | null;
@@ -28,11 +31,37 @@ export interface ExtractedSign {
    */
   confidenceScore: number;
   reviewFlag: boolean;
+  /** Reason this sign was flagged as an exception (set when reviewFlag is true and AI found an exception condition) */
+  exceptionReason?: string | null;
+  /** How this sign was extracted: "text" for text-based extraction, "image" for visual/AI bbox detection */
+  extractionMethod?: string | null;
+  /** ID of the paired text sign when this is the image-only counterpart (or vice versa) */
+  pairedSignId?: string | null;
   /** True if this sign was manually placed by the user (not AI-extracted) */
   manuallyAdded?: boolean;
   /** True if the user has manually edited this sign; protected from AI re-run overwrites */
   manuallyEdited?: boolean | null;
   /** True if the user has saved/confirmed this sign entry; preserved across re-extractions */
   userVerified?: boolean;
+  /** PDF page number where this sign is placed (1-indexed); null means unplaced */
+  pageNumber?: number | null;
+  /** Horizontal position on the page (0–1 fraction) */
+  xPos?: number | null;
+  /** Vertical position on the page (0–1 fraction) */
+  yPos?: number | null;
+  /** How the sign was placed: "pdf" = auto, "ai" = AI-detected, "manual" = user-placed */
+  placementSource?: string | null;
+  /** Data source classification */
+  dataSource?: ExtractedSignDataSource;
+  /** Whether AI bounding box was used for placement */
+  aiBbox?: boolean | null;
+  /** AI bounding box X coordinate (fraction) */
+  aiBboxX?: number | null;
+  /** AI bounding box Y coordinate (fraction) */
+  aiBboxY?: number | null;
+  /** AI bounding box width (fraction) */
+  aiBboxW?: number | null;
+  /** AI bounding box height (fraction) */
+  aiBboxH?: number | null;
   createdAt: Date;
 }

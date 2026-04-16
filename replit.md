@@ -16,7 +16,7 @@ Sign TakeOff IQ is built as a pnpm workspace monorepo using TypeScript.
 
 **Backend & API:**
 - The API server is built with Express 5.
-- Uses OpenAPI specification for API definition, with Orval for client and schema codegen.
+- Uses OpenAPI specification (`lib/api-spec/openapi.yaml`) as the single source of truth for API types. Run `pnpm codegen` from the project root to regenerate TypeScript interfaces and TanStack Query hooks whenever the spec changes. Do not edit `lib/api-client-react/src/generated/` or `lib/api-zod/src/generated/` by hand.
 - All API routes, except `/api/healthz`, require Clerk-based authentication with role-based access control (SUPER_ADMIN, ADMIN, SALES, ESTIMATOR, PROJECT_MANAGER).
 - Activity tracking records significant user actions to the `activity_logs` table, providing role-scoped visibility and job-specific activity history.
 
