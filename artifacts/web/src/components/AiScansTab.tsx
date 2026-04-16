@@ -101,6 +101,8 @@ export function AiScansTab({
   const plaqueConfirmRef = useRef<HTMLTableRowElement | null>(null);
   const [showOccupantConfirm, setShowOccupantConfirm] = useState(false);
   const [confirmRunOneType, setConfirmRunOneType] = useState<string | null>(null);
+  const [confirmRunSelected, setConfirmRunSelected] = useState(false);
+  const [confirmRunAll, setConfirmRunAll] = useState(false);
 
   // Protected-row highlight state
   const [plaqueHighlightProtected, setPlaqueHighlightProtected] = useState(false);
@@ -206,6 +208,24 @@ export function AiScansTab({
   }, [confirmRunOneType]);
 
   useEffect(() => {
+    if (!confirmRunSelected) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setConfirmRunSelected(false);
+    };
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, [confirmRunSelected]);
+
+  useEffect(() => {
+    if (!confirmRunAll) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setConfirmRunAll(false);
+    };
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, [confirmRunAll]);
+
+  useEffect(() => {
     setRegistryLoading(true);
     apiFetch(`/api/jobs/${jobId}/ai-calls`)
       .then((res) => res.json())
@@ -298,17 +318,36 @@ export function AiScansTab({
     await runScan([type]);
   };
 
-  const handleRunSelected = async () => {
+  const doRunSelected = async () => {
     if (selectedTypes.size === 0) return;
     setRunAllState("running");
     await runScan(Array.from(selectedTypes));
     setRunAllState("done");
   };
 
-  const handleRunAll = async () => {
+  const handleRunSelected = async () => {
+    if (selectedTypes.size === 0) return;
+    const hasExisting = Array.from(selectedTypes).some((t) => completedCallTypes.has(t));
+    if (hasExisting) {
+      setConfirmRunSelected(true);
+    } else {
+      await doRunSelected();
+    }
+  };
+
+  const doRunAll = async () => {
     setRunAllState("running");
     await runScan(callRegistry.map((d) => d.type));
     setRunAllState("done");
+  };
+
+  const handleRunAll = async () => {
+    const hasExisting = callRegistry.some((d) => completedCallTypes.has(d.type));
+    if (hasExisting) {
+      setConfirmRunAll(true);
+    } else {
+      await doRunAll();
+    }
   };
 
   const toggleSelect = (type: string) => {
@@ -711,30 +750,68 @@ export function AiScansTab({
             {showAiHighlight ? <Eye className="w-3.5 h-3.5" /> : <EyeOff className="w-3.5 h-3.5" />}
             AI Highlights {showAiHighlight ? "On" : "Off"}
           </button>
-          <button
-            onClick={handleRunSelected}
-            disabled={anyRunning || selectedTypes.size === 0}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded text-[11px] font-medium bg-violet-600 text-white hover:bg-violet-500 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-          >
-            {runAllState === "running" ? (
-              <Loader2 className="w-3.5 h-3.5 animate-spin" />
-            ) : (
-              <Play className="w-3.5 h-3.5" />
-            )}
-            Run Selected ({selectedTypes.size})
-          </button>
-          <button
-            onClick={handleRunAll}
-            disabled={anyRunning}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded text-[11px] font-medium bg-secondary text-muted-foreground border border-border hover:text-foreground disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-          >
-            {runAllState === "running" ? (
-              <Loader2 className="w-3.5 h-3.5 animate-spin" />
-            ) : (
-              <Brain className="w-3.5 h-3.5" />
-            )}
-            Run All
-          </button>
+          {confirmRunSelected ? (
+            <div className="flex items-center gap-1.5">
+              <span className="text-[11px] text-amber-400 whitespace-nowrap">Replace existing results?</span>
+              <button
+                onClick={() => { setConfirmRunSelected(false); doRunSelected(); }}
+                disabled={anyRunning}
+                className="flex items-center justify-center px-2 py-1 rounded text-[11px] font-medium text-white bg-amber-500 hover:bg-amber-400 transition-colors border border-amber-400/30 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                Continue
+              </button>
+              <button
+                onClick={() => setConfirmRunSelected(false)}
+                className="flex items-center justify-center px-2 py-1 rounded text-[11px] font-medium text-muted-foreground bg-secondary hover:text-foreground transition-colors border border-border"
+              >
+                Cancel
+              </button>
+            </div>
+          ) : (
+            <button
+              onClick={handleRunSelected}
+              disabled={anyRunning || selectedTypes.size === 0}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded text-[11px] font-medium bg-violet-600 text-white hover:bg-violet-500 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+            >
+              {runAllState === "running" ? (
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              ) : (
+                <Play className="w-3.5 h-3.5" />
+              )}
+              Run Selected ({selectedTypes.size})
+            </button>
+          )}
+          {confirmRunAll ? (
+            <div className="flex items-center gap-1.5">
+              <span className="text-[11px] text-amber-400 whitespace-nowrap">Replace existing results?</span>
+              <button
+                onClick={() => { setConfirmRunAll(false); doRunAll(); }}
+                disabled={anyRunning}
+                className="flex items-center justify-center px-2 py-1 rounded text-[11px] font-medium text-white bg-amber-500 hover:bg-amber-400 transition-colors border border-amber-400/30 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                Continue
+              </button>
+              <button
+                onClick={() => setConfirmRunAll(false)}
+                className="flex items-center justify-center px-2 py-1 rounded text-[11px] font-medium text-muted-foreground bg-secondary hover:text-foreground transition-colors border border-border"
+              >
+                Cancel
+              </button>
+            </div>
+          ) : (
+            <button
+              onClick={handleRunAll}
+              disabled={anyRunning}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded text-[11px] font-medium bg-secondary text-muted-foreground border border-border hover:text-foreground disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+            >
+              {runAllState === "running" ? (
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              ) : (
+                <Brain className="w-3.5 h-3.5" />
+              )}
+              Run All
+            </button>
+          )}
         </div>
       </div>
 
