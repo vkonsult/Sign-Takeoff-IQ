@@ -18,6 +18,8 @@ import type {
 
 import type {
   ErrorResponse,
+  ExtractOccupantLoadsResponse,
+  ExtractPlaqueScheduleResponse,
   HealthStatus,
   JobDetails,
   KnowledgeIngestRequest,
@@ -25,6 +27,8 @@ import type {
   KnowledgeQueryRequest,
   KnowledgeQueryResponse,
   ListJobs200,
+  OccupantLoadsResponse,
+  PlaqueScheduleResponse,
   ProcessResponse,
   UploadFilesBody,
   UploadResponse,
@@ -509,6 +513,359 @@ export function useListJobs<
   request?: SecondParameter<typeof customFetch>;
 }): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
   const queryOptions = getListJobsQueryOptions(options);
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+/**
+ * Scans the job's PDF files to find signage/plaque schedules, renders them, and uses AI to extract plaque type specifications.
+ * @summary Extract plaque schedule from job PDFs
+ */
+export const getExtractPlaqueScheduleUrl = (jobId: string) => {
+  return `/api/jobs/${jobId}/extract-plaque-schedule`;
+};
+
+export const extractPlaqueSchedule = async (
+  jobId: string,
+  options?: RequestInit,
+): Promise<ExtractPlaqueScheduleResponse> => {
+  return customFetch<ExtractPlaqueScheduleResponse>(
+    getExtractPlaqueScheduleUrl(jobId),
+    {
+      ...options,
+      method: "POST",
+    },
+  );
+};
+
+export const getExtractPlaqueScheduleMutationOptions = <
+  TError = ErrorType<ErrorResponse>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof extractPlaqueSchedule>>,
+    TError,
+    { jobId: string },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof extractPlaqueSchedule>>,
+  TError,
+  { jobId: string },
+  TContext
+> => {
+  const mutationKey = ["extractPlaqueSchedule"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof extractPlaqueSchedule>>,
+    { jobId: string }
+  > = (props) => {
+    const { jobId } = props ?? {};
+
+    return extractPlaqueSchedule(jobId, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type ExtractPlaqueScheduleMutationResult = NonNullable<
+  Awaited<ReturnType<typeof extractPlaqueSchedule>>
+>;
+
+export type ExtractPlaqueScheduleMutationError = ErrorType<ErrorResponse>;
+
+/**
+ * @summary Extract plaque schedule from job PDFs
+ */
+export const useExtractPlaqueSchedule = <
+  TError = ErrorType<ErrorResponse>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof extractPlaqueSchedule>>,
+    TError,
+    { jobId: string },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof extractPlaqueSchedule>>,
+  TError,
+  { jobId: string },
+  TContext
+> => {
+  return useMutation(getExtractPlaqueScheduleMutationOptions(options));
+};
+
+/**
+ * Returns the stored plaque schedule data extracted from the job's PDF files.
+ * @summary Get plaque schedule for a job
+ */
+export const getGetPlaqueScheduleUrl = (jobId: string) => {
+  return `/api/jobs/${jobId}/plaque-schedule`;
+};
+
+export const getPlaqueSchedule = async (
+  jobId: string,
+  options?: RequestInit,
+): Promise<PlaqueScheduleResponse> => {
+  return customFetch<PlaqueScheduleResponse>(getGetPlaqueScheduleUrl(jobId), {
+    ...options,
+    method: "GET",
+  });
+};
+
+export const getGetPlaqueScheduleQueryKey = (jobId: string) => {
+  return [`/api/jobs/${jobId}/plaque-schedule`] as const;
+};
+
+export const getGetPlaqueScheduleQueryOptions = <
+  TData = Awaited<ReturnType<typeof getPlaqueSchedule>>,
+  TError = ErrorType<ErrorResponse>,
+>(
+  jobId: string,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof getPlaqueSchedule>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey =
+    queryOptions?.queryKey ?? getGetPlaqueScheduleQueryKey(jobId);
+
+  const queryFn: QueryFunction<
+    Awaited<ReturnType<typeof getPlaqueSchedule>>
+  > = ({ signal }) => getPlaqueSchedule(jobId, { signal, ...requestOptions });
+
+  return {
+    queryKey,
+    queryFn,
+    enabled: !!jobId,
+    ...queryOptions,
+  } as UseQueryOptions<
+    Awaited<ReturnType<typeof getPlaqueSchedule>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type GetPlaqueScheduleQueryResult = NonNullable<
+  Awaited<ReturnType<typeof getPlaqueSchedule>>
+>;
+export type GetPlaqueScheduleQueryError = ErrorType<ErrorResponse>;
+
+/**
+ * @summary Get plaque schedule for a job
+ */
+
+export function useGetPlaqueSchedule<
+  TData = Awaited<ReturnType<typeof getPlaqueSchedule>>,
+  TError = ErrorType<ErrorResponse>,
+>(
+  jobId: string,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof getPlaqueSchedule>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getGetPlaqueScheduleQueryOptions(jobId, options);
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+/**
+ * Scans egress/life-safety drawings for occupant load tables, extracts room-level occupancy data, and identifies assembly rooms (occupant load >= 50).
+ * @summary Extract occupant loads from job PDFs
+ */
+export const getExtractOccupantLoadsUrl = (jobId: string) => {
+  return `/api/jobs/${jobId}/extract-occupant-loads`;
+};
+
+export const extractOccupantLoads = async (
+  jobId: string,
+  options?: RequestInit,
+): Promise<ExtractOccupantLoadsResponse> => {
+  return customFetch<ExtractOccupantLoadsResponse>(
+    getExtractOccupantLoadsUrl(jobId),
+    {
+      ...options,
+      method: "POST",
+    },
+  );
+};
+
+export const getExtractOccupantLoadsMutationOptions = <
+  TError = ErrorType<ErrorResponse>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof extractOccupantLoads>>,
+    TError,
+    { jobId: string },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof extractOccupantLoads>>,
+  TError,
+  { jobId: string },
+  TContext
+> => {
+  const mutationKey = ["extractOccupantLoads"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof extractOccupantLoads>>,
+    { jobId: string }
+  > = (props) => {
+    const { jobId } = props ?? {};
+
+    return extractOccupantLoads(jobId, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type ExtractOccupantLoadsMutationResult = NonNullable<
+  Awaited<ReturnType<typeof extractOccupantLoads>>
+>;
+
+export type ExtractOccupantLoadsMutationError = ErrorType<ErrorResponse>;
+
+/**
+ * @summary Extract occupant loads from job PDFs
+ */
+export const useExtractOccupantLoads = <
+  TError = ErrorType<ErrorResponse>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof extractOccupantLoads>>,
+    TError,
+    { jobId: string },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof extractOccupantLoads>>,
+  TError,
+  { jobId: string },
+  TContext
+> => {
+  return useMutation(getExtractOccupantLoadsMutationOptions(options));
+};
+
+/**
+ * Returns stored occupant load data and a list of identified assembly rooms.
+ * @summary Get occupant loads for a job
+ */
+export const getGetOccupantLoadsUrl = (jobId: string) => {
+  return `/api/jobs/${jobId}/occupant-loads`;
+};
+
+export const getOccupantLoads = async (
+  jobId: string,
+  options?: RequestInit,
+): Promise<OccupantLoadsResponse> => {
+  return customFetch<OccupantLoadsResponse>(getGetOccupantLoadsUrl(jobId), {
+    ...options,
+    method: "GET",
+  });
+};
+
+export const getGetOccupantLoadsQueryKey = (jobId: string) => {
+  return [`/api/jobs/${jobId}/occupant-loads`] as const;
+};
+
+export const getGetOccupantLoadsQueryOptions = <
+  TData = Awaited<ReturnType<typeof getOccupantLoads>>,
+  TError = ErrorType<ErrorResponse>,
+>(
+  jobId: string,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof getOccupantLoads>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey = queryOptions?.queryKey ?? getGetOccupantLoadsQueryKey(jobId);
+
+  const queryFn: QueryFunction<
+    Awaited<ReturnType<typeof getOccupantLoads>>
+  > = ({ signal }) => getOccupantLoads(jobId, { signal, ...requestOptions });
+
+  return {
+    queryKey,
+    queryFn,
+    enabled: !!jobId,
+    ...queryOptions,
+  } as UseQueryOptions<
+    Awaited<ReturnType<typeof getOccupantLoads>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type GetOccupantLoadsQueryResult = NonNullable<
+  Awaited<ReturnType<typeof getOccupantLoads>>
+>;
+export type GetOccupantLoadsQueryError = ErrorType<ErrorResponse>;
+
+/**
+ * @summary Get occupant loads for a job
+ */
+
+export function useGetOccupantLoads<
+  TData = Awaited<ReturnType<typeof getOccupantLoads>>,
+  TError = ErrorType<ErrorResponse>,
+>(
+  jobId: string,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof getOccupantLoads>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getGetOccupantLoadsQueryOptions(jobId, options);
 
   const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
     queryKey: QueryKey;

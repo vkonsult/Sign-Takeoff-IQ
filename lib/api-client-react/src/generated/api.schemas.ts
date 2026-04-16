@@ -61,12 +61,34 @@ export interface JobSummary {
   updatedAt: string;
 }
 
+/**
+ * Classified type of this outline section
+ */
+export type PdfOutlineSectionType =
+  | (typeof PdfOutlineSectionType)[keyof typeof PdfOutlineSectionType]
+  | null;
+
+export const PdfOutlineSectionType = {
+  floor_plan: "floor_plan",
+  sign_schedule: "sign_schedule",
+  other: "other",
+} as const;
+
 export interface PdfOutlineSection {
+  /** Bookmark / outline item title */
   title: string;
+  /** First page of this section (1-indexed) */
   pageStart: number;
+  /** Last page of this section (1-indexed, inclusive) */
   pageEnd: number;
-  type: "floor_plan" | "sign_schedule" | "other" | null;
+  /** Classified type of this outline section */
+  type: PdfOutlineSectionType;
 }
+
+/**
+ * Map of page number (as string key) to server-relative path of pre-rendered PNG image (resolved server-side; not exposed to clients)
+ */
+export type PageStatsPageImagePaths = { [key: string]: string } | null;
 
 export interface PageStats {
   /** PDF page numbers classified as floor plans */
@@ -81,8 +103,8 @@ export interface PageStats {
   pageLabels?: (string | null)[] | null;
   /** Top-level PDF outline (bookmark) sections with classified page ranges */
   outlineSections?: PdfOutlineSection[] | null;
-  /** Map of page number (as string key) to absolute file path of pre-rendered PNG image */
-  pageImagePaths?: Record<string, string> | null;
+  /** Map of page number (as string key) to server-relative path of pre-rendered PNG image (resolved server-side; not exposed to clients) */
+  pageImagePaths?: PageStatsPageImagePaths;
 }
 
 export interface JobFile {
@@ -116,7 +138,10 @@ export interface ExtractedSign {
    */
   confidenceScore: number;
   reviewFlag: boolean;
-  exceptionReason?: string | null;
+  /** True if this sign was manually placed by the user (not AI-extracted) */
+  manuallyAdded?: boolean;
+  /** True if the user has saved/confirmed this sign entry; preserved across re-extractions */
+  userVerified?: boolean;
   createdAt: string;
 }
 
@@ -212,6 +237,187 @@ export interface KnowledgeQueryResponse {
   results: KnowledgeResult[];
   citations: string[];
   totalResults: number;
+}
+
+/**
+ * General notes associated with this plaque type
+ */
+export type PlaqueScheduleEntryGeneralNotes = { [key: string]: unknown } | null;
+
+/**
+ * Raw extracted JSON from AI
+ */
+export type PlaqueScheduleEntryRawJson = { [key: string]: unknown } | null;
+
+/**
+ * A single plaque type extracted from the sign schedule
+ */
+export interface PlaqueScheduleEntry {
+  id: string;
+  jobId: string;
+  /** Plaque type identifier (e.g. "P1", "P2") */
+  typeId: string;
+  /** Descriptive name of the plaque type */
+  name?: string | null;
+  /** Whether the plaque requires Braille */
+  braille?: boolean | null;
+  /** Whether the plaque has an insert */
+  insert?: boolean | null;
+  /** Insert size specification */
+  insertSize?: string | null;
+  /** Letter height specification */
+  letterHeight?: string | null;
+  /** Trigger condition for this plaque type */
+  trigger?: string | null;
+  /** Column in the sign schedule this type maps to */
+  mapsToColumn?: string | null;
+  /** General notes associated with this plaque type */
+  generalNotes?: PlaqueScheduleEntryGeneralNotes;
+  /** Raw extracted JSON from AI */
+  rawJson?: PlaqueScheduleEntryRawJson;
+  /** PDF page number where this plaque type was found */
+  sourcePage?: number | null;
+  createdAt: string;
+}
+
+/**
+ * Per-file result from a plaque schedule extraction run
+ */
+export interface PlaqueScheduleFileDetail {
+  /** Number of plaque types extracted from this file */
+  plaqueCount: number;
+  /** PDF page number where the plaque schedule was found */
+  sourcePage?: number | null;
+  /** Whether this file was skipped (e.g. no sign schedule pages) */
+  skipped: boolean;
+  /** Reason the file was skipped, if applicable */
+  skipReason?: string | null;
+  /** Gemini input tokens consumed for this file */
+  inputTokens: number;
+  /** Gemini output tokens consumed for this file */
+  outputTokens: number;
+}
+
+/**
+ * Per-file extraction details keyed by file UUID
+ */
+export type ExtractPlaqueScheduleResponseDetails = {
+  [key: string]: PlaqueScheduleFileDetail;
+};
+
+/**
+ * Result of a plaque schedule extraction run
+ */
+export interface ExtractPlaqueScheduleResponse {
+  success: boolean;
+  jobId: string;
+  /** Total number of plaque types extracted across all files */
+  totalPlaques: number;
+  /** Total Gemini input tokens consumed */
+  totalInputTokens: number;
+  /** Total Gemini output tokens consumed */
+  totalOutputTokens: number;
+  /** Per-file extraction details keyed by file UUID */
+  details: ExtractPlaqueScheduleResponseDetails;
+}
+
+/**
+ * Stored plaque schedule data for a job
+ */
+export interface PlaqueScheduleResponse {
+  jobId: string;
+  plaques: PlaqueScheduleEntry[];
+}
+
+/**
+ * A single room's occupant load data extracted from egress drawings
+ */
+export interface OccupantLoadEntry {
+  id: string;
+  jobId: string;
+  /** Room number or identifier */
+  roomNum: string;
+  /** Room name or description */
+  roomName?: string | null;
+  /** Calculated occupant load for the room */
+  occupantLoad?: number | null;
+  /** IBC occupancy group classification (e.g. A-2, B, E) */
+  occupancyGroup?: string | null;
+  /** PDF page number where this occupant load was found */
+  sourcePage?: number | null;
+  createdAt: string;
+}
+
+/**
+ * A room identified as an assembly occupancy (occupant load >= 50)
+ */
+export interface AssemblyRoom {
+  /** Room number or identifier */
+  roomNumber: string;
+  /** Room name or description */
+  roomName?: string | null;
+  /** Occupant load for the room */
+  occupantLoad: number;
+  /** IBC occupancy group classification */
+  occupancyGroup?: string | null;
+  /** Always true for assembly rooms */
+  isAssembly: boolean;
+}
+
+/**
+ * Per-file result from an occupant loads extraction run
+ */
+export interface OccupantLoadFileDetail {
+  /** Number of rooms extracted from this file */
+  roomCount: number;
+  /** PDF page numbers where occupant load tables were found */
+  sourcePages: number[];
+  /** Whether this file was skipped (e.g. no other/egress pages) */
+  skipped: boolean;
+  /** Reason the file was skipped, if applicable */
+  skipReason?: string | null;
+  /** Gemini input tokens consumed for this file */
+  inputTokens: number;
+  /** Gemini output tokens consumed for this file */
+  outputTokens: number;
+}
+
+/**
+ * Per-file extraction details keyed by file UUID
+ */
+export type ExtractOccupantLoadsResponseDetails = {
+  [key: string]: OccupantLoadFileDetail;
+};
+
+/**
+ * Result of an occupant loads extraction run
+ */
+export interface ExtractOccupantLoadsResponse {
+  success: boolean;
+  jobId: string;
+  /** Total number of rooms extracted across all files */
+  totalRooms: number;
+  /** Total Gemini input tokens consumed */
+  totalInputTokens: number;
+  /** Total Gemini output tokens consumed */
+  totalOutputTokens: number;
+  /** Number of rooms identified as assembly occupancy */
+  assemblyRoomCount: number;
+  /** Rooms identified as assembly occupancy (occupant load >= 50) */
+  assemblyRooms: AssemblyRoom[];
+  /** Per-file extraction details keyed by file UUID */
+  details: ExtractOccupantLoadsResponseDetails;
+}
+
+/**
+ * Stored occupant loads data for a job
+ */
+export interface OccupantLoadsResponse {
+  jobId: string;
+  /** All occupant load records for the job */
+  loads: OccupantLoadEntry[];
+  /** Rooms identified as assembly occupancy */
+  assemblyRooms: AssemblyRoom[];
 }
 
 export interface ErrorResponse {

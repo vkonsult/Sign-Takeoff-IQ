@@ -6,8 +6,13 @@
  * OpenAPI spec version: 0.1.0
  */
 
+export * from "./assemblyRoom";
 export * from "./errorResponse";
 export * from "./extractedSign";
+export * from "./extractOccupantLoadsResponse";
+export * from "./extractOccupantLoadsResponseDetails";
+export * from "./extractPlaqueScheduleResponse";
+export * from "./extractPlaqueScheduleResponseDetails";
 export * from "./healthStatus";
 export * from "./jobDetails";
 export * from "./jobFile";
@@ -22,7 +27,18 @@ export * from "./knowledgeQueryResponse";
 export * from "./knowledgeResult";
 export * from "./knowledgeResultMetadata";
 export * from "./listJobs200";
+export * from "./occupantLoadEntry";
+export * from "./occupantLoadFileDetail";
+export * from "./occupantLoadsResponse";
 export * from "./pageStats";
+export * from "./pageStatsPageImagePaths";
+export * from "./pdfOutlineSection";
+export * from "./pdfOutlineSectionType";
+export * from "./plaqueScheduleEntry";
+export * from "./plaqueScheduleEntryGeneralNotes";
+export * from "./plaqueScheduleEntryRawJson";
+export * from "./plaqueScheduleFileDetail";
+export * from "./plaqueScheduleResponse";
 export * from "./processResponse";
 export * from "./processResponseStatus";
 export * from "./uploadFilesBody";

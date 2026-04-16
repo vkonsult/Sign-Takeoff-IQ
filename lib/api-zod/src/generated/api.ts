@@ -98,6 +98,44 @@ export const GetJobResponse = zod.object({
             .describe(
               "PDF page numbers not matching floor plan or sign schedule patterns",
             ),
+          bothPages: zod
+            .array(zod.number())
+            .optional()
+            .describe(
+              "PDF page numbers classified as both floor plan and sign schedule",
+            ),
+          pageLabels: zod
+            .array(zod.string().nullable())
+            .nullish()
+            .describe(
+              'PDF logical page labels (e.g. \"A1.1\") indexed by page number (0-based)',
+            ),
+          outlineSections: zod
+            .array(
+              zod.object({
+                title: zod.string().describe("Bookmark \/ outline item title"),
+                pageStart: zod
+                  .number()
+                  .describe("First page of this section (1-indexed)"),
+                pageEnd: zod
+                  .number()
+                  .describe("Last page of this section (1-indexed, inclusive)"),
+                type: zod
+                  .enum(["floor_plan", "sign_schedule", "other"])
+                  .nullable()
+                  .describe("Classified type of this outline section"),
+              }),
+            )
+            .nullish()
+            .describe(
+              "Top-level PDF outline (bookmark) sections with classified page ranges",
+            ),
+          pageImagePaths: zod
+            .record(zod.string(), zod.string())
+            .nullish()
+            .describe(
+              "Map of page number (as string key) to server-relative path of pre-rendered PNG image (resolved server-side; not exposed to clients)",
+            ),
         })
         .nullish()
         .describe("Per-page classification breakdown from the extraction pass"),
@@ -126,6 +164,18 @@ export const GetJobResponse = zod.object({
         .min(getJobResponseExtractedSignsItemConfidenceScoreMin)
         .max(getJobResponseExtractedSignsItemConfidenceScoreMax),
       reviewFlag: zod.boolean(),
+      manuallyAdded: zod
+        .boolean()
+        .optional()
+        .describe(
+          "True if this sign was manually placed by the user (not AI-extracted)",
+        ),
+      userVerified: zod
+        .boolean()
+        .optional()
+        .describe(
+          "True if the user has saved\/confirmed this sign entry; preserved across re-extractions",
+        ),
       createdAt: zod.date(),
     }),
   ),
@@ -178,6 +228,276 @@ export const ListJobsResponse = zod.object({
     }),
   ),
 });
+
+/**
+ * Scans the job's PDF files to find signage/plaque schedules, renders them, and uses AI to extract plaque type specifications.
+ * @summary Extract plaque schedule from job PDFs
+ */
+export const ExtractPlaqueScheduleParams = zod.object({
+  jobId: zod.coerce.string().uuid(),
+});
+
+export const ExtractPlaqueScheduleResponse = zod
+  .object({
+    success: zod.boolean(),
+    jobId: zod.string().uuid(),
+    totalPlaques: zod
+      .number()
+      .describe("Total number of plaque types extracted across all files"),
+    totalInputTokens: zod
+      .number()
+      .describe("Total Gemini input tokens consumed"),
+    totalOutputTokens: zod
+      .number()
+      .describe("Total Gemini output tokens consumed"),
+    details: zod
+      .record(
+        zod.string(),
+        zod
+          .object({
+            plaqueCount: zod
+              .number()
+              .describe("Number of plaque types extracted from this file"),
+            sourcePage: zod
+              .number()
+              .nullish()
+              .describe("PDF page number where the plaque schedule was found"),
+            skipped: zod
+              .boolean()
+              .describe(
+                "Whether this file was skipped (e.g. no sign schedule pages)",
+              ),
+            skipReason: zod
+              .string()
+              .nullish()
+              .describe("Reason the file was skipped, if applicable"),
+            inputTokens: zod
+              .number()
+              .describe("Gemini input tokens consumed for this file"),
+            outputTokens: zod
+              .number()
+              .describe("Gemini output tokens consumed for this file"),
+          })
+          .describe("Per-file result from a plaque schedule extraction run"),
+      )
+      .describe("Per-file extraction details keyed by file UUID"),
+  })
+  .describe("Result of a plaque schedule extraction run");
+
+/**
+ * Returns the stored plaque schedule data extracted from the job's PDF files.
+ * @summary Get plaque schedule for a job
+ */
+export const GetPlaqueScheduleParams = zod.object({
+  jobId: zod.coerce.string().uuid(),
+});
+
+export const GetPlaqueScheduleResponse = zod
+  .object({
+    jobId: zod.string().uuid(),
+    plaques: zod.array(
+      zod
+        .object({
+          id: zod.string().uuid(),
+          jobId: zod.string().uuid(),
+          typeId: zod
+            .string()
+            .describe('Plaque type identifier (e.g. \"P1\", \"P2\")'),
+          name: zod
+            .string()
+            .nullish()
+            .describe("Descriptive name of the plaque type"),
+          braille: zod
+            .boolean()
+            .nullish()
+            .describe("Whether the plaque requires Braille"),
+          insert: zod
+            .boolean()
+            .nullish()
+            .describe("Whether the plaque has an insert"),
+          insertSize: zod
+            .string()
+            .nullish()
+            .describe("Insert size specification"),
+          letterHeight: zod
+            .string()
+            .nullish()
+            .describe("Letter height specification"),
+          trigger: zod
+            .string()
+            .nullish()
+            .describe("Trigger condition for this plaque type"),
+          mapsToColumn: zod
+            .string()
+            .nullish()
+            .describe("Column in the sign schedule this type maps to"),
+          generalNotes: zod
+            .record(zod.string(), zod.unknown())
+            .nullish()
+            .describe("General notes associated with this plaque type"),
+          rawJson: zod
+            .record(zod.string(), zod.unknown())
+            .nullish()
+            .describe("Raw extracted JSON from AI"),
+          sourcePage: zod
+            .number()
+            .nullish()
+            .describe("PDF page number where this plaque type was found"),
+          createdAt: zod.date(),
+        })
+        .describe("A single plaque type extracted from the sign schedule"),
+    ),
+  })
+  .describe("Stored plaque schedule data for a job");
+
+/**
+ * Scans egress/life-safety drawings for occupant load tables, extracts room-level occupancy data, and identifies assembly rooms (occupant load >= 50).
+ * @summary Extract occupant loads from job PDFs
+ */
+export const ExtractOccupantLoadsParams = zod.object({
+  jobId: zod.coerce.string().uuid(),
+});
+
+export const ExtractOccupantLoadsResponse = zod
+  .object({
+    success: zod.boolean(),
+    jobId: zod.string().uuid(),
+    totalRooms: zod
+      .number()
+      .describe("Total number of rooms extracted across all files"),
+    totalInputTokens: zod
+      .number()
+      .describe("Total Gemini input tokens consumed"),
+    totalOutputTokens: zod
+      .number()
+      .describe("Total Gemini output tokens consumed"),
+    assemblyRoomCount: zod
+      .number()
+      .describe("Number of rooms identified as assembly occupancy"),
+    assemblyRooms: zod
+      .array(
+        zod
+          .object({
+            roomNumber: zod.string().describe("Room number or identifier"),
+            roomName: zod
+              .string()
+              .nullish()
+              .describe("Room name or description"),
+            occupantLoad: zod.number().describe("Occupant load for the room"),
+            occupancyGroup: zod
+              .string()
+              .nullish()
+              .describe("IBC occupancy group classification"),
+            isAssembly: zod
+              .boolean()
+              .describe("Always true for assembly rooms"),
+          })
+          .describe(
+            "A room identified as an assembly occupancy (occupant load >= 50)",
+          ),
+      )
+      .describe("Rooms identified as assembly occupancy (occupant load >= 50)"),
+    details: zod
+      .record(
+        zod.string(),
+        zod
+          .object({
+            roomCount: zod
+              .number()
+              .describe("Number of rooms extracted from this file"),
+            sourcePages: zod
+              .array(zod.number())
+              .describe(
+                "PDF page numbers where occupant load tables were found",
+              ),
+            skipped: zod
+              .boolean()
+              .describe(
+                "Whether this file was skipped (e.g. no other\/egress pages)",
+              ),
+            skipReason: zod
+              .string()
+              .nullish()
+              .describe("Reason the file was skipped, if applicable"),
+            inputTokens: zod
+              .number()
+              .describe("Gemini input tokens consumed for this file"),
+            outputTokens: zod
+              .number()
+              .describe("Gemini output tokens consumed for this file"),
+          })
+          .describe("Per-file result from an occupant loads extraction run"),
+      )
+      .describe("Per-file extraction details keyed by file UUID"),
+  })
+  .describe("Result of an occupant loads extraction run");
+
+/**
+ * Returns stored occupant load data and a list of identified assembly rooms.
+ * @summary Get occupant loads for a job
+ */
+export const GetOccupantLoadsParams = zod.object({
+  jobId: zod.coerce.string().uuid(),
+});
+
+export const GetOccupantLoadsResponse = zod
+  .object({
+    jobId: zod.string().uuid(),
+    loads: zod
+      .array(
+        zod
+          .object({
+            id: zod.string().uuid(),
+            jobId: zod.string().uuid(),
+            roomNum: zod.string().describe("Room number or identifier"),
+            roomName: zod
+              .string()
+              .nullish()
+              .describe("Room name or description"),
+            occupantLoad: zod
+              .number()
+              .nullish()
+              .describe("Calculated occupant load for the room"),
+            occupancyGroup: zod
+              .string()
+              .nullish()
+              .describe("IBC occupancy group classification (e.g. A-2, B, E)"),
+            sourcePage: zod
+              .number()
+              .nullish()
+              .describe("PDF page number where this occupant load was found"),
+            createdAt: zod.date(),
+          })
+          .describe(
+            "A single room's occupant load data extracted from egress drawings",
+          ),
+      )
+      .describe("All occupant load records for the job"),
+    assemblyRooms: zod
+      .array(
+        zod
+          .object({
+            roomNumber: zod.string().describe("Room number or identifier"),
+            roomName: zod
+              .string()
+              .nullish()
+              .describe("Room name or description"),
+            occupantLoad: zod.number().describe("Occupant load for the room"),
+            occupancyGroup: zod
+              .string()
+              .nullish()
+              .describe("IBC occupancy group classification"),
+            isAssembly: zod
+              .boolean()
+              .describe("Always true for assembly rooms"),
+          })
+          .describe(
+            "A room identified as an assembly occupancy (occupant load >= 50)",
+          ),
+      )
+      .describe("Rooms identified as assembly occupancy"),
+  })
+  .describe("Stored occupant loads data for a job");
 
 /**
  * Reads knowledge files from the knowledge directory, generates embeddings, and stores them in ChromaDB. Optionally filter by collection name or specific file path.

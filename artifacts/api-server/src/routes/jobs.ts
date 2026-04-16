@@ -2256,7 +2256,7 @@ router.get("/jobs/:jobId/occupant-loads", async (req, res) => {
     const assemblyRooms = loads
       .filter((r) => typeof r.occupantLoad === "number" && r.occupantLoad >= 50)
       .map((r) => ({
-        roomNum: r.roomNum,
+        roomNumber: r.roomNum,
         roomName: r.roomName,
         occupantLoad: r.occupantLoad,
         occupancyGroup: r.occupancyGroup,
