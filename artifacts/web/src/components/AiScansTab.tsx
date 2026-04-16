@@ -1,6 +1,6 @@
 import { useState, useCallback, useEffect } from "react";
 import { apiFetch } from "@/lib/apiClient";
-import { Brain, Play, Loader2, CheckCircle2, AlertTriangle, Info, Cpu, Eye, EyeOff, ChevronDown, ChevronRight } from "lucide-react";
+import { Brain, Play, Loader2, CheckCircle2, AlertTriangle, Info, Cpu, Eye, EyeOff, ChevronDown, ChevronRight, BookOpen, Users } from "lucide-react";
 
 export interface AiCallDescriptor {
   type: string;
@@ -20,6 +20,25 @@ interface AiScanResult {
 interface CallState {
   status: "idle" | "running" | "success" | "error";
   result?: AiScanResult;
+}
+
+interface PlaqueRow {
+  id: string;
+  typeId: string;
+  name: string | null;
+  braille: boolean | null;
+  letterHeight: string | null;
+  trigger: string | null;
+  insert: boolean | null;
+  insertSize: string | null;
+}
+
+interface OccupantLoadRow {
+  id: string;
+  roomNum: string;
+  roomName: string | null;
+  occupantLoad: number | null;
+  occupancyGroup: string | null;
 }
 
 const CALL_TYPE_ICONS: Record<string, React.ReactNode> = {
@@ -51,6 +70,20 @@ export function AiScansTab({
   const [selectedTypes, setSelectedTypes] = useState<Set<string>>(new Set());
   const [expandedPrompts, setExpandedPrompts] = useState<Set<string>>(new Set());
 
+  // Plaque Schedule state
+  const [plaqueStatus, setPlaqueStatus] = useState<"idle" | "running" | "success" | "error">("idle");
+  const [plaqueError, setPlaqueError] = useState<string | null>(null);
+  const [plaqueLoadError, setPlaqueLoadError] = useState<string | null>(null);
+  const [plaqueRows, setPlaqueRows] = useState<PlaqueRow[]>([]);
+  const [plaqueLoading, setPlaqueLoading] = useState(true);
+
+  // Occupant Loads state
+  const [occupantStatus, setOccupantStatus] = useState<"idle" | "running" | "success" | "error">("idle");
+  const [occupantError, setOccupantError] = useState<string | null>(null);
+  const [occupantLoadError, setOccupantLoadError] = useState<string | null>(null);
+  const [occupantRows, setOccupantRows] = useState<OccupantLoadRow[]>([]);
+  const [occupantLoading, setOccupantLoading] = useState(true);
+
   useEffect(() => {
     setRegistryLoading(true);
     apiFetch(`/api/jobs/${jobId}/ai-calls`)
@@ -59,7 +92,6 @@ export function AiScansTab({
         const registry = data.callTypes ?? [];
         setCallRegistry(registry);
         setRegistryError(null);
-        // Sync default selection from live registry (all enabled by default)
         setSelectedTypes((prev) =>
           prev.size === 0 ? new Set(registry.map((c: AiCallDescriptor) => c.type)) : prev
         );
@@ -68,6 +100,42 @@ export function AiScansTab({
         setRegistryError(String(err));
       })
       .finally(() => setRegistryLoading(false));
+  }, [jobId]);
+
+  // Load existing plaque schedule on mount
+  useEffect(() => {
+    setPlaqueLoading(true);
+    setPlaqueLoadError(null);
+    apiFetch(`/api/jobs/${jobId}/plaque-schedule`)
+      .then((res) => {
+        if (!res.ok) throw new Error(`Server error ${res.status}`);
+        return res.json();
+      })
+      .then((data: { plaques: PlaqueRow[] }) => {
+        setPlaqueRows(data.plaques ?? []);
+      })
+      .catch((err) => {
+        setPlaqueLoadError(String(err));
+      })
+      .finally(() => setPlaqueLoading(false));
+  }, [jobId]);
+
+  // Load existing occupant loads on mount
+  useEffect(() => {
+    setOccupantLoading(true);
+    setOccupantLoadError(null);
+    apiFetch(`/api/jobs/${jobId}/occupant-loads`)
+      .then((res) => {
+        if (!res.ok) throw new Error(`Server error ${res.status}`);
+        return res.json();
+      })
+      .then((data: { loads: OccupantLoadRow[] }) => {
+        setOccupantRows(data.loads ?? []);
+      })
+      .catch((err) => {
+        setOccupantLoadError(String(err));
+      })
+      .finally(() => setOccupantLoading(false));
   }, [jobId]);
 
   const isRunning = (type: string) => callStates[type]?.status === "running";
@@ -135,6 +203,54 @@ export function AiScansTab({
       else next.add(type);
       return next;
     });
+  };
+
+  const handleExtractPlaqueSchedule = async () => {
+    setPlaqueStatus("running");
+    setPlaqueError(null);
+    try {
+      const res = await apiFetch(`/api/jobs/${jobId}/extract-plaque-schedule`, { method: "POST" });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        // Refresh plaque rows from GET
+        const getRes = await apiFetch(`/api/jobs/${jobId}/plaque-schedule`);
+        if (getRes.ok) {
+          const getData: { plaques: PlaqueRow[] } = await getRes.json();
+          setPlaqueRows(getData.plaques ?? []);
+        }
+        setPlaqueStatus("success");
+      } else {
+        setPlaqueError(data.error ?? "Extraction failed");
+        setPlaqueStatus("error");
+      }
+    } catch (err) {
+      setPlaqueError(String(err));
+      setPlaqueStatus("error");
+    }
+  };
+
+  const handleExtractOccupantLoads = async () => {
+    setOccupantStatus("running");
+    setOccupantError(null);
+    try {
+      const res = await apiFetch(`/api/jobs/${jobId}/extract-occupant-loads`, { method: "POST" });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        // Refresh occupant rows from GET
+        const getRes = await apiFetch(`/api/jobs/${jobId}/occupant-loads`);
+        if (getRes.ok) {
+          const getData: { loads: OccupantLoadRow[] } = await getRes.json();
+          setOccupantRows(getData.loads ?? []);
+        }
+        setOccupantStatus("success");
+      } else {
+        setOccupantError(data.error ?? "Extraction failed");
+        setOccupantStatus("error");
+      }
+    } catch (err) {
+      setOccupantError(String(err));
+      setOccupantStatus("error");
+    }
   };
 
   const lastRunResult = Object.values(callStates).find((s) => s.status === "success")?.result;
@@ -328,6 +444,233 @@ export function AiScansTab({
         </div>
       )}
 
+      {/* ── Step 3: Plaque Schedule ─────────────────────────────────────────────── */}
+      <div className="rounded-lg border border-border bg-card">
+        <div className="flex items-center justify-between gap-3 p-3 border-b border-border">
+          <div className="flex items-center gap-2">
+            <BookOpen className="w-4 h-4 text-amber-400 flex-shrink-0" />
+            <div>
+              <span className="text-xs font-medium text-foreground">Step 3: Plaque Schedule</span>
+              <p className="text-[11px] text-muted-foreground mt-0.5">
+                Extract sign type definitions (plaque types, braille, letter height) from the sign schedule pages.
+              </p>
+            </div>
+          </div>
+          <button
+            onClick={handleExtractPlaqueSchedule}
+            disabled={plaqueStatus === "running"}
+            className={`flex-shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded text-[11px] font-medium border transition-all disabled:opacity-50 disabled:cursor-not-allowed ${
+              plaqueStatus === "success"
+                ? "bg-amber-500/10 text-amber-400 border-amber-500/20 hover:bg-amber-500/20"
+                : plaqueStatus === "error"
+                ? "bg-destructive/10 text-destructive border-destructive/20 hover:bg-destructive/20"
+                : "bg-secondary text-muted-foreground border-border hover:text-foreground"
+            }`}
+          >
+            {plaqueStatus === "running" ? (
+              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+            ) : plaqueStatus === "success" ? (
+              <CheckCircle2 className="w-3.5 h-3.5" />
+            ) : plaqueStatus === "error" ? (
+              <AlertTriangle className="w-3.5 h-3.5" />
+            ) : (
+              <Play className="w-3.5 h-3.5" />
+            )}
+            {plaqueStatus === "running"
+              ? "Running…"
+              : plaqueStatus === "success"
+              ? "Re-run"
+              : plaqueStatus === "error"
+              ? "Retry"
+              : "Run"}
+          </button>
+        </div>
+
+        {plaqueError && (
+          <div className="flex items-center gap-2 px-3 py-2 text-[11px] text-destructive border-b border-border">
+            <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0" />
+            {plaqueError}
+          </div>
+        )}
+        {plaqueLoadError && !plaqueLoading && (
+          <div className="flex items-center gap-2 px-3 py-2 text-[11px] text-destructive border-b border-border">
+            <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0" />
+            Could not load saved plaque schedule: {plaqueLoadError}
+          </div>
+        )}
+
+        {plaqueLoading ? (
+          <div className="flex items-center gap-2 px-3 py-4 text-xs text-muted-foreground">
+            <Loader2 className="w-3.5 h-3.5 animate-spin" /> Loading plaque schedule…
+          </div>
+        ) : plaqueLoadError ? null : plaqueRows.length === 0 ? (
+          <div className="px-3 py-4 text-[11px] text-muted-foreground">
+            No plaque types extracted yet. Run the extraction above.
+          </div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-[11px]">
+              <thead>
+                <tr className="border-b border-border bg-secondary/30">
+                  <th className="px-3 py-2 text-left font-medium text-muted-foreground">Type ID</th>
+                  <th className="px-3 py-2 text-left font-medium text-muted-foreground">Name</th>
+                  <th className="px-3 py-2 text-left font-medium text-muted-foreground">Braille</th>
+                  <th className="px-3 py-2 text-left font-medium text-muted-foreground">Letter Height</th>
+                  <th className="px-3 py-2 text-left font-medium text-muted-foreground">Trigger</th>
+                </tr>
+              </thead>
+              <tbody>
+                {plaqueRows.map((row) => (
+                  <tr key={row.id} className="border-b border-border/50 hover:bg-secondary/20 transition-colors">
+                    <td className="px-3 py-2 font-mono text-amber-400">{row.typeId}</td>
+                    <td className="px-3 py-2 text-foreground">{row.name ?? <span className="text-muted-foreground/50">—</span>}</td>
+                    <td className="px-3 py-2">
+                      {row.braille === true ? (
+                        <span className="text-emerald-400">Yes</span>
+                      ) : row.braille === false ? (
+                        <span className="text-muted-foreground">No</span>
+                      ) : (
+                        <span className="text-muted-foreground/50">—</span>
+                      )}
+                    </td>
+                    <td className="px-3 py-2 text-foreground">{row.letterHeight ?? <span className="text-muted-foreground/50">—</span>}</td>
+                    <td className="px-3 py-2 text-foreground">{row.trigger ?? <span className="text-muted-foreground/50">—</span>}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            <div className="px-3 py-2 text-[10px] text-muted-foreground border-t border-border/50">
+              {plaqueRows.length} plaque type{plaqueRows.length !== 1 ? "s" : ""} extracted
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* ── Step 4b: Occupant Loads ─────────────────────────────────────────────── */}
+      <div className="rounded-lg border border-border bg-card">
+        <div className="flex items-center justify-between gap-3 p-3 border-b border-border">
+          <div className="flex items-center gap-2">
+            <Users className="w-4 h-4 text-sky-400 flex-shrink-0" />
+            <div>
+              <span className="text-xs font-medium text-foreground">Step 4b: Occupant Loads</span>
+              <p className="text-[11px] text-muted-foreground mt-0.5">
+                Scan egress drawings for room capacities and occupancy groups. Assembly rooms (≥ 50 occupants) are highlighted.
+              </p>
+            </div>
+          </div>
+          <button
+            onClick={handleExtractOccupantLoads}
+            disabled={occupantStatus === "running"}
+            className={`flex-shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded text-[11px] font-medium border transition-all disabled:opacity-50 disabled:cursor-not-allowed ${
+              occupantStatus === "success"
+                ? "bg-sky-500/10 text-sky-400 border-sky-500/20 hover:bg-sky-500/20"
+                : occupantStatus === "error"
+                ? "bg-destructive/10 text-destructive border-destructive/20 hover:bg-destructive/20"
+                : "bg-secondary text-muted-foreground border-border hover:text-foreground"
+            }`}
+          >
+            {occupantStatus === "running" ? (
+              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+            ) : occupantStatus === "success" ? (
+              <CheckCircle2 className="w-3.5 h-3.5" />
+            ) : occupantStatus === "error" ? (
+              <AlertTriangle className="w-3.5 h-3.5" />
+            ) : (
+              <Play className="w-3.5 h-3.5" />
+            )}
+            {occupantStatus === "running"
+              ? "Running…"
+              : occupantStatus === "success"
+              ? "Re-run"
+              : occupantStatus === "error"
+              ? "Retry"
+              : "Run"}
+          </button>
+        </div>
+
+        {occupantError && (
+          <div className="flex items-center gap-2 px-3 py-2 text-[11px] text-destructive border-b border-border">
+            <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0" />
+            {occupantError}
+          </div>
+        )}
+
+        {occupantLoadError && !occupantLoading && (
+          <div className="flex items-center gap-2 px-3 py-2 text-[11px] text-destructive border-b border-border">
+            <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0" />
+            Could not load saved occupant loads: {occupantLoadError}
+          </div>
+        )}
+
+        {occupantLoading ? (
+          <div className="flex items-center gap-2 px-3 py-4 text-xs text-muted-foreground">
+            <Loader2 className="w-3.5 h-3.5 animate-spin" /> Loading occupant loads…
+          </div>
+        ) : occupantLoadError ? null : occupantRows.length === 0 ? (
+          <div className="px-3 py-4 text-[11px] text-muted-foreground">
+            No occupant load data extracted yet. Run the extraction above.
+          </div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-[11px]">
+              <thead>
+                <tr className="border-b border-border bg-secondary/30">
+                  <th className="px-3 py-2 text-left font-medium text-muted-foreground">Room #</th>
+                  <th className="px-3 py-2 text-left font-medium text-muted-foreground">Room Name</th>
+                  <th className="px-3 py-2 text-left font-medium text-muted-foreground">Occupant Load</th>
+                  <th className="px-3 py-2 text-left font-medium text-muted-foreground">Occupancy Group</th>
+                </tr>
+              </thead>
+              <tbody>
+                {occupantRows.map((row) => {
+                  const isAssembly = typeof row.occupantLoad === "number" && row.occupantLoad >= 50;
+                  return (
+                    <tr
+                      key={row.id}
+                      className={`border-b border-border/50 transition-colors ${
+                        isAssembly
+                          ? "bg-orange-500/8 hover:bg-orange-500/12"
+                          : "hover:bg-secondary/20"
+                      }`}
+                    >
+                      <td className="px-3 py-2 font-mono text-sky-400">{row.roomNum}</td>
+                      <td className="px-3 py-2 text-foreground">
+                        {row.roomName ?? <span className="text-muted-foreground/50">—</span>}
+                      </td>
+                      <td className="px-3 py-2">
+                        {row.occupantLoad !== null && row.occupantLoad !== undefined ? (
+                          <span className={isAssembly ? "text-orange-400 font-semibold" : "text-foreground"}>
+                            {row.occupantLoad}
+                            {isAssembly && (
+                              <span className="ml-1.5 text-[10px] font-normal px-1 py-0.5 rounded bg-orange-500/15 text-orange-400 border border-orange-500/20">
+                                assembly
+                              </span>
+                            )}
+                          </span>
+                        ) : (
+                          <span className="text-muted-foreground/50">—</span>
+                        )}
+                      </td>
+                      <td className="px-3 py-2 text-foreground">
+                        {row.occupancyGroup ?? <span className="text-muted-foreground/50">—</span>}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+            <div className="px-3 py-2 text-[10px] text-muted-foreground border-t border-border/50 flex items-center gap-3">
+              <span>{occupantRows.length} room{occupantRows.length !== 1 ? "s" : ""} extracted</span>
+              {occupantRows.filter((r) => typeof r.occupantLoad === "number" && r.occupantLoad >= 50).length > 0 && (
+                <span className="text-orange-400">
+                  · {occupantRows.filter((r) => typeof r.occupantLoad === "number" && r.occupantLoad >= 50).length} assembly room{occupantRows.filter((r) => typeof r.occupantLoad === "number" && r.occupantLoad >= 50).length !== 1 ? "s" : ""}
+                </span>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
+
       {/* Legend */}
       <div className="space-y-2">
         {/* Color swatch row */}
@@ -344,6 +687,10 @@ export function AiScansTab({
             <span className="inline-block w-3 h-3 rounded-full border-2 border-violet-500 border-dashed flex-shrink-0" />
             <span>AI-sourced floor plan marker</span>
           </div>
+          <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
+            <span className="inline-block w-3 h-3 rounded-sm bg-orange-500/15 border border-orange-500/20 flex-shrink-0" />
+            <span>Assembly room (≥ 50 occupants)</span>
+          </div>
         </div>
         {/* Call type legend */}
         <div className="flex items-start gap-3 p-3 rounded-lg bg-secondary/30 border border-border">
@@ -353,6 +700,8 @@ export function AiScansTab({
             <p><strong className="text-orange-400">Vision Fallback</strong> + <strong className="text-orange-400">Bbox Detection</strong> — visual scans of floor plan images. Useful for callouts not in the text layer.</p>
             <p><strong className="text-blue-400">Project Info</strong> — reads title blocks to fill project location fields. Run once per job.</p>
             <p><strong className="text-amber-400">Title Block Vision</strong> — uses AI vision to detect floor level names from each page's title block.</p>
+            <p><strong className="text-amber-400">Step 3: Plaque Schedule</strong> — extracts sign type definitions from the plaque/sign schedule pages.</p>
+            <p><strong className="text-sky-400">Step 4b: Occupant Loads</strong> — scans egress drawings for room capacities; assembly rooms are flagged for R9/R10 compliance.</p>
           </div>
         </div>
       </div>
