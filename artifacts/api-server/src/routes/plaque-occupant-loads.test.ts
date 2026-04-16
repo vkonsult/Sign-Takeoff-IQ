@@ -62,6 +62,8 @@ let loadsQueryResult: unknown[] = FAKE_LOADS;
 let signsQueryResult: unknown[] = [];
 // Result returned by delete().where().returning() — default is the first plaque (success)
 let deleteReturningResult: unknown[] = [FAKE_PLAQUES[0]];
+// Result returned by update().set().where().returning()
+let updateReturningResult: unknown[] = [{ ...FAKE_LOADS[0], manuallyEdited: false }];
 
 // Track which table was queried so tests can inspect behaviour
 let lastQueriedTable: unknown = null;
@@ -102,6 +104,13 @@ vi.mock("@workspace/db", () => {
     delete: vi.fn().mockImplementation(() => ({
       where: vi.fn().mockReturnValue({
         returning: vi.fn().mockImplementation(() => Promise.resolve(deleteReturningResult)),
+      }),
+    })),
+    update: vi.fn().mockImplementation(() => ({
+      set: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockImplementation(() => Promise.resolve(updateReturningResult)),
+        }),
       }),
     })),
     insert: vi.fn().mockImplementation(() => ({ values: vi.fn().mockResolvedValue(undefined) })),
@@ -466,6 +475,116 @@ describe("DELETE /jobs/:jobId/plaque-schedule/:id", () => {
   });
 });
 
+describe("PUT /jobs/:jobId/occupant-loads/:id (unlock)", () => {
+  let app: express.Express;
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    jobQueryResult = [FAKE_JOB];
+    updateReturningResult = [{ ...FAKE_LOADS[0], manuallyEdited: false }];
+    app = await buildApp();
+  });
+
+  it("returns 200 and sets manuallyEdited=false when unlock-only PUT is sent", async () => {
+    const res = await supertest(app)
+      .put("/jobs/job-111/occupant-loads/load-1")
+      .send({ manuallyEdited: false });
+    expect(res.status).toBe(200);
+    expect(res.body.load.manuallyEdited).toBe(false);
+  });
+
+  it("returns 200 and sets manuallyEdited=true for a normal edit", async () => {
+    updateReturningResult = [{ ...FAKE_LOADS[0], roomName: "Updated Room", manuallyEdited: true }];
+    const res = await supertest(app)
+      .put("/jobs/job-111/occupant-loads/load-1")
+      .send({ roomName: "Updated Room" });
+    expect(res.status).toBe(200);
+    expect(res.body.load.manuallyEdited).toBe(true);
+    expect(res.body.load.roomName).toBe("Updated Room");
+  });
+
+  it("returns 400 when no fields are provided", async () => {
+    const res = await supertest(app)
+      .put("/jobs/job-111/occupant-loads/load-1")
+      .send({});
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/no fields/i);
+  });
+
+  it("returns 404 when occupant load does not exist", async () => {
+    updateReturningResult = [];
+    const res = await supertest(app)
+      .put("/jobs/job-111/occupant-loads/nonexistent")
+      .send({ manuallyEdited: false });
+    expect(res.status).toBe(404);
+    expect(res.body.error).toMatch(/not found/i);
+  });
+
+  it("returns 404 when job does not exist", async () => {
+    jobQueryResult = [];
+    const res = await supertest(app)
+      .put("/jobs/nonexistent-job/occupant-loads/load-1")
+      .send({ manuallyEdited: false });
+    expect(res.status).toBe(404);
+    expect(res.body.error).toMatch(/not found/i);
+  });
+});
+
+describe("PUT /jobs/:jobId/plaque-schedule/:id (unlock)", () => {
+  let app: express.Express;
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    jobQueryResult = [FAKE_JOB];
+    updateReturningResult = [{ ...FAKE_PLAQUES[0], manuallyEdited: false }];
+    app = await buildApp();
+  });
+
+  it("returns 200 and sets manuallyEdited=false when unlock-only PUT is sent", async () => {
+    const res = await supertest(app)
+      .put("/jobs/job-111/plaque-schedule/plaque-1")
+      .send({ manuallyEdited: false });
+    expect(res.status).toBe(200);
+    expect(res.body.plaque.manuallyEdited).toBe(false);
+  });
+
+  it("returns 200 and sets manuallyEdited=true for a normal edit", async () => {
+    updateReturningResult = [{ ...FAKE_PLAQUES[0], name: "Updated Name", manuallyEdited: true }];
+    const res = await supertest(app)
+      .put("/jobs/job-111/plaque-schedule/plaque-1")
+      .send({ name: "Updated Name" });
+    expect(res.status).toBe(200);
+    expect(res.body.plaque.manuallyEdited).toBe(true);
+    expect(res.body.plaque.name).toBe("Updated Name");
+  });
+
+  it("returns 400 when no fields are provided", async () => {
+    const res = await supertest(app)
+      .put("/jobs/job-111/plaque-schedule/plaque-1")
+      .send({});
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/no fields/i);
+  });
+
+  it("returns 404 when plaque row does not exist", async () => {
+    updateReturningResult = [];
+    const res = await supertest(app)
+      .put("/jobs/job-111/plaque-schedule/nonexistent")
+      .send({ manuallyEdited: false });
+    expect(res.status).toBe(404);
+    expect(res.body.error).toMatch(/not found/i);
+  });
+
+  it("returns 404 when job does not exist", async () => {
+    jobQueryResult = [];
+    const res = await supertest(app)
+      .put("/jobs/nonexistent-job/plaque-schedule/plaque-1")
+      .send({ manuallyEdited: false });
+    expect(res.status).toBe(404);
+    expect(res.body.error).toMatch(/not found/i);
+  });
+});
+
 describe("POST /jobs/:jobId/extract-occupant-loads", () => {
   let app: express.Express;
 
@@ -499,6 +618,7 @@ describe("POST /jobs/:jobId/extract-occupant-loads", () => {
     expect(persistOccupantLoads).toHaveBeenCalledWith(
       "job-111",
       expect.any(Array),
+      expect.anything(),
       expect.anything(),
     );
   });

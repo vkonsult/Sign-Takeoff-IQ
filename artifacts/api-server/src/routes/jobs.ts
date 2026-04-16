@@ -2354,6 +2354,7 @@ const OccupantLoadUpdateSchema = z.object({
   roomName: z.string().nullable().optional(),
   occupantLoad: z.number().nonnegative().nullable().optional(),
   occupancyGroup: z.string().nullable().optional(),
+  manuallyEdited: z.boolean().optional(),
 });
 
 router.put("/jobs/:jobId/occupant-loads/:id", async (req, res) => {
@@ -2370,13 +2371,18 @@ router.put("/jobs/:jobId/occupant-loads/:id", async (req, res) => {
     const job = await getJobWithOrgCheck(req, res, jobId);
     if (!job) return;
 
-    const updateData: Record<string, unknown> = { manuallyEdited: true };
+    const updateData: Record<string, unknown> = {
+      manuallyEdited: parsed.data.manuallyEdited !== undefined ? parsed.data.manuallyEdited : true,
+    };
     if (parsed.data.roomNum !== undefined) updateData.roomNum = parsed.data.roomNum;
     if (parsed.data.roomName !== undefined) updateData.roomName = parsed.data.roomName;
     if (parsed.data.occupantLoad !== undefined) updateData.occupantLoad = parsed.data.occupantLoad;
     if (parsed.data.occupancyGroup !== undefined) updateData.occupancyGroup = parsed.data.occupancyGroup;
 
-    if (Object.keys(updateData).length <= 1) {
+    const hasDataFields = parsed.data.roomNum !== undefined || parsed.data.roomName !== undefined ||
+      parsed.data.occupantLoad !== undefined || parsed.data.occupancyGroup !== undefined ||
+      parsed.data.manuallyEdited !== undefined;
+    if (!hasDataFields) {
       res.status(400).json({ error: "No fields provided to update" });
       return;
     }
@@ -2527,6 +2533,7 @@ const PlaqueScheduleUpdateSchema = z.object({
   braille: z.boolean().nullable().optional(),
   letterHeight: z.string().nullable().optional(),
   trigger: z.string().nullable().optional(),
+  manuallyEdited: z.boolean().optional(),
 });
 
 router.put("/jobs/:jobId/plaque-schedule/:id", async (req, res) => {
@@ -2543,14 +2550,19 @@ router.put("/jobs/:jobId/plaque-schedule/:id", async (req, res) => {
     const job = await getJobWithOrgCheck(req, res, jobId);
     if (!job) return;
 
-    const updateData: Record<string, unknown> = { manuallyEdited: true };
+    const updateData: Record<string, unknown> = {
+      manuallyEdited: parsed.data.manuallyEdited !== undefined ? parsed.data.manuallyEdited : true,
+    };
     if (parsed.data.typeId !== undefined) updateData.typeId = parsed.data.typeId;
     if (parsed.data.name !== undefined) updateData.name = parsed.data.name;
     if (parsed.data.braille !== undefined) updateData.braille = parsed.data.braille;
     if (parsed.data.letterHeight !== undefined) updateData.letterHeight = parsed.data.letterHeight;
     if (parsed.data.trigger !== undefined) updateData.trigger = parsed.data.trigger;
 
-    if (Object.keys(updateData).length <= 1) {
+    const hasDataFields = parsed.data.typeId !== undefined || parsed.data.name !== undefined ||
+      parsed.data.braille !== undefined || parsed.data.letterHeight !== undefined ||
+      parsed.data.trigger !== undefined || parsed.data.manuallyEdited !== undefined;
+    if (!hasDataFields) {
       res.status(400).json({ error: "No fields provided to update" });
       return;
     }

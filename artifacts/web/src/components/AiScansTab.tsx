@@ -1,6 +1,6 @@
 import { useState, useCallback, useEffect, useRef } from "react";
 import { apiFetch } from "@/lib/apiClient";
-import { Brain, Play, Loader2, CheckCircle2, AlertTriangle, Info, Cpu, Eye, EyeOff, ChevronDown, ChevronRight, BookOpen, Users, Pencil, Trash2, Plus, Check, X } from "lucide-react";
+import { Brain, Play, Loader2, CheckCircle2, AlertTriangle, Info, Cpu, Eye, EyeOff, ChevronDown, ChevronRight, BookOpen, Users, Pencil, Trash2, Plus, Check, X, Lock } from "lucide-react";
 
 export interface AiCallDescriptor {
   type: string;
@@ -31,6 +31,7 @@ interface PlaqueRow {
   trigger: string | null;
   insert: boolean | null;
   insertSize: string | null;
+  manuallyEdited: boolean | null;
 }
 
 interface OccupantLoadRow {
@@ -39,6 +40,7 @@ interface OccupantLoadRow {
   roomName: string | null;
   occupantLoad: number | null;
   occupancyGroup: string | null;
+  manuallyEdited: boolean | null;
 }
 
 const CALL_TYPE_ICONS: Record<string, React.ReactNode> = {
@@ -90,6 +92,7 @@ export function AiScansTab({
   const [plaqueEditSaving, setPlaqueEditSaving] = useState(false);
   const [plaqueEditError, setPlaqueEditError] = useState<string | null>(null);
   const [plaqueDeletingId, setPlaqueDeletingId] = useState<string | null>(null);
+  const [plaqueUnlockingId, setPlaqueUnlockingId] = useState<string | null>(null);
   const [plaqueConfirmDeleteId, setPlaqueConfirmDeleteId] = useState<string | null>(null);
   const [showPlaqueConfirm, setShowPlaqueConfirm] = useState(false);
   const plaqueConfirmRef = useRef<HTMLTableRowElement | null>(null);
@@ -102,6 +105,7 @@ export function AiScansTab({
   const [editSaving, setEditSaving] = useState(false);
   const [editError, setEditError] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [unlockingId, setUnlockingId] = useState<string | null>(null);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const confirmRef = useRef<HTMLTableRowElement | null>(null);
 
@@ -409,6 +413,28 @@ export function AiScansTab({
     }
   };
 
+  const handleUnlockPlaqueRow = async (id: string) => {
+    setPlaqueUnlockingId(id);
+    setPlaqueEditError(null);
+    try {
+      const res = await apiFetch(`/api/jobs/${jobId}/plaque-schedule/${id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ manuallyEdited: false }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setPlaqueEditError(data.error ?? "Failed to unlock row.");
+        return;
+      }
+      setPlaqueRows((prev) => prev.map((r) => r.id === id ? (data.plaque as PlaqueRow) : r));
+    } catch (err) {
+      setPlaqueEditError(String(err));
+    } finally {
+      setPlaqueUnlockingId(null);
+    }
+  };
+
   const handleExtractOccupantLoads = async () => {
     setOccupantStatus("running");
     setOccupantError(null);
@@ -539,6 +565,28 @@ export function AiScansTab({
       setEditError(String(err));
     } finally {
       setDeletingId(null);
+    }
+  };
+
+  const handleUnlockRow = async (id: string) => {
+    setUnlockingId(id);
+    setEditError(null);
+    try {
+      const res = await apiFetch(`/api/jobs/${jobId}/occupant-loads/${id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ manuallyEdited: false }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setEditError(data.error ?? "Failed to unlock row.");
+        return;
+      }
+      setOccupantRows((prev) => prev.map((r) => r.id === id ? (data.load as OccupantLoadRow) : r));
+    } catch (err) {
+      setEditError(String(err));
+    } finally {
+      setUnlockingId(null);
     }
   };
 
@@ -912,11 +960,12 @@ export function AiScansTab({
                       );
                     }
 
+                    const isPlaqueUnlocking = plaqueUnlockingId === row.id;
                     return (
                       <tr
                         key={row.id}
                         ref={plaqueConfirmDeleteId === row.id ? plaqueConfirmRef : null}
-                        className={`border-b border-border/50 hover:bg-secondary/20 transition-colors group ${isDeleting ? "opacity-40" : ""}`}
+                        className={`border-b border-border/50 hover:bg-secondary/20 transition-colors group ${isDeleting || isPlaqueUnlocking ? "opacity-40" : ""}`}
                       >
                         <td className="px-3 py-2 font-mono text-amber-400">{row.typeId}</td>
                         <td className="px-3 py-2 text-foreground">{row.name ?? <span className="text-muted-foreground/50">—</span>}</td>
@@ -953,23 +1002,36 @@ export function AiScansTab({
                               </button>
                             </div>
                           ) : (
-                            <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                              <button
-                                onClick={() => handleEditPlaqueRow(row)}
-                                disabled={plaqueEditingId !== null || plaqueDeletingId !== null || plaqueConfirmDeleteId !== null}
-                                className="flex items-center justify-center w-6 h-6 rounded text-muted-foreground hover:text-amber-400 hover:bg-amber-500/10 transition-colors disabled:opacity-30"
-                                title="Edit row"
-                              >
-                                <Pencil className="w-3 h-3" />
-                              </button>
-                              <button
-                                onClick={() => setPlaqueConfirmDeleteId(row.id)}
-                                disabled={plaqueEditingId !== null || plaqueDeletingId !== null || plaqueConfirmDeleteId !== null}
-                                className="flex items-center justify-center w-6 h-6 rounded text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors disabled:opacity-30"
-                                title="Delete row"
-                              >
-                                <Trash2 className="w-3 h-3" />
-                              </button>
+                            <div className="flex items-center gap-1">
+                              {row.manuallyEdited && (
+                                <button
+                                  onClick={() => handleUnlockPlaqueRow(row.id)}
+                                  disabled={plaqueEditingId !== null || plaqueDeletingId !== null || plaqueUnlockingId !== null || plaqueConfirmDeleteId !== null}
+                                  className="flex items-center justify-center w-6 h-6 rounded text-amber-400 hover:text-emerald-400 hover:bg-emerald-500/10 transition-colors disabled:opacity-30"
+                                  title="Unlock row — allow AI to update again"
+                                  aria-label="Unlock row"
+                                >
+                                  {isPlaqueUnlocking ? <Loader2 className="w-3 h-3 animate-spin" /> : <Lock className="w-3 h-3" />}
+                                </button>
+                              )}
+                              <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                                <button
+                                  onClick={() => handleEditPlaqueRow(row)}
+                                  disabled={plaqueEditingId !== null || plaqueDeletingId !== null || plaqueUnlockingId !== null || plaqueConfirmDeleteId !== null}
+                                  className="flex items-center justify-center w-6 h-6 rounded text-muted-foreground hover:text-amber-400 hover:bg-amber-500/10 transition-colors disabled:opacity-30"
+                                  title="Edit row"
+                                >
+                                  <Pencil className="w-3 h-3" />
+                                </button>
+                                <button
+                                  onClick={() => setPlaqueConfirmDeleteId(row.id)}
+                                  disabled={plaqueEditingId !== null || plaqueDeletingId !== null || plaqueUnlockingId !== null || plaqueConfirmDeleteId !== null}
+                                  className="flex items-center justify-center w-6 h-6 rounded text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors disabled:opacity-30"
+                                  title="Delete row"
+                                >
+                                  <Trash2 className="w-3 h-3" />
+                                </button>
+                              </div>
                             </div>
                           )}
                         </td>
@@ -1247,13 +1309,14 @@ export function AiScansTab({
                       );
                     }
 
+                    const isUnlocking = unlockingId === row.id;
                     return (
                       <tr
                         key={row.id}
                         ref={confirmDeleteId === row.id ? confirmRef : null}
                         className={`border-b border-border/50 transition-colors group ${
                           isAssembly ? "bg-orange-500/8 hover:bg-orange-500/12" : "hover:bg-secondary/20"
-                        } ${isDeleting ? "opacity-40" : ""}`}
+                        } ${isDeleting || isUnlocking ? "opacity-40" : ""}`}
                       >
                         <td className="px-3 py-2 font-mono text-sky-400">{row.roomNum}</td>
                         <td className="px-3 py-2 text-foreground">
@@ -1298,23 +1361,36 @@ export function AiScansTab({
                               </button>
                             </div>
                           ) : (
-                            <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                              <button
-                                onClick={() => handleEditRow(row)}
-                                disabled={editingId !== null || deletingId !== null || confirmDeleteId !== null}
-                                className="flex items-center justify-center w-6 h-6 rounded text-muted-foreground hover:text-sky-400 hover:bg-sky-500/10 transition-colors disabled:opacity-30"
-                                title="Edit row"
-                              >
-                                <Pencil className="w-3 h-3" />
-                              </button>
-                              <button
-                                onClick={() => setConfirmDeleteId(row.id)}
-                                disabled={editingId !== null || deletingId !== null || confirmDeleteId !== null}
-                                className="flex items-center justify-center w-6 h-6 rounded text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors disabled:opacity-30"
-                                title="Delete row"
-                              >
-                                <Trash2 className="w-3 h-3" />
-                              </button>
+                            <div className="flex items-center gap-1">
+                              {row.manuallyEdited && (
+                                <button
+                                  onClick={() => handleUnlockRow(row.id)}
+                                  disabled={editingId !== null || deletingId !== null || unlockingId !== null || confirmDeleteId !== null}
+                                  className="flex items-center justify-center w-6 h-6 rounded text-sky-400 hover:text-emerald-400 hover:bg-emerald-500/10 transition-colors disabled:opacity-30"
+                                  title="Unlock row — allow AI to update again"
+                                  aria-label="Unlock row"
+                                >
+                                  {isUnlocking ? <Loader2 className="w-3 h-3 animate-spin" /> : <Lock className="w-3 h-3" />}
+                                </button>
+                              )}
+                              <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                                <button
+                                  onClick={() => handleEditRow(row)}
+                                  disabled={editingId !== null || deletingId !== null || unlockingId !== null || confirmDeleteId !== null}
+                                  className="flex items-center justify-center w-6 h-6 rounded text-muted-foreground hover:text-sky-400 hover:bg-sky-500/10 transition-colors disabled:opacity-30"
+                                  title="Edit row"
+                                >
+                                  <Pencil className="w-3 h-3" />
+                                </button>
+                                <button
+                                  onClick={() => setConfirmDeleteId(row.id)}
+                                  disabled={editingId !== null || deletingId !== null || unlockingId !== null || confirmDeleteId !== null}
+                                  className="flex items-center justify-center w-6 h-6 rounded text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors disabled:opacity-30"
+                                  title="Delete row"
+                                >
+                                  <Trash2 className="w-3 h-3" />
+                                </button>
+                              </div>
                             </div>
                           )}
                         </td>
