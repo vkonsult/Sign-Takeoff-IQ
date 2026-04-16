@@ -32,10 +32,10 @@ const ACTION_LABELS: Record<string, string> = {
   pdf_exported: "exported PDF for",
 };
 
-type SortBy = "name" | "status" | "createdAt" | "updatedAt" | "plaqueCount" | "occupantLoadCount";
+type SortBy = "name" | "status" | "createdAt" | "updatedAt" | "plaqueCount" | "occupantLoadCount" | "unplacedCount";
 type SortDir = "asc" | "desc";
 
-const VALID_SORT_COLS: SortBy[] = ["name", "status", "createdAt", "updatedAt", "plaqueCount", "occupantLoadCount"];
+const VALID_SORT_COLS: SortBy[] = ["name", "status", "createdAt", "updatedAt", "plaqueCount", "occupantLoadCount", "unplacedCount"];
 const DEFAULT_SORT_BY: SortBy = "createdAt";
 const DEFAULT_SORT_DIR: SortDir = "desc";
 
@@ -147,6 +147,9 @@ export default function JobsList() {
       } else if (sortBy === "occupantLoadCount") {
         aVal = Number(a.occupantLoadCount ?? 0);
         bVal = Number(b.occupantLoadCount ?? 0);
+      } else if (sortBy === "unplacedCount") {
+        aVal = Number(a.unplacedCount ?? 0);
+        bVal = Number(b.unplacedCount ?? 0);
       } else if (sortBy === "updatedAt") {
         aVal = a.updatedAt ? new Date(a.updatedAt).getTime() : 0;
         bVal = b.updatedAt ? new Date(b.updatedAt).getTime() : 0;
@@ -378,6 +381,17 @@ export default function JobsList() {
                 <Users className="w-2.5 h-2.5" />
                 Occ. load count
                 <SortIcon col="occupantLoadCount" active={sortBy} dir={sortDir} />
+              </button>
+              <button
+                onClick={() => setSort("unplacedCount")}
+                className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-semibold border transition-colors
+                  ${sortBy === "unplacedCount"
+                    ? "bg-orange-500/20 text-orange-400 border-orange-500/40"
+                    : "bg-orange-500/5 text-orange-400/60 border-orange-500/10 hover:bg-orange-500/15 hover:text-orange-400"}`}
+              >
+                <MapPinOff className="w-2.5 h-2.5" />
+                Unplaced
+                <SortIcon col="unplacedCount" active={sortBy} dir={sortDir} />
               </button>
             </div>
 
