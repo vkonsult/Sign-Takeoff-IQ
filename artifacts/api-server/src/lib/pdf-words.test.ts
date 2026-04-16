@@ -511,6 +511,14 @@ describe("sanitizePhraseCoords", () => {
     expect(r.y1).toBeCloseTo(0.8);
   });
 
+  it("swaps both x and y when both axes are inverted (in-range values)", () => {
+    const r = sanitizePhraseCoords(0.9, 0.1, 0.8, 0.2);
+    expect(r.x0).toBeCloseTo(0.1);
+    expect(r.x1).toBeCloseTo(0.9);
+    expect(r.y0).toBeCloseTo(0.2);
+    expect(r.y1).toBeCloseTo(0.8);
+  });
+
   it("clamps negative values to 0", () => {
     const r = sanitizePhraseCoords(-0.5, 0.5, -1, 0.5);
     expect(r.x0).toBe(0);
