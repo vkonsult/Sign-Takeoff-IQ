@@ -1,5 +1,6 @@
 import { PDFDocument, rgb, StandardFonts, PDFPage } from "pdf-lib";
 import { apiFetch } from "./apiClient";
+import { normalizedToMediaBox } from "./pdfCoords";
 
 export interface MarkerSign {
   id: string;
@@ -49,26 +50,6 @@ export function getSignColor(signType: string | null | undefined): [number, numb
   return [0.420, 0.447, 0.502];
 }
 
-/**
- * Convert normalised marker coordinates (nx ∈ [0,1] left→right,
- * ny ∈ [0,1] top→bottom in viewport / screen space) to pdf-lib drawing
- * coordinates (x, y in MediaBox space: origin bottom-left, y upward).
- */
-export function normalizedToMediaBox(
-  nx: number,
-  ny: number,
-  W: number,
-  H: number,
-  rotationDeg: number,
-): { x: number; y: number } {
-  const r = ((rotationDeg % 360) + 360) % 360;
-  switch (r) {
-    case 90:  return { x: ny * W,       y: nx * H };
-    case 180: return { x: (1 - nx) * W, y: ny * H };
-    case 270: return { x: (1 - ny) * W, y: (1 - nx) * H };
-    default:  return { x: nx * W,       y: (1 - ny) * H };
-  }
-}
 
 export async function exportMarkedupPdf(
   jobId: string,
