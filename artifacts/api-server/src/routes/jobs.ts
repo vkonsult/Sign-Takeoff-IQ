@@ -1278,15 +1278,25 @@ router.get("/jobs/:jobId/export", async (req, res) => {
       return;
     }
 
-    const signs = await db
-      .select()
-      .from(extractedSignsTable)
-      .where(
-        and(
-          eq(extractedSignsTable.jobId, jobId),
-          not(extractedSignsTable.hidden)
-        )
-      );
+    const [signs, plaques, occupantLoads] = await Promise.all([
+      db
+        .select()
+        .from(extractedSignsTable)
+        .where(
+          and(
+            eq(extractedSignsTable.jobId, jobId),
+            not(extractedSignsTable.hidden)
+          )
+        ),
+      db
+        .select()
+        .from(plaqueSchedulesTable)
+        .where(eq(plaqueSchedulesTable.jobId, jobId)),
+      db
+        .select()
+        .from(occupantLoadsTable)
+        .where(eq(occupantLoadsTable.jobId, jobId)),
+    ]);
 
     if (signs.length === 0) {
       res.status(404).json({ error: "No extracted signs found for this job" });
@@ -1294,7 +1304,7 @@ router.get("/jobs/:jobId/export", async (req, res) => {
     }
 
     const exportPath = getJobExportPath(jobId);
-    await buildExcelExport(signs, jobId, exportPath);
+    await buildExcelExport(signs, jobId, exportPath, plaques, occupantLoads);
 
     const fileName = `sign-takeoff-${jobId.slice(0, 8)}.xlsx`;
     res.setHeader(
