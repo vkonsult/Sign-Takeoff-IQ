@@ -7,6 +7,7 @@ import router from "./routes";
 import { logger } from "./lib/logger";
 import { ensureDirectories } from "./lib/storage";
 import { seedDefaultOrg } from "./lib/seed";
+import { registerExistingFileWatchers } from "./lib/pdf-file-watcher";
 
 ensureDirectories().catch((err) => {
   logger.error({ err }, "Failed to initialize storage directories");
@@ -14,6 +15,10 @@ ensureDirectories().catch((err) => {
 
 seedDefaultOrg().catch((err) => {
   logger.error({ err }, "Failed to seed default organization");
+});
+
+registerExistingFileWatchers().catch((err) => {
+  logger.error({ err }, "Failed to register file watchers for pre-existing PDF files");
 });
 
 const app: Express = express();
