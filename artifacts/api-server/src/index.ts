@@ -1,3 +1,10 @@
+import * as Sentry from "@sentry/node";
+
+const sentryDsn = process.env["SENTRY_DSN"];
+if (sentryDsn) {
+  Sentry.init({ dsn: sentryDsn });
+}
+
 import app from "./app";
 import { logger } from "./lib/logger";
 import { unwatchAllPdfFiles } from "./lib/pdf-file-watcher";

@@ -31,6 +31,13 @@ Sign TakeOff IQ is built as a pnpm workspace monorepo using TypeScript.
 - Files are stored in a structured manner within the `data/` directory for uploads, parsed JSON results, XLSX exports, and ChromaDB vector store.
 - XLSX export functionality uses `exceljs` for generating formatted spreadsheets with conditional styling based on confidence scores.
 
+## Environment Variables
+
+| Variable | Used by | Purpose |
+|---|---|---|
+| `VITE_SENTRY_DSN` | `artifacts/web` (frontend) | Sentry DSN for capturing frontend errors via `@sentry/react`. Omit to disable Sentry on the frontend. |
+| `SENTRY_DSN` | `artifacts/api-server` (backend) | Sentry DSN for capturing unhandled Express errors via `@sentry/node`. Omit to disable Sentry on the API server. |
+
 ## External Dependencies
 - **Clerk**: For user authentication, authorization, and multi-tenancy management.
 - **Gemini AI**: Used for intelligent data extraction from PDF documents. The Replit-managed integration is used for core extraction, while a separate Google AI API key is required for `text-embedding-004` embeddings in ChromaDB.

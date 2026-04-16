@@ -16,6 +16,7 @@
     "@clerk/express": "^2.0.8",
     "@google/genai": "^1.46.0",
     "@napi-rs/canvas": "^0.1.97",
+    "@sentry/node": "^10.48.0",
     "@workspace/api-zod": "workspace:*",
     "@workspace/db": "workspace:*",
     "@workspace/integrations-gemini-ai": "workspace:*",
