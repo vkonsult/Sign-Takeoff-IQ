@@ -138,6 +138,42 @@ export async function buildExcelExport(
     return group.startsWith("A") || (r.occupantLoad != null && r.occupantLoad >= 50);
   }).length;
 
+  const SECTION_LABEL_FILL: ExcelJS.Fill = {
+    type: "pattern",
+    pattern: "solid",
+    fgColor: { argb: "FFD9E1F2" },
+  };
+  const SECTION_LABEL_FONT: Partial<ExcelJS.Font> = { bold: true, size: 11, color: { argb: "FF1E3A5F" } };
+  const DIVIDER_FILL: ExcelJS.Fill = {
+    type: "pattern",
+    pattern: "solid",
+    fgColor: { argb: "FFB8C9E8" },
+  };
+
+  const addSectionLabel = (label: string) => {
+    const labelRow = summarySheet.addRow({ metric: label, value: "" });
+    labelRow.eachCell({ includeEmpty: true }, (cell) => {
+      cell.fill = SECTION_LABEL_FILL;
+      cell.font = SECTION_LABEL_FONT;
+      cell.alignment = { vertical: "middle" };
+      cell.border = { bottom: { style: "thin", color: { argb: "FF9BB0D4" } } };
+    });
+    labelRow.height = 20;
+  };
+
+  const addDivider = () => {
+    const divRow = summarySheet.addRow({ metric: "", value: "" });
+    divRow.eachCell({ includeEmpty: true }, (cell) => {
+      cell.fill = DIVIDER_FILL;
+      cell.border = {
+        top: { style: "medium", color: { argb: "FF1E3A5F" } },
+        bottom: { style: "medium", color: { argb: "FF1E3A5F" } },
+      };
+    });
+    divRow.height = 6;
+  };
+
+  addSectionLabel("Sign Metrics");
   [
     { metric: "Job ID", value: jobId },
     { metric: "Export Date", value: new Date().toLocaleDateString() },
@@ -145,6 +181,14 @@ export async function buildExcelExport(
     { metric: "Total Sign Quantity", value: totalSigns },
     { metric: "High Confidence Items", value: highConfCount },
     { metric: "Items Flagged for Review", value: reviewCount },
+  ].forEach((row) => {
+    summarySheet.addRow(row);
+  });
+
+  addDivider();
+
+  addSectionLabel("Plaque & Occupant Loads");
+  [
     { metric: "Plaque Types", value: plaques.length },
     { metric: "Occupant Load Rooms", value: occupantLoads.length },
     { metric: "Assembly Rooms", value: assemblyRoomCount },
