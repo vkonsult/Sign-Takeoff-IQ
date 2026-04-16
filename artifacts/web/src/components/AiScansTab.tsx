@@ -102,6 +102,30 @@ export function AiScansTab({
   const [showOccupantConfirm, setShowOccupantConfirm] = useState(false);
   const [confirmRunOneType, setConfirmRunOneType] = useState<string | null>(null);
 
+  // Protected-row highlight state
+  const [plaqueHighlightProtected, setPlaqueHighlightProtected] = useState(false);
+  const [occupantHighlightProtected, setOccupantHighlightProtected] = useState(false);
+  const plaqueTableRef = useRef<HTMLDivElement | null>(null);
+  const occupantTableRef = useRef<HTMLDivElement | null>(null);
+
+  const handlePlaqueProtectedClick = useCallback(() => {
+    const container = plaqueTableRef.current;
+    if (!container) return;
+    const firstProtected = container.querySelector<HTMLElement>("[data-protected='true']");
+    if (firstProtected) firstProtected.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    setPlaqueHighlightProtected(true);
+    setTimeout(() => setPlaqueHighlightProtected(false), 1800);
+  }, []);
+
+  const handleOccupantProtectedClick = useCallback(() => {
+    const container = occupantTableRef.current;
+    if (!container) return;
+    const firstProtected = container.querySelector<HTMLElement>("[data-protected='true']");
+    if (firstProtected) firstProtected.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    setOccupantHighlightProtected(true);
+    setTimeout(() => setOccupantHighlightProtected(false), 1800);
+  }, []);
+
   // Occupant Loads inline-editing state
   // editingId: id of the row being edited, or "__new__" for a new unsaved row
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -989,7 +1013,7 @@ export function AiScansTab({
             <Loader2 className="w-3.5 h-3.5 animate-spin" /> Loading plaque schedule…
           </div>
         ) : plaqueLoadError ? null : (
-          <div className="overflow-x-auto">
+          <div className="overflow-x-auto" ref={plaqueTableRef}>
             {plaqueRows.length === 0 && plaqueEditingId !== "__new__" && (
               <div className="px-3 py-4 text-[11px] text-muted-foreground">
                 No plaque types extracted yet. Run the extraction above or add rows manually.
@@ -1089,7 +1113,8 @@ export function AiScansTab({
                       <tr
                         key={row.id}
                         ref={plaqueConfirmDeleteId === row.id ? plaqueConfirmRef : null}
-                        className={`border-b border-border/50 hover:bg-secondary/20 transition-colors group ${isDeleting || isPlaqueUnlocking ? "opacity-40" : ""}`}
+                        data-protected={row.manuallyEdited ? "true" : undefined}
+                        className={`border-b border-border/50 hover:bg-secondary/20 transition-colors group ${isDeleting || isPlaqueUnlocking ? "opacity-40" : ""} ${plaqueHighlightProtected && row.manuallyEdited ? "ring-1 ring-inset ring-amber-400/60 bg-amber-500/10" : ""}`}
                       >
                         <td className="px-3 py-2 font-mono text-amber-400">
                           <span className="flex items-center gap-1.5">
@@ -1275,7 +1300,14 @@ export function AiScansTab({
                   {plaqueRows.filter((r) => r.manuallyEdited).length > 0 && (
                     <>
                       <span className="text-border">·</span>
-                      <span className="text-amber-400">{plaqueRows.filter((r) => r.manuallyEdited).length} manually protected</span>
+                      <button
+                        onClick={handlePlaqueProtectedClick}
+                        className="flex items-center gap-1 text-amber-400 hover:text-amber-300 transition-colors cursor-pointer underline-offset-2 hover:underline"
+                        title="Click to scroll to and highlight manually protected rows"
+                      >
+                        <Lock className="w-2.5 h-2.5" />
+                        {plaqueRows.filter((r) => r.manuallyEdited).length} manually protected
+                      </button>
                     </>
                   )}
                 </>
@@ -1383,7 +1415,7 @@ export function AiScansTab({
             <Loader2 className="w-3.5 h-3.5 animate-spin" /> Loading occupant loads…
           </div>
         ) : (
-          <div className="overflow-x-auto">
+          <div className="overflow-x-auto" ref={occupantTableRef}>
             {occupantRows.length === 0 && editingId !== "__new__" && (
               <div className="px-3 py-4 text-[11px] text-muted-foreground">
                 No occupant load data extracted yet. Run the extraction above or add rows manually.
@@ -1473,9 +1505,10 @@ export function AiScansTab({
                       <tr
                         key={row.id}
                         ref={confirmDeleteId === row.id ? confirmRef : null}
+                        data-protected={row.manuallyEdited ? "true" : undefined}
                         className={`border-b border-border/50 transition-colors group ${
                           isAssembly ? "bg-orange-500/8 hover:bg-orange-500/12" : "hover:bg-secondary/20"
-                        } ${isDeleting || isUnlocking ? "opacity-40" : ""}`}
+                        } ${isDeleting || isUnlocking ? "opacity-40" : ""} ${occupantHighlightProtected && row.manuallyEdited ? "ring-1 ring-inset ring-sky-400/60 bg-sky-500/10" : ""}`}
                       >
                         <td className="px-3 py-2 font-mono text-sky-400">
                           <span className="flex items-center gap-1.5">
@@ -1665,7 +1698,14 @@ export function AiScansTab({
                   {occupantRows.filter((r) => r.manuallyEdited).length > 0 && (
                     <>
                       <span className="text-border">·</span>
-                      <span className="text-sky-400">{occupantRows.filter((r) => r.manuallyEdited).length} manually protected</span>
+                      <button
+                        onClick={handleOccupantProtectedClick}
+                        className="flex items-center gap-1 text-sky-400 hover:text-sky-300 transition-colors cursor-pointer underline-offset-2 hover:underline"
+                        title="Click to scroll to and highlight manually protected rows"
+                      >
+                        <Lock className="w-2.5 h-2.5" />
+                        {occupantRows.filter((r) => r.manuallyEdited).length} manually protected
+                      </button>
                     </>
                   )}
                 </>
