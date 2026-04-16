@@ -62,7 +62,7 @@ export default function JobsList() {
   const [deletingSingle, setDeletingSingle] = useState<string | null>(null);
   const [bulkConfirming, setBulkConfirming] = useState(false);
   const [bulkDeleting, setBulkDeleting] = useState(false);
-  type SortKey = "plaqueCount" | "occupantLoadCount";
+  type SortKey = "plaqueCount" | "occupantLoadCount" | "createdAt" | "updatedAt";
   const [sortBy, setSortBy] = useState<SortKey | null>(null);
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
 
@@ -81,10 +81,17 @@ export default function JobsList() {
     recentUsers?: RecentUser[];
     files?: { id: string; originalName: string }[];
   };
+
   const rawJobs = (data?.jobs ?? []) as JobSummaryListItem[];
   const jobs = useMemo(() => {
     if (!sortBy) return rawJobs;
     return [...rawJobs].sort((a, b) => {
+      if (sortBy === "createdAt" || sortBy === "updatedAt") {
+        const aVal = sortBy === "updatedAt" ? (a.updatedAt ?? a.createdAt) : a.createdAt;
+        const bVal = sortBy === "updatedAt" ? (b.updatedAt ?? b.createdAt) : b.createdAt;
+        const diff = new Date(aVal).getTime() - new Date(bVal).getTime();
+        return sortDir === "asc" ? diff : -diff;
+      }
       const aVal = Number(a[sortBy] ?? 0);
       const bVal = Number(b[sortBy] ?? 0);
       return sortDir === "asc" ? aVal - bVal : bVal - aVal;
@@ -265,8 +272,30 @@ export default function JobsList() {
               </div>
               <div className="text-center">Status</div>
               <div className="text-center" title="Last active user">User</div>
-              <div className="text-right">Created</div>
-              <div className="text-right pr-8">Updated</div>
+              <button
+                onClick={() => handleSort("createdAt")}
+                className="flex items-center justify-end gap-1 hover:text-foreground transition-colors ml-auto"
+                title="Sort by created date"
+              >
+                Created
+                {sortBy === "createdAt"
+                  ? sortDir === "asc"
+                    ? <ArrowUp className="w-3 h-3 text-primary" />
+                    : <ArrowDown className="w-3 h-3 text-primary" />
+                  : <ArrowUpDown className="w-3 h-3 opacity-40" />}
+              </button>
+              <button
+                onClick={() => handleSort("updatedAt")}
+                className="flex items-center justify-end gap-1 pr-8 hover:text-foreground transition-colors ml-auto"
+                title="Sort by updated date"
+              >
+                Updated
+                {sortBy === "updatedAt"
+                  ? sortDir === "asc"
+                    ? <ArrowUp className="w-3 h-3 text-primary" />
+                    : <ArrowDown className="w-3 h-3 text-primary" />
+                  : <ArrowUpDown className="w-3 h-3 opacity-40" />}
+              </button>
               <div />
             </div>
 
