@@ -6,6 +6,7 @@ import { apiFetch, openPdfInNewTab } from "@/lib/apiClient";
 import { useJobDetails, useStartExtraction, downloadExport, useUpdateJobName } from "@/hooks/use-takeoff";
 import { useExportButtonState } from "@/hooks/useExportButtonState";
 import { useToast } from "@/hooks/use-toast";
+import { ToastAction } from "@/components/ui/toast";
 import { UnifiedPlanViewer } from "@/components/UnifiedPlanViewer";
 import type { ExtractedSign as SignMarker } from "@/components/UnifiedPlanViewer";
 import { SignSpecModal } from "@/components/SignSpecModal";
@@ -568,8 +569,22 @@ export default function JobDetails() {
   const [placeSignId, setPlaceSignId] = useState<string | null>(null);
   useEffect(() => {
     if (activeTab !== "floorplans" && placeSignId !== null) {
+      const cancelledSignId = placeSignId;
       setPlaceSignId(null);
-      toast({ title: "Sign placement cancelled" });
+      toast({
+        title: "Sign placement cancelled",
+        action: (
+          <ToastAction
+            altText="Go back to floorplans"
+            onClick={() => {
+              setActiveTab("floorplans");
+              setPlaceSignId(cancelledSignId);
+            }}
+          >
+            Go back
+          </ToastAction>
+        ),
+      });
     }
   }, [activeTab]);
   const [showAiHighlight, setShowAiHighlight] = useState(false);
