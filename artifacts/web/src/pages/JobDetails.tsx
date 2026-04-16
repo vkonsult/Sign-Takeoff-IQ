@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from "react";
-import { useRoute } from "wouter";
+import { useRoute, useSearch } from "wouter";
 import { useQueryClient } from "@tanstack/react-query";
 import { AppShell } from "@/components/layout/Shell";
 import { apiFetch, openPdfInNewTab } from "@/lib/apiClient";
@@ -540,7 +540,14 @@ export default function JobDetails() {
   const [sortField, setSortField] = useState<string | null>(null);
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
   const [summaryFilter, setSummaryFilter] = useState<null | "flagged">(null);
-  const [activeTab, setActiveTab] = useState<"table" | "sheets" | "summary" | "floorplans" | "signpages" | "specs" | "timeline" | "coords" | "ai_scans" | "compliance" | "plaque_schedule" | "occupant_loads">("table");
+  const searchString = useSearch();
+  const initialTab = (() => {
+    const p = new URLSearchParams(searchString);
+    const t = p.get("tab");
+    const valid = ["table","sheets","summary","floorplans","signpages","specs","timeline","coords","ai_scans","compliance","plaque_schedule","occupant_loads"] as const;
+    return (valid as readonly string[]).includes(t ?? "") ? (t as typeof valid[number]) : "table";
+  })();
+  const [activeTab, setActiveTab] = useState<"table" | "sheets" | "summary" | "floorplans" | "signpages" | "specs" | "timeline" | "coords" | "ai_scans" | "compliance" | "plaque_schedule" | "occupant_loads">(initialTab);
   const [showAiHighlight, setShowAiHighlight] = useState(false);
   const [unlockingSignId, setUnlockingSignId] = useState<string | null>(null);
 

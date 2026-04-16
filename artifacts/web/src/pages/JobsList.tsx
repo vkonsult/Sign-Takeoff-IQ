@@ -11,7 +11,7 @@ import {
   AlertTriangle, Trash2, X, Square, CheckSquare, MinusSquare,
   Archive, EyeOff, Layers, Users, ArrowUp, ArrowDown, ArrowUpDown,
 } from "lucide-react";
-import { Link } from "wouter";
+import { Link, useLocation } from "wouter";
 
 
 interface RecentUser {
@@ -52,6 +52,7 @@ function StackedUserBadges({ users }: { users: RecentUser[] }) {
 }
 
 export default function JobsList() {
+  const [, navigate] = useLocation();
   const [showArchived, setShowArchived] = useState(false);
   const { data, isLoading } = useJobsList(showArchived);
   const queryClient = useQueryClient();
@@ -326,22 +327,34 @@ export default function JobsList() {
                               {job.id.split("-")[0]}
                             </span>
                             {plaqueCount > 0 && (
-                              <span
-                                className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-violet-500/10 text-violet-400 border border-violet-500/20"
-                                title={`${plaqueCount} plaque type${plaqueCount !== 1 ? "s" : ""} extracted`}
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                  navigate(`/jobs/${job.id}?tab=plaque_schedule`);
+                                }}
+                                className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-violet-500/10 text-violet-400 border border-violet-500/20 hover:bg-violet-500/20 transition-colors cursor-pointer"
+                                title={`${plaqueCount} plaque type${plaqueCount !== 1 ? "s" : ""} — click to view Plaque Schedule`}
                               >
                                 <Layers className="w-2.5 h-2.5" />
                                 {plaqueCount} plaque{plaqueCount !== 1 ? "s" : ""}
-                              </span>
+                              </button>
                             )}
                             {occupantLoadCount > 0 && (
-                              <span
-                                className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-sky-500/10 text-sky-400 border border-sky-500/20"
-                                title={`${occupantLoadCount} occupant load room${occupantLoadCount !== 1 ? "s" : ""} extracted`}
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                  navigate(`/jobs/${job.id}?tab=occupant_loads`);
+                                }}
+                                className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-sky-500/10 text-sky-400 border border-sky-500/20 hover:bg-sky-500/20 transition-colors cursor-pointer"
+                                title={`${occupantLoadCount} occupant load room${occupantLoadCount !== 1 ? "s" : ""} — click to view Occupant Loads`}
                               >
                                 <Users className="w-2.5 h-2.5" />
                                 {occupantLoadCount} occ. load{occupantLoadCount !== 1 ? "s" : ""}
-                              </span>
+                              </button>
                             )}
                           </div>
                         </div>
