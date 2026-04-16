@@ -1298,8 +1298,8 @@ router.get("/jobs/:jobId/export", async (req, res) => {
         .where(eq(occupantLoadsTable.jobId, jobId)),
     ]);
 
-    if (signs.length === 0) {
-      res.status(404).json({ error: "No extracted signs found for this job" });
+    if (signs.length === 0 && plaques.length === 0 && occupantLoads.length === 0) {
+      res.status(404).json({ error: "No data found for this job" });
       return;
     }
 
