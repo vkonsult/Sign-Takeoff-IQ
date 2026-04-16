@@ -20,7 +20,7 @@ import { renderFloorPlanPages } from "./pdf-render";
 import { extractPagePhrases, classifyPageFromPhrases, CANONICAL_LEVEL_NAMES } from "./pdf-words";
 import path from "path";
 import { db } from "@workspace/db";
-import { eq } from "drizzle-orm";
+import { eq, and } from "drizzle-orm";
 import { signTypeSpecsTable, jobFilesTable, plaqueSchedulesTable, occupantLoadsTable } from "@workspace/db";
 import { enrichWithGemini } from "./signage-schedule-parser";
 import { getPdfPageCount } from "./pdf-words";
@@ -672,19 +672,68 @@ export async function runPlaqueScheduleExtraction(
 }
 
 /**
- * Persists plaque schedule data for a job (delete-then-insert at job level).
- * Call once after collecting results across all files.
+ * Merges plaque schedule data for a job into existing rows instead of replacing them.
+ *
+ * Strategy:
+ * - Existing rows matched by typeId that were NOT manually edited are updated with AI values.
+ * - Existing rows that WERE manually edited are left untouched — UNLESS overwrite=true, in
+ *   which case all rows are updated and the manuallyEdited flag is reset to false.
+ * - New AI rows with no existing match are inserted.
+ * - Existing rows not found by AI are left in place (not deleted).
+ *
+ * @param overwrite - When true, manually-edited rows are also updated and their flag is cleared.
  */
 export async function persistPlaqueSchedule(
   jobId: string,
   plaques: PlaqueType[],
   generalNotes: Record<string, unknown> | null,
   sourcePage: number | null,
+  overwrite = false,
 ): Promise<void> {
-  await db.delete(plaqueSchedulesTable).where(eq(plaqueSchedulesTable.jobId, jobId));
-  if (plaques.length > 0) {
+  const existingRows = await db
+    .select()
+    .from(plaqueSchedulesTable)
+    .where(eq(plaqueSchedulesTable.jobId, jobId));
+
+  const existingByTypeId = new Map(existingRows.map((r) => [r.typeId.toLowerCase(), r]));
+
+  const toInsert: PlaqueType[] = [];
+  let updatedCount = 0;
+  let skippedCount = 0;
+
+  for (const p of plaques) {
+    const typeId = String(p.type_id ?? "");
+    if (!typeId) continue;
+    const existing = existingByTypeId.get(typeId.toLowerCase());
+
+    if (!existing) {
+      toInsert.push(p);
+    } else if (!existing.manuallyEdited || overwrite) {
+      await db
+        .update(plaqueSchedulesTable)
+        .set({
+          name: p.name ?? null,
+          braille: p.braille ?? null,
+          insert: p.insert ?? null,
+          insertSize: p.insert_size ?? null,
+          letterHeight: p.letter_height ?? null,
+          trigger: p.trigger ?? null,
+          mapsToColumn: p.maps_to_column ?? null,
+          generalNotes,
+          rawJson: p as unknown as Record<string, unknown>,
+          sourcePage,
+          manuallyEdited: false,
+        })
+        .where(and(eq(plaqueSchedulesTable.id, existing.id), eq(plaqueSchedulesTable.jobId, jobId)));
+      updatedCount++;
+    } else {
+      skippedCount++;
+    }
+  }
+
+  if (toInsert.length > 0) {
     await db.insert(plaqueSchedulesTable).values(
-      plaques.map((p) => ({
+      toInsert.map((p) => ({
         jobId,
         typeId: String(p.type_id ?? ""),
         name: p.name ?? null,
@@ -700,7 +749,11 @@ export async function persistPlaqueSchedule(
       })),
     );
   }
-  logger.info({ jobId, plaqueCount: plaques.length }, "persistPlaqueSchedule: stored");
+
+  logger.info(
+    { jobId, aiCount: plaques.length, inserted: toInsert.length, updated: updatedCount, skipped: skippedCount, overwrite },
+    "persistPlaqueSchedule: merged",
+  );
 }
 
 // ── Occupant Loads Extraction ─────────────────────────────────────────────────
@@ -832,16 +885,25 @@ export async function runOccupantLoadsExtraction(
 }
 
 /**
- * Persists occupant-load rows for a job (delete-then-insert at job level).
- * Deduplicates across all collected rooms before writing.
- * Call once after collecting results across all files.
+ * Merges occupant-load rows for a job into existing rows instead of replacing them.
+ *
+ * Strategy:
+ * - Deduplicates incoming AI rooms by normalised roomNum (first wins).
+ * - Existing rows matched by normalised roomNum that were NOT manually edited are updated.
+ * - Existing rows that WERE manually edited are left untouched — UNLESS overwrite=true, in
+ *   which case all rows are updated and the manuallyEdited flag is reset to false.
+ * - New AI rooms with no existing match are inserted.
+ * - Existing rows not found by AI are left in place (not deleted).
+ *
+ * @param overwrite - When true, manually-edited rows are also updated and their flag is cleared.
  */
 export async function persistOccupantLoads(
   jobId: string,
   rooms: OccupantLoadRoom[],
   sourcePage: number | null = null,
+  overwrite = false,
 ): Promise<void> {
-  // Deduplicate across all files by normalised room number
+  // Deduplicate incoming AI results by normalised room number (first wins)
   const seen = new Set<string>();
   const dedupedRooms: OccupantLoadRoom[] = [];
   for (const room of rooms) {
@@ -851,11 +913,45 @@ export async function persistOccupantLoads(
     dedupedRooms.push(room);
   }
 
-  await db.delete(occupantLoadsTable).where(eq(occupantLoadsTable.jobId, jobId));
+  const existingRows = await db
+    .select()
+    .from(occupantLoadsTable)
+    .where(eq(occupantLoadsTable.jobId, jobId));
 
-  if (dedupedRooms.length > 0) {
+  const existingByNormKey = new Map(
+    existingRows.map((r) => [normaliseRoomNum(r.roomNum), r]),
+  );
+
+  const toInsert: OccupantLoadRoom[] = [];
+  let updatedCount = 0;
+  let skippedCount = 0;
+
+  for (const r of dedupedRooms) {
+    const key = normaliseRoomNum(String(r.room_num ?? ""));
+    const existing = existingByNormKey.get(key);
+
+    if (!existing) {
+      toInsert.push(r);
+    } else if (!existing.manuallyEdited || overwrite) {
+      await db
+        .update(occupantLoadsTable)
+        .set({
+          roomName: r.room_name ?? null,
+          occupantLoad: typeof r.occupant_load === "number" ? r.occupant_load : null,
+          occupancyGroup: r.occupancy_group ?? null,
+          sourcePage,
+          manuallyEdited: false,
+        })
+        .where(and(eq(occupantLoadsTable.id, existing.id), eq(occupantLoadsTable.jobId, jobId)));
+      updatedCount++;
+    } else {
+      skippedCount++;
+    }
+  }
+
+  if (toInsert.length > 0) {
     await db.insert(occupantLoadsTable).values(
-      dedupedRooms.map((r) => ({
+      toInsert.map((r) => ({
         jobId,
         roomNum: String(r.room_num ?? ""),
         roomName: r.room_name ?? null,
@@ -865,7 +961,11 @@ export async function persistOccupantLoads(
       })),
     );
   }
-  logger.info({ jobId, roomCount: dedupedRooms.length }, "persistOccupantLoads: stored");
+
+  logger.info(
+    { jobId, aiCount: dedupedRooms.length, inserted: toInsert.length, updated: updatedCount, skipped: skippedCount, overwrite },
+    "persistOccupantLoads: merged",
+  );
 }
 
 // ── Compliance-scan DB helpers ────────────────────────────────────────────────

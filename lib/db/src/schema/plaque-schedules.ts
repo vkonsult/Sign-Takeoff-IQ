@@ -24,6 +24,7 @@ export const plaqueSchedulesTable = pgTable("plaque_schedules", {
   generalNotes: json("general_notes").$type<Record<string, unknown> | null>(),
   rawJson: json("raw_json").$type<Record<string, unknown> | null>(),
   sourcePage: integer("source_page"),
+  manuallyEdited: boolean("manually_edited").notNull().default(false),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
@@ -38,6 +39,7 @@ export const occupantLoadsTable = pgTable("occupant_loads", {
   occupantLoad: real("occupant_load"),
   occupancyGroup: text("occupancy_group"),
   sourcePage: integer("source_page"),
+  manuallyEdited: boolean("manually_edited").notNull().default(false),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 

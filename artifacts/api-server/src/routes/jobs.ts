@@ -2104,6 +2104,8 @@ router.post("/jobs/:jobId/extract-plaque-schedule", async (req, res) => {
   const jobId = req.params.jobId;
   if (!jobId) { res.status(400).json({ error: "Job ID required" }); return; }
 
+  const overwrite = req.body?.overwrite === true;
+
   try {
     const job = await getJobWithOrgCheck(req, res, jobId);
     if (!job) return;
@@ -2155,8 +2157,7 @@ router.post("/jobs/:jobId/extract-plaque-schedule", async (req, res) => {
       }
     }
 
-    // Single delete+insert for the whole job
-    await persistPlaqueSchedule(jobId, finalPlaques, finalGeneralNotes, finalSourcePage);
+    await persistPlaqueSchedule(jobId, finalPlaques, finalGeneralNotes, finalSourcePage, overwrite);
 
     recordActivity(req, "ai_scan_run", jobId);
 
@@ -2179,6 +2180,8 @@ router.post("/jobs/:jobId/extract-plaque-schedule", async (req, res) => {
 router.post("/jobs/:jobId/extract-occupant-loads", async (req, res) => {
   const jobId = req.params.jobId;
   if (!jobId) { res.status(400).json({ error: "Job ID required" }); return; }
+
+  const overwrite = req.body?.overwrite === true;
 
   try {
     const job = await getJobWithOrgCheck(req, res, jobId);
@@ -2222,8 +2225,7 @@ router.post("/jobs/:jobId/extract-occupant-loads", async (req, res) => {
       };
     }
 
-    // Single delete+insert for the whole job (deduplicated inside persistOccupantLoads)
-    await persistOccupantLoads(jobId, allCollectedRooms, firstSourcePage);
+    await persistOccupantLoads(jobId, allCollectedRooms, firstSourcePage, overwrite);
 
     // ── Wire occupant loads into RoomInventory (compliance-scan integration) ───
     // Fetch stored occupant loads and merge into a room inventory built from the
@@ -2334,6 +2336,7 @@ router.post("/jobs/:jobId/occupant-loads", async (req, res) => {
         roomName: parsed.data.roomName ?? null,
         occupantLoad: parsed.data.occupantLoad ?? null,
         occupancyGroup: parsed.data.occupancyGroup ?? null,
+        manuallyEdited: true,
       })
       .returning();
 
@@ -2367,13 +2370,13 @@ router.put("/jobs/:jobId/occupant-loads/:id", async (req, res) => {
     const job = await getJobWithOrgCheck(req, res, jobId);
     if (!job) return;
 
-    const updateData: Record<string, unknown> = {};
+    const updateData: Record<string, unknown> = { manuallyEdited: true };
     if (parsed.data.roomNum !== undefined) updateData.roomNum = parsed.data.roomNum;
     if (parsed.data.roomName !== undefined) updateData.roomName = parsed.data.roomName;
     if (parsed.data.occupantLoad !== undefined) updateData.occupantLoad = parsed.data.occupantLoad;
     if (parsed.data.occupancyGroup !== undefined) updateData.occupancyGroup = parsed.data.occupancyGroup;
 
-    if (Object.keys(updateData).length === 0) {
+    if (Object.keys(updateData).length <= 1) {
       res.status(400).json({ error: "No fields provided to update" });
       return;
     }
@@ -2505,6 +2508,7 @@ router.post("/jobs/:jobId/plaque-schedule", async (req, res) => {
         braille: parsed.data.braille ?? null,
         letterHeight: parsed.data.letterHeight ?? null,
         trigger: parsed.data.trigger ?? null,
+        manuallyEdited: true,
       })
       .returning();
 
@@ -2539,14 +2543,14 @@ router.put("/jobs/:jobId/plaque-schedule/:id", async (req, res) => {
     const job = await getJobWithOrgCheck(req, res, jobId);
     if (!job) return;
 
-    const updateData: Record<string, unknown> = {};
+    const updateData: Record<string, unknown> = { manuallyEdited: true };
     if (parsed.data.typeId !== undefined) updateData.typeId = parsed.data.typeId;
     if (parsed.data.name !== undefined) updateData.name = parsed.data.name;
     if (parsed.data.braille !== undefined) updateData.braille = parsed.data.braille;
     if (parsed.data.letterHeight !== undefined) updateData.letterHeight = parsed.data.letterHeight;
     if (parsed.data.trigger !== undefined) updateData.trigger = parsed.data.trigger;
 
-    if (Object.keys(updateData).length === 0) {
+    if (Object.keys(updateData).length <= 1) {
       res.status(400).json({ error: "No fields provided to update" });
       return;
     }
