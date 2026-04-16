@@ -575,7 +575,10 @@ export default function JobDetails() {
   }, [jobId, activeTab]);
   const [placeSignId, setPlaceSignId] = useState<string | null>(null);
   useEffect(() => {
-    if (activeTab !== "floorplans") setPlaceSignId(null);
+    if (activeTab !== "floorplans" && placeSignId !== null) {
+      setPlaceSignId(null);
+      toast({ title: "Sign placement cancelled" });
+    }
   }, [activeTab]);
   const [showAiHighlight, setShowAiHighlight] = useState(false);
   const [unlockingSignId, setUnlockingSignId] = useState<string | null>(null);
