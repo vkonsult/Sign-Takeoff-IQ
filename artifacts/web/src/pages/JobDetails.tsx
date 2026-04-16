@@ -10,7 +10,14 @@ import { SignSpecModal } from "@/components/SignSpecModal";
 import { AiScansTab } from "@/components/AiScansTab";
 import { SignSpecsTab } from "@/components/SignSpecsTab";
 import { ComplianceTab } from "@/components/ComplianceTab";
-import { getGetJobQueryKey } from "@workspace/api-client-react";
+import {
+  getGetJobQueryKey,
+  useGetPlaqueSchedule,
+  useGetOccupantLoads,
+  useExtractPlaqueSchedule,
+  useExtractOccupantLoads,
+} from "@workspace/api-client-react";
+import type { PlaqueScheduleEntry, OccupantLoadEntry, AssemblyRoom } from "@workspace/api-client-react";
 import { 
   FileText, 
   Cpu, 
@@ -40,6 +47,8 @@ import {
   ExternalLink,
   Clock,
   Brain,
+  Users,
+  BookOpen,
 } from "lucide-react";
 import { format, formatDistanceToNow } from "date-fns";
 import { exportMarkedupPdf, type MarkerSign } from "@/lib/exportMarkedupPdf";
@@ -444,6 +453,11 @@ export default function JobDetails() {
   const nameInputRef = useRef<HTMLInputElement>(null);
   const updateJobName = useUpdateJobName(jobId);
 
+  const plaqueScheduleQuery = useGetPlaqueSchedule(jobId);
+  const occupantLoadsQuery = useGetOccupantLoads(jobId);
+  const extractPlaqueMutation = useExtractPlaqueSchedule();
+  const extractOccupantMutation = useExtractOccupantLoads();
+
   const startNameEdit = (currentName: string) => {
     setNameValue(currentName);
     setEditingName(true);
@@ -507,7 +521,7 @@ export default function JobDetails() {
   const [sortField, setSortField] = useState<string | null>(null);
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
   const [summaryFilter, setSummaryFilter] = useState<null | "flagged">(null);
-  const [activeTab, setActiveTab] = useState<"table" | "sheets" | "summary" | "floorplans" | "signpages" | "specs" | "timeline" | "coords" | "ai_scans" | "compliance">("table");
+  const [activeTab, setActiveTab] = useState<"table" | "sheets" | "summary" | "floorplans" | "signpages" | "specs" | "timeline" | "coords" | "ai_scans" | "compliance" | "plaque_schedule" | "occupant_loads">("table");
   const [showAiHighlight, setShowAiHighlight] = useState(false);
 
   const PROCESSING_TIMEOUT_SECONDS = 5 * 60;
@@ -1094,6 +1108,42 @@ export default function JobDetails() {
                       Compliance
                     </button>
                   )}
+                  {(isCompleted || isFailed) && (
+                    <button
+                      onClick={() => setActiveTab("plaque_schedule")}
+                      className={`flex items-center gap-1.5 px-3 py-2 text-[10px] font-display font-semibold uppercase tracking-wider border-b-2 transition-all ${
+                        activeTab === "plaque_schedule"
+                          ? "border-indigo-500 text-indigo-400"
+                          : "border-transparent text-muted-foreground hover:text-foreground"
+                      }`}
+                    >
+                      <Stamp className="w-3.5 h-3.5" />
+                      Plaque Schedule
+                      {plaqueScheduleQuery.data && plaqueScheduleQuery.data.plaques.length > 0 && (
+                        <span className="ml-1 bg-indigo-500/20 text-indigo-400 rounded px-1 text-[9px] font-mono">
+                          {plaqueScheduleQuery.data.plaques.length}
+                        </span>
+                      )}
+                    </button>
+                  )}
+                  {(isCompleted || isFailed) && (
+                    <button
+                      onClick={() => setActiveTab("occupant_loads")}
+                      className={`flex items-center gap-1.5 px-3 py-2 text-[10px] font-display font-semibold uppercase tracking-wider border-b-2 transition-all ${
+                        activeTab === "occupant_loads"
+                          ? "border-orange-500 text-orange-400"
+                          : "border-transparent text-muted-foreground hover:text-foreground"
+                      }`}
+                    >
+                      <Users className="w-3.5 h-3.5" />
+                      Occupant Loads
+                      {occupantLoadsQuery.data && occupantLoadsQuery.data.assemblyRooms.length > 0 && (
+                        <span className="ml-1 bg-orange-500/20 text-orange-400 rounded px-1 text-[9px] font-mono">
+                          {occupantLoadsQuery.data.assemblyRooms.length} asm
+                        </span>
+                      )}
+                    </button>
+                  )}
                 </div>
               </div>
 
@@ -1175,6 +1225,31 @@ export default function JobDetails() {
               ) : activeTab === "compliance" ? (
                 <div className="flex-1 flex flex-col min-h-0 bg-card border-t border-border overflow-hidden">
                   <ComplianceTab jobId={jobId} />
+                </div>
+              ) : activeTab === "plaque_schedule" ? (
+                <div className="flex-1 overflow-auto bg-card border-t border-border">
+                  <PlaqueScheduleTab
+                    jobId={jobId}
+                    plaques={plaqueScheduleQuery.data?.plaques ?? []}
+                    isLoading={plaqueScheduleQuery.isLoading}
+                    isExtracting={extractPlaqueMutation.isPending}
+                    onExtract={() => extractPlaqueMutation.mutate({ jobId }, {
+                      onSuccess: () => plaqueScheduleQuery.refetch(),
+                    })}
+                  />
+                </div>
+              ) : activeTab === "occupant_loads" ? (
+                <div className="flex-1 overflow-auto bg-card border-t border-border">
+                  <OccupantLoadsTab
+                    jobId={jobId}
+                    loads={occupantLoadsQuery.data?.loads ?? []}
+                    assemblyRooms={occupantLoadsQuery.data?.assemblyRooms ?? []}
+                    isLoading={occupantLoadsQuery.isLoading}
+                    isExtracting={extractOccupantMutation.isPending}
+                    onExtract={() => extractOccupantMutation.mutate({ jobId }, {
+                      onSuccess: () => occupantLoadsQuery.refetch(),
+                    })}
+                  />
                 </div>
               ) : (
                 <>
@@ -2365,6 +2440,249 @@ function CostCard({ inputTokens, outputTokens }: { inputTokens: number; outputTo
           <Zap className="w-4 h-4 text-muted-foreground" />
         </div>
       </div>
+    </div>
+  );
+}
+
+function PlaqueScheduleTab({
+  jobId: _jobId,
+  plaques,
+  isLoading,
+  isExtracting,
+  onExtract,
+}: {
+  jobId: string;
+  plaques: PlaqueScheduleEntry[];
+  isLoading: boolean;
+  isExtracting: boolean;
+  onExtract: () => void;
+}) {
+  return (
+    <div className="p-6 max-w-5xl mx-auto w-full space-y-6">
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-base font-display font-semibold text-foreground">Plaque Schedule</h2>
+          <p className="text-xs text-muted-foreground mt-0.5">
+            Plaque type specifications extracted from sign schedule pages.
+          </p>
+        </div>
+        <button
+          onClick={onExtract}
+          disabled={isExtracting}
+          className="flex items-center gap-2 px-3 py-1.5 rounded-md bg-indigo-500/10 border border-indigo-500/30 text-indigo-400 text-xs font-medium hover:bg-indigo-500/20 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+        >
+          {isExtracting ? (
+            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+          ) : (
+            <BookOpen className="w-3.5 h-3.5" />
+          )}
+          {isExtracting ? "Extracting…" : plaques.length > 0 ? "Re-extract" : "Extract Plaque Schedule"}
+        </button>
+      </div>
+
+      {isLoading ? (
+        <div className="flex items-center justify-center py-12">
+          <Loader2 className="w-6 h-6 animate-spin text-muted-foreground" />
+        </div>
+      ) : plaques.length === 0 ? (
+        <div className="border border-dashed border-border rounded-lg p-10 flex flex-col items-center gap-3 text-center">
+          <Stamp className="w-8 h-8 text-muted-foreground/40" />
+          <p className="text-sm text-muted-foreground">No plaque schedule data yet.</p>
+          <p className="text-xs text-muted-foreground/60">
+            Click "Extract Plaque Schedule" to scan sign schedule pages for plaque type specifications.
+          </p>
+        </div>
+      ) : (
+        <div className="overflow-x-auto rounded-lg border border-border">
+          <table className="w-full text-left border-collapse">
+            <thead>
+              <tr className="bg-secondary/60">
+                <th className="px-3 py-2 text-[10px] font-display font-semibold uppercase tracking-wider text-muted-foreground w-16">Type</th>
+                <th className="px-3 py-2 text-[10px] font-display font-semibold uppercase tracking-wider text-muted-foreground">Name</th>
+                <th className="px-3 py-2 text-[10px] font-display font-semibold uppercase tracking-wider text-muted-foreground w-20">Braille</th>
+                <th className="px-3 py-2 text-[10px] font-display font-semibold uppercase tracking-wider text-muted-foreground w-20">Insert</th>
+                <th className="px-3 py-2 text-[10px] font-display font-semibold uppercase tracking-wider text-muted-foreground">Insert Size</th>
+                <th className="px-3 py-2 text-[10px] font-display font-semibold uppercase tracking-wider text-muted-foreground">Letter Ht.</th>
+                <th className="px-3 py-2 text-[10px] font-display font-semibold uppercase tracking-wider text-muted-foreground">Trigger</th>
+                <th className="px-3 py-2 text-[10px] font-display font-semibold uppercase tracking-wider text-muted-foreground">Maps To</th>
+                <th className="px-3 py-2 text-[10px] font-display font-semibold uppercase tracking-wider text-muted-foreground w-16 text-center">Page</th>
+              </tr>
+            </thead>
+            <tbody>
+              {plaques.map((p, i) => (
+                <tr
+                  key={p.id}
+                  className={`border-t border-border/50 hover:bg-secondary/30 transition-colors ${i % 2 === 0 ? "" : "bg-secondary/10"}`}
+                >
+                  <td className="px-3 py-2 font-mono text-xs font-semibold text-indigo-400">{p.typeId}</td>
+                  <td className="px-3 py-2 text-sm text-foreground">{p.name ?? <span className="text-muted-foreground/40">—</span>}</td>
+                  <td className="px-3 py-2 text-xs text-center">
+                    {p.braille === true ? (
+                      <span className="text-emerald-400 font-semibold">Yes</span>
+                    ) : p.braille === false ? (
+                      <span className="text-muted-foreground/50">No</span>
+                    ) : (
+                      <span className="text-muted-foreground/30">—</span>
+                    )}
+                  </td>
+                  <td className="px-3 py-2 text-xs text-center">
+                    {p.insert === true ? (
+                      <span className="text-emerald-400 font-semibold">Yes</span>
+                    ) : p.insert === false ? (
+                      <span className="text-muted-foreground/50">No</span>
+                    ) : (
+                      <span className="text-muted-foreground/30">—</span>
+                    )}
+                  </td>
+                  <td className="px-3 py-2 text-xs text-muted-foreground">{p.insertSize ?? <span className="text-muted-foreground/30">—</span>}</td>
+                  <td className="px-3 py-2 text-xs text-muted-foreground">{p.letterHeight ?? <span className="text-muted-foreground/30">—</span>}</td>
+                  <td className="px-3 py-2 text-xs text-muted-foreground max-w-[200px] truncate" title={p.trigger ?? undefined}>{p.trigger ?? <span className="text-muted-foreground/30">—</span>}</td>
+                  <td className="px-3 py-2 text-xs text-muted-foreground">{p.mapsToColumn ?? <span className="text-muted-foreground/30">—</span>}</td>
+                  <td className="px-3 py-2 text-xs text-muted-foreground text-center font-mono">{p.sourcePage ?? "—"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function OccupantLoadsTab({
+  jobId: _jobId,
+  loads,
+  assemblyRooms,
+  isLoading,
+  isExtracting,
+  onExtract,
+}: {
+  jobId: string;
+  loads: OccupantLoadEntry[];
+  assemblyRooms: AssemblyRoom[];
+  isLoading: boolean;
+  isExtracting: boolean;
+  onExtract: () => void;
+}) {
+  const assemblySet = new Set(assemblyRooms.map((r) => r.roomNumber));
+
+  return (
+    <div className="p-6 max-w-5xl mx-auto w-full space-y-6">
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-base font-display font-semibold text-foreground">Occupant Loads</h2>
+          <p className="text-xs text-muted-foreground mt-0.5">
+            Room-level occupancy data extracted from egress/life-safety drawings.
+          </p>
+        </div>
+        <button
+          onClick={onExtract}
+          disabled={isExtracting}
+          className="flex items-center gap-2 px-3 py-1.5 rounded-md bg-orange-500/10 border border-orange-500/30 text-orange-400 text-xs font-medium hover:bg-orange-500/20 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+        >
+          {isExtracting ? (
+            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+          ) : (
+            <Users className="w-3.5 h-3.5" />
+          )}
+          {isExtracting ? "Extracting…" : loads.length > 0 ? "Re-extract" : "Extract Occupant Loads"}
+        </button>
+      </div>
+
+      {isLoading ? (
+        <div className="flex items-center justify-center py-12">
+          <Loader2 className="w-6 h-6 animate-spin text-muted-foreground" />
+        </div>
+      ) : loads.length === 0 ? (
+        <div className="border border-dashed border-border rounded-lg p-10 flex flex-col items-center gap-3 text-center">
+          <Users className="w-8 h-8 text-muted-foreground/40" />
+          <p className="text-sm text-muted-foreground">No occupant load data yet.</p>
+          <p className="text-xs text-muted-foreground/60">
+            Click "Extract Occupant Loads" to scan egress drawings for room-level occupancy data.
+          </p>
+        </div>
+      ) : (
+        <div className="space-y-6">
+          {assemblyRooms.length > 0 && (
+            <div className="rounded-lg border border-orange-500/30 bg-orange-500/5 p-4">
+              <div className="flex items-center gap-2 mb-3">
+                <AlertTriangle className="w-4 h-4 text-orange-400 flex-shrink-0" />
+                <span className="text-sm font-display font-semibold text-orange-400">
+                  Assembly Rooms ({assemblyRooms.length})
+                </span>
+                <span className="text-xs text-muted-foreground">— occupant load ≥ 50</span>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+                {assemblyRooms.map((r) => (
+                  <div
+                    key={r.roomNumber}
+                    className="flex items-center justify-between gap-2 bg-orange-500/10 border border-orange-500/20 rounded-md px-3 py-2"
+                  >
+                    <div className="min-w-0">
+                      <div className="text-xs font-mono font-semibold text-orange-400">{r.roomNumber}</div>
+                      {r.roomName && (
+                        <div className="text-xs text-muted-foreground truncate">{r.roomName}</div>
+                      )}
+                    </div>
+                    <div className="text-right flex-shrink-0">
+                      <div className="text-sm font-bold font-mono text-orange-300">{r.occupantLoad}</div>
+                      {r.occupancyGroup && (
+                        <div className="text-[10px] text-muted-foreground font-mono">{r.occupancyGroup}</div>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          <div className="overflow-x-auto rounded-lg border border-border">
+            <table className="w-full text-left border-collapse">
+              <thead>
+                <tr className="bg-secondary/60">
+                  <th className="px-3 py-2 text-[10px] font-display font-semibold uppercase tracking-wider text-muted-foreground w-24">Room #</th>
+                  <th className="px-3 py-2 text-[10px] font-display font-semibold uppercase tracking-wider text-muted-foreground">Room Name</th>
+                  <th className="px-3 py-2 text-[10px] font-display font-semibold uppercase tracking-wider text-muted-foreground w-28 text-right">Occupant Load</th>
+                  <th className="px-3 py-2 text-[10px] font-display font-semibold uppercase tracking-wider text-muted-foreground w-28">Occupancy Group</th>
+                  <th className="px-3 py-2 text-[10px] font-display font-semibold uppercase tracking-wider text-muted-foreground w-16 text-center">Page</th>
+                </tr>
+              </thead>
+              <tbody>
+                {loads.map((r, i) => {
+                  const isAssembly = assemblySet.has(r.roomNum);
+                  return (
+                    <tr
+                      key={r.id}
+                      className={`border-t border-border/50 transition-colors ${
+                        isAssembly
+                          ? "bg-orange-500/8 hover:bg-orange-500/12"
+                          : i % 2 === 0
+                            ? "hover:bg-secondary/30"
+                            : "bg-secondary/10 hover:bg-secondary/30"
+                      }`}
+                    >
+                      <td className="px-3 py-2 font-mono text-xs font-semibold text-foreground">
+                        <div className="flex items-center gap-1.5">
+                          {isAssembly && <AlertTriangle className="w-3 h-3 text-orange-400 flex-shrink-0" />}
+                          {r.roomNum}
+                        </div>
+                      </td>
+                      <td className="px-3 py-2 text-sm text-foreground">{r.roomName ?? <span className="text-muted-foreground/40">—</span>}</td>
+                      <td className="px-3 py-2 text-right">
+                        <span className={`text-sm font-mono font-semibold ${isAssembly ? "text-orange-400" : "text-foreground"}`}>
+                          {r.occupantLoad ?? <span className="text-muted-foreground/40 font-normal">—</span>}
+                        </span>
+                      </td>
+                      <td className="px-3 py-2 text-xs text-muted-foreground font-mono">{r.occupancyGroup ?? <span className="text-muted-foreground/30">—</span>}</td>
+                      <td className="px-3 py-2 text-xs text-muted-foreground text-center font-mono">{r.sourcePage ?? "—"}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
