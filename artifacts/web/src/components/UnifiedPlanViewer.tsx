@@ -147,8 +147,7 @@ const SIGN_TYPE_COLORS: Record<string, string> = {
   "building sign": "#6366F1",
 };
 
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-function getSignColor(signType: string | null | undefined): string {
+function _getSignColor(signType: string | null | undefined): string {
   if (!signType) return "#6B7280";
   const key = signType.toLowerCase();
   for (const [k, v] of Object.entries(SIGN_TYPE_COLORS)) {
@@ -1976,12 +1975,14 @@ export function UnifiedPlanViewer({
       setSavedSigns(currentSigns);
       setHistoryStack([]);
       setRedoStack([]);
-      if (onSignUpdated) currentSigns.forEach((s) => {
-        const orig = savedMap.get(s.id);
-        if (orig && (orig.xPos !== s.xPos || orig.yPos !== s.yPos)) {
-          onSignUpdated(s.id, s.xPos ?? 0, s.yPos ?? 0);
-        }
-      });
+      if (onSignUpdated) {
+        currentSigns.forEach((s) => {
+          const orig = savedMap.get(s.id);
+          if (orig && (orig.xPos !== s.xPos || orig.yPos !== s.yPos)) {
+            onSignUpdated(s.id, s.xPos ?? 0, s.yPos ?? 0);
+          }
+        });
+      }
       savedSigns.forEach((s) => {
         if (!currentMap.has(s.id)) onSignDeleted?.(s.id);
       });
