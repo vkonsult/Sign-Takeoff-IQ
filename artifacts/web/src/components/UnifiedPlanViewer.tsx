@@ -2048,6 +2048,17 @@ export function UnifiedPlanViewer({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialSignId]);
 
+  const placeSignNavRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!placeSignId) { placeSignNavRef.current = null; return; }
+    if (placeSignNavRef.current === placeSignId) return;
+    const s = localSigns.find((sign) => sign.id === placeSignId);
+    if (!s) return;
+    placeSignNavRef.current = placeSignId;
+    if (s.jobFileId) setSelectedFileId(s.jobFileId);
+    if (s.pageNumber) setPageNumber(s.pageNumber);
+  }, [placeSignId, localSigns]);
+
   const setActiveSign = useCallback((s: ExtractedSign | null) => {
     setActiveSignState(s);
     if (s?.jobFileId) setSelectedFileId(s.jobFileId);
