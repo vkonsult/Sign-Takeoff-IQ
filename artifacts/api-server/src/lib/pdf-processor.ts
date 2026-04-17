@@ -19,7 +19,7 @@ import {
 
 import { extractTextFromPdf, isSpecFile } from "./extraction";
 import { extractSignsHeuristic } from "./extraction-heuristic";
-import { FLOOR_PLAN_EXCLUSION_PHRASES, SIGN_SCHEDULE_PHRASES, isCodeOnlyLocation } from "./sign-vocabulary";
+import { isCodeOnlyLocation } from "./sign-vocabulary";
 import { saveParsedResult, getFilePageImagesDir, PAGES_DIR } from "./storage";
 import { renderFloorPlanPages } from "./pdf-render";
 import { logger } from "./logger";
@@ -27,14 +27,11 @@ import {
   extractPagePhrases,
   extractRawPageItems,
   matchLocationToCoords,
-  classifyPageFromPhrases,
-  extractFloorLevelName,
   extractTitleBlockBuildingType,
-  extractPdfMetadata,
   extractCodeProximityPairs,
   type PdfPhrase,
-  type SpatialPageType,
 } from "./pdf-words";
+import { buildSheetManifest } from "./sheet-manifest";
 import {
   extractSignageData,
   type SignTypeSpec,
@@ -137,7 +134,6 @@ export async function runPdfProcessor(jobId: string): Promise<void> {
   // ── Per-file processing ───────────────────────────────────────────────────
   const parsedResults: Record<string, unknown>[] = [];
   const allPageImagePaths = new Map<string, Record<string, string>>();
-  const allSpatialPageTypes = new Map<string, Map<number, SpatialPageType>>();
   const allSpatialFloorLevelNames = new Map<string, Map<number, string>>();
   const fileFloorPlanPages = new Map<string, Set<number>>();
 
@@ -159,215 +155,79 @@ export async function runPdfProcessor(jobId: string): Promise<void> {
         // Read any previously rejected page numbers so they are preserved across re-runs.
         const existingRejectedPages: number[] = (file.pageStats as { rejectedPageNumbers?: number[] } | null)?.rejectedPageNumbers ?? [];
 
-        // ── Spatial pre-pass ──────────────────────────────────────────────
-        let spatialPageTypes: Map<number, SpatialPageType> | undefined;
-        let spatialFloorLevelNames: Map<number, string> | undefined;
-        let bookmarkTitles: Record<number, string> | undefined;
-        let outlineSections: Array<{ title: string; pageStart: number; pageEnd: number; type: "floor_plan" | "sign_schedule" | "other" | null }> | undefined;
-        // Hoisted so the bookmark-title veto (applied after text extraction) can access it.
-        const bookmarkPageMap = new Map<number, { title: string; type: "floor_plan" | "sign_schedule" | "other" | null }>();
-        const t_spatial = Date.now();
-        try {
-          const { getPdfPageCount } = await import("./pdf-words");
-          const numPages = await getPdfPageCount(file.storedPath);
-          spatialPageTypes = new Map<number, SpatialPageType>();
-          spatialFloorLevelNames = new Map<number, string>();
+        // ── Phase 2: Sheet Manifest ───────────────────────────────────────
+        // Replaces the legacy spatial pre-pass. Classifies every page into
+        // one of 10 buckets using a 3-pass cascade (bookmarks → title block
+        // strips → full-page scan for excerpts).
+        const t_manifest = Date.now();
+        const manifest = await buildSheetManifest(file.storedPath, file.id);
+        manifest.warnings.forEach((w) =>
+          logger.warn({ jobId, fileId: file.id, warning: w }, "[PDF Processor] Sheet manifest warning")
+        );
 
-          // ── Bookmark extraction ────────────────────────────────────────
-          // Load PDF outline to build a pageNum→bookmark map (title + classified type).
-          // Bookmark classification is the primary signal; phrase-based
-          // classification is the fallback when no bookmark covers a page.
-          try {
-            const pdfMeta = await extractPdfMetadata(file.storedPath);
-            if (pdfMeta.outlineSections.length > 0) {
-              outlineSections = pdfMeta.outlineSections.map((s) => ({
-                title: s.title,
-                pageStart: s.pageStart,
-                pageEnd: s.pageEnd,
-                type: (s.type === "both" ? "floor_plan" : s.type) as "floor_plan" | "sign_schedule" | "other" | null,
-              }));
-            }
-            for (const section of pdfMeta.outlineSections) {
-              for (let p = section.pageStart; p <= section.pageEnd; p++) {
-                if (!bookmarkPageMap.has(p)) {
-                  bookmarkPageMap.set(p, { title: section.title, type: section.type });
-                }
-              }
-            }
-          } catch (err) {
-            logger.warn({ err, file: file.originalName }, "[PDF Processor] Bookmark extraction failed — falling back to phrase classification");
-          }
+        const finalFloorPlanPages = manifest.entries
+          .filter((e) => e.bucket === "floor_plan")
+          .map((e) => e.pdfPage);
+        const finalSignSchedulePages = manifest.entries
+          .filter((e) => e.bucket === "signage_schedule")
+          .map((e) => e.pdfPage);
+        const finalBothPages: number[] = []; // "both" bucket removed in 10-bucket system
+        const lifeSafetyPages = manifest.entries
+          .filter((e) => e.bucket === "life_safety")
+          .map((e) => e.pdfPage);
 
-          await Promise.all(
-            Array.from({ length: numPages }, (_, i) => i + 1).map(async (pageNum) => {
-              try {
-                const pageWords = await extractPagePhrases(file.storedPath, file.id, pageNum);
-
-                let spatialType: SpatialPageType;
-                const bookmark = bookmarkPageMap.get(pageNum);
-
-                if (bookmark) {
-                  // Primary signal: bookmark covers this page — use its classification directly.
-                  // "floor_plan" and "sign_schedule" map directly to SpatialPageType.
-                  // "other" and null map to "unknown" (page is excluded, not re-promoted).
-                  if (bookmark.type === "floor_plan" || bookmark.type === "sign_schedule") {
-                    spatialType = bookmark.type as SpatialPageType;
-                  } else {
-                    spatialType = "unknown";
-                  }
-                } else {
-                  // No bookmark covers this page — fall back to phrase-based classification.
-                  // For floor-plan candidates, additionally require that a valid floor level
-                  // name can be extracted. Without a level name, an incidental "floor plan"
-                  // reference in a legend or callout is too ambiguous to classify the page
-                  // as a floor plan — downgrade to unknown.
-                  const phraseResult = classifyPageFromPhrases(pageWords.phrases);
-                  if (phraseResult.type === "floor_plan" || phraseResult.type === "both") {
-                    const levelName = extractFloorLevelName(pageWords.phrases);
-                    if (levelName) {
-                      spatialType = phraseResult.type;
-                    } else if (phraseResult.type === "both") {
-                      // Floor plan evidence is unconfirmed (no level extractable) but
-                      // sign-schedule evidence is still valid — keep sign_schedule.
-                      spatialType = "sign_schedule";
-                    } else {
-                      // Pure floor-plan candidate with no level: downgrade to unknown.
-                      spatialType = "unknown";
-                    }
-                  } else {
-                    spatialType = phraseResult.type;
-                  }
-                }
-
-                spatialPageTypes!.set(pageNum, spatialType);
-                if (spatialType === "floor_plan" || spatialType === "both") {
-                  const levelName = extractFloorLevelName(pageWords.phrases);
-                  if (levelName) spatialFloorLevelNames!.set(pageNum, levelName);
-                }
-              } catch {
-                // individual page failures are non-fatal
-              }
-            })
-          );
-
-          // Build bookmarkTitles record for pageStats
-          if (bookmarkPageMap.size > 0) {
-            bookmarkTitles = {};
-            for (const [pageNum, bm] of bookmarkPageMap) {
-              bookmarkTitles[pageNum] = bm.title;
-            }
-          }
-
-          const floorPlanCount = [...spatialPageTypes.values()].filter((t) => t === "floor_plan").length;
-          const bothCount = [...spatialPageTypes.values()].filter((t) => t === "both").length;
-          const fpSet = new Set<number>();
-          for (const [pageNum, type] of spatialPageTypes) {
-            if (type === "floor_plan" || type === "both") fpSet.add(pageNum);
-          }
-          fileFloorPlanPages.set(file.id, fpSet);
-          allSpatialPageTypes.set(file.id, spatialPageTypes);
-          allSpatialFloorLevelNames.set(file.id, spatialFloorLevelNames);
-
-          // ── Building-type detection from title block (PDF text only) ──────
-          // Scan the first page's title-block region for project name keywords
-          // and map them to a canonical building type.  The phrase cache is
-          // already warm from the spatial pre-pass loop above so this is cheap.
-          try {
-            const firstPagePhrases = await extractPagePhrases(file.storedPath, file.id, 1);
-            const detected = extractTitleBlockBuildingType(firstPagePhrases.phrases);
-            if (detected && !detectedBuildingType) {
-              detectedBuildingType = detected;
-              logger.info({ jobId, fileId: file.id, buildingType: detected }, "[PDF Processor] Building type detected from title block");
-            }
-          } catch {
-            // non-fatal
-          }
-
-          pipelineSteps.push({
-            step: `spatial_prepass_${file.id}`,
-            label: filesToProcess.length > 1 ? `Spatial pre-pass — ${file.originalName}` : "Spatial pre-pass",
-            durationMs: Date.now() - t_spatial,
-            startedAt: new Date(t_spatial).toISOString(),
-            details: { pages: numPages, floorPlan: floorPlanCount, both: bothCount, bookmarks: bookmarkPageMap.size },
-          });
-        } catch (err) {
-          logger.warn({ err, file: file.originalName }, "[PDF Processor] Spatial pre-pass failed");
+        // Level names from manifest (pdfPage → normalized level)
+        const spatialFloorLevelNames = new Map<number, string>();
+        for (const entry of manifest.entries) {
+          if (entry.level) spatialFloorLevelNames.set(entry.pdfPage, entry.level);
         }
+
+        const fpSet = new Set<number>(finalFloorPlanPages);
+        fileFloorPlanPages.set(file.id, fpSet);
+        allSpatialFloorLevelNames.set(file.id, spatialFloorLevelNames);
+
+        // Building-type detection from first page title block (phrase cache warm from manifest)
+        try {
+          const firstPagePhrases = await extractPagePhrases(file.storedPath, file.id, 1);
+          const detected = extractTitleBlockBuildingType(firstPagePhrases.phrases);
+          if (detected && !detectedBuildingType) {
+            detectedBuildingType = detected;
+            logger.info({ jobId, fileId: file.id, buildingType: detected }, "[PDF Processor] Building type detected from title block");
+          }
+        } catch {
+          // non-fatal
+        }
+
+        recordStep(
+          `sheet_manifest_${file.id}`,
+          filesToProcess.length > 1 ? `Sheet manifest — ${file.originalName}` : "Sheet manifest",
+          t_manifest,
+          {
+            totalPages: manifest.totalPages,
+            floorPlan: finalFloorPlanPages.length,
+            signSchedule: finalSignSchedulePages.length,
+            lifeSafety: lifeSafetyPages.length,
+            isExcerpt: manifest.isExcerpt,
+            source: manifest.entries[0]?.source ?? "none",
+          }
+        );
 
         // ── Raw text extraction (no AI) ───────────────────────────────────
         const t_text = Date.now();
         const { pages, numPages } = await extractTextFromPdf(file.storedPath, file.id);
         const rawText = pages.map((p) => p.text).join("\n");
 
-        // Identify page types from raw classification
-        const floorPlanPages: number[] = [];
-        const signSchedulePages: number[] = [];
-        const bothPages: number[] = [];
+        // Derive otherPages for pageStats — all pages not in a named bucket.
+        const classifiedManifestSet = new Set([
+          ...finalFloorPlanPages,
+          ...finalSignSchedulePages,
+          ...finalBothPages,
+          ...lifeSafetyPages,
+        ]);
         const otherPages: number[] = [];
         for (const page of pages) {
-          if (page.type === "floor_plan") floorPlanPages.push(page.pageNum);
-          else if (page.type === "sign_schedule") signSchedulePages.push(page.pageNum);
-          else if (page.type === "both") { bothPages.push(page.pageNum); }
-          else otherPages.push(page.pageNum);
+          if (!classifiedManifestSet.has(page.pageNum)) otherPages.push(page.pageNum);
         }
-
-        // Override with spatial classification where available
-        const spatialFp: number[] = [];
-        const spatialSs: number[] = [];
-        const spatialBoth: number[] = [];
-        if (spatialPageTypes) {
-          for (const [pageNum, type] of spatialPageTypes) {
-            if (type === "floor_plan") spatialFp.push(pageNum);
-            else if (type === "sign_schedule") spatialSs.push(pageNum);
-            else if (type === "both") spatialBoth.push(pageNum);
-          }
-        }
-
-        const finalFloorPlanPages = spatialFp.length > 0 ? spatialFp : floorPlanPages;
-
-        // Merge spatial and text-extraction sign-schedule results, then apply vetoes:
-        //  1. Bookmark-title veto: bookmark containing exclusion keywords → not a sign schedule.
-        //  2. Text-phrase veto (unbookmarked spatial pages only): if spatial detection flagged
-        //     a page that text extraction DID NOT flag, and the page text contains exclusion
-        //     phrases but zero sign-schedule phrases, reject it (likely a grid/table layout
-        //     like an electrical panel schedule that mimics a sign schedule visually).
-        const rawSs = spatialSs.length > 0 ? spatialSs : signSchedulePages;
-        const signSchedulePageSet = new Set(signSchedulePages);
-        const finalSignSchedulePages = (await Promise.all(
-          rawSs.map(async (pg) => {
-            // Veto 1: bookmark title contains exclusion keyword
-            const bm = bookmarkPageMap.get(pg);
-            if (bm) {
-              const t = bm.title.toLowerCase();
-              if (FLOOR_PLAN_EXCLUSION_PHRASES.some((p) => t.includes(p))) return null;
-            }
-
-            // Veto 2: unbookmarked page that spatial detected but text extraction missed
-            if (!bm && spatialSs.length > 0 && !signSchedulePageSet.has(pg)) {
-              try {
-                const { extractPagePhrases } = await import("./pdf-words");
-                const { phrases } = await extractPagePhrases(file.storedPath, file.id, pg);
-                const pageText = phrases.map((p) => p.text).join(" ").toLowerCase();
-                const hasSsPhrases = SIGN_SCHEDULE_PHRASES.some((p) => pageText.includes(p));
-                const hasExclusion = FLOOR_PLAN_EXCLUSION_PHRASES.some((p) => pageText.includes(p));
-                if (!hasSsPhrases && hasExclusion) return null;
-              } catch {
-                // phrase extraction failed — keep the spatial result
-              }
-            }
-
-            return pg;
-          })
-        )).filter((pg): pg is number => pg !== null);
-
-        const finalBothPages = spatialBoth.length > 0 ? spatialBoth : bothPages;
-
-        // Re-sync fileFloorPlanPages with the fallback-aware final sets so that
-        // heuristic and code-proximity extraction run on all correctly-identified
-        // floor plan pages (spatial pre-pass alone may return empty if the page
-        // title block doesn't match floor-plan keywords, while text extraction
-        // classifies those same pages correctly).
-        fileFloorPlanPages.set(file.id, new Set([...finalFloorPlanPages, ...finalBothPages]));
 
         recordStep(`text_extraction_${file.id}`,
           filesToProcess.length > 1 ? `Text extraction — ${file.originalName}` : "Text extraction",
@@ -540,37 +400,62 @@ export async function runPdfProcessor(jobId: string): Promise<void> {
         }
 
         // ── Persist file metadata ─────────────────────────────────────────
-        const floorPageLevels = spatialFloorLevelNames && spatialFloorLevelNames.size > 0
-          ? Object.fromEntries(spatialFloorLevelNames)
-          : undefined;
-
-        // Exclude any previously-rejected pages from all classification lists so they
-        // are never sent for AI extraction or heuristic sign detection on re-runs.
+        // Exclude any previously-rejected pages from all classification lists.
         const rejectedSet = new Set(existingRejectedPages);
         const filterRejected = (pages: number[]) => pages.filter((p) => !rejectedSet.has(p));
 
-        // Build the classified-page sets so otherPages can exclude any page that is
-        // already accounted for in a specific classification bucket.  Using the raw
-        // text-extraction otherPages directly would include pages that the spatial
-        // pre-pass reclassified as floor_plan / sign_schedule / both, causing a page
-        // to appear in two contradictory buckets simultaneously.
-        const classifiedPageSet = new Set([
-          ...finalFloorPlanPages,
-          ...finalSignSchedulePages,
-          ...finalBothPages,
-        ]);
-        const dedupedOtherPages = otherPages.filter((p) => !classifiedPageSet.has(p));
+        const floorPageLevels = spatialFloorLevelNames.size > 0
+          ? Object.fromEntries(spatialFloorLevelNames)
+          : undefined;
+
+        // Build bookmark titles + outline sections from manifest for downstream consumers.
+        const bookmarkTitles: Record<number, string> = {};
+        const outlineSections: Array<{ title: string; pageStart: number; pageEnd: number; bucket: string }> = [];
+        for (const entry of manifest.entries) {
+          if (entry.source === "bookmark") {
+            bookmarkTitles[entry.pdfPage] = entry.sheetTitle;
+          }
+        }
+        // Compact bookmark entries into contiguous ranges for the outline sections record.
+        const bookmarkEntries = manifest.entries.filter((e) => e.source === "bookmark");
+        if (bookmarkEntries.length > 0) {
+          let curTitle = bookmarkEntries[0]!.sheetTitle;
+          let curBucket = bookmarkEntries[0]!.bucket;
+          let curStart = bookmarkEntries[0]!.pdfPage;
+          let curEnd = bookmarkEntries[0]!.pdfPage;
+          for (let i = 1; i < bookmarkEntries.length; i++) {
+            const e = bookmarkEntries[i]!;
+            if (e.sheetTitle === curTitle && e.pdfPage === curEnd + 1) {
+              curEnd = e.pdfPage;
+            } else {
+              outlineSections.push({ title: curTitle, pageStart: curStart, pageEnd: curEnd, bucket: curBucket });
+              curTitle = e.sheetTitle; curBucket = e.bucket; curStart = e.pdfPage; curEnd = e.pdfPage;
+            }
+          }
+          outlineSections.push({ title: curTitle, pageStart: curStart, pageEnd: curEnd, bucket: curBucket });
+        }
 
         const pageStats = {
           floorPlanPages: filterRejected(finalFloorPlanPages),
           signSchedulePages: filterRejected(finalSignSchedulePages),
           bothPages: filterRejected(finalBothPages),
-          otherPages: filterRejected(dedupedOtherPages),
+          lifeSafetyPages: filterRejected(lifeSafetyPages),
+          otherPages: filterRejected(otherPages),
+          sheetManifest: manifest.entries.map((e) => ({
+            pdfPage: e.pdfPage,
+            bucket: e.bucket,
+            sheetTitle: e.sheetTitle,
+            sheetNumber: e.sheetNumber,
+            level: e.level,
+            area: e.area,
+            building: e.building,
+            source: e.source,
+          })),
           ...(existingRejectedPages.length > 0 ? { rejectedPageNumbers: existingRejectedPages } : {}),
           ...(pageImagePathsRelative ? { pageImagePaths: pageImagePathsRelative } : {}),
           ...(floorPageLevels ? { floorPageLevels } : {}),
-          ...(bookmarkTitles ? { bookmarkTitles } : {}),
-          ...(outlineSections ? { outlineSections } : {}),
+          ...(Object.keys(bookmarkTitles).length > 0 ? { bookmarkTitles } : {}),
+          ...(outlineSections.length > 0 ? { outlineSections } : {}),
         };
 
         await db
