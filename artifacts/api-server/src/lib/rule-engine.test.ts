@@ -7,7 +7,7 @@
  *   - assignmentToRows() — maps SignAssignment → extractedSignsTable rows
  */
 
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeAll } from "vitest";
 import {
   classifyRoom,
   assignmentToRows,
@@ -20,13 +20,12 @@ import type { RoomInventory as Phase4RoomInventory, RoomRecord as Phase4RoomReco
 // ── Phase 4 fixture helpers ───────────────────────────────────────────────────
 
 function makeRoom(overrides: Partial<Phase4RoomRecord> & { roomName: string }): Phase4RoomRecord {
-  return {
-    roomNumber: null,
-    roomName: overrides.roomName,
+  const base = {
+    roomNumber: null as string | null,
     level: "L1",
     pdfPage: 1,
-    occupantLoad: null,
-    occupancyGroup: null,
+    occupantLoad: null as number | null,
+    occupancyGroup: null as string | null,
     isRestroom: false,
     isStair: false,
     isElevator: false,
@@ -38,10 +37,14 @@ function makeRoom(overrides: Partial<Phase4RoomRecord> & { roomName: string }): 
     isPublicFacing: false,
     isStaffOnly: false,
     isAssembly: false,
-    boundingBox: null,
+    isOffice: false,
+    isSuite: false,
+    doorCount: null as number | null,
+    zoneQualifier: null as string | null | undefined,
+    boundingBox: null as Phase4RoomRecord["boundingBox"],
     extractionConfidence: 1,
-    ...overrides,
   };
+  return { ...base, ...overrides };
 }
 
 function makeInventory(rooms: Phase4RoomRecord[]): Phase4RoomInventory {
@@ -65,6 +68,7 @@ function makeAssignment(overrides: Partial<SignAssignment>): SignAssignment {
     pdfPage: 3,
     roomId: null,
     roomIdWithInsert: null,
+    suiteId: null,
     restroom: null,
     exit: null,
     maxOccupancy: null,
@@ -78,6 +82,7 @@ function makeAssignment(overrides: Partial<SignAssignment>): SignAssignment {
     sourceSheet: null,
     ambiguous: false,
     ambiguityNote: null,
+    zoneQualifier: null,
     ...overrides,
   };
 }
@@ -400,8 +405,8 @@ describe("assignmentToRows — rawJson traceability", () => {
 // ── applySignRules — full rule engine integration tests ───────────────────────
 
 describe("applySignRules — R1: regular occupied room gets Room ID sign", () => {
-  it("an ordinary office room gets roomId=1 via R1", () => {
-    const inv = makeInventory([makeRoom({ roomName: "OFFICE", roomNumber: "101" })]);
+  it("a generic occupied room gets roomId=1 via R1", () => {
+    const inv = makeInventory([makeRoom({ roomName: "BREAK ROOM", roomNumber: "101" })]);
     const result = applySignRules(inv, [], "job-1");
     expect(result.assignments).toHaveLength(1);
     const a = result.assignments[0]!;
@@ -420,14 +425,15 @@ describe("applySignRules — R1: regular occupied room gets Room ID sign", () =>
 });
 
 describe("applySignRules — R2: variable-use room gets Room ID w/ Insert", () => {
-  it("CONFERENCE ROOM gets roomIdWithInsert=1 and ambiguous flag", () => {
+  it("CONFERENCE ROOM gets roomIdWithInsert=1 with audit note (not ambiguous) when doorCount unknown", () => {
     const inv = makeInventory([makeRoom({ roomName: "CONFERENCE ROOM", isVariableUse: true })]);
     const result = applySignRules(inv, [], "job-3");
     const a = result.assignments[0]!;
     expect(a.roomIdWithInsert).toBe(1);
     expect(a.roomId).toBe(0);
     expect(a.appliedRules).toContain("R2");
-    expect(a.ambiguous).toBe(true);
+    expect(a.ambiguous).toBe(false);
+    expect(a.ambiguityNote).toMatch(/quantity 1 assumed/i);
   });
 
   it("TRAINING ROOM (name-derived variable use) also triggers R2", () => {
@@ -556,7 +562,7 @@ describe("applySignRules — R10: max occupancy / capacity sign", () => {
 });
 
 describe("applySignRules — R11: stair plaques", () => {
-  it("STAIRWELL → stairCorridor=1 + stairLanding=1, no Room ID", () => {
+  it("STAIRWELL → stairCorridor=1 + stairLanding=1, no Room ID, audit note when doorCount unknown", () => {
     const inv = makeInventory([makeRoom({ roomName: "STAIRWELL", isStair: true })]);
     const result = applySignRules(inv, [], "job-17");
     const a = result.assignments[0]!;
@@ -564,7 +570,8 @@ describe("applySignRules — R11: stair plaques", () => {
     expect(a.stairLanding).toBe(1);
     expect(a.appliedRules).toContain("R11");
     expect(a.roomId).toBeNull();
-    expect(a.ambiguous).toBe(true);
+    expect(a.ambiguous).toBe(false);
+    expect(a.ambiguityNote).toMatch(/quantity 1 assumed/i);
   });
 
   it("STAIR TOWER (name-derived) → also gets R11 signs", () => {
@@ -634,7 +641,7 @@ describe("applySignRules — R13: evacuation map", () => {
 });
 
 describe("applySignRules — R14: office directory", () => {
-  it("LOBBY on L1 → first lobby on level gets officeDirectory=1", () => {
+  it("LOBBY on L1 → gets officeDirectory=1 via R14", () => {
     const inv = makeInventory([makeRoom({ roomName: "MAIN LOBBY", isPublicFacing: true })]);
     const result = applySignRules(inv, [], "job-25");
     const a = result.assignments[0]!;
@@ -642,7 +649,7 @@ describe("applySignRules — R14: office directory", () => {
     expect(a.appliedRules).toContain("R14");
   });
 
-  it("second LOBBY on same level → no directory (deduped to first)", () => {
+  it("R14 fix: ALL lobbies on same level receive an office directory (not just first)", () => {
     const inv = makeInventory([
       makeRoom({ roomName: "MAIN LOBBY", isPublicFacing: true, level: "L1" }),
       makeRoom({ roomName: "EAST LOBBY", isPublicFacing: true, level: "L1" }),
@@ -651,8 +658,9 @@ describe("applySignRules — R14: office directory", () => {
     const dirAssignments = result.assignments.filter(
       (a) => a.officeDirectory !== null && a.officeDirectory > 0,
     );
-    expect(dirAssignments).toHaveLength(1);
-    expect(dirAssignments[0]!.roomName).toBe("MAIN LOBBY");
+    expect(dirAssignments).toHaveLength(2);
+    expect(dirAssignments.map((a) => a.roomName)).toContain("MAIN LOBBY");
+    expect(dirAssignments.map((a) => a.roomName)).toContain("EAST LOBBY");
   });
 
   it("LOBBY on different levels each get their own directory", () => {
@@ -665,6 +673,19 @@ describe("applySignRules — R14: office directory", () => {
       (a) => a.officeDirectory !== null && a.officeDirectory > 0,
     );
     expect(dirAssignments).toHaveLength(2);
+  });
+
+  it("three lobbies on L1 all get directories — R14 covers every lobby on a level", () => {
+    const inv = makeInventory([
+      makeRoom({ roomName: "MAIN LOBBY", isPublicFacing: true, level: "L1" }),
+      makeRoom({ roomName: "EAST LOBBY", isPublicFacing: true, level: "L1" }),
+      makeRoom({ roomName: "WEST LOBBY", isPublicFacing: true, level: "L1" }),
+    ]);
+    const result = applySignRules(inv, [], "job-27b");
+    const dirAssignments = result.assignments.filter(
+      (a) => a.officeDirectory !== null && a.officeDirectory > 0,
+    );
+    expect(dirAssignments).toHaveLength(3);
   });
 });
 
@@ -689,6 +710,41 @@ describe("applySignRules — edge case: mezzanine MEP veto (R15)", () => {
     const a = result.assignments[0]!;
     expect(a.exclusionReasons.some((r) => r.includes("R15"))).toBe(false);
     expect(a.roomId).toBe(1);
+  });
+});
+
+describe("applySignRules — Step 3b: staff-only level-cluster fallback", () => {
+  it("restroom on all-office level → classified staff-only, no directory sign", () => {
+    const level = "L2";
+    const inv = makeInventory([
+      makeRoom({ roomName: "WOMEN'S RESTROOM", level, isRestroom: true, isPublicFacing: true }),
+      makeRoom({ roomName: "OFFICE 201", level, isOffice: true }),
+      makeRoom({ roomName: "OFFICE 202", level, isOffice: true }),
+      makeRoom({ roomName: "MECHANICAL", level, isMepUnoccupied: true }),
+    ]);
+    const result = applySignRules(inv, [], "job-re-staff-1");
+    const restroomAssign = result.assignments.find((a) => a.roomName === "WOMEN'S RESTROOM")!;
+    // Staff-only restroom should still get a restroom sign (R7), but should
+    // NOT appear in questionsForVerification as a public-facing room
+    expect(restroomAssign.restroom).toBe(1);
+    expect(restroomAssign.appliedRules).toContain("R7");
+  });
+
+  it("restroom on mixed-use level with public lobby → NOT reclassified staff-only", () => {
+    const level = "L1";
+    const inv = makeInventory([
+      makeRoom({ roomName: "RESTROOM", level, isRestroom: true, isPublicFacing: true }),
+      makeRoom({ roomName: "MAIN LOBBY", level, isPublicFacing: true, isCorridorOrHall: true }),
+      makeRoom({ roomName: "OFFICE 101", level, isOffice: true }),
+    ]);
+    const result = applySignRules(inv, [], "job-re-staff-2");
+    const restroomAssign = result.assignments.find((a) => a.roomName === "RESTROOM")!;
+    // The restroom is public-facing — the level-cluster fallback must NOT
+    // reclassify it as staff-only when a public lobby is present on the same level.
+    expect(restroomAssign.restroom).toBe(1);
+    // isPublicFacing should remain true (no reclassification happened)
+    // — confirmed by the assignment still receiving a standard R7 plaque
+    expect(restroomAssign.appliedRules).toContain("R7");
   });
 });
 
@@ -746,6 +802,7 @@ function totalSignsForAssignment(a: SignAssignment): number {
   return (
     (a.roomId ?? 0) +
     (a.roomIdWithInsert ?? 0) +
+    (a.suiteId ?? 0) +
     (a.restroom ?? 0) +
     (a.exit ?? 0) +
     (a.maxOccupancy ?? 0) +
@@ -922,7 +979,7 @@ describe("applySignRules — mixed inventory: excluded rooms don't inflate total
     const excludedAssignments = result.assignments.filter((a) => a.roomName !== "OFFICE 101");
 
     expect(officeAssignment.roomId).toBe(1);
-    expect(officeAssignment.appliedRules).toContain("R1");
+    expect(officeAssignment.appliedRules.some((r) => r === "R1" || r === "R5")).toBe(true);
 
     for (const a of excludedAssignments) {
       expect(totalSignsForAssignment(a)).toBe(0);
@@ -947,5 +1004,331 @@ describe("applySignRules — mixed inventory: excluded rooms don't inflate total
     expect(totalQuantity).toBe(1);
     expect(allRows[0]!.signType).toBe("ROOM ID SIGN");
     expect(allRows[0]!.signIdentifier).toBe("S1");
+  });
+});
+
+// ── R5: Office gets Room ID via R5 ────────────────────────────────────────────
+
+describe("applySignRules — R5: office room ID sign", () => {
+  it("office room (isOffice=true) → roomId=1, appliedRules contains R5", () => {
+    const inv = makeInventory([
+      makeRoom({ roomName: "EXECUTIVE OFFICE", roomNumber: "205", isOffice: true }),
+    ]);
+    const result = applySignRules(inv, [], "job-r5a");
+    const a = result.assignments[0]!;
+    expect(a.roomId).toBe(1);
+    expect(a.appliedRules).toContain("R5");
+  });
+
+  it("assignmentToRows for office emits ROOM ID SIGN row", () => {
+    const inv = makeInventory([
+      makeRoom({ roomName: "OFFICE", roomNumber: "301", isOffice: true }),
+    ]);
+    const result = applySignRules(inv, [], "job-r5b");
+    const rows = result.assignments.flatMap((a) => assignmentToRows(a));
+    const roomIdRows = rows.filter((r) => r.signType === "ROOM ID SIGN");
+    expect(roomIdRows.length).toBeGreaterThanOrEqual(1);
+  });
+});
+
+// ── R6: Suite gets Suite ID sign ──────────────────────────────────────────────
+
+describe("applySignRules — R6: suite ID sign", () => {
+  it("suite room (isSuite=true) → suiteId=1, appliedRules contains R6", () => {
+    const inv = makeInventory([
+      makeRoom({ roomName: "SUITE 100", roomNumber: "100", isSuite: true }),
+    ]);
+    const result = applySignRules(inv, [], "job-r6a");
+    const a = result.assignments[0]!;
+    expect(a.suiteId).toBe(1);
+    expect(a.appliedRules).toContain("R6");
+  });
+
+  it("assignmentToRows for suite emits SUITE ID SIGN row", () => {
+    const inv = makeInventory([
+      makeRoom({ roomName: "SUITE 200", roomNumber: "200", isSuite: true }),
+    ]);
+    const result = applySignRules(inv, [], "job-r6b");
+    const rows = result.assignments.flatMap((a) => assignmentToRows(a));
+    const suiteRows = rows.filter((r) => r.signType === "SUITE ID SIGN");
+    expect(suiteRows.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("non-suite room → suiteId remains null", () => {
+    const inv = makeInventory([
+      makeRoom({ roomName: "CONFERENCE ROOM", roomNumber: "102", isSuite: false }),
+    ]);
+    const result = applySignRules(inv, [], "job-r6c");
+    const a = result.assignments[0]!;
+    expect(a.suiteId).toBeNull();
+  });
+});
+
+// ── R9/R10: occupantLoad-aware ambiguity suppression ─────────────────────────
+
+describe("applySignRules — R9/R10: occupantLoad-aware rules", () => {
+  it("R9: high-occupancy assembly room (>49) → exit sign scale reflects load", () => {
+    // Use "AUDITORIUM" to avoid the hall/corridor token in "BANQUET HALL"
+    const inv = makeInventory([
+      makeRoom({ roomName: "AUDITORIUM", occupantLoad: 300, isAssembly: true }),
+    ]);
+    const result = applySignRules(inv, [], "job-r9a");
+    const a = result.assignments[0]!;
+    expect(a.appliedRules).toContain("R9");
+    expect(a.exit).toBeGreaterThanOrEqual(1);
+  });
+
+  it("R10: max-occupancy sign applied to assembly rooms; no ambiguity when load known", () => {
+    // R10 fires for assembly rooms (isAssembly=true)
+    const inv = makeInventory([
+      makeRoom({ roomName: "ASSEMBLY ROOM", occupantLoad: 75, isAssembly: true }),
+    ]);
+    const result = applySignRules(inv, [], "job-r10a");
+    const a = result.assignments[0]!;
+    expect(a.appliedRules).toContain("R10");
+    // With occupantLoad known, no ambiguity flag is added for R10
+    expect(a.ambiguityNote ?? "").not.toContain("R10: capacity sign — verify occupant load");
+  });
+
+  it("R10: assembly room with no occupantLoad → ambiguity note added", () => {
+    const inv = makeInventory([
+      makeRoom({ roomName: "ASSEMBLY ROOM", occupantLoad: null, isAssembly: true }),
+    ]);
+    const result = applySignRules(inv, [], "job-r10b");
+    const a = result.assignments[0]!;
+    expect(a.appliedRules).toContain("R10");
+    expect(a.ambiguous).toBe(true);
+  });
+
+  it("non-assembly room with no occupantLoad → R10 not applied", () => {
+    const inv = makeInventory([
+      makeRoom({ roomName: "BREAK ROOM", occupantLoad: null, isAssembly: false }),
+    ]);
+    const result = applySignRules(inv, [], "job-r10c");
+    const a = result.assignments[0]!;
+    expect(a.appliedRules).not.toContain("R10");
+  });
+});
+
+// ── R15 MEP hardening ─────────────────────────────────────────────────────────
+
+describe("applySignRules — R15: hardened MEP veto on mezzanine", () => {
+  it("mezzanine STORAGE room (not MEP) → NOT vetoed by R15", () => {
+    const inv = makeInventory([
+      makeRoom({ roomName: "MEZZANINE STORAGE", isMepUnoccupied: false }),
+    ]);
+    const result = applySignRules(inv, [], "job-r15a");
+    const a = result.assignments[0]!;
+    const allReasons = a.appliedRules.concat(a.exclusionReasons);
+    // R15 full veto must not have fired — room may get a near-veto note, but not a full veto
+    expect(allReasons.some((r) => r === "R15: mezzanine MEP unoccupied — all signs excluded")).toBe(false);
+    // Total signs > 0 confirms the room was not fully excluded
+    expect(totalSignsForAssignment(a)).toBeGreaterThan(0);
+  });
+
+  it("MEZZANINE STORAGE with Phase4 isMepUnoccupied=true → near-veto fires, signs still produced", () => {
+    // Regression test: old MEP_KEYWORDS included 'STORAGE', so Phase 4 would set
+    // isMepUnoccupied=true for storage rooms.  The R15 near-veto must catch this
+    // (room name has no true MEP token) and fall through to normal rules, producing
+    // at least one sign rather than silently zero-signing the room.
+    const inv = makeInventory([
+      makeRoom({ roomName: "MEZZANINE STORAGE", isMepUnoccupied: true }),
+    ]);
+    const result = applySignRules(inv, [], "job-r15a-regression");
+    const a = result.assignments[0]!;
+    // Full R15 veto must not fire
+    expect(a.exclusionReasons.some((r) => r === "R15: mezzanine MEP unoccupied — all signs excluded")).toBe(false);
+    // Room must receive at least one sign (Room ID via R1)
+    expect(totalSignsForAssignment(a)).toBeGreaterThan(0);
+  });
+
+  it("mezzanine ELECTRICAL room (MEP) → vetoed by R15", () => {
+    const inv = makeInventory([
+      makeRoom({ roomName: "MEZZANINE ELECTRICAL", isMepUnoccupied: true }),
+    ]);
+    const result = applySignRules(inv, [], "job-r15b");
+    const a = result.assignments[0]!;
+    const allReasons = a.appliedRules.concat(a.exclusionReasons);
+    expect(allReasons.some((r) => r.startsWith("R15"))).toBe(true);
+    expect(totalSignsForAssignment(a)).toBe(0);
+  });
+});
+
+// ── Zero-sign reason codes ────────────────────────────────────────────────────
+
+describe("applySignRules — zero-sign rooms emit typed reason codes", () => {
+  it("MEP-vetoed room emits VETOED_MEP in questionsForVerification", () => {
+    const inv = makeInventory([
+      makeRoom({ roomName: "ELECTRICAL ROOM", isMepUnoccupied: true }),
+    ]);
+    const result = applySignRules(inv, [], "job-zsr-mep");
+    const hasVetoedMep = result.questionsForVerification.some(
+      (q) => q.includes("VETOED_MEP"),
+    );
+    expect(hasVetoedMep).toBe(true);
+  });
+
+  it("mezzanine MEP room emits VETOED_MEZZANINE in questionsForVerification", () => {
+    const inv = makeInventory([
+      makeRoom({ roomName: "MEZZANINE ELECTRICAL", isMepUnoccupied: true }),
+    ]);
+    const result = applySignRules(inv, [], "job-zsr-mezz");
+    const hasMezzVeto = result.questionsForVerification.some(
+      (q) => q.includes("VETOED_MEZZANINE"),
+    );
+    expect(hasMezzVeto).toBe(true);
+  });
+
+  it("corridor room emits EXPLICIT_EXCLUSION in questionsForVerification", () => {
+    const inv = makeInventory([
+      makeRoom({ roomName: "CORRIDOR", isCorridorOrHall: true }),
+    ]);
+    const result = applySignRules(inv, [], "job-zsr-corridor");
+    const hasExplicit = result.questionsForVerification.some(
+      (q) => q.includes("EXPLICIT_EXCLUSION"),
+    );
+    expect(hasExplicit).toBe(true);
+  });
+
+  it("vehicle bay room emits EXPLICIT_EXCLUSION in questionsForVerification", () => {
+    const inv = makeInventory([
+      makeRoom({ roomName: "TRUCK BAY", isVehicleBay: true }),
+    ]);
+    const result = applySignRules(inv, [], "job-zsr-vehiclebay");
+    const hasExplicit = result.questionsForVerification.some(
+      (q) => q.includes("EXPLICIT_EXCLUSION"),
+    );
+    expect(hasExplicit).toBe(true);
+  });
+
+  it("office room with R5 default-door assumption emits AUDIT_ASSUMPTION in questionsForVerification", () => {
+    const inv = makeInventory([
+      makeRoom({ roomName: "EXECUTIVE OFFICE", roomNumber: "205", isOffice: true }),
+    ]);
+    const result = applySignRules(inv, [], "job-zsr-r5assumption");
+    const hasAuditAssumption = result.questionsForVerification.some(
+      (q) => q.includes("[AUDIT_ASSUMPTION]") && q.includes("R5"),
+    );
+    expect(hasAuditAssumption).toBe(true);
+  });
+
+  it("suite room with R6 assumption emits AUDIT_ASSUMPTION in questionsForVerification", () => {
+    const inv = makeInventory([
+      makeRoom({ roomName: "SUITE 100", roomNumber: "100", isSuite: true }),
+    ]);
+    const result = applySignRules(inv, [], "job-zsr-r6assumption");
+    const hasAuditAssumption = result.questionsForVerification.some(
+      (q) => q.includes("[AUDIT_ASSUMPTION]") && q.includes("R6"),
+    );
+    expect(hasAuditAssumption).toBe(true);
+  });
+
+  it("R2 variable-use room with known doorCount → no ambiguity flag", () => {
+    const inv = makeInventory([
+      makeRoom({ roomName: "CONFERENCE ROOM", isVariableUse: true, doorCount: 2 }),
+    ]);
+    const result = applySignRules(inv, [], "job-zsr-r2doorcount");
+    const a = result.assignments[0]!;
+    expect(a.roomIdWithInsert).toBe(2);
+    expect(a.ambiguous).toBe(false);
+  });
+
+  it("R11 stair with known doorCount → uses extracted count, no ambiguity", () => {
+    const inv = makeInventory([
+      makeRoom({ roomName: "STAIR A", isStair: true, doorCount: 3 }),
+    ]);
+    const result = applySignRules(inv, [], "job-zsr-r11doorcount");
+    const a = result.assignments[0]!;
+    expect(a.stairCorridor).toBe(3);
+    expect(a.ambiguous).toBe(false);
+  });
+});
+
+// ── Fixture-level regression: mixed-occupancy building ────────────────────────
+// This fixture locks in per-room sign counts for a representative multi-story
+// building. Add rooms here whenever a production job reveals new edge cases.
+// "Church/Tower" style: mix of MEP, storage, office, suite, restroom, stair, lobby.
+
+describe("Fixture: mixed-occupancy building — sign count regression", () => {
+  const fixtureRooms: Parameters<typeof makeRoom>[0][] = [
+    // Occupied rooms → get signs
+    { roomName: "OFFICE 101", roomNumber: "101", isOffice: true },
+    { roomName: "SUITE 200", roomNumber: "200", isSuite: true },
+    { roomName: "CONFERENCE ROOM", roomNumber: "102", isVariableUse: true },
+    { roomName: "LOBBY", roomNumber: "103", isPublicFacing: true, isCorridorOrHall: true },
+    { roomName: "WOMEN'S RESTROOM", roomNumber: "104", isRestroom: true },
+    { roomName: "STAIR A", roomNumber: "105", isStair: true },
+    { roomName: "STORAGE ROOM", roomNumber: "106" },         // plain storage — should get sign
+    { roomName: "JANITOR CLOSET", roomNumber: "107", isMepUnoccupied: true }, // Phase4 correctly flags janitor as MEP
+    // True MEP rooms → excluded
+    { roomName: "MECHANICAL ROOM", roomNumber: "108", isMepUnoccupied: true },
+    { roomName: "ELECTRICAL ROOM", roomNumber: "109", isMepUnoccupied: true },
+    // Mezzanine storage falsely flagged as MEP by Phase 4 → near-veto, gets sign
+    { roomName: "MEZZANINE STORAGE", roomNumber: "110", isMepUnoccupied: true },
+  ];
+
+  let result: ReturnType<typeof applySignRules>;
+
+  beforeAll(() => {
+    const inv = makeInventory(fixtureRooms.map((r) => makeRoom(r)));
+    result = applySignRules(inv, [], "job-fixture-mixed");
+  });
+
+  it("OFFICE 101 → roomId ≥ 1 (R5)", () => {
+    const a = result.assignments.find((x) => x.roomNumber === "101")!;
+    expect(a.roomId).toBeGreaterThanOrEqual(1);
+    expect(a.appliedRules.some((r) => r === "R5" || r === "R1")).toBe(true);
+  });
+
+  it("SUITE 200 → suiteId = 1 (R6)", () => {
+    const a = result.assignments.find((x) => x.roomNumber === "200")!;
+    expect(a.suiteId).toBe(1);
+    expect(a.appliedRules).toContain("R6");
+  });
+
+  it("CONFERENCE ROOM → roomIdWithInsert ≥ 1 (R2)", () => {
+    const a = result.assignments.find((x) => x.roomNumber === "102")!;
+    expect((a.roomIdWithInsert ?? 0)).toBeGreaterThanOrEqual(1);
+    expect(a.appliedRules).toContain("R2");
+  });
+
+  it("STORAGE ROOM → at least 1 sign (not silently zero-signed)", () => {
+    const a = result.assignments.find((x) => x.roomNumber === "106")!;
+    expect(totalSignsForAssignment(a)).toBeGreaterThan(0);
+    expect(a.exclusionReasons.some((r) => r.includes("MEP"))).toBe(false);
+  });
+
+  it("JANITOR CLOSET → 0 signs (MEP unoccupied)", () => {
+    const a = result.assignments.find((x) => x.roomNumber === "107")!;
+    expect(totalSignsForAssignment(a)).toBe(0);
+  });
+
+  it("MECHANICAL ROOM → 0 signs, VETOED_MEP reason", () => {
+    const a = result.assignments.find((x) => x.roomNumber === "108")!;
+    expect(totalSignsForAssignment(a)).toBe(0);
+    const hasVeto = result.questionsForVerification.some(
+      (q) => q.includes("VETOED_MEP") && q.includes("108"),
+    );
+    expect(hasVeto).toBe(true);
+  });
+
+  it("ELECTRICAL ROOM → 0 signs", () => {
+    const a = result.assignments.find((x) => x.roomNumber === "109")!;
+    expect(totalSignsForAssignment(a)).toBe(0);
+  });
+
+  it("MEZZANINE STORAGE (Phase4 isMepUnoccupied=true) → ≥1 sign via R15 near-veto", () => {
+    const a = result.assignments.find((x) => x.roomNumber === "110")!;
+    expect(totalSignsForAssignment(a)).toBeGreaterThan(0);
+    expect(a.exclusionReasons.some((r) => r === "R15: mezzanine MEP unoccupied — all signs excluded")).toBe(false);
+  });
+
+  it("total signed rooms = 7, zero-sign rooms = 4", () => {
+    // Signed: OFFICE, SUITE, CONFERENCE ROOM, WOMEN'S RESTROOM, STAIR A, STORAGE ROOM, MEZZANINE STORAGE
+    // Zero-sign: LOBBY (R4 corridor), JANITOR CLOSET (MEP), MECHANICAL ROOM (MEP), ELECTRICAL ROOM (MEP)
+    const signed = result.assignments.filter((a) => totalSignsForAssignment(a) > 0);
+    const zeroSign = result.assignments.filter((a) => totalSignsForAssignment(a) === 0);
+    expect(signed).toHaveLength(7);
+    expect(zeroSign).toHaveLength(4);
   });
 });

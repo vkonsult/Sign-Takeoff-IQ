@@ -79,6 +79,8 @@ const NO_FLAGS = {
   isPublicFacing: false,
   isStaffOnly: false,
   isAssembly: false,
+  isOffice: false,
+  isSuite: false,
 };
 
 /**

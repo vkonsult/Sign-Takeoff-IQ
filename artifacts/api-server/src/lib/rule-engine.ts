@@ -47,6 +47,22 @@ export interface RoomRecord {
   isStair: boolean;
   isMezzanine: boolean;
   isAssembly: boolean;
+  isOffice: boolean;
+  isSuite: boolean;
+
+  /** Occupant load carried from Phase 4 — used by R9/R10 to suppress ambiguity
+   *  flags when occupant data is actually available. */
+  occupantLoad: number | null;
+
+  /** Door count carried from Phase 4 extraction — used by R2/R5/R11 to set
+   *  the correct sign quantity when a drawing text hint is available.
+   *  Null means no hint was found; the rule falls back to quantity=1. */
+  doorCount: number | null;
+
+  /** Zone qualifier inherited from a large-font zone label (e.g. "AREA A").
+   *  Carried from Phase 4; used in decisionsLog and SignAssignment for
+   *  location context in sign schedules. */
+  zoneQualifier: string | null;
 
   sourceSheet: string | null;
 }
@@ -76,7 +92,13 @@ export interface SignAssignment {
   roomIdWithInsert: number | null;
 
   // R4 — Excluded from Room ID
-  // R5/R6 — Office/suite IDs (not implemented)
+
+  // R5 — Office Room ID (per door; default 1 when door count unavailable)
+  // R5 is satisfied by the standard roomId field — offices are handled the
+  // same as R1 but with an explicit audit note when door count is assumed.
+
+  // R6 — Suite ID (one sign at suite entry)
+  suiteId: number | null;
 
   // R7/R8 — Restroom plaques
   restroom: number | null;
@@ -106,6 +128,11 @@ export interface SignAssignment {
   sourceSheet: string | null;
   ambiguous: boolean;
   ambiguityNote: string | null;
+
+  /** Zone qualifier from Phase 4 spatial anchors (e.g. "AREA A").
+   *  Null when no zone anchor was close enough to this room.
+   *  Intended for use in sign schedule location text columns. */
+  zoneQualifier: string | null;
 }
 
 /**
@@ -179,6 +206,11 @@ function bridgeInventoryRoom(p4: Phase4RoomRecord): RoomRecord {
     isStair: flags.isStair || p4.isStair,
     isMezzanine: flags.isMezzanine,
     isAssembly: flags.isAssembly || p4.isAssembly,
+    isOffice: flags.isOffice || p4.isOffice,
+    isSuite: flags.isSuite || p4.isSuite,
+    occupantLoad: p4.occupantLoad,
+    doorCount: p4.doorCount ?? null,
+    zoneQualifier: p4.zoneQualifier ?? null,
   };
 }
 
@@ -241,12 +273,35 @@ const PUBLIC_FACING_TOKENS = new Set([
   "atrium", "reception", "front desk", "welcome", "concourse",
   "main entry", "public", "grand",
 ]);
+const OFFICE_TOKENS = new Set([
+  "office", "admin", "administration", "administrative", "executive",
+  "manager", "director", "principal", "workroom", "workspace",
+]);
+const SUITE_TOKENS = new Set([
+  "suite", "tenant space", "tenant",
+]);
+/**
+ * Occupied-use tokens: rooms with any of these in their name are clearly
+ * human-occupied spaces and must NOT trigger the R15 mezzanine MEP veto even
+ * if Phase 4 mistakenly flagged them as isMepUnoccupied (e.g. "STORAGE").
+ */
+const OCCUPIED_USE_TOKENS = new Set([
+  "office", "conference", "lobby", "reception", "waiting", "classroom",
+  "training", "meeting", "breakout", "collaboration", "workspace", "workroom",
+  "collab", "collaborative", "seminar", "lecture", "huddle", "flex",
+]);
 const ASSEMBLY_TOKENS = new Set([
   "worship", "sanctuary", "chapel", "auditorium", "fellowship",
   "cafeteria", "gymnasium", "gym", "ballroom", "banquet",
   "theater", "theatre", "amphitheater", "stage", "arena",
   "community", "multipurpose hall", "great hall", "grand hall",
 ]);
+
+/** Appends a note to an existing ambiguity/audit note, joining with "; ".
+ *  When existing is null or empty, returns note directly (no leading semicolon). */
+function appendNote(existing: string | null, note: string): string {
+  return existing ? `${existing}; ${note}` : note;
+}
 
 function tokenize(text: string): string[] {
   return text
@@ -265,7 +320,7 @@ export function classifyRoom(
   roomName: string,
   level: string,
   roomNumber: string | null,
-): Omit<RoomRecord, "roomNumber" | "roomName" | "level" | "pdfPage" | "sourceSheet"> {
+): Omit<RoomRecord, "roomNumber" | "roomName" | "level" | "pdfPage" | "sourceSheet" | "occupantLoad" | "doorCount" | "zoneQualifier"> {
   const lower = roomName.toLowerCase().trim();
   const tokens = tokenize(lower);
 
@@ -326,6 +381,18 @@ export function classifyRoom(
     !isMepUnoccupied &&
     !hasToken(STORAGE_QUALIFIER_TOKENS);
 
+  // R5: Office rooms — detected by OFFICE_TOKENS but not restroom/stair/elevator/corridor
+  const isOffice =
+    hasToken(OFFICE_TOKENS) &&
+    !isRestroom &&
+    !isStair &&
+    !isElevator &&
+    !isCorridorOrHall &&
+    !isMepUnoccupied;
+
+  // R6: Suite rooms — detected by SUITE_TOKENS
+  const isSuite = hasToken(SUITE_TOKENS) && !isRestroom && !isMepUnoccupied;
+
   // isOccupied: false for MEP/unoccupied, vehicle bays, and explicitly excluded rooms
   const isOccupied = !isMepUnoccupied && !isVehicleBay;
 
@@ -345,6 +412,8 @@ export function classifyRoom(
     isStair,
     isMezzanine,
     isAssembly,
+    isOffice,
+    isSuite,
   };
 }
 
@@ -368,6 +437,7 @@ function applyRulesToRoom(
     pdfPage: room.pdfPage,
     roomId: null,
     roomIdWithInsert: null,
+    suiteId: null,
     restroom: null,
     exit: null,
     maxOccupancy: null,
@@ -381,14 +451,40 @@ function applyRulesToRoom(
     sourceSheet: room.sourceSheet,
     ambiguous: false,
     ambiguityNote: null,
+    zoneQualifier: room.zoneQualifier,
   };
 
   const nameUpper = room.roomName.toUpperCase();
+  // Tracks whether R15 near-veto fired: mezzanine room claimed as MEP by Phase 4
+  // but lacking true MEP tokens.  When true, the generic MEP exclusion is skipped
+  // and the room is treated as occupied for R1–R14.
+  let isMepNearVeto = false;
 
   // ── R15 — Mezzanine exclusion (checked first as it vetoes everything) ──────
   if (room.isMezzanine && room.isMepUnoccupied) {
-    assignment.exclusionReasons.push("R15: mezzanine MEP unoccupied — all signs excluded");
-    return assignment;
+    // Hardened guard: require at least one true MEP token (mechanical, electrical,
+    // etc.) AND absence of human-occupied-use tokens before firing the veto.
+    // This prevents plain "STORAGE" on a mezzanine from triggering R15 when Phase 4
+    // classified it as MEP due to its broad keyword list.
+    const roomNameTokens = tokenize(room.roomName);
+    const hasTrueMepToken = roomNameTokens.some((t) => MEP_TOKENS.has(t));
+    const hasOccupiedUseToken = roomNameTokens.some((t) => OCCUPIED_USE_TOKENS.has(t));
+
+    if (hasTrueMepToken && !hasOccupiedUseToken) {
+      assignment.exclusionReasons.push("R15: mezzanine MEP unoccupied — all signs excluded");
+      return assignment;
+    } else {
+      // Near-veto: isMepUnoccupied set by Phase 4 but Phase 5 name analysis
+      // does not confirm true MEP use — log and continue with normal rules.
+      isMepNearVeto = true;
+      logger.info(
+        { roomName: room.roomName, level: room.level, hasTrueMepToken, hasOccupiedUseToken },
+        "[RuleEngine] R15 near-veto: mezzanine room classified MEP by Phase 4 but did not pass hardened MEP criteria — normal rules applied",
+      );
+      assignment.exclusionReasons.push(
+        `R15-near-veto: mezzanine isMepUnoccupied=${room.isMepUnoccupied} but lacks true MEP tokens or has occupied-use tokens; normal rules applied`,
+      );
+    }
   }
 
   // ── R4 — Corridor exclusion ───────────────────────────────────────────────
@@ -402,8 +498,9 @@ function applyRulesToRoom(
 
   // ── MEP / unoccupied room exclusion ──────────────────────────────────────
   // Non-mezzanine MEP/unoccupied rooms (mechanical, electrical, server rooms,
-  // etc.) require no signage. Mezzanine MEP is already handled by R15 above.
-  if (room.isMepUnoccupied) {
+  // etc.) require no signage.  Mezzanine rooms that triggered the R15 near-veto
+  // (isMepNearVeto=true) must NOT be excluded here — normal rules apply to them.
+  if (room.isMepUnoccupied && !isMepNearVeto) {
     assignment.exclusionReasons.push("excluded: MEP/unoccupied — no signs required");
     return assignment;
   }
@@ -416,19 +513,28 @@ function applyRulesToRoom(
 
   // ── R2 — Variable use (takes priority over R1) ────────────────────────────
   if (room.isVariableUse) {
-    // Variable-use rooms: Room ID with insert
-    // Quantity depends on egress door count — we can't count doors without Phase 4,
-    // so we default to 1 and flag as ambiguous.
-    assignment.roomIdWithInsert = 1;
+    // Variable-use rooms: Room ID with insert.
+    // When a door count was extracted from drawing text, use it directly and
+    // suppress the ambiguity flag. When unknown, default to 1 and flag for review.
+    const r2Qty = room.doorCount ?? 1;
+    assignment.roomIdWithInsert = r2Qty;
     assignment.roomId = 0;
     assignment.appliedRules.push("R2");
-    assignment.ambiguous = true;
-    assignment.ambiguityNote =
-      "R2: variable-use room — door count unknown; quantity may be 1 or 2 depending on egress doors";
-  } else if (room.isOccupied && !room.isMepUnoccupied && !room.isVehicleBay) {
+    if (room.doorCount != null) {
+      // Door count known from drawing — no ambiguity
+      assignment.ambiguityNote =
+        `R2: variable-use room — quantity ${r2Qty} from extracted door count`;
+    } else {
+      // Default of 1 is the conservative assumption; record as audit note,
+      // not as ambiguity (reviewer can verify without blocking production).
+      assignment.ambiguityNote =
+        "R2: variable-use room — quantity 1 assumed (no door count in drawings; verify egress count)";
+    }
+  } else if ((room.isOccupied || isMepNearVeto) && !room.isVehicleBay) {
     // ── R1 — Room ID default ────────────────────────────────────────────────
     // Restrooms, stairs, and elevators get their own specialized signs below,
     // not a generic Room ID sign.
+    // isMepNearVeto: mezzanine falsely flagged as MEP by Phase 4 — treat as occupied.
     if (!room.isRestroom && !room.isStair && !room.isElevator) {
       assignment.roomId = 1;
       assignment.appliedRules.push("R1");
@@ -436,17 +542,67 @@ function applyRulesToRoom(
   }
 
   // R3 — Multi-entry large rooms: flag as ambiguous since we can't count doors
-  // without Phase 4. The ambiguityNote from R2 already covers this for variable-use rooms.
+  // without Phase 4. When doorCount is available, use it and suppress ambiguity.
   if (!room.isVariableUse && room.isAssembly) {
     if (assignment.roomId !== null && assignment.roomId > 0) {
-      assignment.ambiguous = true;
-      assignment.ambiguityNote =
-        "R3 candidate: assembly space may have multiple entry doors — verify door count for quantity";
+      if (room.doorCount != null) {
+        assignment.roomId = room.doorCount;
+        assignment.ambiguityNote =
+          `R3: assembly space — quantity ${room.doorCount} from extracted door count`;
+      } else {
+        assignment.ambiguous = true;
+        assignment.ambiguityNote =
+          "R3 candidate: assembly space may have multiple entry doors — verify door count for quantity";
+      }
     }
   }
 
-  // ── R5/R6 — Office/suite IDs (not implemented) ───────────────────────────
-  // Deferred — requires additional floor plan analysis.
+  // ── R5 — Office Room ID ──────────────────────────────────────────────────
+  // Offices receive one Room ID sign per entry door. When a door count was
+  // extracted from drawing text, use it directly (no ambiguity flag).
+  // When unknown, default to 1 and record an audit assumption (NOT an
+  // ambiguity flag, per the task specification).
+  // R1 already assigns roomId=1 for generic occupied rooms; for isOffice rooms
+  // we confirm this via R5 and update the quantity if doorCount is available.
+  if (room.isOffice && assignment.roomId !== null && assignment.roomId > 0) {
+    // Replace R1 attribution with explicit R5
+    const r1idx = assignment.appliedRules.indexOf("R1");
+    if (r1idx !== -1) assignment.appliedRules[r1idx] = "R5";
+    else assignment.appliedRules.push("R5");
+    // Apply doorCount if available, else default to 1 with an assumption note
+    if (room.doorCount != null) {
+      assignment.roomId = room.doorCount;
+      if (!assignment.ambiguityNote?.includes("R5")) {
+        assignment.ambiguityNote = appendNote(
+          assignment.ambiguityNote,
+          `R5: office Room ID quantity ${room.doorCount} from extracted door count`,
+        );
+      }
+    } else {
+      // Record as assumption (not ambiguity) since 1-door default is defensible
+      if (!assignment.ambiguityNote?.includes("R5")) {
+        assignment.ambiguityNote = appendNote(
+          assignment.ambiguityNote,
+          "R5: office Room ID quantity assumes 1 door — verify if multi-entry",
+        );
+      }
+    }
+  }
+
+  // ── R6 — Suite ID ────────────────────────────────────────────────────────
+  // Each suite receives one Suite ID sign at its entry point.
+  // Business rule: suiteId coexists with roomId (R1) — both signs are emitted.
+  // If policy changes to suite-only (R6 replaces R1), add `!room.isSuite` to the
+  // R1 guard above and remove this note.  Pending client confirmation (Task #522).
+  if (room.isSuite) {
+    assignment.suiteId = 1;
+    if (!assignment.appliedRules.includes("R6")) assignment.appliedRules.push("R6");
+    // Assumption: one entry — record in audit log, not as ambiguity
+    const suiteNote = "R6: suite ID assigned with default quantity 1 — verify entry door count";
+    if (!assignment.ambiguityNote?.includes("R6")) {
+      assignment.ambiguityNote = appendNote(assignment.ambiguityNote, suiteNote);
+    }
+  }
 
   // ── R7 — Restroom type selection ─────────────────────────────────────────
   if (room.isRestroom) {
@@ -465,9 +621,10 @@ function applyRulesToRoom(
       assignment.appliedRules.push("R7");
       if (room.isAccessibleRestroom) assignment.appliedRules.push("R8");
       assignment.ambiguous = true;
-      assignment.ambiguityNote =
-        (assignment.ambiguityNote ?? "") +
-        "; R7/R8: no matching plaque table entry — type unknown (verify plaque selection)";
+      assignment.ambiguityNote = appendNote(
+        assignment.ambiguityNote,
+        "R7/R8: no matching plaque table entry — type unknown (verify plaque selection)",
+      );
     }
     // Restrooms do NOT get a generic Room ID sign (R1 already skipped above)
   }
@@ -475,7 +632,9 @@ function applyRulesToRoom(
   // ── R9 — EXIT plaque ───────────────────────────────────────────────────────
   // 1 EXIT at each exit-discharge vestibule
   // 1 EXIT at public lobby with exit door
-  // For assembly rooms: count = required exits per IBC 1006.2.1
+  // For assembly rooms: count = required exits per IBC 1006.2.1.
+  // When occupant load is available (from Phase 4 Gemini enrichment), use the
+  // most conservative applicable rule and suppress the ambiguity flag.
   if (exitDischargeVestibules.has(room.roomName.toLowerCase())) {
     assignment.exit = 1;
     assignment.appliedRules.push("R9");
@@ -483,40 +642,75 @@ function applyRulesToRoom(
     assignment.exit = 1;
     assignment.appliedRules.push("R9");
   } else if (room.isAssembly) {
-    // Assembly: IBC 1006.2.1 requires exits based on occupant load
-    // Without occupant load data, flag as ambiguous
-    assignment.exit = 2; // minimum for assembly spaces per IBC 1004.1
+    // Assembly: IBC 1006.2.1 requires exits based on occupant load.
+    // Conservative non-ambiguous default is 2 exits (minimum per IBC 1004.1).
+    // When occupant load is known, apply the exact IBC requirement.
+    // When unknown, keep 2-exit default with an audit note (not ambiguous=true)
+    // since 2 is the most conservative allowed minimum.
+    assignment.exit = 2;
     assignment.appliedRules.push("R9");
-    assignment.ambiguous = true;
-    assignment.ambiguityNote =
-      (assignment.ambiguityNote ?? "") +
-      "; R9: assembly exit count — verify per IBC 1006.2.1 (occupant load required)";
+    if (room.occupantLoad != null) {
+      // Occupant load known — scale exits per IBC 1006.2.1
+      if (room.occupantLoad >= 1000) assignment.exit = 4;
+      else if (room.occupantLoad >= 500) assignment.exit = 3;
+      // else: 2 exits (already set above)
+    } else {
+      // No occupant load — 2-exit conservative default; audit note for reviewer
+      assignment.ambiguityNote = appendNote(
+        assignment.ambiguityNote,
+        "R9: assembly exit quantity 2 assumed (IBC 1004.1 minimum; verify per 1006.2.1 when load known)",
+      );
+    }
+  } else if ((room.isOccupied || isMepNearVeto) && !room.isCorridorOrHall && !room.isVehicleBay) {
+    // Non-assembly occupied rooms with exterior doors: conservative rule = 1 exit plaque
+    // (only applies when room has an exterior exit indicator in its name)
+    if (nameUpper.includes("EXIT") || nameUpper.includes("DISCHARGE")) {
+      assignment.exit = 1;
+      assignment.appliedRules.push("R9");
+    }
   }
 
   // ── R10 — Capacity sign ──────────────────────────────────────────────────
   if (room.isAssembly) {
-    // Assembly spaces with occupancy group A-2/A-3 or occupant load >= 50
-    // We flag assembly rooms as needing capacity sign (ambiguous quantity)
+    // Assembly spaces with occupancy group A-2/A-3 or occupant load >= 50 require
+    // a posted capacity sign. When occupant load is available, use it directly.
     assignment.maxOccupancy = 1;
     assignment.appliedRules.push("R10");
-    assignment.ambiguous = true;
-    const note = "; R10: capacity sign — verify occupant load (≥50 required for A-2/A-3)";
-    if (!assignment.ambiguityNote?.includes("R10:")) {
-      assignment.ambiguityNote = (assignment.ambiguityNote ?? "") + note;
+    if (room.occupantLoad == null) {
+      assignment.ambiguous = true;
+      if (!assignment.ambiguityNote?.includes("R10:")) {
+        assignment.ambiguityNote = appendNote(
+          assignment.ambiguityNote,
+          "R10: capacity sign — verify occupant load (≥50 required for A-2/A-3)",
+        );
+      }
     }
+    // If occupant load is known, assign without ambiguity (load already confirmed ≥50
+    // because isAssembly = true when occupantLoad ≥ 50 from Phase 4)
   }
 
   // ── R11 — Stair plaques per level ────────────────────────────────────────
   if (room.isStair) {
-    // stairCorridor = count of corridor entry doors at this level (unknown without Phase 4 — set to 1)
-    // stairLanding = 1 (one landing sign per stair per level)
-    assignment.stairCorridor = 1;
+    // stairCorridor = count of corridor entry doors at this level.
+    // When a door count was extracted from drawing text, use it directly
+    // and suppress the ambiguity flag. Otherwise default to 1 and flag.
+    const r11DoorQty = room.doorCount ?? 1;
+    assignment.stairCorridor = r11DoorQty;
     assignment.stairLanding = 1;
     assignment.appliedRules.push("R11");
-    assignment.ambiguous = true;
-    assignment.ambiguityNote =
-      (assignment.ambiguityNote ?? "") +
-      "; R11: stair corridor sign count may be >1 — verify door count";
+    if (room.doorCount != null) {
+      assignment.ambiguityNote = appendNote(
+        assignment.ambiguityNote,
+        `R11: stair corridor quantity ${r11DoorQty} from extracted door count`,
+      );
+    } else {
+      // Default of 1 is the conservative assumption per IBC; record as audit
+      // note rather than blocking ambiguity — reviewer can confirm door count.
+      assignment.ambiguityNote = appendNote(
+        assignment.ambiguityNote,
+        "R11: stair corridor quantity 1 assumed (no door count in drawings; verify)",
+      );
+    }
     // Stairs do NOT get a generic Room ID sign (R1 already skipped above)
   }
 
@@ -544,20 +738,16 @@ function applyRulesToRoom(
   }
 
   // ── R14 — Office Directory ──────────────────────────────────────────────
-  // 1 × at main public-facing hall/lobby per wing/department zone per level
-  // We emit one per public lobby; final dedup is done at summary level.
+  // 1 × at EVERY lobby / main-entry / atrium on a level.
+  // IBC and ADA guidance requires a directory at each accessible building entry;
+  // a multi-lobby level (e.g. east wing + west wing) needs one at each lobby.
   if (nameUpper.includes("LOBBY") || nameUpper.includes("MAIN ENTRY") || nameUpper.includes("ATRIUM")) {
-    const levelLobbiesForThisLevel = levelLobbies.get(room.level) ?? [];
-    // Only assign directory to the first lobby on this level (simplification)
-    const isFirstLobbyOnLevel = levelLobbiesForThisLevel[0]?.roomName === room.roomName;
-    if (isFirstLobbyOnLevel) {
-      assignment.officeDirectory = 1;
-      assignment.appliedRules.push("R14");
-    }
+    assignment.officeDirectory = 1;
+    assignment.appliedRules.push("R14");
   }
 
   // Final: rooms that got nothing (isOccupied but excluded by room type checks)
-  // should still be tracked with explicit zero
+  // should still be tracked with an explicit typed reason for the audit log.
   if (
     !room.isRestroom &&
     !room.isStair &&
@@ -566,12 +756,13 @@ function applyRulesToRoom(
     !room.isMepUnoccupied &&
     !room.isVehicleBay &&
     assignment.roomId === null &&
-    assignment.roomIdWithInsert === null
+    assignment.roomIdWithInsert === null &&
+    assignment.suiteId === null
   ) {
     // Unusual case: occupied room that didn't get a sign — flag for review
     assignment.ambiguous = true;
     assignment.ambiguityNote =
-      "No rule applied — verify room type and flag classification";
+      "NO_RULE_MATCH — verify room type and classification";
   }
 
   return assignment;
@@ -625,6 +816,33 @@ function findPlaqueForRoom(
   }
 
   return null;
+}
+
+// ── Typed zero-sign reason codes ─────────────────────────────────────────────
+
+/**
+ * Typed reason codes for rooms that received zero signs.
+ * These are surfaced in the per-job questionsForVerification list so reviewers
+ * can act on them by category without reading every individual log entry.
+ */
+export type ZeroSignReason =
+  | "VETOED_MEP"            // non-mezzanine MEP/unoccupied room — no signs required
+  | "VETOED_MEZZANINE"      // R15 fired: mezzanine MEP room, all signs excluded
+  | "EXPLICIT_EXCLUSION"    // explicitly excluded room type (corridor, vehicle bay, etc.)
+  | "NO_RULE_MATCH"         // occupied room but no rule produced a sign
+  | "CLASSIFICATION_FAILURE"// no flags derived from room name
+  | "EXTRACTION_MISS";      // ambiguous extraction — may not be a real room
+
+/**
+ * A zero-sign room entry included in the questionsForVerification list.
+ */
+export interface ZeroSignRoom {
+  roomName: string;
+  roomNumber: string | null;
+  level: string;
+  pdfPage: number;
+  reason: ZeroSignReason;
+  detail: string;
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────
@@ -705,10 +923,61 @@ export function applySignRules(
   const elevatorRooms = rooms.filter((r) => r.isElevator);
   const elevatorJobCount = elevatorRooms.length;
 
+  // ── Step 3b: Staff-only restroom resolution ──────────────────────────────
+  // Phase 4 (room-inventory.ts) now runs a geometric k-nearest detection using
+  // boundingBox centroids and surfaces the result via p4.isStaffOnly, which
+  // bridgeInventoryRoom already ORs into isStaffOnlyRestroom above.
+  // This Phase 5 pass handles rooms whose Phase 4 boundingBox was unavailable
+  // (e.g. AI-enriched rooms without text-layer positions) by applying a
+  // level-cluster fallback: if every non-restroom room on the same level is
+  // an explicit office or back-of-house type (no public or assembly rooms),
+  // classify the restroom as staff-only.  This is more conservative than the
+  // prior implementation — only explicit office/MEP/service types pass through.
+  const roomsByLevel = new Map<string, RoomRecord[]>();
+  for (const room of rooms) {
+    const existing = roomsByLevel.get(room.level) ?? [];
+    existing.push(room);
+    roomsByLevel.set(room.level, existing);
+  }
+
+  for (const room of rooms) {
+    if (!room.isRestroom || room.isStaffOnlyRestroom) continue;
+    const levelRooms = roomsByLevel.get(room.level) ?? [];
+    const nonRestroomRooms = levelRooms.filter((r) => !r.isRestroom);
+    if (nonRestroomRooms.length === 0) continue;
+
+    const hasPublicOrAssembly = nonRestroomRooms.some(
+      (r) => r.isPublicFacing || r.isAssembly,
+    );
+    // Stricter than the prior heuristic: only explicit office or back-of-house
+    // types qualify.  Variable-use, generic occupied rooms, and classifyRoom
+    // fallthrough rooms do NOT qualify, preventing overclassification on
+    // mixed-use floors with unlabelled spaces.
+    const hasOnlyExplicitBackOfHouse = nonRestroomRooms.every(
+      (r) =>
+        r.isOffice ||
+        r.isMepUnoccupied ||
+        r.isVehicleBay ||
+        r.isCorridorOrHall ||
+        r.isStair ||
+        r.isElevator,
+    );
+
+    if (!hasPublicOrAssembly && hasOnlyExplicitBackOfHouse) {
+      room.isStaffOnlyRestroom = true;
+      room.isPublicFacing = false;
+      logger.info(
+        { roomName: room.roomName, level: room.level },
+        "[RuleEngine] Staff-only restroom detected via level-cluster fallback (no bounding box in Phase 4)",
+      );
+    }
+  }
+
   // ── Step 4: Apply rules R1-R15 to each room ──────────────────────────────
   const assignments: SignAssignment[] = [];
   const decisionsLog: string[] = [];
   const questionsForVerification: string[] = [];
+  const zeroSignRooms: ZeroSignRoom[] = [];
 
   // Track elevators that already have an ICF sign (job-wide dedup for R12)
   let icfAssigned = false;
@@ -741,6 +1010,7 @@ export function applySignRules(
     const signSummary: string[] = [];
     if (assignment.roomId && assignment.roomId > 0) signSummary.push(`Room ID ×${assignment.roomId}`);
     if (assignment.roomIdWithInsert && assignment.roomIdWithInsert > 0) signSummary.push(`Room ID w/ Insert ×${assignment.roomIdWithInsert}`);
+    if (assignment.suiteId && assignment.suiteId > 0) signSummary.push(`Suite ID ×${assignment.suiteId}`);
     if (assignment.restroom && assignment.restroom > 0) signSummary.push(`Restroom ×${assignment.restroom}`);
     if (assignment.exit && assignment.exit > 0) signSummary.push(`Exit ×${assignment.exit}`);
     if (assignment.maxOccupancy && assignment.maxOccupancy > 0) signSummary.push(`Max Occupancy ×${assignment.maxOccupancy}`);
@@ -752,16 +1022,75 @@ export function applySignRules(
 
     const identifier = room.roomNumber ? `${room.roomNumber} ${room.roomName}` : room.roomName;
     const levelStr = room.level !== `Page ${room.pdfPage}` ? ` [${room.level}]` : "";
+    const zoneStr = room.zoneQualifier ? ` {zone: ${room.zoneQualifier}}` : "";
     const rulesStr = assignment.appliedRules.length > 0 ? ` → ${assignment.appliedRules.join(", ")}` : "";
     const exclusions = assignment.exclusionReasons.length > 0 ? ` (${assignment.exclusionReasons.join("; ")})` : "";
     const signsStr = signSummary.length > 0 ? ` | ${signSummary.join(", ")}` : " | no signs";
 
-    const logEntry = `Room ${identifier}${levelStr}${rulesStr}${signsStr}${exclusions}`;
+    const logEntry = `Room ${identifier}${levelStr}${zoneStr}${rulesStr}${signsStr}${exclusions}`;
     decisionsLog.push(logEntry);
 
     if (assignment.ambiguous) {
       questionsForVerification.push(
         `${identifier}${levelStr}: ${assignment.ambiguityNote ?? "review required"}`,
+      );
+    } else if (assignment.ambiguityNote) {
+      // Non-blocking audit note — surfaced for reviewers but does not flag room
+      questionsForVerification.push(
+        `[AUDIT_ASSUMPTION] ${identifier}${levelStr}: ${assignment.ambiguityNote}`,
+      );
+    }
+
+    // ── Typed zero-sign reason codes ────────────────────────────────────────
+    const hasAnySigns = signSummary.length > 0;
+    if (!hasAnySigns) {
+      let reason: ZeroSignReason;
+      let detail: string;
+
+      if (assignment.exclusionReasons.some((r) => r.startsWith("R15: mezzanine"))) {
+        reason = "VETOED_MEZZANINE";
+        detail = "R15 mezzanine MEP veto — all signs excluded for this unoccupied mezzanine room";
+      } else if (assignment.exclusionReasons.some((r) => r.includes("MEP") || r.includes("unoccupied"))) {
+        reason = "VETOED_MEP";
+        detail = "MEP/unoccupied room — no signs required per building code";
+      } else if (assignment.exclusionReasons.some((r) => r.includes("R4:") || r.includes("vehicle_bay"))) {
+        reason = "EXPLICIT_EXCLUSION";
+        detail = assignment.exclusionReasons.find((r) => r.includes("R4:") || r.includes("vehicle_bay"))
+          ?? "Explicitly excluded room type — no signs required";
+      } else if (assignment.ambiguityNote?.includes("NO_RULE_MATCH")) {
+        reason = "NO_RULE_MATCH";
+        detail = assignment.ambiguityNote ?? "No matching rule for this room type";
+      } else if (!room.isMepUnoccupied && !room.isCorridorOrHall && !room.isVehicleBay) {
+        reason = "CLASSIFICATION_FAILURE";
+        detail = "Room had no flags derived from its name — likely an unusual abbreviation or label";
+      } else {
+        reason = "EXTRACTION_MISS";
+        detail = "Room may be a false-positive extraction or label fragment";
+      }
+
+      zeroSignRooms.push({
+        roomName: room.roomName,
+        roomNumber: room.roomNumber,
+        level: room.level,
+        pdfPage: room.pdfPage,
+        reason,
+        detail,
+      });
+    }
+  }
+
+  // Append zero-sign rooms grouped by reason to questionsForVerification
+  if (zeroSignRooms.length > 0) {
+    const byReason = new Map<ZeroSignReason, ZeroSignRoom[]>();
+    for (const z of zeroSignRooms) {
+      const group = byReason.get(z.reason) ?? [];
+      group.push(z);
+      byReason.set(z.reason, group);
+    }
+    for (const [reason, items] of byReason) {
+      const names = items.map((z) => z.roomName + (z.roomNumber ? ` (${z.roomNumber})` : "")).join(", ");
+      questionsForVerification.push(
+        `[${reason}] ${items.length} room(s) received zero signs — ${names}`,
       );
     }
   }
@@ -916,6 +1245,9 @@ export function assignmentToRows(assignment: SignAssignment): SignRow[] {
   }
   if (assignment.roomIdWithInsert && assignment.roomIdWithInsert > 0) {
     push("ROOM ID SIGN W/ INSERT", assignment.roomIdWithInsert, "R2");
+  }
+  if (assignment.suiteId && assignment.suiteId > 0) {
+    push("SUITE ID SIGN", assignment.suiteId, "R6");
   }
   if (assignment.restroom && assignment.restroom > 0) {
     push("RESTROOM SIGN", assignment.restroom, "R7/R8");

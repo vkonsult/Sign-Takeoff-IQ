@@ -38,7 +38,10 @@ import {
   isLikelyRoomNumber,
   cropRoomRegion,
   enrichAmbiguousRoomsWithAI,
+  assignZoneQualifiersToRooms,
+  detectGeometricStaffOnlyRestrooms,
 } from "./room-inventory";
+import type { ZoneAnchor } from "./room-inventory";
 
 import { ai } from "@workspace/integrations-gemini-ai";
 import { renderFloorPlanPages } from "./pdf-render";
@@ -75,6 +78,8 @@ function makeRoom(overrides: Partial<RoomRecord> = {}): RoomRecord {
     isPublicFacing: false,
     isStaffOnly: false,
     isAssembly: false,
+    isOffice: false,
+    isSuite: false,
     boundingBox: null,
     extractionConfidence: 0.3,
     ...overrides,
@@ -207,17 +212,32 @@ describe("deriveFlags — isMepUnoccupied", () => {
     expect(flags.isMepUnoccupied).toBe(false);
   });
 
-  it("sets isMepUnoccupied=true for STORAGE CLOSET with occupantLoad=0", () => {
+  it("STORAGE CLOSET → isMepUnoccupied=false (storage rooms are occupied use, not MEP)", () => {
     const flags = deriveFlags("STORAGE CLOSET", 0, null);
+    expect(flags.isMepUnoccupied).toBe(false);
+  });
+
+  it("plain STORAGE room → isMepUnoccupied=false (R15 hardening: storage ≠ MEP)", () => {
+    const flags = deriveFlags("STORAGE", null, null);
+    expect(flags.isMepUnoccupied).toBe(false);
+  });
+
+  it("MEZZANINE STORAGE → isMepUnoccupied=false (storage on mezzanine is still occupied use)", () => {
+    const flags = deriveFlags("MEZZANINE STORAGE", null, null);
+    expect(flags.isMepUnoccupied).toBe(false);
+  });
+
+  it("ELECTRICAL CLOSET → isMepUnoccupied=true (ELECTRICAL is a true MEP token)", () => {
+    const flags = deriveFlags("ELECTRICAL CLOSET", null, null);
     expect(flags.isMepUnoccupied).toBe(true);
   });
 });
 
 describe("deriveFlags — collaboration/breakout room detection (Task 457)", () => {
-  it("WORKSHOP STORAGE → isVariableUse=false, isMepUnoccupied=true", () => {
+  it("WORKSHOP STORAGE → isVariableUse=false (storage qualifier suppresses variable-use), isMepUnoccupied=false", () => {
     const flags = deriveFlags("WORKSHOP STORAGE", null, null);
     expect(flags.isVariableUse).toBe(false);
-    expect(flags.isMepUnoccupied).toBe(true);
+    expect(flags.isMepUnoccupied).toBe(false);
   });
 
   it("COLLABORATION ROOM → isVariableUse=true, isMepUnoccupied=false", () => {
@@ -231,10 +251,10 @@ describe("deriveFlags — collaboration/breakout room detection (Task 457)", () 
     expect(flags.isVariableUse).toBe(true);
   });
 
-  it("BREAKOUT CLOSET → isVariableUse=false (storage type overrides collaboration)", () => {
+  it("BREAKOUT CLOSET → isVariableUse=false (storage qualifier overrides collaboration), isMepUnoccupied=false", () => {
     const flags = deriveFlags("BREAKOUT CLOSET", null, null);
     expect(flags.isVariableUse).toBe(false);
-    expect(flags.isMepUnoccupied).toBe(true);
+    expect(flags.isMepUnoccupied).toBe(false);
   });
 
   it("COLLAB STORAGE → isVariableUse=false", () => {
@@ -578,5 +598,95 @@ describe("enrichAmbiguousRoomsWithAI — text-only fallback when pdfPath is give
       (p) => typeof p === "object" && p !== null && "inlineData" in p,
     );
     expect(hasInlineData).toBe(false);
+  });
+});
+
+// ── assignZoneQualifiersToRooms ───────────────────────────────────────────────
+
+describe("assignZoneQualifiersToRooms — centroid-based zone label assignment", () => {
+  const bbox = (x: number, y: number, w = 50, h = 20) => ({ x, y, w, h });
+  const anchor = (text: string, x: number, y: number, w = 200, h = 30): ZoneAnchor => ({
+    text,
+    pdfPage: 1,
+    x,
+    y,
+    w,
+    h,
+  });
+
+  it("assigns nearest anchor when room centroid is within 2× anchor dimension", () => {
+    const room = makeRoom({ boundingBox: bbox(100, 100), pdfPage: 1 });
+    const zone = anchor("AREA A", 80, 80);
+    assignZoneQualifiersToRooms([room], [zone]);
+    expect(room.zoneQualifier).toBe("AREA A");
+  });
+
+  it("does not assign when room centroid is too far from anchor", () => {
+    const room = makeRoom({ boundingBox: bbox(900, 900), pdfPage: 1 });
+    const zone = anchor("AREA A", 0, 0, 10, 10);
+    assignZoneQualifiersToRooms([room], [zone]);
+    expect(room.zoneQualifier).toBeUndefined();
+  });
+
+  it("does not assign anchor from a different page", () => {
+    const room = makeRoom({ boundingBox: bbox(100, 100), pdfPage: 1 });
+    const zone: ZoneAnchor = { text: "AREA B", pdfPage: 2, x: 100, y: 100, w: 200, h: 30 };
+    assignZoneQualifiersToRooms([room], [zone]);
+    expect(room.zoneQualifier).toBeUndefined();
+  });
+
+  it("assigns closest anchor when multiple anchors are present", () => {
+    const room = makeRoom({ boundingBox: bbox(100, 100), pdfPage: 1 });
+    const close = anchor("CLOSE ZONE", 90, 90, 200, 30);
+    const far = anchor("FAR ZONE", 500, 500, 200, 30);
+    assignZoneQualifiersToRooms([room], [close, far]);
+    expect(room.zoneQualifier).toBe("CLOSE ZONE");
+  });
+
+  it("skips rooms without a boundingBox", () => {
+    const room = makeRoom({ boundingBox: null, pdfPage: 1 });
+    const zone = anchor("AREA A", 0, 0);
+    assignZoneQualifiersToRooms([room], [zone]);
+    expect(room.zoneQualifier).toBeUndefined();
+  });
+});
+
+// ── detectGeometricStaffOnlyRestrooms ────────────────────────────────────────
+
+describe("detectGeometricStaffOnlyRestrooms — K-nearest spatial detection", () => {
+  const bbox = (x: number, y: number) => ({ x, y, w: 50, h: 20 });
+
+  it("classifies restroom as staff-only when all nearest rooms are offices", () => {
+    const restroom = makeRoom({ roomName: "RESTROOM", isRestroom: true, isPublicFacing: true, boundingBox: bbox(100, 100), pdfPage: 1 });
+    const office1 = makeRoom({ roomName: "OFFICE 1", isOffice: true, boundingBox: bbox(120, 100), pdfPage: 1 });
+    const office2 = makeRoom({ roomName: "OFFICE 2", isOffice: true, boundingBox: bbox(80, 100), pdfPage: 1 });
+    const rooms = [restroom, office1, office2];
+    detectGeometricStaffOnlyRestrooms(rooms);
+    expect(restroom.isStaffOnly).toBe(true);
+    expect(restroom.isPublicFacing).toBe(false);
+  });
+
+  it("does NOT classify restroom as staff-only when a public lobby is nearby", () => {
+    const restroom = makeRoom({ roomName: "RESTROOM", isRestroom: true, isPublicFacing: true, boundingBox: bbox(100, 100), pdfPage: 1 });
+    const lobby = makeRoom({ roomName: "LOBBY", isPublicFacing: true, boundingBox: bbox(110, 100), pdfPage: 1 });
+    const office = makeRoom({ roomName: "OFFICE", isOffice: true, boundingBox: bbox(90, 100), pdfPage: 1 });
+    const rooms = [restroom, lobby, office];
+    detectGeometricStaffOnlyRestrooms(rooms);
+    expect(restroom.isStaffOnly).toBe(false);
+    expect(restroom.isPublicFacing).toBe(true);
+  });
+
+  it("skips already-classified staff-only restrooms", () => {
+    const restroom = makeRoom({ roomName: "EMPLOYEE RESTROOM", isRestroom: true, isStaffOnly: true, boundingBox: bbox(100, 100), pdfPage: 1 });
+    const lobby = makeRoom({ roomName: "LOBBY", isPublicFacing: true, boundingBox: bbox(105, 100), pdfPage: 1 });
+    detectGeometricStaffOnlyRestrooms([restroom, lobby]);
+    expect(restroom.isStaffOnly).toBe(true);
+  });
+
+  it("skips rooms without bounding box", () => {
+    const restroom = makeRoom({ roomName: "RESTROOM", isRestroom: true, boundingBox: null, pdfPage: 1 });
+    const office = makeRoom({ roomName: "OFFICE", isOffice: true, boundingBox: bbox(100, 100), pdfPage: 1 });
+    detectGeometricStaffOnlyRestrooms([restroom, office]);
+    expect(restroom.isStaffOnly).toBe(false);
   });
 });

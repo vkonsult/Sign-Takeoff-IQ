@@ -36,10 +36,34 @@ export interface RoomRecord {
   isPublicFacing: boolean;
   isStaffOnly: boolean;
   isAssembly: boolean;
+  /** True when the room name identifies it as a private office (R5 applies). */
+  isOffice: boolean;
+  /** True when the room name identifies it as a suite (R6 applies). */
+  isSuite: boolean;
 
   boundingBox: { x: number; y: number; w: number; h: number } | null;
   extractionConfidence: number;
   aiEnriched?: boolean;
+
+  /** Number of entry doors extracted from adjacent text tokens, if found.
+   *  Used by R2/R3/R5/R11 to set correct sign quantities.
+   *  Null when no door-count hint was found in the drawing text. */
+  doorCount?: number | null;
+
+  /** Zone qualifier inherited from a large-font zone label (e.g. "AREA A")
+   *  that spatially overlaps this room.  Used as a location anchor in sign
+   *  schedules when the room has no explicit number. */
+  zoneQualifier?: string | null;
+}
+
+/** A large-font zone label (20–36 pt) captured as a spatial anchor. */
+export interface ZoneAnchor {
+  text: string;
+  pdfPage: number;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
 }
 
 export interface RoomInventory {
@@ -50,6 +74,10 @@ export interface RoomInventory {
   warnings: string[];
   sourcePages: number[];
   aiEnrichedCount?: number;
+  /** Zone labels captured from large-font (20–36pt) text on floor plan pages.
+   *  These are stored as spatial anchors for downstream use; they are NOT
+   *  included in the room list and do NOT trigger sign assignments. */
+  zoneAnchors?: ZoneAnchor[];
 }
 
 // ── Internal types ────────────────────────────────────────────────────────────
@@ -68,10 +96,16 @@ const ELEVATOR_KEYWORDS = ["ELEV", "ELEVATOR", "LIFT"];
 const VESTIBULE_KEYWORDS = ["VEST", "VESTIBULE"];
 const CORRIDOR_KEYWORDS = ["HALL", "CORR", "CORRIDOR", "LOBBY", "FOYER"];
 const VEHICLE_BAY_KEYWORDS = ["APPARATUS", "VEHICLE BAY", "SALLY PORT", "GARAGE", "BAY"];
+// MEP_KEYWORDS — true mechanical/electrical/plumbing service rooms only.
+// "STORAGE" and "CLOSET" are intentionally excluded: a plain storage room is an
+// occupied use and must receive signage. Rooms like "ELECTRICAL CLOSET" or
+// "MECHANICAL STORAGE" are caught because "ELECTRICAL"/"MECHANICAL" appear here.
+// Adding storage terms to this list would conflate MEP rooms with storage rooms
+// (the R15 hardening objective) and cause storage rooms to be silently zero-signed.
 const MEP_KEYWORDS = [
   "MECHANICAL", "ELECTRICAL", "ELEC", "DATA", "IT ROOM", "SERVER",
   "FIRE SPRINKLER", "TELECOM", "TELEPHONE", "COMM", "MDF", "IDF", "SPRINKLER",
-  "RISER", "JANITOR", "JAN", "STORAGE", "CLOSET",
+  "RISER", "JANITOR", "JAN",
 ];
 const VARIABLE_USE_KEYWORDS = [
   "TRAINING", "COMMUNITY", "EOC", "MULTIPURPOSE", "MULTI-PURPOSE",
@@ -79,8 +113,16 @@ const VARIABLE_USE_KEYWORDS = [
   "COLLABORATION", "COLLAB", "COLLABORATIVE", "CO-WORKING", "COWORKING",
   "IDEATION", "WORKSHOP", "HUDDLE", "FLEX", "FLEXIBLE",
 ];
+// Storage qualifier words: presence in a room name suppresses isVariableUse so
+// that "WORKSHOP STORAGE" or "BREAKOUT CLOSET" are not classified as variable-use
+// rooms.  These are NOT in MEP_KEYWORDS (storage is occupied use, not MEP).
+const STORAGE_QUALIFIER_KEYWORDS = ["STORAGE", "CLOSET", "STOREROOM"];
 const PUBLIC_FACING_KEYWORDS = ["LOBBY", "RECEPTION", "WAITING", "ENTRY", "ENTRANCE", "VISITOR", "ATRIUM", "CONCOURSE", "FOYER"];
 const STAFF_KEYWORDS = ["STAFF", "EMPLOYEE", "CREW", "PERSONNEL"];
+
+/** Token sets for R5 (office) and R6 (suite) detection — must match rule-engine.ts. */
+const OFFICE_TOKENS = new Set(["OFFICE", "OFFICES", "EXEC ", "EXECUTIVE", "DIRECTOR", "PRINCIPAL", "MANAGER", "PARTNER", "ADMIN OFFICE", "PRIVATE OFFICE"]);
+const SUITE_TOKENS = new Set(["SUITE", "SUITES", "STE ", "TENANT SUITE", "OFFICE SUITE"]);
 
 // Dimension / scale text patterns — these are NOT room labels
 const DIMENSION_RE = /[\d]+'|[\d]+"|\d+\s*[-x]\s*\d|1\s*\/\s*\d{1,3}\s*=|^\d+[\s.]*$/;
@@ -126,12 +168,19 @@ export function deriveFlags(
   const isMepUnoccupied =
     MEP_KEYWORDS.some((k) => u.includes(k)) &&
     (occupantLoad === null || occupantLoad === 0);
-  const isVariableUse = VARIABLE_USE_KEYWORDS.some((k) => includesWholeWord(u, k)) && !isMepUnoccupied;
+  const hasStorageQualifier = STORAGE_QUALIFIER_KEYWORDS.some((k) => u.includes(k));
+  const isVariableUse =
+    VARIABLE_USE_KEYWORDS.some((k) => includesWholeWord(u, k)) &&
+    !isMepUnoccupied &&
+    !hasStorageQualifier;
   const isPublicFacing = PUBLIC_FACING_KEYWORDS.some((k) => u.includes(k));
   const isStaffOnly = STAFF_KEYWORDS.some((k) => u.includes(k));
   const isAssembly =
     (occupancyGroup != null && /^A[-\s]?[0-9]/.test(occupancyGroup)) ||
     (occupantLoad != null && occupantLoad >= 50);
+
+  const isOffice = [...OFFICE_TOKENS].some((tok) => u.includes(tok.trim()));
+  const isSuite = [...SUITE_TOKENS].some((tok) => u.includes(tok.trim()));
 
   return {
     isRestroom,
@@ -145,6 +194,8 @@ export function deriveFlags(
     isPublicFacing,
     isStaffOnly,
     isAssembly,
+    isOffice,
+    isSuite,
   };
 }
 
@@ -341,6 +392,7 @@ interface RawRoomLabel {
   w: number;
   h: number;
   confidence: number;
+  doorCount?: number | null;
 }
 
 /**
@@ -396,26 +448,36 @@ export function isLikelyRoomNumber(text: string): boolean {
   return ROOM_NUMBER_RE.test(text.trim());
 }
 
+// Door-keyword patterns for door-count heuristic extraction.
+// We look for digit tokens adjacent to these keywords within the room zone.
+const DOOR_KEYWORDS = new Set(["door", "doors", "entry", "entries", "egress", "exit", "exits"]);
+
 /**
  * Extracts raw room labels from a single floor plan page.
  *
- * Maintains two candidate sets:
- *   - nameCandidates: phrases that pass isLikelyRoomName()
- *   - numberCandidates: phrases that pass isLikelyRoomNumber()
+ * Maintains three candidate sets:
+ *   - nameCandidates: phrases that pass isLikelyRoomName() (4–20 pt)
+ *   - numberCandidates: phrases that pass isLikelyRoomNumber() (4–20 pt)
+ *   - zoneLabelCandidates: large-font (20–36 pt) phrases — stored as spatial
+ *     anchors but NOT added to the room candidate list.
  *
- * This separation prevents numeric tokens from being blocked by isLikelyRoomName()
- * and then failing adjacency matching (the critical bug fixed in this revision).
+ * Adjacency thresholds are computed adaptively from the median inter-room
+ * spacing on the page rather than using the fixed 6% / 12% hardcoded values,
+ * so the algorithm self-calibrates to dense or sparse drawings.
+ *
+ * Returns both room labels AND zone anchors via a two-element tuple.
  */
 async function extractRoomLabelsFromPage(
   pdfPath: string,
   fileId: string,
   pageNum: number,
-): Promise<RawRoomLabel[]> {
+): Promise<{ labels: RawRoomLabel[]; zoneAnchors: ZoneAnchor[] }> {
   const { phrases, pageHeight } = await extractPagePhrases(pdfPath, fileId, pageNum);
 
-  // Separate interior phrases into two candidate sets
+  // Separate interior phrases into candidate sets
   const nameCandidates: typeof phrases = [];
   const numberCandidates: typeof phrases = [];
+  const zoneLabelCandidates: ZoneAnchor[] = [];
 
   for (const p of phrases) {
     // Exclude title block area (bottom-right corner of page)
@@ -425,12 +487,76 @@ async function extractRoomLabelsFromPage(
     const t = p.text.trim();
 
     if (isLikelyRoomNumber(t)) {
-      // Only accept number tokens within reasonable font size range
-      if (heightPts >= 4 && heightPts <= 20) {
-        numberCandidates.push(p);
-      }
+      if (heightPts >= 4 && heightPts <= 20) numberCandidates.push(p);
     } else if (isLikelyRoomName(t, heightPts)) {
       nameCandidates.push(p);
+    } else if (heightPts > 20 && heightPts <= 36 && /[A-Za-z]/.test(t) && t.length >= 3 && t.length <= 30) {
+      // Large-font zone label (e.g. "AREA A", "WING B") — capture as spatial anchor
+      zoneLabelCandidates.push({
+        text: t.toUpperCase(),
+        pdfPage: pageNum,
+        x: p.x0,
+        y: p.y0,
+        w: p.x1 - p.x0,
+        h: p.y1 - p.y0,
+      });
+    }
+  }
+
+  // ── Adaptive adjacency thresholds ────────────────────────────────────────
+  // Compute the median vertical gap between adjacent name candidates (sorted
+  // by Y-center). Use 1.5× that median as the vertical threshold and 2.5× as
+  // the horizontal threshold. Clamp to the original fixed values as fallback.
+  let vertThreshold = 0.06;  // fallback: 6% of page height
+  let horizThreshold = 0.12; // fallback: 12% of page width
+
+  if (nameCandidates.length >= 3) {
+    const yCenters = nameCandidates
+      .map((p) => (p.y0 + p.y1) / 2)
+      .sort((a, b) => a - b);
+    const gaps: number[] = [];
+    for (let i = 1; i < yCenters.length; i++) {
+      const gap = yCenters[i]! - yCenters[i - 1]!;
+      if (gap > 0) gaps.push(gap);
+    }
+    if (gaps.length > 0) {
+      gaps.sort((a, b) => a - b);
+      const medianGap = gaps[Math.floor(gaps.length / 2)]!;
+      // Use 1.5× median as vertical, 2.5× as horizontal; clamp to [0.03, 0.15]
+      vertThreshold = Math.max(0.03, Math.min(0.15, medianGap * 1.5));
+      horizThreshold = Math.max(0.06, Math.min(0.25, medianGap * 2.5));
+    }
+  }
+
+  // ── Door count heuristic extraction ─────────────────────────────────────
+  // Scan all phrases for digit tokens adjacent to door-keyword tokens.
+  // Results are stored as positioned records (not a page-global Y-bucket)
+  // so each room can look for door hints within its own spatial window.
+  interface DoorHint { x: number; y: number; count: number }
+  const doorHintList: DoorHint[] = [];
+  const allPhrasesSorted = [...phrases].sort((a, b) => (a.y0 + a.y1) / 2 - (b.y0 + b.y1) / 2);
+
+  for (let i = 0; i < allPhrasesSorted.length; i++) {
+    const p = allPhrasesSorted[i]!;
+    const lower = p.text.trim().toLowerCase();
+    if (!DOOR_KEYWORDS.has(lower)) continue;
+
+    // Look for adjacent digit tokens within ±2 positions and same Y-band
+    for (let j = Math.max(0, i - 2); j <= Math.min(allPhrasesSorted.length - 1, i + 2); j++) {
+      if (j === i) continue;
+      const neighbor = allPhrasesSorted[j]!;
+      const vertDist = Math.abs((p.y0 + p.y1) / 2 - (neighbor.y0 + neighbor.y1) / 2);
+      if (vertDist > vertThreshold) continue;
+      const num = parseInt(neighbor.text.trim(), 10);
+      if (!isNaN(num) && num >= 1 && num <= 20) {
+        // Store hint at the centroid of the door-keyword phrase
+        doorHintList.push({
+          x: (p.x0 + p.x1) / 2,
+          y: (p.y0 + p.y1) / 2,
+          count: num,
+        });
+        break;
+      }
     }
   }
 
@@ -457,7 +583,7 @@ async function extractRoomLabelsFromPage(
     }
 
     // Case 2: Look for an adjacent room number in the numberCandidates set.
-    // "Adjacent" means within ~6% of page height vertically and ~12% horizontally.
+    // "Adjacent" uses the adaptively computed thresholds.
     let adjacentNumber: string | null = null;
     let bestIdx = -1;
     let bestDist = Infinity;
@@ -473,7 +599,7 @@ async function extractRoomLabelsFromPage(
         (phrase.x0 + phrase.x1) / 2 - (numPhrase.x0 + numPhrase.x1) / 2
       );
 
-      if (vertDist < 0.06 && horizDist < 0.12) {
+      if (vertDist < vertThreshold && horizDist < horizThreshold) {
         const dist = Math.sqrt(vertDist ** 2 + horizDist ** 2);
         if (dist < bestDist) {
           bestDist = dist;
@@ -487,6 +613,22 @@ async function extractRoomLabelsFromPage(
       usedNumberIndices.add(bestIdx);
     }
 
+    // Case 3: Check for a door-count hint within this phrase's local spatial
+    // window.  Uses the same adaptive thresholds as room-number adjacency so
+    // hints from neighbouring rooms on the same Y-band are NOT misattributed.
+    const roomCx = (phrase.x0 + phrase.x1) / 2;
+    const roomCy = (phrase.y0 + phrase.y1) / 2;
+    let doorCount: number | null = null;
+    for (const hint of doorHintList) {
+      if (
+        Math.abs(hint.y - roomCy) < vertThreshold &&
+        Math.abs(hint.x - roomCx) < horizThreshold
+      ) {
+        doorCount = hint.count;
+        break;
+      }
+    }
+
     results.push({
       name: text.toUpperCase(),
       number: adjacentNumber,
@@ -496,10 +638,11 @@ async function extractRoomLabelsFromPage(
       w: phrase.x1 - phrase.x0,
       h: phrase.y1 - phrase.y0,
       confidence: adjacentNumber ? 0.75 : 0.6,
+      doorCount,
     });
   }
 
-  return results;
+  return { labels: results, zoneAnchors: zoneLabelCandidates };
 }
 
 // ── Deduplication ─────────────────────────────────────────────────────────────
@@ -975,6 +1118,104 @@ function roomTypeToFlags(
   };
 }
 
+// ── Spatial helpers (exported for testability) ────────────────────────────────
+
+/**
+ * For each room with a boundingBox, finds the nearest ZoneAnchor on the same
+ * PDF page and assigns its label as the room's zoneQualifier — if the room
+ * centroid is within 2× the anchor's larger dimension.
+ *
+ * Mutates rooms in place.  No-op when anchors is empty.
+ */
+export function assignZoneQualifiersToRooms(
+  rooms: RoomRecord[],
+  anchors: ZoneAnchor[],
+): void {
+  if (anchors.length === 0) return;
+  for (const room of rooms) {
+    if (!room.boundingBox) continue;
+    const rcx = room.boundingBox.x + room.boundingBox.w / 2;
+    const rcy = room.boundingBox.y + room.boundingBox.h / 2;
+
+    let nearest: ZoneAnchor | null = null;
+    let nearestDist = Infinity;
+    for (const anchor of anchors) {
+      if (anchor.pdfPage !== room.pdfPage) continue;
+      const acx = anchor.x + anchor.w / 2;
+      const acy = anchor.y + anchor.h / 2;
+      const dist = Math.hypot(rcx - acx, rcy - acy);
+      if (dist < nearestDist) {
+        nearestDist = dist;
+        nearest = anchor;
+      }
+    }
+    if (nearest != null) {
+      const radius = Math.max(nearest.w, nearest.h) * 2.0;
+      if (nearestDist <= radius) {
+        room.zoneQualifier = nearest.text;
+      }
+    }
+  }
+}
+
+/**
+ * Geometric staff-only restroom detection using K-nearest spatial neighbors.
+ *
+ * For each restroom that is not already staff-only, finds the K=5 nearest
+ * non-restroom rooms on the same PDF page by boundingBox centroid distance.
+ * If all K nearest rooms are explicit back-of-house types and none are
+ * public-facing or assembly, the restroom is reclassified as staff-only.
+ *
+ * Mutates rooms in place.  Skips rooms without a boundingBox.
+ *
+ * @param jobId  Used for logging only.
+ */
+export function detectGeometricStaffOnlyRestrooms(
+  rooms: RoomRecord[],
+  jobId = "unknown",
+): void {
+  const K_NEAREST_STAFF = 5;
+  for (const room of rooms) {
+    if (!room.isRestroom || room.isStaffOnly || !room.boundingBox) continue;
+    const rcx = room.boundingBox.x + room.boundingBox.w / 2;
+    const rcy = room.boundingBox.y + room.boundingBox.h / 2;
+
+    const candidates = rooms.filter(
+      (r) => r !== room && !r.isRestroom && r.pdfPage === room.pdfPage && r.boundingBox != null,
+    );
+    if (candidates.length === 0) continue;
+
+    const sorted = candidates
+      .map((r) => {
+        const cx = r.boundingBox!.x + r.boundingBox!.w / 2;
+        const cy = r.boundingBox!.y + r.boundingBox!.h / 2;
+        return { room: r, dist: Math.hypot(rcx - cx, rcy - cy) };
+      })
+      .sort((a, b) => a.dist - b.dist);
+
+    const kNearest = sorted.slice(0, K_NEAREST_STAFF).map((s) => s.room);
+    const hasPublicOrAssembly = kNearest.some((r) => r.isPublicFacing || r.isAssembly);
+    const allBackOfHouse = kNearest.every(
+      (r) =>
+        r.isStaffOnly ||
+        r.isMepUnoccupied ||
+        r.isVehicleBay ||
+        r.isCorridorOrHall ||
+        r.isStair ||
+        r.isElevator ||
+        r.isOffice,
+    );
+    if (!hasPublicOrAssembly && allBackOfHouse) {
+      room.isStaffOnly = true;
+      room.isPublicFacing = false;
+      logger.info(
+        { roomName: room.roomName, level: room.level, jobId },
+        "[RoomInventory] Staff-only restroom detected via geometric k-nearest (Phase 4)",
+      );
+    }
+  }
+}
+
 // ── Main export ───────────────────────────────────────────────────────────────
 
 /**
@@ -1016,19 +1257,23 @@ export async function buildRoomInventory(
 
   // ── Step 1: Extract room labels from all floor plan pages ─────────────────
   const allRawLabels: RawRoomLabel[] = [];
+  const allZoneAnchors: ZoneAnchor[] = [];
 
   await Promise.all(
     floorPlanPages.map(async (pageNum) => {
       try {
-        const labels = await extractRoomLabelsFromPage(pdfPath, fileId, pageNum);
+        const { labels, zoneAnchors: pageZoneAnchors } = await extractRoomLabelsFromPage(pdfPath, fileId, pageNum);
         allRawLabels.push(...labels);
+        allZoneAnchors.push(...pageZoneAnchors);
         logger.info(
           {
             jobId,
             fileId,
             pageNum,
             labelsFound: labels.length,
+            zoneAnchorsFound: pageZoneAnchors.length,
             roomNames: labels.map((l) => (l.number ? `${l.number} ${l.name}` : l.name)),
+            zoneLabels: pageZoneAnchors.map((z) => z.text),
           },
           "[RoomInventory] Page labels extracted",
         );
@@ -1121,8 +1366,23 @@ export async function buildRoomInventory(
         h: label.h,
       },
       extractionConfidence: label.confidence,
+      doorCount: label.doorCount ?? null,
     };
   });
+
+  // ── Step 3.5: Zone qualifier assignment + geometric staff-only detection ──
+  // Both are pure spatial operations exported as helpers for testability.
+  assignZoneQualifiersToRooms(rooms, allZoneAnchors);
+  if (allZoneAnchors.length > 0) {
+    const zoneAssigned = rooms.filter((r) => r.zoneQualifier != null).length;
+    if (zoneAssigned > 0) {
+      logger.info(
+        { jobId, fileId, zoneAssigned, anchors: allZoneAnchors.length },
+        "[RoomInventory] Zone qualifiers assigned from spatial anchors",
+      );
+    }
+  }
+  detectGeometricStaffOnlyRestrooms(rooms, jobId);
 
   // ── Validate cross-references ─────────────────────────────────────────────
   let occupantLoadRoomsMatched = 0;
@@ -1150,6 +1410,13 @@ export async function buildRoomInventory(
     "[RoomInventory] Room inventory built",
   );
 
+  if (allZoneAnchors.length > 0) {
+    logger.info(
+      { jobId, fileId, zoneAnchorCount: allZoneAnchors.length, zones: allZoneAnchors.map((z) => `${z.text} (p${z.pdfPage})`) },
+      "[RoomInventory] Zone anchors captured from large-font labels",
+    );
+  }
+
   return {
     rooms,
     occupantLoadTableFound,
@@ -1157,5 +1424,6 @@ export async function buildRoomInventory(
     occupantLoadRoomsMatched,
     warnings,
     sourcePages: floorPlanPages,
+    zoneAnchors: allZoneAnchors.length > 0 ? allZoneAnchors : undefined,
   };
 }
