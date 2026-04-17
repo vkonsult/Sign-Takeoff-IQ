@@ -1205,9 +1205,20 @@ export interface SignRow {
 export function assignmentToRows(assignment: SignAssignment): SignRow[] {
   const rows: SignRow[] = [];
 
+  // When a room has no number, append the zone qualifier so fabricators can
+  // locate it on the plan (e.g. "LOBBY [AREA A]" instead of just "LOBBY").
+  const baseSlug = assignment.roomName.toUpperCase().replace(/\s+/g, "_").slice(0, 40);
   const identifier =
     assignment.roomNumber ??
-    assignment.roomName.toUpperCase().replace(/\s+/g, "_").slice(0, 40);
+    (assignment.zoneQualifier
+      ? `${baseSlug.slice(0, 32)} [${assignment.zoneQualifier}]`
+      : baseSlug);
+
+  // The human-readable location always includes the zone qualifier when known.
+  const location = assignment.zoneQualifier
+    ? `${assignment.roomName} — ${assignment.zoneQualifier}`
+    : assignment.roomName;
+
   const confidence = assignment.ambiguous ? 0.7 : 1.0;
   const reviewFlag = assignment.ambiguous;
   const baseRawJson: Record<string, unknown> = {
@@ -1223,7 +1234,7 @@ export function assignmentToRows(assignment: SignAssignment): SignRow[] {
       signType,
       signIdentifier: identifier,
       quantity,
-      location: assignment.roomName,
+      location,
       notes: `Rule engine: ${rule}`,
       pageNumber: assignment.pdfPage,
       confidenceScore: confidence,

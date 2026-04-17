@@ -402,6 +402,67 @@ describe("assignmentToRows — rawJson traceability", () => {
   });
 });
 
+// ── assignmentToRows — zone qualifier wiring ──────────────────────────────────
+
+describe("assignmentToRows — zoneQualifier in signIdentifier and location", () => {
+  it("room without number and with zoneQualifier: identifier appends [ZONE], location appends zone", () => {
+    const a = makeAssignment({
+      roomNumber: null,
+      roomName: "Lobby",
+      zoneQualifier: "AREA A",
+      roomId: 1,
+      appliedRules: ["R1"],
+    });
+    const rows = assignmentToRows(a);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.signIdentifier).toBe("LOBBY [AREA A]");
+    expect(rows[0]!.location).toBe("Lobby — AREA A");
+  });
+
+  it("room with a number: identifier is the room number, location still includes zone", () => {
+    const a = makeAssignment({
+      roomNumber: "201",
+      roomName: "Break Room",
+      zoneQualifier: "WING B",
+      roomId: 1,
+      appliedRules: ["R1"],
+    });
+    const rows = assignmentToRows(a);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.signIdentifier).toBe("201");
+    expect(rows[0]!.location).toBe("Break Room — WING B");
+  });
+
+  it("room without number and without zoneQualifier: identifier is slug, location is roomName", () => {
+    const a = makeAssignment({
+      roomNumber: null,
+      roomName: "Storage Room",
+      zoneQualifier: null,
+      roomId: 1,
+      appliedRules: ["R1"],
+    });
+    const rows = assignmentToRows(a);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.signIdentifier).toBe("STORAGE_ROOM");
+    expect(rows[0]!.location).toBe("Storage Room");
+  });
+
+  it("long room name without number gets slug capped and zone appended correctly", () => {
+    const a = makeAssignment({
+      roomNumber: null,
+      roomName: "Very Long Conference And Training Room Name Here",
+      zoneQualifier: "ZONE C",
+      roomId: 1,
+      appliedRules: ["R1"],
+    });
+    const rows = assignmentToRows(a);
+    expect(rows).toHaveLength(1);
+    const slug = rows[0]!.signIdentifier;
+    expect(slug).toContain("[ZONE C]");
+    expect(slug.length).toBeLessThanOrEqual(48);
+  });
+});
+
 // ── applySignRules — full rule engine integration tests ───────────────────────
 
 describe("applySignRules — R1: regular occupied room gets Room ID sign", () => {

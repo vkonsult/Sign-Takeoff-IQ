@@ -649,6 +649,32 @@ describe("assignZoneQualifiersToRooms — centroid-based zone label assignment",
     assignZoneQualifiersToRooms([room], [zone]);
     expect(room.zoneQualifier).toBeUndefined();
   });
+
+  it("multi-room multi-zone fixture: each room gets the nearest in-radius anchor, out-of-radius rooms get none", () => {
+    // Layout (page 1):
+    //   AREA A anchor centred at (200, 150), 200×30 → radius = 2×200 = 400
+    //   AREA B anchor centred at (700, 150), 180×30 → radius = 2×180 = 360
+    //
+    //   Room A (centroid 200,150) → distance 0 to AREA A → assigned AREA A
+    //   Room B (centroid 680,150) → distance 20 to AREA B → assigned AREA B
+    //   Room C (centroid 2000,2000) → outside both radii → no assignment
+    //   Room D (pdfPage 2)        → different page → no assignment
+
+    const areaA = anchor("AREA A", 100, 135, 200, 30); // centroid (200,150)
+    const areaB = anchor("AREA B", 610, 135, 180, 30); // centroid (700,150)
+
+    const roomA = makeRoom({ boundingBox: bbox(175, 140), pdfPage: 1 }); // centroid (200,150)
+    const roomB = makeRoom({ boundingBox: bbox(655, 140), pdfPage: 1 }); // centroid (680,150)
+    const roomC = makeRoom({ boundingBox: bbox(1975, 1990), pdfPage: 1 }); // too far
+    const roomD = makeRoom({ boundingBox: bbox(200, 150), pdfPage: 2 });  // wrong page
+
+    assignZoneQualifiersToRooms([roomA, roomB, roomC, roomD], [areaA, areaB]);
+
+    expect(roomA.zoneQualifier).toBe("AREA A");
+    expect(roomB.zoneQualifier).toBe("AREA B");
+    expect(roomC.zoneQualifier).toBeUndefined();
+    expect(roomD.zoneQualifier).toBeUndefined();
+  });
 });
 
 // ── detectGeometricStaffOnlyRestrooms ────────────────────────────────────────
