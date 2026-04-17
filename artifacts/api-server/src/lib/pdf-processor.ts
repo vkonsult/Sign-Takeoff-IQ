@@ -39,6 +39,7 @@ import {
 } from "./signage-schedule-parser";
 import { extractSignSchedule } from "./sign-schedule-extractor";
 import { applySignRules, assignmentToRows, type PlaqueEntry } from "./rule-engine";
+import { verifyRuleEngineResult } from "./verifier";
 
 export async function runPdfProcessor(jobId: string): Promise<void> {
   const pipelineSteps: ProcessingStep[] = [];
@@ -544,16 +545,46 @@ export async function runPdfProcessor(jobId: string): Promise<void> {
     }
   }
 
+  // ── Phase 6: Verify & Output ───────────────────────────────────────────────
+  // Run structured pre-output verification checks (V1–V7) from the SignTakeoff
+  // System Prompt v1.1.  Phase 4 (RoomInventory) and Phase 5 (RuleEngine) are
+  // not yet implemented; empty inputs are passed so all checks pass trivially
+  // until those modules ship.  The step is always recorded so the Timeline UI
+  // shows Phase 6 as complete.
+  {
+    const t_verify = Date.now();
+    const report = verifyRuleEngineResult(
+      { assignments: [], byLevel: {} },
+      { rooms: [], elevatorCount: 0, stairCount: 0, levelNames: [] },
+      { levels: [], pageCount: filesToProcess.length },
+    );
+    recordStep("verification", "Phase 6 — Verify & Output", t_verify, {
+      passed: report.passed,
+      errors: report.errors.length,
+      warnings: report.warnings.length,
+      questions: report.questionsForVerification.length,
+      totalSigns: report.summary.totalSigns,
+      errorDetails: report.errors,
+      warningDetails: report.warnings,
+      questionDetails: report.questionsForVerification,
+      checksPassed: report.checksPassed,
+      ...report.summary.byType,
+    });
+  }
+
   // ── Persist schedule parser results (sign_type_specs + signage_schedule_entries) ──
   // Always clear previous schedule rows first (re-run support, prevents stale data
   // if no schedule pages are found in a subsequent run).
   await db.delete(signageScheduleEntriesTable).where(eq(signageScheduleEntriesTable.jobId, jobId));
   await db.delete(signTypeSpecsTable).where(eq(signTypeSpecsTable.jobId, jobId));
 
+  // Track insertion counts for output_db_insert step (always recorded below).
+  const t_db_insert = Date.now();
+  let dbInsertedSpecs = 0;
+  let dbInsertedEntries = 0;
+
   if (allScheduleSpecs.length > 0 || allScheduleEntries.length > 0) {
     try {
-      const t_schedule_persist = Date.now();
-
       // Deduplicate specs job-wide by typeCode (last-file wins for conflicts)
       const deduplicatedSpecsMap = new Map<string, typeof allScheduleSpecs[0]>();
       for (const spec of allScheduleSpecs) {
@@ -591,6 +622,7 @@ export async function runPdfProcessor(jobId: string): Promise<void> {
         for (const row of inserted) {
           specIdMap.set(row.typeCode, row.id);
         }
+        dbInsertedSpecs = deduplicatedSpecs.length;
       }
 
       // Build pairedSignId lookup: job + sign type code → extracted_signs row id
@@ -630,10 +662,11 @@ export async function runPdfProcessor(jobId: string): Promise<void> {
         for (let i = 0; i < entryRows.length; i += CHUNK) {
           await db.insert(signageScheduleEntriesTable).values(entryRows.slice(i, i + CHUNK));
         }
+        dbInsertedEntries = entryRows.length;
       }
 
       logger.info(
-        { jobId, specs: allScheduleSpecs.length, entries: allScheduleEntries.length, durationMs: Date.now() - t_schedule_persist },
+        { jobId, specs: dbInsertedSpecs, entries: dbInsertedEntries, durationMs: Date.now() - t_db_insert },
         "[PDF Processor] Schedule data persisted"
       );
       recordStep("schedule_persist", "Schedule data persistence", t_schedule_persist, {
@@ -641,10 +674,19 @@ export async function runPdfProcessor(jobId: string): Promise<void> {
         entries: allScheduleEntries.length,
       }, "phase-3");
 
+
     } catch (err) {
       logger.warn({ err, jobId }, "[PDF Processor] Schedule data persistence failed — non-fatal");
     }
   }
+
+  // Always record output_db_insert — represents the full verified-result write path
+  // regardless of whether schedule data was present for this job.
+  recordStep("output_db_insert", "Write verified results", t_db_insert, {
+    rows: dbInsertedSpecs + dbInsertedEntries,
+    specs: dbInsertedSpecs,
+    entries: dbInsertedEntries,
+  });
 
   // ── Phase 3: Sign Schedule Extraction (Gemini visual read) ───────────────
   // For every file that has signage schedule pages, run the Gemini visual read

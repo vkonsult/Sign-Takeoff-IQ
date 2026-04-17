@@ -46,6 +46,7 @@ artifacts/
 │           ├── sign-vocabulary.ts         # Canonical keyword lists + building-type maps
 │           ├── signage-schedule-parser.ts # Structured sign-schedule table parser (legacy text path)
 │           ├── sign-schedule-extractor.ts # Phase 3: Gemini visual read of sign schedule pages → PlaqueTypeRow[]
+│           ├── verifier.ts                # Phase 6: pre-output verification checks V1-V7
 │           ├── storage.ts                 # File storage helpers
 │           └── export.ts                  # XLSX export
 └── web/                    # React + Vite frontend

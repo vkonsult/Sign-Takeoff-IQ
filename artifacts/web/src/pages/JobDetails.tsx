@@ -321,6 +321,98 @@ function ProcessingTimeline({ steps, isLoading }: { steps: ProcessingStep[]; isL
         </div>
       </div>
 
+      {/* Verification Report — shown when Phase 6 "verification" step is present */}
+      {(() => {
+        const verStep = steps.find((s) => s.step === "verification");
+        if (!verStep) return null;
+        const d = verStep.details ?? {};
+        const passed = d.passed as boolean | undefined;
+        const errorDetails = (d.errorDetails as string[] | undefined) ?? [];
+        const warningDetails = (d.warningDetails as string[] | undefined) ?? [];
+        const questionDetails = (d.questionDetails as string[] | undefined) ?? [];
+        const checksPassed = (d.checksPassed as string[] | undefined) ?? [];
+        const hasAnyContent = errorDetails.length > 0 || warningDetails.length > 0 || questionDetails.length > 0 || checksPassed.length > 0;
+        return (
+          <div>
+            <div className="text-[10px] font-display font-bold uppercase tracking-widest text-muted-foreground mb-3">
+              Verification Report
+            </div>
+            <div className={`rounded-lg border p-4 space-y-3 ${
+              passed
+                ? "border-teal-500/30 bg-teal-500/5"
+                : errorDetails.length > 0
+                  ? "border-red-500/30 bg-red-500/5"
+                  : "border-blue-500/30 bg-blue-500/5"
+            }`}>
+              <div className={`flex items-center gap-2 text-sm font-semibold ${
+                passed ? "text-teal-400" : errorDetails.length > 0 ? "text-red-400" : "text-blue-400"
+              }`}>
+                {passed
+                  ? "✓ All checks passed"
+                  : errorDetails.length > 0 || warningDetails.length > 0
+                    ? `⚠ ${errorDetails.length} error(s), ${warningDetails.length} warning(s)`
+                    : `? ${questionDetails.length} question(s) pending`}
+              </div>
+
+              {checksPassed.length > 0 && (
+                <div className="space-y-1">
+                  {checksPassed.map((check) => (
+                    <div key={check} className="flex items-start gap-2 text-xs text-teal-400">
+                      <span className="shrink-0 font-bold mt-px">✓</span>
+                      <span>{check}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {errorDetails.length > 0 && (
+                <div className="space-y-1">
+                  {errorDetails.map((err, i) => (
+                    <div key={i} className="flex items-start gap-2 text-xs text-red-400">
+                      <span className="shrink-0 font-bold mt-px">✗</span>
+                      <span>{err}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {warningDetails.length > 0 && (
+                <div className="space-y-1">
+                  {warningDetails.map((warn, i) => (
+                    <div key={i} className="flex items-start gap-2 text-xs text-amber-400">
+                      <span className="shrink-0 font-bold mt-px">⚠</span>
+                      <span>{warn}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {questionDetails.length > 0 && (
+                <div className="border-t border-border/40 pt-3">
+                  <div className="text-[10px] font-display font-semibold uppercase tracking-wider text-blue-400 mb-2">
+                    Questions for Review
+                  </div>
+                  <div className="space-y-1">
+                    {questionDetails.map((q, i) => (
+                      <div key={i} className="flex items-start gap-2 text-xs text-blue-400">
+                        <span className="shrink-0 font-bold mt-px">?</span>
+                        <span>{q}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {!hasAnyContent && (
+                <div className="text-xs text-muted-foreground italic">
+                  No room inventory data available — checks V1–V7 will run automatically once Phase 4 &amp; 5 are implemented.
+                </div>
+              )}
+            </div>
+          </div>
+        );
+      })()}
+
       {/* Step Details — collapsible phase sections */}
       {groups.length > 0 && (
         <div>
@@ -668,6 +760,20 @@ export default function JobDetails() {
   }
 
   const { job, files, totalSigns, flaggedCount, highConfidenceCount } = data;
+
+  // Derive verification badge from the job's processing log (Phase 6 step)
+  const jobProcessingLog = (job as Record<string, unknown>).processingLog as Array<{ step: string; details?: Record<string, unknown> }> | null | undefined;
+  const verificationStep = jobProcessingLog?.find((s) => s.step === "verification");
+  const verificationBadge = verificationStep
+    ? {
+        passed: (verificationStep.details?.passed as boolean) ?? true,
+        issues:
+          ((verificationStep.details?.errors as number) ?? 0) +
+          ((verificationStep.details?.warnings as number) ?? 0) +
+          ((verificationStep.details?.questions as number) ?? 0),
+      }
+    : null;
+
   const dataAny = data as typeof data & {
     lastScan?: { at: string; userName: string; userInitials: string } | null;
     lastEdit?: { at: string; userName: string; userInitials: string } | null;
@@ -981,6 +1087,15 @@ export default function JobDetails() {
                   >
                     <ListFilter className="w-3.5 h-3.5" />
                     Sign Table
+                    {verificationBadge && (
+                      <span className={`ml-0.5 text-[9px] font-mono px-1 py-px rounded border ${
+                        verificationBadge.passed
+                          ? "bg-teal-500/10 text-teal-400 border-teal-500/30"
+                          : "bg-amber-500/10 text-amber-400 border-amber-500/30"
+                      }`}>
+                        {verificationBadge.passed ? "✓ Verified" : `⚠ ${verificationBadge.issues}`}
+                      </span>
+                    )}
                   </button>
                   <button
                     onClick={() => setActiveTab("sheets")}

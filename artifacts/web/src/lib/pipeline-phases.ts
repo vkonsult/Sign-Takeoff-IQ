@@ -212,8 +212,8 @@ export const PIPELINE_PHASES: PipelinePhase[] = [
       "pdf-processor.ts → deduplication block",
       "pdf-processor.ts → db_insert block",
     ],
-    newModule: "verifier.ts (planned)",
-    taskRef: null,
+    newModule: "verifier.ts → verifyRuleEngineResult()",
+    taskRef: "#359",
   },
 ];
 
