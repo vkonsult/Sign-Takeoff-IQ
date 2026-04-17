@@ -74,6 +74,85 @@ function formatDuration(ms: number): string {
 // UUID pattern to detect per-file step suffixes — used to filter them out of the top-level view
 const PER_FILE_STEP_RE = /^(.+?)_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/;
 
+/** Aggregated timing summary for one file, built from multiple UUID-suffixed per-file steps */
+interface FileSummary {
+  fileId: string;
+  fileName: string;
+  combinedDurationMs: number;
+  pageCount: number | null;
+  classificationLabel: string | null;
+}
+
+/** Derive a short classification label from a per-file step's details */
+function getClassificationLabel(details: Record<string, unknown> | undefined): string | null {
+  if (!details) return null;
+  const d = details as Record<string, unknown>;
+  if (d.classification) return String(d.classification);
+  if (Number(d.signSchedule) > 0) return "Sign Schedule";
+  if (Number(d.floorPlan) > 0) return "Floor Plan";
+  if (d.classified) return String(d.classified);
+  return null;
+}
+
+/**
+ * Known per-file step base names that belong to the extraction phase.
+ * Gating to this set prevents future non-extraction UUID-suffixed steps
+ * from being incorrectly folded into the extraction breakdown.
+ */
+const EXTRACTION_STEP_PREFIXES = new Set([
+  "sheet_manifest",
+  "text_extraction",
+  "sign_schedule_extract",
+]);
+
+/**
+ * Group all UUID-suffixed per-file steps by their file UUID, then combine them
+ * into a single FileSummary per file.  All such summaries are keyed under the
+ * "extraction" parent step, which is the visible aggregate step in the timeline.
+ */
+function buildFileSummaries(allSteps: ProcessingStep[]): FileSummary[] {
+  // Group per-file steps by their UUID (the file ID) — only for known extraction prefixes
+  const byFileId = new Map<string, ProcessingStep[]>();
+  for (const s of allSteps) {
+    const m = PER_FILE_STEP_RE.exec(s.step);
+    if (m && EXTRACTION_STEP_PREFIXES.has(m[1])) {
+      const uuid = m[2];
+      if (!byFileId.has(uuid)) byFileId.set(uuid, []);
+      byFileId.get(uuid)!.push(s);
+    }
+  }
+
+  const summaries: FileSummary[] = [];
+  for (const [fileId, steps] of byFileId) {
+    // Prefer file name embedded in step labels ("Text extraction — filename.pdf")
+    let fileName = fileId;
+    for (const s of steps) {
+      const dashIdx = s.label.indexOf(" — ");
+      if (dashIdx !== -1) { fileName = s.label.slice(dashIdx + 3); break; }
+    }
+
+    // Combined duration is the sum of all per-file passes for this file
+    const combinedDurationMs = steps.reduce((acc, s) => acc + s.durationMs, 0);
+
+    // Page count comes from the text_extraction_* step (has a `pages` detail)
+    let pageCount: number | null = null;
+    const textStep = steps.find((s) => s.step.startsWith("text_extraction_"));
+    if (textStep?.details?.pages != null) pageCount = Number(textStep.details.pages);
+
+    // Classification comes from the sheet_manifest_* step (floorPlan / signSchedule counts)
+    let classificationLabel: string | null = null;
+    const manifestStep = steps.find((s) => s.step.startsWith("sheet_manifest_"));
+    if (manifestStep?.details) classificationLabel = getClassificationLabel(manifestStep.details);
+
+    summaries.push({ fileId, fileName, combinedDurationMs, pageCount, classificationLabel });
+  }
+
+  // Sort by combined duration descending so slowest file is always at the top
+  summaries.sort((a, b) => b.combinedDurationMs - a.combinedDurationMs);
+
+  return summaries;
+}
+
 function formatDetails(details: Record<string, unknown> | undefined): string | null {
   if (!details) return null;
   const parts: string[] = [];
@@ -128,27 +207,33 @@ interface PhaseGroup {
   totalMs: number;
 }
 
-function TimelineStepRow({ step, maxMs }: { step: ProcessingStep; maxMs: number }) {
-  const widthPct = Math.max(2, (step.durationMs / maxMs) * 100);
-  const detailStr = formatDetails(step.details);
+/** A single per-file summary sub-row inside an expandable step */
+function FileSubRow({ summary, maxMs }: { summary: FileSummary; maxMs: number }) {
+  const widthPct = Math.max(1, (summary.combinedDurationMs / maxMs) * 100);
   return (
-    <div className="flex items-center gap-3 py-1.5" title={detailStr ?? undefined}>
-      <div className="w-52 shrink-0 text-sm text-foreground/80 truncate leading-tight">
-        {step.label}
+    <div className="flex items-center gap-3 py-1 pl-6 text-xs text-muted-foreground">
+      <div className="w-44 shrink-0 truncate leading-tight" title={summary.fileName}>
+        <FileText className="inline w-3 h-3 mr-1 opacity-50" />
+        {summary.fileName}
       </div>
-      <div className="flex-1 h-4 bg-muted/40 rounded overflow-hidden">
+      <div className="flex-1 h-2.5 bg-muted/30 rounded overflow-hidden">
         <div
-          className="h-full rounded bg-primary/50"
+          className="h-full rounded bg-primary/30"
           style={{ width: `${widthPct}%` }}
         />
       </div>
-      <div className="w-16 shrink-0 text-right text-sm font-mono text-foreground/70 tabular-nums">
-        {formatDuration(step.durationMs)}
+      <div className="w-16 shrink-0 text-right font-mono tabular-nums">
+        {formatDuration(summary.combinedDurationMs)}
       </div>
-      <div className="w-64 shrink-0">
-        {detailStr && (
-          <span className="inline-flex items-center px-1.5 py-0.5 rounded bg-muted/50 text-[11px] text-muted-foreground truncate max-w-full">
-            {detailStr}
+      <div className="w-64 shrink-0 flex items-center gap-1.5">
+        {summary.pageCount != null && (
+          <span className="px-1 py-0.5 rounded bg-muted/40 text-[10px]">
+            {summary.pageCount}p
+          </span>
+        )}
+        {summary.classificationLabel && (
+          <span className="px-1 py-0.5 rounded bg-muted/40 text-[10px] truncate max-w-[10rem]">
+            {summary.classificationLabel}
           </span>
         )}
       </div>
@@ -156,7 +241,63 @@ function TimelineStepRow({ step, maxMs }: { step: ProcessingStep; maxMs: number 
   );
 }
 
-function PhaseSection({ group, maxMs, defaultOpen }: { group: PhaseGroup; maxMs: number; defaultOpen: boolean }) {
+function TimelineStepRow({ step, maxMs, fileSummaries }: { step: ProcessingStep; maxMs: number; fileSummaries?: FileSummary[] }) {
+  const widthPct = Math.max(2, (step.durationMs / maxMs) * 100);
+  const detailStr = formatDetails(step.details);
+  const hasChildren = fileSummaries && fileSummaries.length > 0;
+  const [childOpen, setChildOpen] = useState(false);
+
+  return (
+    <div>
+      <div
+        className={`flex items-center gap-3 py-1.5 ${hasChildren ? "cursor-pointer select-none hover:bg-muted/20 rounded" : ""}`}
+        title={detailStr ?? undefined}
+        onClick={hasChildren ? () => setChildOpen((o) => !o) : undefined}
+      >
+        <div className="w-52 shrink-0 text-sm text-foreground/80 truncate leading-tight flex items-center gap-1">
+          {hasChildren && (
+            <span className="shrink-0">
+              {childOpen
+                ? <ChevronDown className="w-3 h-3 text-muted-foreground/60" />
+                : <ChevronRight className="w-3 h-3 text-muted-foreground/60" />}
+            </span>
+          )}
+          {step.label}
+        </div>
+        <div className="flex-1 h-4 bg-muted/40 rounded overflow-hidden">
+          <div
+            className="h-full rounded bg-primary/50"
+            style={{ width: `${widthPct}%` }}
+          />
+        </div>
+        <div className="w-16 shrink-0 text-right text-sm font-mono text-foreground/70 tabular-nums">
+          {formatDuration(step.durationMs)}
+        </div>
+        <div className="w-64 shrink-0 flex items-center gap-1.5">
+          {detailStr && (
+            <span className="inline-flex items-center px-1.5 py-0.5 rounded bg-muted/50 text-[11px] text-muted-foreground truncate max-w-full">
+              {detailStr}
+            </span>
+          )}
+          {hasChildren && (
+            <span className="shrink-0 px-1 py-0.5 rounded bg-muted/40 text-[10px] text-muted-foreground font-mono">
+              {fileSummaries.length} file{fileSummaries.length !== 1 ? "s" : ""}
+            </span>
+          )}
+        </div>
+      </div>
+      {hasChildren && childOpen && (
+        <div className="border-l-2 border-border/30 ml-3 mb-1 divide-y divide-border/20">
+          {fileSummaries.map((s) => (
+            <FileSubRow key={s.fileId} summary={s} maxMs={maxMs} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function PhaseSection({ group, maxMs, defaultOpen, extractionFileSummaries }: { group: PhaseGroup; maxMs: number; defaultOpen: boolean; extractionFileSummaries: FileSummary[] }) {
   const [open, setOpen] = useState(defaultOpen);
   const isLegacy = group.phase === null;
   return (
@@ -181,7 +322,12 @@ function PhaseSection({ group, maxMs, defaultOpen }: { group: PhaseGroup; maxMs:
       {open && (
         <div className="px-4 py-1 divide-y divide-border/30">
           {group.steps.map((step) => (
-            <TimelineStepRow key={step.step} step={step} maxMs={maxMs} />
+            <TimelineStepRow
+              key={step.step}
+              step={step}
+              maxMs={maxMs}
+              fileSummaries={step.step === "extraction" ? extractionFileSummaries : undefined}
+            />
           ))}
         </div>
       )}
@@ -224,6 +370,9 @@ function ProcessingTimeline({ steps, isLoading }: { steps: ProcessingStep[]; isL
   const visibleSteps = steps.filter(
     (s) => s.step !== "total" && !PER_FILE_STEP_RE.test(s.step)
   );
+
+  // Build per-file summaries (grouped by UUID, attached to the "extraction" parent step)
+  const extractionFileSummaries = buildFileSummaries(steps);
 
   // Group steps: check step.phase first (backend-tagged), then resolvePhaseForStep fallback
   const phaseGroupMap = new Map<string, { label: string; steps: ProcessingStep[] }>();
@@ -426,6 +575,7 @@ function ProcessingTimeline({ steps, isLoading }: { steps: ProcessingStep[]; isL
                 group={group}
                 maxMs={maxMs}
                 defaultOpen={i === 0 || groups.length <= 2}
+                extractionFileSummaries={extractionFileSummaries}
               />
             ))}
           </div>
