@@ -43,6 +43,7 @@ import {
   Clock,
   Brain,
   Building2,
+  Info,
 } from "lucide-react";
 import { format, formatDistanceToNow } from "date-fns";
 import { exportMarkedupPdf, type MarkerSign } from "@/lib/exportMarkedupPdf";
@@ -222,8 +223,6 @@ function formatDetails(details: Record<string, unknown> | undefined): string | n
   if (textRows != null) parts.push(`${textRows} text rows`);
   if (imageRows != null) parts.push(`${imageRows} image rows`);
   if (signsExtracted != null) parts.push(`${signsExtracted} signs`);
-  if (skipped && skipReason) parts.push(`skipped: ${skipReason}`);
-  else if (skipped) parts.push("skipped");
   return parts.length > 0 ? parts.join(" · ") : null;
 }
 
@@ -485,6 +484,8 @@ function TimelineStepRow({ step, maxMs, fileSummaries, onRetryFile, retryingFile
   const widthPct = Math.max(2, ((step.durationMs ?? 0) / maxMs) * 100);
   const detailStr = formatDetails(step.details);
   const hasChildren = fileSummaries && fileSummaries.length > 0;
+  const stepIsSkipped = step.details?.skipped === true;
+  const stepSkipReason = typeof step.details?.skipReason === "string" ? step.details.skipReason : null;
 
   const failedCount = fileSummaries ? fileSummaries.filter((s) => s.hasError).length : 0;
   const skippedCount = fileSummaries ? fileSummaries.filter((s) => !s.hasError && s.isSkipped).length : 0;
@@ -535,7 +536,16 @@ function TimelineStepRow({ step, maxMs, fileSummaries, onRetryFile, retryingFile
           {formatDuration(step.durationMs)}
         </div>
         <div className="w-64 shrink-0 flex items-center gap-1.5">
-          {detailStr && (
+          {stepIsSkipped && (
+            <span
+              className="shrink-0 inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-muted/40 text-[11px] text-muted-foreground border border-border/40 font-mono"
+              title={stepSkipReason ?? "Step was skipped"}
+            >
+              <Info className="w-3 h-3 shrink-0 text-sky-400/70" />
+              {stepSkipReason ? `Skipped — ${stepSkipReason}` : "Skipped"}
+            </span>
+          )}
+          {!stepIsSkipped && detailStr && (
             <span className="inline-flex items-center px-1.5 py-0.5 rounded bg-muted/50 text-[11px] text-muted-foreground truncate max-w-full">
               {detailStr}
             </span>
