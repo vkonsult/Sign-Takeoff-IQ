@@ -648,6 +648,26 @@ function ProcessingTimeline({ steps, isLoading }: { steps: ProcessingStep[]; isL
         const questionDetails = (d.questionDetails as string[] | undefined) ?? [];
         const checksPassed = (d.checksPassed as string[] | undefined) ?? [];
         const hasAnyContent = errorDetails.length > 0 || warningDetails.length > 0 || questionDetails.length > 0 || checksPassed.length > 0;
+
+        const roomsFromInventory = d.roomsFromInventory as number | undefined;
+        const assignmentsFromEngine = d.assignmentsFromEngine as number | undefined;
+        const totalSigns = d.totalSigns as number | undefined;
+
+        const SIGN_TYPE_LABELS: Record<string, string> = {
+          roomId: "Room ID",
+          restroom: "Restroom",
+          exit: "EXIT",
+          stairCorridor: "Stair (Corridor)",
+          stairLanding: "Stair (Landing)",
+          inCaseOfFire: "In Case of Fire",
+          maxOccupancy: "Max Occupancy",
+        };
+        const byType: { key: string; label: string; count: number }[] = Object.entries(SIGN_TYPE_LABELS)
+          .map(([key, label]) => ({ key, label, count: (d[key] as number | undefined) ?? 0 }))
+          .filter((t) => t.count > 0);
+
+        const hasSummary = roomsFromInventory != null || assignmentsFromEngine != null || totalSigns != null || byType.length > 0;
+
         return (
           <div>
             <div className="text-[10px] font-display font-bold uppercase tracking-widest text-muted-foreground mb-3">
@@ -670,8 +690,49 @@ function ProcessingTimeline({ steps, isLoading }: { steps: ProcessingStep[]; isL
                     : `? ${questionDetails.length} question(s) pending`}
               </div>
 
+              {hasSummary && (
+                <div className="border-t border-border/30 pt-3 space-y-2">
+                  <div className="text-[10px] font-display font-semibold uppercase tracking-wider text-muted-foreground/70 mb-1.5">
+                    Summary
+                  </div>
+                  <div className="flex flex-wrap gap-x-5 gap-y-1">
+                    {roomsFromInventory != null && (
+                      <span className="text-xs text-muted-foreground">
+                        <span className="font-semibold text-foreground/80">{roomsFromInventory}</span> rooms
+                      </span>
+                    )}
+                    {assignmentsFromEngine != null && (
+                      <span className="text-xs text-muted-foreground">
+                        <span className="font-semibold text-foreground/80">{assignmentsFromEngine}</span> assignments
+                      </span>
+                    )}
+                    {totalSigns != null && (
+                      <span className="text-xs text-muted-foreground">
+                        <span className="font-semibold text-foreground/80">{totalSigns}</span> total signs
+                      </span>
+                    )}
+                  </div>
+                  {byType.length > 0 && (
+                    <div className="flex flex-wrap gap-1.5 pt-0.5">
+                      {byType.map((t) => (
+                        <span
+                          key={t.key}
+                          className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-muted/50 border border-border/40 text-[11px] text-muted-foreground"
+                        >
+                          <span className="font-semibold text-foreground/80 font-mono tabular-nums">{t.count}</span>
+                          <span>{t.label}</span>
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+
               {checksPassed.length > 0 && (
-                <div className="space-y-1">
+                <div className="border-t border-border/30 pt-3 space-y-1">
+                  <div className="text-[10px] font-display font-semibold uppercase tracking-wider text-teal-400/70 mb-1.5">
+                    Passed Checks
+                  </div>
                   {checksPassed.map((check) => (
                     <div key={check} className="flex items-start gap-2 text-xs text-teal-400">
                       <span className="shrink-0 font-bold mt-px">✓</span>
@@ -682,7 +743,10 @@ function ProcessingTimeline({ steps, isLoading }: { steps: ProcessingStep[]; isL
               )}
 
               {errorDetails.length > 0 && (
-                <div className="space-y-1">
+                <div className="border-t border-border/30 pt-3 space-y-1">
+                  <div className="text-[10px] font-display font-semibold uppercase tracking-wider text-red-400/70 mb-1.5">
+                    Errors
+                  </div>
                   {errorDetails.map((err, i) => (
                     <div key={i} className="flex items-start gap-2 text-xs text-red-400">
                       <span className="shrink-0 font-bold mt-px">✗</span>
@@ -693,7 +757,10 @@ function ProcessingTimeline({ steps, isLoading }: { steps: ProcessingStep[]; isL
               )}
 
               {warningDetails.length > 0 && (
-                <div className="space-y-1">
+                <div className="border-t border-border/30 pt-3 space-y-1">
+                  <div className="text-[10px] font-display font-semibold uppercase tracking-wider text-amber-400/70 mb-1.5">
+                    Warnings
+                  </div>
                   {warningDetails.map((warn, i) => (
                     <div key={i} className="flex items-start gap-2 text-xs text-amber-400">
                       <span className="shrink-0 font-bold mt-px">⚠</span>
@@ -719,7 +786,7 @@ function ProcessingTimeline({ steps, isLoading }: { steps: ProcessingStep[]; isL
                 </div>
               )}
 
-              {!hasAnyContent && (
+              {!hasAnyContent && !hasSummary && (
                 <div className="text-xs text-muted-foreground italic">
                   No room inventory data available — checks V1–V7 will run automatically once Phase 4 &amp; 5 are implemented.
                 </div>
