@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, type Mock } from "vitest";
 import express from "express";
 import request from "supertest";
 
@@ -21,6 +21,10 @@ const ADMIN_USER = {
 };
 
 const SAMPLE_JOB_ID = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+
+// Valid RFC 4122 v4 UUIDs for query-param tests that go through Zod validation
+const VALID_ORG_JOB_ID = "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11";
+const FOREIGN_JOB_ID = "b0eebc99-9c0b-4ef8-bb6d-6bb9bd380a22";
 
 const SAMPLE_ROW = {
   id: "row-uuid-1",
@@ -69,6 +73,7 @@ vi.mock("drizzle-orm", () => ({
 }));
 
 import activityRouter from "./activity";
+import { eq, inArray } from "drizzle-orm";
 
 /**
  * Sets up one mocked query that chains:
@@ -199,5 +204,83 @@ describe("GET /activity/ai-calls", () => {
 
     expect(res.status).toBe(200);
     expect(res.body.aiCalls).toEqual([]);
+  });
+
+  it("returns scoped aiCalls for org admin with jobs (inArray branch)", async () => {
+    // 1st query: org job IDs lookup
+    setupShortQuery([{ id: SAMPLE_JOB_ID }]);
+    // 2nd query: paginated ai-call rows
+    setupFullQuery([SAMPLE_ROW]);
+    // 3rd query: job name enrichment
+    setupShortQuery([SAMPLE_JOB]);
+
+    const app = buildApp(ADMIN_USER);
+    const res = await request(app).get("/activity/ai-calls");
+
+    expect(res.status).toBe(200);
+    expect(Array.isArray(res.body.aiCalls)).toBe(true);
+    expect(res.body.aiCalls).toHaveLength(1);
+    // The route makes two inArray calls:
+    //   [0] inArray(aiCallLogsTable.jobId, orgJobIdSet)  — org scoping (must come first)
+    //   [1] inArray(jobsTable.id, jobIds)                — job name enrichment
+    // Table column refs resolve to undefined in the mock, so we inspect the
+    // second argument (the values array) of the FIRST call to confirm that
+    // org-scoping specifically used the org's job ID set.
+    const inArrayCalls = (inArray as Mock).mock.calls;
+    expect(inArrayCalls).toHaveLength(2);
+    const [, orgScopeVals] = inArrayCalls[0] as [unknown, string[]];
+    expect(Array.isArray(orgScopeVals)).toBe(true);
+    expect(orgScopeVals).toContain(SAMPLE_JOB_ID);
+  });
+
+  it("applies ?jobId= filter via eq on aiCallLogsTable.jobId", async () => {
+    // 1st query: org job IDs lookup (VALID_ORG_JOB_ID belongs to this org)
+    setupShortQuery([{ id: VALID_ORG_JOB_ID }]);
+    // 2nd query: paginated ai-call rows
+    setupFullQuery([SAMPLE_ROW]);
+    // 3rd query: job name enrichment
+    setupShortQuery([SAMPLE_JOB]);
+
+    const app = buildApp(ADMIN_USER);
+    const res = await request(app).get(`/activity/ai-calls?jobId=${VALID_ORG_JOB_ID}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.aiCalls).toHaveLength(1);
+    // eq was called with the jobId filter value as its second argument
+    const eqCalls = (eq as Mock).mock.calls;
+    expect(
+      eqCalls.some(([, val]: [unknown, unknown]) => val === VALID_ORG_JOB_ID)
+    ).toBe(true);
+  });
+
+  it("applies ?page= filter via eq on aiCallLogsTable.pageNumber", async () => {
+    // 1st query: org job IDs lookup
+    setupShortQuery([{ id: SAMPLE_JOB_ID }]);
+    // 2nd query: paginated ai-call rows (row on page 2)
+    setupFullQuery([SAMPLE_ROW]);
+    // 3rd query: job name enrichment
+    setupShortQuery([SAMPLE_JOB]);
+
+    const app = buildApp(ADMIN_USER);
+    const res = await request(app).get("/activity/ai-calls?page=2");
+
+    expect(res.status).toBe(200);
+    expect(res.body.aiCalls).toHaveLength(1);
+    // eq was called with the numeric page value as its second argument
+    const eqCalls = (eq as Mock).mock.calls;
+    expect(
+      eqCalls.some(([, val]: [unknown, unknown]) => val === 2)
+    ).toBe(true);
+  });
+
+  it("returns 403 when org admin queries a jobId belonging to a different org", async () => {
+    // org jobs lookup returns VALID_ORG_JOB_ID — FOREIGN_JOB_ID is absent
+    setupShortQuery([{ id: VALID_ORG_JOB_ID }]);
+
+    const app = buildApp(ADMIN_USER);
+    const res = await request(app).get(`/activity/ai-calls?jobId=${FOREIGN_JOB_ID}`);
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toMatch(/does not belong/i);
   });
 });
