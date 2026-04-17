@@ -167,7 +167,7 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
       </div>
 
       {/* Main nav */}
-      <nav className={cn("space-y-1", collapsed ? "p-1.5 pt-2" : "p-4")}>
+      <nav aria-label="Main navigation" className={cn("space-y-1", collapsed ? "p-1.5 pt-2" : "p-4")}>
         {mainNavItems.map((item) => (
           <NavItem key={item.href} {...item} />
         ))}
@@ -182,7 +182,7 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
             </h3>
           )}
           {collapsed && <div className="h-px bg-border my-1.5" />}
-          <nav className="space-y-1">
+          <nav aria-label="Settings navigation" className="space-y-1">
             {adminNavItems.map((item) => (
               <NavItem key={item.href} {...item} />
             ))}
@@ -199,7 +199,7 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
             </h3>
           )}
           {collapsed && <div className="h-px bg-border my-1.5" />}
-          <nav className="space-y-1">
+          <nav aria-label="Super admin navigation" className="space-y-1">
             {superAdminNavItems.map((item) => (
               <NavItem key={item.href} {...item} />
             ))}
