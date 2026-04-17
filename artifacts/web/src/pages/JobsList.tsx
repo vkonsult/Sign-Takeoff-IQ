@@ -9,9 +9,10 @@ import { Button } from "@/components/ui/button";
 import {
   FolderOpen, Eye, FileText, CheckCircle2, Cpu,
   AlertTriangle, Trash2, X, Square, CheckSquare, MinusSquare,
-  Archive, EyeOff,
+  Archive, EyeOff, Table2, FileDown, Loader2,
 } from "lucide-react";
 import { Link } from "wouter";
+import { exportMarkedupPdf, type MarkerSign } from "@/lib/exportMarkedupPdf";
 
 
 interface RecentUser {
@@ -61,6 +62,34 @@ export default function JobsList() {
   const [deletingSingle, setDeletingSingle] = useState<string | null>(null);
   const [bulkConfirming, setBulkConfirming] = useState(false);
   const [bulkDeleting, setBulkDeleting] = useState(false);
+  const [exportingPdf, setExportingPdf] = useState<Set<string>>(new Set());
+
+  const handleMarkedPdf = async (jobId: string, jobName: string | null | undefined, e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (exportingPdf.has(jobId)) return;
+    setExportingPdf((prev) => new Set(prev).add(jobId));
+    try {
+      const res = await apiFetch(`/api/jobs/${jobId}`);
+      if (!res.ok) throw new Error("Failed to fetch job details");
+      const jobData = await res.json() as {
+        extractedSigns?: MarkerSign[];
+        files?: { id: string; originalName: string }[];
+      };
+      const signs = (jobData.extractedSigns ?? []).filter((s) => s.pageNumber != null);
+      await exportMarkedupPdf(
+        jobId,
+        jobName ?? `Job-${jobId.split("-")[0]}`,
+        jobData.files ?? [],
+        signs
+      );
+      apiFetch(`/api/jobs/${jobId}/log-pdf-export`, { method: "POST" }).catch(() => {});
+    } catch (err) {
+      console.error("Marked PDF export failed:", err);
+    } finally {
+      setExportingPdf((prev) => { const n = new Set(prev); n.delete(jobId); return n; });
+    }
+  };
   const jobs = (data?.jobs ?? []) as Array<{
     id: string;
     name?: string | null;
@@ -321,6 +350,32 @@ export default function JobsList() {
                         <Eye className="w-5 h-5" />
                       </div>
                     </Link>
+
+                    {/* Quick-action buttons for completed jobs */}
+                    {!isChecked && job.status === "completed" && (
+                      <div className="absolute right-[88px] top-1/2 -translate-y-1/2 flex items-center gap-1 z-10 opacity-0 group-hover:opacity-100 transition-opacity">
+                        <Link
+                          href={`/jobs/${job.id}?tab=signs`}
+                          onClick={(e: React.MouseEvent) => e.stopPropagation()}
+                          title="View sign table results"
+                          className="flex items-center gap-1 px-2 py-1 rounded text-[11px] font-display font-semibold text-primary bg-primary/10 border border-primary/30 hover:bg-primary/20 transition-all"
+                        >
+                          <Table2 className="w-3.5 h-3.5" />
+                          Results
+                        </Link>
+                        <button
+                          onClick={(e) => handleMarkedPdf(job.id, job.name, e)}
+                          disabled={exportingPdf.has(job.id)}
+                          title="Download marked-up PDF"
+                          className="flex items-center gap-1 px-2 py-1 rounded text-[11px] font-display font-semibold text-foreground/70 bg-secondary border border-border hover:text-foreground hover:bg-secondary/80 transition-all disabled:opacity-50"
+                        >
+                          {exportingPdf.has(job.id)
+                            ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                            : <FileDown className="w-3.5 h-3.5" />}
+                          PDF
+                        </button>
+                      </div>
+                    )}
 
                     {/* Single-row delete — always visible, destructive red */}
                     {!isChecked && (

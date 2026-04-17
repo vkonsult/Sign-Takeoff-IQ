@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from "react";
-import { useRoute } from "wouter";
+import { useRoute, useSearch } from "wouter";
 import { useQueryClient } from "@tanstack/react-query";
 import { AppShell } from "@/components/layout/Shell";
 import { apiFetch, openPdfInNewTab } from "@/lib/apiClient";
@@ -900,9 +900,18 @@ function ProcessingTimeline({ steps, isLoading }: { steps: ProcessingStep[]; isL
   );
 }
 
+function parseTabParam(search: string): "table" | "sheets" | "summary" | "floorplans" | "signpages" | "specs" | "timeline" | "coords" | "ai_scans" | null {
+  const p = new URLSearchParams(search);
+  const t = p.get("tab");
+  if (t === "signs") return "table";
+  const valid = ["table", "sheets", "summary", "floorplans", "signpages", "specs", "timeline", "coords", "ai_scans"] as const;
+  return (valid as readonly string[]).includes(t ?? "") ? (t as ReturnType<typeof parseTabParam>) : null;
+}
+
 export default function JobDetails() {
   const [, params] = useRoute("/jobs/:jobId");
   const jobId = params?.jobId || "";
+  const search = useSearch();
   
   const { data, isLoading, isError, error } = useJobDetails(jobId);
   const extractMutation = useStartExtraction();
@@ -982,7 +991,11 @@ export default function JobDetails() {
   const [sortField, setSortField] = useState<string | null>(null);
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
   const [summaryFilter, setSummaryFilter] = useState<null | "flagged">(null);
-  const [activeTab, setActiveTab] = useState<"table" | "sheets" | "summary" | "floorplans" | "signpages" | "specs" | "timeline" | "coords" | "ai_scans">("table");
+  const [activeTab, setActiveTab] = useState<"table" | "sheets" | "summary" | "floorplans" | "signpages" | "specs" | "timeline" | "coords" | "ai_scans">(() => parseTabParam(search) ?? "table");
+  useEffect(() => {
+    const parsed = parseTabParam(search);
+    if (parsed) setActiveTab(parsed);
+  }, [search]);
   const [showAiHighlight, setShowAiHighlight] = useState(false);
 
   const PROCESSING_TIMEOUT_SECONDS = 5 * 60;
