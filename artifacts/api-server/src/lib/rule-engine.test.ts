@@ -696,3 +696,213 @@ describe("applySignRules — result metadata", () => {
     expect(result.questionsForVerification.length).toBeGreaterThan(0);
   });
 });
+
+// ── Helpers for sign-total assertions ─────────────────────────────────────────
+
+function totalSignsForAssignment(a: SignAssignment): number {
+  return (
+    (a.roomId ?? 0) +
+    (a.roomIdWithInsert ?? 0) +
+    (a.restroom ?? 0) +
+    (a.exit ?? 0) +
+    (a.maxOccupancy ?? 0) +
+    (a.stairCorridor ?? 0) +
+    (a.stairLanding ?? 0) +
+    (a.inCaseOfFire ?? 0) +
+    (a.evacuationMap ?? 0) +
+    (a.officeDirectory ?? 0)
+  );
+}
+
+// ── Excluded room types — sign count totals and verificationErrors ─────────────
+
+describe("applySignRules — corridor rooms are fully excluded from sign totals", () => {
+  it("single CORRIDOR contributes 0 to every sign type total", () => {
+    const inv = makeInventory([makeRoom({ roomName: "CORRIDOR", isCorridorOrHall: true })]);
+    const result = applySignRules(inv, [], "job-35");
+    const a = result.assignments[0]!;
+
+    expect(a.roomIdWithInsert).toBeNull();
+    expect(a.restroom).toBeNull();
+    expect(a.exit).toBeNull();
+    expect(a.maxOccupancy).toBeNull();
+    expect(a.stairCorridor).toBeNull();
+    expect(a.stairLanding).toBeNull();
+    expect(a.inCaseOfFire).toBeNull();
+    expect(a.evacuationMap).toBeNull();
+    expect(a.officeDirectory).toBeNull();
+    expect(totalSignsForAssignment(a)).toBe(0);
+  });
+
+  it("CORRIDOR has R4 exclusion reason and no applied rules", () => {
+    const inv = makeInventory([makeRoom({ roomName: "CORRIDOR", isCorridorOrHall: true })]);
+    const result = applySignRules(inv, [], "job-36");
+    const a = result.assignments[0]!;
+
+    expect(a.exclusionReasons.some((r) => r.includes("R4"))).toBe(true);
+    expect(a.appliedRules).toHaveLength(0);
+  });
+
+  it("verificationErrors is empty when inventory contains only a corridor", () => {
+    const inv = makeInventory([makeRoom({ roomName: "MAIN CORRIDOR", isCorridorOrHall: true })]);
+    const result = applySignRules(inv, [], "job-37");
+    expect(result.verificationErrors).toHaveLength(0);
+  });
+
+  it("multiple corridors all contribute 0 and produce no verificationErrors", () => {
+    const inv = makeInventory([
+      makeRoom({ roomName: "CORRIDOR A", isCorridorOrHall: true }),
+      makeRoom({ roomName: "CORRIDOR B", isCorridorOrHall: true }),
+      makeRoom({ roomName: "HALLWAY", isCorridorOrHall: true }),
+    ]);
+    const result = applySignRules(inv, [], "job-38");
+
+    for (const a of result.assignments) {
+      expect(totalSignsForAssignment(a)).toBe(0);
+    }
+    expect(result.verificationErrors).toHaveLength(0);
+  });
+});
+
+describe("applySignRules — MEP/unoccupied rooms are fully excluded from sign totals", () => {
+  it("MECHANICAL ROOM contributes 0 to every sign type total", () => {
+    const inv = makeInventory([makeRoom({ roomName: "MECHANICAL ROOM", isMepUnoccupied: true })]);
+    const result = applySignRules(inv, [], "job-39");
+    const a = result.assignments[0]!;
+
+    expect(a.roomId).toBeNull();
+    expect(a.roomIdWithInsert).toBeNull();
+    expect(a.restroom).toBeNull();
+    expect(a.exit).toBeNull();
+    expect(a.maxOccupancy).toBeNull();
+    expect(a.stairCorridor).toBeNull();
+    expect(a.stairLanding).toBeNull();
+    expect(a.inCaseOfFire).toBeNull();
+    expect(a.evacuationMap).toBeNull();
+    expect(a.officeDirectory).toBeNull();
+    expect(totalSignsForAssignment(a)).toBe(0);
+  });
+
+  it("MECHANICAL ROOM has MEP exclusion reason and no applied rules", () => {
+    const inv = makeInventory([makeRoom({ roomName: "MECHANICAL ROOM", isMepUnoccupied: true })]);
+    const result = applySignRules(inv, [], "job-40");
+    const a = result.assignments[0]!;
+
+    expect(a.exclusionReasons.some((r) => r.includes("MEP"))).toBe(true);
+    expect(a.appliedRules).toHaveLength(0);
+  });
+
+  it("verificationErrors is empty when inventory contains only an MEP room", () => {
+    const inv = makeInventory([makeRoom({ roomName: "ELECTRICAL ROOM", isMepUnoccupied: true })]);
+    const result = applySignRules(inv, [], "job-41");
+    expect(result.verificationErrors).toHaveLength(0);
+  });
+
+  it("multiple MEP room variants (electrical, server, IDF) all excluded with no verificationErrors", () => {
+    const inv = makeInventory([
+      makeRoom({ roomName: "MECHANICAL ROOM", isMepUnoccupied: true }),
+      makeRoom({ roomName: "ELECTRICAL ROOM", isMepUnoccupied: true }),
+      makeRoom({ roomName: "SERVER ROOM", isMepUnoccupied: true }),
+      makeRoom({ roomName: "IDF ROOM", isMepUnoccupied: true }),
+    ]);
+    const result = applySignRules(inv, [], "job-42");
+
+    for (const a of result.assignments) {
+      expect(totalSignsForAssignment(a)).toBe(0);
+      expect(a.exclusionReasons.some((r) => r.includes("MEP"))).toBe(true);
+    }
+    expect(result.verificationErrors).toHaveLength(0);
+  });
+});
+
+describe("applySignRules — vehicle bay rooms are fully excluded from sign totals", () => {
+  it("vehicle bay contributes 0 to every sign type total", () => {
+    const inv = makeInventory([makeRoom({ roomName: "VEHICLE BAY", isVehicleBay: true })]);
+    const result = applySignRules(inv, [], "job-43");
+    const a = result.assignments[0]!;
+
+    expect(a.roomId).toBeNull();
+    expect(a.roomIdWithInsert).toBeNull();
+    expect(a.restroom).toBeNull();
+    expect(a.exit).toBeNull();
+    expect(a.maxOccupancy).toBeNull();
+    expect(a.stairCorridor).toBeNull();
+    expect(a.stairLanding).toBeNull();
+    expect(a.inCaseOfFire).toBeNull();
+    expect(a.evacuationMap).toBeNull();
+    expect(a.officeDirectory).toBeNull();
+    expect(totalSignsForAssignment(a)).toBe(0);
+  });
+
+  it("vehicle bay has vehicle_bay exclusion reason and no applied rules", () => {
+    const inv = makeInventory([makeRoom({ roomName: "APPARATUS BAY", isVehicleBay: true })]);
+    const result = applySignRules(inv, [], "job-44");
+    const a = result.assignments[0]!;
+
+    expect(a.exclusionReasons.some((r) => r.includes("vehicle_bay"))).toBe(true);
+    expect(a.appliedRules).toHaveLength(0);
+  });
+
+  it("verificationErrors is empty when inventory contains only a vehicle bay", () => {
+    const inv = makeInventory([makeRoom({ roomName: "FIRE APPARATUS BAY", isVehicleBay: true })]);
+    const result = applySignRules(inv, [], "job-45");
+    expect(result.verificationErrors).toHaveLength(0);
+  });
+
+  it("multiple vehicle bays all excluded with no verificationErrors", () => {
+    const inv = makeInventory([
+      makeRoom({ roomName: "BAY 1", isVehicleBay: true }),
+      makeRoom({ roomName: "BAY 2", isVehicleBay: true }),
+      makeRoom({ roomName: "APPARATUS BAY", isVehicleBay: true }),
+    ]);
+    const result = applySignRules(inv, [], "job-46");
+
+    for (const a of result.assignments) {
+      expect(totalSignsForAssignment(a)).toBe(0);
+      expect(a.exclusionReasons.some((r) => r.includes("vehicle_bay"))).toBe(true);
+    }
+    expect(result.verificationErrors).toHaveLength(0);
+  });
+});
+
+describe("applySignRules — mixed inventory: excluded rooms don't inflate totals", () => {
+  it("corridor + MEP + vehicle bay alongside a regular office: only the office gets signs", () => {
+    const inv = makeInventory([
+      makeRoom({ roomName: "OFFICE 101", roomNumber: "101" }),
+      makeRoom({ roomName: "CORRIDOR", isCorridorOrHall: true }),
+      makeRoom({ roomName: "MECHANICAL ROOM", isMepUnoccupied: true }),
+      makeRoom({ roomName: "VEHICLE BAY", isVehicleBay: true }),
+    ]);
+    const result = applySignRules(inv, [], "job-47");
+
+    const officeAssignment = result.assignments.find((a) => a.roomName === "OFFICE 101")!;
+    const excludedAssignments = result.assignments.filter((a) => a.roomName !== "OFFICE 101");
+
+    expect(officeAssignment.roomId).toBe(1);
+    expect(officeAssignment.appliedRules).toContain("R1");
+
+    for (const a of excludedAssignments) {
+      expect(totalSignsForAssignment(a)).toBe(0);
+      expect(a.exclusionReasons.length).toBeGreaterThan(0);
+    }
+
+    expect(result.verificationErrors).toHaveLength(0);
+  });
+
+  it("sign totals from assignmentToRows match only the regular room, not excluded rooms", () => {
+    const inv = makeInventory([
+      makeRoom({ roomName: "STORAGE ROOM", roomNumber: "S1" }),
+      makeRoom({ roomName: "HALLWAY", isCorridorOrHall: true }),
+      makeRoom({ roomName: "ELECTRICAL", isMepUnoccupied: true }),
+      makeRoom({ roomName: "TRUCK BAY", isVehicleBay: true }),
+    ]);
+    const result = applySignRules(inv, [], "job-48");
+
+    const allRows = result.assignments.flatMap((a) => assignmentToRows(a));
+    const totalQuantity = allRows.reduce((sum, r) => sum + r.quantity, 0);
+
+    expect(totalQuantity).toBe(1);
+    expect(allRows[0]!.signType).toBe("ROOM ID SIGN");
+    expect(allRows[0]!.signIdentifier).toBe("S1");
+  });
+});

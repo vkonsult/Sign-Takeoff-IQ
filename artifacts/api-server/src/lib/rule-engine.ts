@@ -372,6 +372,20 @@ function applyRulesToRoom(
     return assignment;
   }
 
+  // ── MEP / unoccupied room exclusion ──────────────────────────────────────
+  // Non-mezzanine MEP/unoccupied rooms (mechanical, electrical, server rooms,
+  // etc.) require no signage. Mezzanine MEP is already handled by R15 above.
+  if (room.isMepUnoccupied) {
+    assignment.exclusionReasons.push("excluded: MEP/unoccupied — no signs required");
+    return assignment;
+  }
+
+  // ── Vehicle bay exclusion ─────────────────────────────────────────────────
+  if (room.isVehicleBay) {
+    assignment.exclusionReasons.push("excluded: vehicle_bay — no signs required");
+    return assignment;
+  }
+
   // ── R2 — Variable use (takes priority over R1) ────────────────────────────
   if (room.isVariableUse) {
     // Variable-use rooms: Room ID with insert
