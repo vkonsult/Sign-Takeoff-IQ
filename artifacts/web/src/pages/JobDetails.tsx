@@ -297,24 +297,26 @@ function TimelineStepRow({ step, maxMs, fileSummaries }: { step: ProcessingStep;
   );
 }
 
-function PhaseSection({ group, maxMs, defaultOpen, extractionFileSummaries }: { group: PhaseGroup; maxMs: number; defaultOpen: boolean; extractionFileSummaries: FileSummary[] }) {
+function PhaseSection({ group, maxMs, defaultOpen, extractionFileSummaries, isSlowest }: { group: PhaseGroup; maxMs: number; defaultOpen: boolean; extractionFileSummaries: FileSummary[]; isSlowest?: boolean }) {
   const [open, setOpen] = useState(defaultOpen);
   const isLegacy = group.phase === null;
   return (
-    <div className="rounded-lg border border-border/60 overflow-hidden">
+    <div className={`rounded-lg border overflow-hidden ${isSlowest ? "border-amber-500/50" : "border-border/60"}`}>
       <button
         onClick={() => setOpen((o) => !o)}
         className={`w-full flex items-center gap-3 px-4 py-2.5 text-left transition-colors
-          ${isLegacy ? "bg-muted/30 hover:bg-muted/50" : "bg-primary/5 hover:bg-primary/10"}`}
+          ${isLegacy ? "bg-muted/30 hover:bg-muted/50" : isSlowest ? "bg-amber-500/10 hover:bg-amber-500/15" : "bg-primary/5 hover:bg-primary/10"}`}
       >
         <span className={`text-xs font-display font-bold uppercase tracking-wider
-          ${isLegacy ? "text-muted-foreground" : "text-primary/80"}`}>
+          ${isLegacy ? "text-muted-foreground" : isSlowest ? "text-amber-400" : "text-primary/80"}`}>
           {group.label}
         </span>
         <span className="flex-1" />
         <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-mono font-semibold tabular-nums
           ${isLegacy
             ? "bg-muted/60 text-muted-foreground"
+            : isSlowest
+            ? "bg-amber-500/20 text-amber-400 ring-1 ring-amber-500/30"
             : "bg-primary/10 text-primary/90"}`}>
           {formatDuration(group.totalMs)}
         </span>
@@ -572,15 +574,28 @@ function ProcessingTimeline({ steps, isLoading }: { steps: ProcessingStep[]; isL
             Step Details
           </div>
           <div className="space-y-3">
-            {groups.map((group, i) => (
-              <PhaseSection
-                key={group.phase ?? "__legacy__"}
-                group={group}
-                maxMs={maxMs}
-                defaultOpen={i === 0 || groups.length <= 2}
-                extractionFileSummaries={extractionFileSummaries}
-              />
-            ))}
+            {(() => {
+              const realGroups = groups.filter((g) => g.phase !== null && g.totalMs > 0);
+              let slowestGroup: PhaseGroup | null = null;
+              if (realGroups.length >= 2) {
+                const sorted = [...realGroups].sort((a, b) => b.totalMs - a.totalMs);
+                const top = sorted[0];
+                const runnerUp = sorted[1];
+                const isUnique = top.totalMs > runnerUp.totalMs;
+                const isMeaningful = top.totalMs >= runnerUp.totalMs * 1.1;
+                if (isUnique && isMeaningful) slowestGroup = top;
+              }
+              return groups.map((group, i) => (
+                <PhaseSection
+                  key={group.phase ?? "__legacy__"}
+                  group={group}
+                  maxMs={maxMs}
+                  defaultOpen={i === 0 || groups.length <= 2}
+                  extractionFileSummaries={extractionFileSummaries}
+                  isSlowest={slowestGroup !== null && group === slowestGroup}
+                />
+              ));
+            })()}
           </div>
           {/* Grand total row */}
           {(() => {
