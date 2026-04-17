@@ -10,6 +10,8 @@ import {
   extractProjectInfo,
   extractFloorPlanOnly,
   extractSignCalloutsPng,
+  runWithGeminiCallLogger,
+  type GeminiCallEntry,
   type ProjectInfo,
   type ExtractedSignRow,
   type ScanResult,
@@ -21,8 +23,75 @@ import { extractPagePhrases, classifyPageFromPhrases, CANONICAL_LEVEL_NAMES } fr
 import path from "path";
 import { db } from "@workspace/db";
 import { eq } from "drizzle-orm";
-import { signTypeSpecsTable, jobFilesTable } from "@workspace/db";
+import { signTypeSpecsTable, jobFilesTable, aiCallLogsTable } from "@workspace/db";
 import { enrichWithGemini } from "./signage-schedule-parser";
+
+// ── Fire-and-forget AI call logger ────────────────────────────────────────────
+
+function logAiCall(entry: {
+  jobId?: string;
+  pageNumber?: number;
+  callType: string;
+  prompt: string;
+  responseJson: unknown;
+  inputTokens: number;
+  outputTokens: number;
+  durationMs: number;
+}): void {
+  db.insert(aiCallLogsTable).values({
+    jobId: entry.jobId ?? null,
+    pageNumber: entry.pageNumber ?? null,
+    callType: entry.callType,
+    prompt: entry.prompt,
+    responseJson: entry.responseJson as Record<string, unknown>,
+    inputTokens: entry.inputTokens,
+    outputTokens: entry.outputTokens,
+    durationMs: entry.durationMs,
+  }).catch((err: unknown) => {
+    logger.warn({ err }, "logAiCall: failed to insert ai_call_log (non-fatal)");
+  });
+}
+
+// ── Per-call logging via AsyncLocalStorage-scoped hook ────────────────────────
+// runWithGeminiCallLogger runs fn inside a job-scoped async context so that
+// concurrent job scans cannot overwrite each other's logger.
+
+function parsePageFromLabel(label: string): number | undefined {
+  const match = label.match(/[pP](?:age)?[-_\s]?(\d+)/);
+  return match ? parseInt(match[1], 10) : undefined;
+}
+
+function parseResponseJson(rawResponse: string, error?: string): unknown {
+  if (error) return { error };
+  try {
+    return JSON.parse(rawResponse);
+  } catch {
+    return { raw: rawResponse };
+  }
+}
+
+function makeCallLogHandler(jobId: string | undefined, callType: string) {
+  return (entry: GeminiCallEntry) => {
+    logAiCall({
+      jobId,
+      pageNumber: parsePageFromLabel(entry.label),
+      callType,
+      prompt: entry.prompt,
+      responseJson: parseResponseJson(entry.rawResponse, entry.error),
+      inputTokens: entry.inputTokens,
+      outputTokens: entry.outputTokens,
+      durationMs: entry.durationMs,
+    });
+  };
+}
+
+function withCallLogger<T>(
+  jobId: string | undefined,
+  callType: string,
+  fn: () => Promise<T>,
+): Promise<T> {
+  return runWithGeminiCallLogger(fn, makeCallLogHandler(jobId, callType));
+}
 
 // ── AI Call Type ──────────────────────────────────────────────────────────────
 
@@ -173,8 +242,11 @@ export interface ProjectInfoResult {
 
 export async function runProjectInfoExtraction(
   file: { storedPath: string; id: string },
+  jobId?: string,
 ): Promise<ProjectInfoResult> {
-  const { info, inputTokens, outputTokens } = await extractProjectInfo(file.storedPath, file.id, ai);
+  const { info, inputTokens, outputTokens } = await withCallLogger(jobId, "project_info", () =>
+    extractProjectInfo(file.storedPath, file.id, ai)
+  );
   return { info, inputTokens, outputTokens };
 }
 
@@ -189,14 +261,11 @@ export async function runFloorPlanTextExtraction(
   file: { storedPath: string; id: string },
   projectContext?: ProjectInfo,
   spatialPageTypes?: Map<number, import("./pdf-words").SpatialPageType>,
+  jobId?: string,
 ): Promise<SignExtractionResult> {
   // Isolated: runs ONLY the floor plan ADA Gemini pass — no sign schedule pass, no fallback
-  const result = await extractFloorPlanOnly(
-    file.storedPath,
-    file.id,
-    ai,
-    projectContext,
-    spatialPageTypes,
+  const result = await withCallLogger(jobId, "floor_plan_text", () =>
+    extractFloorPlanOnly(file.storedPath, file.id, ai, projectContext, spatialPageTypes)
   );
   return {
     rows: result.rows,
@@ -214,6 +283,7 @@ export interface BboxDetectionResult {
 export async function runBboxDetection(
   file: { storedPath: string; id: string; originalName: string },
   existingPageImagePaths?: Record<string, string>,
+  jobId?: string,
 ): Promise<BboxDetectionResult> {
   // Determine which pages to scan
   const numPages = await (await import("./pdf-words")).getPdfPageCount(file.storedPath);
@@ -259,11 +329,8 @@ export async function runBboxDetection(
     absImagePaths[k] = path.resolve(pagesParent, rel);
   }
 
-  const scanResult = await extractSignCalloutsPng(
-    file.originalName,
-    ai,
-    absImagePaths,
-    relevantPages,
+  const scanResult = await withCallLogger(jobId, "bbox_detection", () =>
+    extractSignCalloutsPng(file.originalName, ai, absImagePaths, relevantPages)
   );
 
   return { scanResult, pageImagePaths };
@@ -276,9 +343,11 @@ export interface TitleBlockVisionResult {
 export async function runTitleBlockVision(
   file: { storedPath: string; id: string },
   pageImagePaths: Record<string, string>,
+  jobId?: string,
 ): Promise<TitleBlockVisionResult> {
   const levelMap = new Map<number, string>();
-  const LEVEL_VISION_PROMPT = `You are reading the title block of an architectural floor plan drawing.
+  const descriptor = getAiCallDescriptor("title_block_vision");
+  const LEVEL_VISION_PROMPT = descriptor?.prompt ?? `You are reading the title block of an architectural floor plan drawing.
 Identify which floor level or zone this plan represents.
 Return ONLY the level name as a single lowercase phrase from this list if it matches:
 - "lower level"
@@ -296,6 +365,7 @@ Do not include any other text or explanation.`;
       const relPath = pageImagePaths[String(pageNum)];
       if (!relPath) return;
       const absPath = path.resolve(pagesParent, relPath);
+      const start = Date.now();
       try {
         const pngBuffer = await fs.readFile(absPath);
         const base64 = pngBuffer.toString("base64");
@@ -305,7 +375,7 @@ Do not include any other text or explanation.`;
               model: string;
               contents: { role: string; parts: ({ text: string } | { inlineData: { mimeType: string; data: string } })[] }[];
               config?: { maxOutputTokens?: number; temperature?: number; thinkingConfig?: { thinkingBudget: number } };
-            }) => Promise<{ text: string | undefined }>;
+            }) => Promise<{ text: string | undefined; usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number } }>;
           };
         }).models.generateContent({
           model: "gemini-2.5-flash",
@@ -325,8 +395,28 @@ Do not include any other text or explanation.`;
         if (matched) {
           levelMap.set(pageNum, matched);
         }
+        logAiCall({
+          jobId,
+          pageNumber: pageNum,
+          callType: "title_block_vision",
+          prompt: LEVEL_VISION_PROMPT,
+          responseJson: { raw, matched: matched ?? null },
+          inputTokens: response.usageMetadata?.promptTokenCount ?? 0,
+          outputTokens: response.usageMetadata?.candidatesTokenCount ?? 0,
+          durationMs: Date.now() - start,
+        });
       } catch (err) {
         logger.debug({ err, fileId: file.id, pageNum }, "title_block_vision failed for page — non-fatal");
+        logAiCall({
+          jobId,
+          pageNumber: pageNum,
+          callType: "title_block_vision",
+          prompt: LEVEL_VISION_PROMPT,
+          responseJson: { error: String(err) },
+          inputTokens: 0,
+          outputTokens: 0,
+          durationMs: Date.now() - start,
+        });
       }
     })
   );
@@ -337,6 +427,7 @@ Do not include any other text or explanation.`;
 export async function runVisionFallback(
   file: { storedPath: string; id: string; originalName: string },
   pageImagePaths: Record<string, string>,
+  jobId?: string,
 ): Promise<BboxDetectionResult> {
   const relevantPages = new Set(Object.keys(pageImagePaths).map(Number).filter((n) => !isNaN(n)));
   if (relevantPages.size === 0) {
@@ -350,7 +441,9 @@ export async function runVisionFallback(
   for (const [k, rel] of Object.entries(pageImagePaths)) {
     absImagePaths[k] = path.resolve(pagesParent, rel);
   }
-  const scanResult = await extractSignCalloutsPng(file.originalName, ai, absImagePaths, relevantPages);
+  const scanResult = await withCallLogger(jobId, "vision_fallback", () =>
+    extractSignCalloutsPng(file.originalName, ai, absImagePaths, relevantPages)
+  );
   return { scanResult, pageImagePaths };
 }
 
@@ -366,6 +459,8 @@ export interface SignScheduleEnrichResult {
  * in jobFilesTable.pageStats) and runs enrichWithGemini per file group.
  */
 export async function runSignScheduleEnrich(jobId: string): Promise<SignScheduleEnrichResult> {
+  const overallStart = Date.now();
+
   const specs = await db
     .select()
     .from(signTypeSpecsTable)
@@ -425,6 +520,18 @@ export async function runSignScheduleEnrich(jobId: string): Promise<SignSchedule
               return `/api/jobs/${jobId}/schedule-crops/${jobFile!.id}/${fileName}`;
             }
           : undefined,
+        (entry) => {
+          logAiCall({
+            jobId,
+            pageNumber: entry.pageNum,
+            callType: "sign_schedule_enrich",
+            prompt: entry.prompt,
+            responseJson: parseResponseJson(entry.rawResponse, entry.error),
+            inputTokens: entry.inputTokens,
+            outputTokens: entry.outputTokens,
+            durationMs: entry.durationMs,
+          });
+        },
       );
 
       for (const [typeCode, result] of enriched) {
@@ -453,5 +560,7 @@ export async function runSignScheduleEnrich(jobId: string): Promise<SignSchedule
     }
   }
 
-  return { enrichedCount, skippedCount: specs.length - enrichedCount, specResults };
+  const finalResult = { enrichedCount, skippedCount: specs.length - enrichedCount, specResults };
+  logger.info({ jobId, enrichedCount, skippedCount: finalResult.skippedCount, durationMs: Date.now() - overallStart }, "runSignScheduleEnrich complete");
+  return finalResult;
 }

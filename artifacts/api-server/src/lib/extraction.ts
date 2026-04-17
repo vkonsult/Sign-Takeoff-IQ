@@ -1,4 +1,5 @@
 import fs from "fs/promises";
+import { AsyncLocalStorage } from "async_hooks";
 import { z } from "zod";
 import { logger } from "./logger";
 import {
@@ -23,6 +24,31 @@ const LEVEL_NAMES_PIPE = CANONICAL_LEVEL_NAMES
 const LEVEL_NAMES_CONJUNCTION = CANONICAL_LEVEL_NAMES
   .map((n) => n.replace(/\b\w/g, (c) => c.toUpperCase()))
   .join(", ");
+
+// ── Per-job Gemini call logger (AsyncLocalStorage-based) ─────────────────────
+// AsyncLocalStorage ensures each concurrent job has its own logger context.
+// No shared mutable state — concurrent scans cannot interfere with each other.
+export interface GeminiCallEntry {
+  prompt: string;
+  rawResponse: string;
+  inputTokens: number;
+  outputTokens: number;
+  durationMs: number;
+  label: string;
+  error?: string;
+}
+
+type GeminiCallLogger = (entry: GeminiCallEntry) => void;
+const _geminiLoggerStorage = new AsyncLocalStorage<GeminiCallLogger>();
+
+/**
+ * Run `fn` with `logFn` as the job-scoped Gemini call logger.
+ * Any callGemini / callGeminiMultimodal invocations within `fn` (including
+ * async continuations) will fire `logFn` for audit logging.
+ */
+export function runWithGeminiCallLogger<T>(fn: () => Promise<T>, logFn: GeminiCallLogger): Promise<T> {
+  return _geminiLoggerStorage.run(logFn, fn);
+}
 
 // ── Module-level cache for PDF text extraction ────────────────────────────────
 // PDF files are immutable once uploaded, so caching by path is safe.
@@ -949,6 +975,7 @@ async function callGemini(
   const MAX_RETRIES = 4;
 
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    const callStart = Date.now();
     try {
       const response = await ai.models.generateContent({
         model: "gemini-2.5-flash",
@@ -963,7 +990,9 @@ async function callGemini(
       const text = response.text ?? "";
       const inputTokens = response.usageMetadata?.promptTokenCount ?? 0;
       const outputTokens = response.usageMetadata?.candidatesTokenCount ?? 0;
+      const durationMs = Date.now() - callStart;
       logger.info({ label, responseLength: text.length, inputTokens, outputTokens }, "Gemini call complete");
+      _geminiLoggerStorage.getStore()?.({ prompt, rawResponse: text, inputTokens, outputTokens, durationMs, label });
       return { text, inputTokens, outputTokens };
     } catch (err: unknown) {
       const isRateLimit =
@@ -979,7 +1008,10 @@ async function callGemini(
         continue;
       }
 
+      const durationMs = Date.now() - callStart;
+      const errMsg = err instanceof Error ? err.message : String(err);
       logger.error({ err, label }, "Gemini call failed");
+      _geminiLoggerStorage.getStore()?.({ prompt, rawResponse: "", inputTokens: 0, outputTokens: 0, durationMs, label, error: errMsg });
       throw err;
     }
   }
@@ -1010,6 +1042,7 @@ async function callGeminiMultimodal(
     : pdfOrParts;
 
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    const callStart = Date.now();
     try {
       const response = await ai.models.generateContent({
         model: "gemini-2.5-flash",
@@ -1032,7 +1065,9 @@ async function callGeminiMultimodal(
       const text = response.text ?? "";
       const inputTokens = response.usageMetadata?.promptTokenCount ?? 0;
       const outputTokens = response.usageMetadata?.candidatesTokenCount ?? 0;
+      const durationMs = Date.now() - callStart;
       logger.info({ label, responseLength: text.length, inputTokens, outputTokens }, "Gemini multimodal call complete");
+      _geminiLoggerStorage.getStore()?.({ prompt, rawResponse: text, inputTokens, outputTokens, durationMs, label });
       return { text, inputTokens, outputTokens };
     } catch (err: unknown) {
       const isRateLimit =
@@ -1048,7 +1083,10 @@ async function callGeminiMultimodal(
         continue;
       }
 
+      const durationMs = Date.now() - callStart;
+      const errMsg = err instanceof Error ? err.message : String(err);
       logger.error({ err, label }, "Gemini multimodal call failed");
+      _geminiLoggerStorage.getStore()?.({ prompt, rawResponse: "", inputTokens: 0, outputTokens: 0, durationMs, label, error: errMsg });
       throw err;
     }
   }

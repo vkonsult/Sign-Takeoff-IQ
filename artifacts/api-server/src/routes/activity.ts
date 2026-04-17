@@ -1,5 +1,5 @@
 import { Router, type IRouter } from "express";
-import { db, activityLogsTable, organizationsTable } from "@workspace/db";
+import { db, activityLogsTable, organizationsTable, aiCallLogsTable, jobsTable } from "@workspace/db";
 import { desc, eq, and, gte, lte, inArray, like } from "drizzle-orm";
 import { z } from "zod/v4";
 
@@ -110,6 +110,99 @@ router.get("/activity", async (req, res) => {
   } catch (err) {
     req.log.error({ err }, "Failed to fetch activity log");
     res.status(500).json({ error: "Failed to fetch activity log" });
+  }
+});
+
+// GET /activity/ai-calls — returns AI call log rows, scoped to the caller's org
+const AiCallsQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(200).default(50),
+  offset: z.coerce.number().int().min(0).default(0),
+  jobId: z.string().uuid().optional(),
+  page: z.coerce.number().int().min(1).optional(),
+});
+
+router.get("/activity/ai-calls", async (req, res) => {
+  const user = req.authUser!;
+
+  const parsed = AiCallsQuerySchema.safeParse(req.query);
+  if (!parsed.success) {
+    res.status(400).json({ error: "Invalid query params", details: parsed.error.issues });
+    return;
+  }
+
+  const { limit, offset, jobId, page } = parsed.data;
+
+  const isAdmin = ["ADMIN", "SUPER_ADMIN"].includes(user.role);
+  if (!isAdmin && !user.isSuperAdmin) {
+    res.status(403).json({ error: "Admin access required" });
+    return;
+  }
+
+  if (!user.isSuperAdmin && !user.organizationId) {
+    res.status(403).json({ error: "No organization context" });
+    return;
+  }
+
+  try {
+    const conditions = [];
+
+    if (jobId) {
+      conditions.push(eq(aiCallLogsTable.jobId, jobId));
+    }
+
+    if (page != null) {
+      conditions.push(eq(aiCallLogsTable.pageNumber, page));
+    }
+
+    if (!user.isSuperAdmin && user.organizationId) {
+      const orgJobIds = await db
+        .select({ id: jobsTable.id })
+        .from(jobsTable)
+        .where(eq(jobsTable.organizationId, user.organizationId));
+      const orgJobIdSet = orgJobIds.map((j) => j.id);
+      if (orgJobIdSet.length === 0) {
+        res.json({ aiCalls: [], limit, offset });
+        return;
+      }
+      if (jobId) {
+        if (!orgJobIdSet.includes(jobId)) {
+          res.status(403).json({ error: "Job does not belong to your organization" });
+          return;
+        }
+      } else {
+        conditions.push(inArray(aiCallLogsTable.jobId, orgJobIdSet));
+      }
+    }
+
+    const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
+
+    const rows = await db
+      .select()
+      .from(aiCallLogsTable)
+      .where(whereClause)
+      .orderBy(desc(aiCallLogsTable.createdAt))
+      .limit(limit)
+      .offset(offset);
+
+    const jobIds = [...new Set(rows.map((r) => r.jobId).filter(Boolean))] as string[];
+    let jobNames: Map<string, string> = new Map();
+    if (jobIds.length > 0) {
+      const jobs = await db
+        .select({ id: jobsTable.id, name: jobsTable.name })
+        .from(jobsTable)
+        .where(inArray(jobsTable.id, jobIds));
+      jobNames = new Map(jobs.map((j) => [j.id, j.name]));
+    }
+
+    const enriched = rows.map((r) => ({
+      ...r,
+      jobName: r.jobId ? (jobNames.get(r.jobId) ?? null) : null,
+    }));
+
+    res.json({ aiCalls: enriched, limit, offset });
+  } catch (err) {
+    req.log.error({ err }, "Failed to fetch AI call logs");
+    res.status(500).json({ error: "Failed to fetch AI call logs" });
   }
 });
 

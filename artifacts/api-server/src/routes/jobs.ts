@@ -1499,7 +1499,7 @@ router.post("/jobs/:jobId/ai-scan", async (req, res) => {
       for (const callType of callTypes as AiCallType[]) {
         try {
           if (callType === "project_info") {
-            const { info, inputTokens, outputTokens } = await runProjectInfoExtraction(file);
+            const { info, inputTokens, outputTokens } = await runProjectInfoExtraction(file, jobId);
             // Update job record with extracted project location info (only if not already set)
             const jobUpdate: Partial<typeof jobsTable.$inferInsert> = {};
             if (info.address && !job.projectAddress) jobUpdate.projectAddress = info.address;
@@ -1513,14 +1513,14 @@ router.post("/jobs/:jobId/ai-scan", async (req, res) => {
 
           } else if (callType === "floor_plan_text") {
             const spatialMap = buildSpatialMap("floor_plan");
-            const { rows, inputTokens, outputTokens } = await runFloorPlanTextExtraction(file, projectContext, spatialMap.size > 0 ? spatialMap : undefined);
+            const { rows, inputTokens, outputTokens } = await runFloorPlanTextExtraction(file, projectContext, spatialMap.size > 0 ? spatialMap : undefined, jobId);
             const { newCount, updateCount } = await mergeAiSignRows(rows, jobId, file.id, existingSignKeys, existingSigns, files);
             totalNewSigns += newCount;
             totalUpdatedSigns += updateCount;
             results[`${callType}_${file.id}`] = { rowsExtracted: rows.length, newSigns: newCount, updatedSigns: updateCount, inputTokens, outputTokens };
 
           } else if (callType === "bbox_detection") {
-            const { scanResult, pageImagePaths: updatedPaths } = await runBboxDetection(file, pageImagePaths);
+            const { scanResult, pageImagePaths: updatedPaths } = await runBboxDetection(file, pageImagePaths, jobId);
             if (!scanResult.skipped && scanResult.callouts.length > 0) {
               const bboxCount = await applyBboxCallouts(scanResult.callouts, jobId, file.id, existingSigns);
               totalUpdatedSigns += bboxCount;
@@ -1534,7 +1534,7 @@ router.post("/jobs/:jobId/ai-scan", async (req, res) => {
             results[`${callType}_${file.id}`] = { callouts: scanResult.callouts?.length ?? 0, skipped: scanResult.skipped, skipReason: scanResult.skipReason, inputTokens: scanResult.inputTokens, outputTokens: scanResult.outputTokens };
 
           } else if (callType === "vision_fallback") {
-            const { scanResult } = await runVisionFallback(file, pageImagePaths);
+            const { scanResult } = await runVisionFallback(file, pageImagePaths, jobId);
             if (!scanResult.skipped && scanResult.callouts.length > 0) {
               const bboxCount = await applyBboxCallouts(scanResult.callouts, jobId, file.id, existingSigns);
               totalUpdatedSigns += bboxCount;
@@ -1542,7 +1542,7 @@ router.post("/jobs/:jobId/ai-scan", async (req, res) => {
             results[`${callType}_${file.id}`] = { callouts: scanResult.callouts?.length ?? 0, skipped: scanResult.skipped, inputTokens: scanResult.inputTokens, outputTokens: scanResult.outputTokens };
 
           } else if (callType === "title_block_vision") {
-            const { levelMap } = await runTitleBlockVision(file, pageImagePaths);
+            const { levelMap } = await runTitleBlockVision(file, pageImagePaths, jobId);
             if (levelMap.size > 0) {
               const floorPageLevels: Record<string, string> = {};
               for (const [pageNum, level] of levelMap) {

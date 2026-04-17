@@ -710,11 +710,23 @@ export interface GeminiEnrichmentResult {
  * @param ai          Gemini AI instance.
  * @param saveImageFn Optional callback to save crop PNG and return a URL.
  */
+export interface EnrichCallLogEntry {
+  typeCode: string;
+  pageNum: number;
+  prompt: string;
+  rawResponse: string;
+  inputTokens: number;
+  outputTokens: number;
+  durationMs: number;
+  error?: string;
+}
+
 export async function enrichWithGemini(
   specs: SignTypeSpec[],
   pdfPath: string,
   ai: import("@workspace/integrations-gemini-ai").GeminiAI,
   saveImageFn?: (typeCode: string, pngBuffer: Buffer) => Promise<string>,
+  onCallLog?: (entry: EnrichCallLogEntry) => void,
 ): Promise<Map<string, { notes: GeminiEnrichmentResult; cropImageUrl: string | null }>> {
   const results = new Map<string, { notes: GeminiEnrichmentResult; cropImageUrl: string | null }>();
 
@@ -801,21 +813,51 @@ Return ONLY the JSON object. No markdown, no explanation.`;
         };
       };
 
-      const response = await geminiApi.models.generateContent({
-        model: "gemini-2.5-flash",
-        contents: [
-          {
-            role: "user",
-            parts: [
-              { inlineData: { mimeType: "image/png", data: base64 } },
-              { text: prompt },
-            ],
-          },
-        ],
-        config: { maxOutputTokens: 512, temperature: 0.0 },
-      });
+      const callStart = Date.now();
+      let rawText = "";
+      let callInputTokens = 0;
+      let callOutputTokens = 0;
+      try {
+        const response = await geminiApi.models.generateContent({
+          model: "gemini-2.5-flash",
+          contents: [
+            {
+              role: "user",
+              parts: [
+                { inlineData: { mimeType: "image/png", data: base64 } },
+                { text: prompt },
+              ],
+            },
+          ],
+          config: { maxOutputTokens: 512, temperature: 0.0 },
+        }) as { text?: string; usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number } };
+        rawText = (response.text ?? "").trim();
+        callInputTokens = response.usageMetadata?.promptTokenCount ?? 0;
+        callOutputTokens = response.usageMetadata?.candidatesTokenCount ?? 0;
+        onCallLog?.({
+          typeCode: spec.typeCode,
+          pageNum: cropBox.pageNum,
+          prompt,
+          rawResponse: rawText,
+          inputTokens: callInputTokens,
+          outputTokens: callOutputTokens,
+          durationMs: Date.now() - callStart,
+        });
+      } catch (callErr) {
+        const errMsg = callErr instanceof Error ? callErr.message : String(callErr);
+        onCallLog?.({
+          typeCode: spec.typeCode,
+          pageNum: cropBox.pageNum,
+          prompt,
+          rawResponse: "",
+          inputTokens: 0,
+          outputTokens: 0,
+          durationMs: Date.now() - callStart,
+          error: errMsg,
+        });
+        throw callErr;
+      }
 
-      const rawText = (response.text ?? "").trim();
       let notes: GeminiEnrichmentResult | null = null;
       try {
         const cleaned = rawText.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
