@@ -191,13 +191,15 @@ export default function SettingsCompany() {
                       ref={fileInputRef}
                       type="file"
                       accept="image/*"
+                      aria-label="Upload company logo image"
                       onChange={handleLogoFileChange}
                       className="hidden"
                     />
                   </div>
                   <div className="space-y-1">
-                    <p className="text-[10px] text-muted-foreground">Or paste a URL:</p>
+                    <label htmlFor="logo-url" className="text-[10px] text-muted-foreground">Or paste a URL:</label>
                     <input
+                      id="logo-url"
                       value={form.logoUrl}
                       onChange={(e) => {
                         setForm((p) => ({ ...p, logoUrl: e.target.value }));
@@ -218,10 +220,11 @@ export default function SettingsCompany() {
                 Organization Information
               </h2>
               <div className="space-y-1">
-                <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
+                <label htmlFor="company-name" className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
                   Company Name *
                 </label>
                 <input
+                  id="company-name"
                   required
                   value={form.name}
                   onChange={(e) => setForm((p) => ({ ...p, name: e.target.value }))}
@@ -230,32 +233,32 @@ export default function SettingsCompany() {
               </div>
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-1">
-                  <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
+                  <label htmlFor="company-email" className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
                     Contact Email
                   </label>
-                  <input type="email" value={form.email}
+                  <input id="company-email" type="email" value={form.email}
                     onChange={(e) => setForm((p) => ({ ...p, email: e.target.value }))}
                     className="w-full px-3 py-2.5 rounded-lg bg-secondary border border-border text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary/50"
                     placeholder="contact@company.com" />
                 </div>
                 <div className="space-y-1">
-                  <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Phone</label>
-                  <input value={form.phone}
+                  <label htmlFor="company-phone" className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Phone</label>
+                  <input id="company-phone" value={form.phone}
                     onChange={(e) => setForm((p) => ({ ...p, phone: e.target.value }))}
                     className="w-full px-3 py-2.5 rounded-lg bg-secondary border border-border text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary/50"
                     placeholder="+1 555 000 0000" />
                 </div>
               </div>
               <div className="space-y-1">
-                <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Address</label>
-                <input value={form.address}
+                <label htmlFor="company-address" className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Address</label>
+                <input id="company-address" value={form.address}
                   onChange={(e) => setForm((p) => ({ ...p, address: e.target.value }))}
                   className="w-full px-3 py-2.5 rounded-lg bg-secondary border border-border text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary/50"
                   placeholder="123 Main St, City, ST 00000" />
               </div>
               <div className="space-y-1">
-                <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Website</label>
-                <input value={form.website}
+                <label htmlFor="company-website" className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Website</label>
+                <input id="company-website" value={form.website}
                   onChange={(e) => setForm((p) => ({ ...p, website: e.target.value }))}
                   className="w-full px-3 py-2.5 rounded-lg bg-secondary border border-border text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary/50"
                   placeholder="https://company.com" />
