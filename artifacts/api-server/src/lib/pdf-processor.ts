@@ -74,15 +74,41 @@ export async function runPdfProcessor(jobId: string, opts: PdfProcessorOptions =
   const pipelineSteps: ProcessingStep[] = [];
   const jobStart = Date.now();
 
-  async function setCurrentStep(label: string | null): Promise<void> {
-    try {
-      await db
-        .update(jobsTable)
-        .set({ currentStep: label })
-        .where(eq(jobsTable.id, jobId));
-    } catch {
-      // non-fatal
+  // ── currentStep batching ──────────────────────────────────────────────────
+  // setCurrentStep buffers the label and absorbs it into the next
+  // persistStepsNow write so the two fields are always updated in a single
+  // round-trip.  A short deferred standalone write fires as a fallback for
+  // phases where persistStepsNow does not follow within ~150 ms (e.g. the
+  // long parallel floor-plan extraction block).
+  let _pendingCurrentStep: string | null | undefined = undefined; // undefined = nothing pending
+  let _currentStepTimer: ReturnType<typeof setTimeout> | null = null;
+  let _processorDone = false; // set in finally; gates the deferred timer callback
+
+  function cancelCurrentStepTimer(): void {
+    _processorDone = true;
+    _pendingCurrentStep = undefined;
+    if (_currentStepTimer !== null) {
+      clearTimeout(_currentStepTimer);
+      _currentStepTimer = null;
     }
+  }
+
+  function setCurrentStep(label: string | null): void {
+    _pendingCurrentStep = label;
+    if (_currentStepTimer !== null) {
+      clearTimeout(_currentStepTimer);
+    }
+    _currentStepTimer = setTimeout(() => {
+      _currentStepTimer = null;
+      if (_processorDone) return; // processor already finished; don't overwrite terminal state
+      if (_pendingCurrentStep === undefined) return; // already flushed by persistStepsNow
+      const toWrite = _pendingCurrentStep;
+      _pendingCurrentStep = undefined;
+      db.update(jobsTable)
+        .set({ currentStep: toWrite })
+        .where(eq(jobsTable.id, jobId))
+        .catch(() => {});
+    }, 150);
   }
 
   // ── Live-progress persistence ─────────────────────────────────────────────
@@ -91,32 +117,36 @@ export async function runPdfProcessor(jobId: string, opts: PdfProcessorOptions =
   // Uses a single-in-flight pattern to prevent out-of-order stale writes:
   // while a write is in flight any new snapshot is staged and flushed once the
   // current write settles.
+  // Each flush also absorbs any pending currentStep label so both fields are
+  // written in one SET, eliminating a separate round-trip per phase boundary.
   let _persistInFlight = false;
   let _pendingSnapshot: ProcessingStep[] | null = null;
 
-  function persistStepsNow(): void {
-    if (isFileRetry) return; // Retry finalization merges from DB; skip live writes
-    if (_persistInFlight) {
-      _pendingSnapshot = [...pipelineSteps]; // stage latest for after current write
-      return;
+  function flushNow(log: ProcessingStep[]): void {
+    // Absorb any pending currentStep into this write and cancel its deferred timer.
+    const stepToWrite = _pendingCurrentStep;
+    if (stepToWrite !== undefined) {
+      _pendingCurrentStep = undefined;
+      if (_currentStepTimer !== null) {
+        clearTimeout(_currentStepTimer);
+        _currentStepTimer = null;
+      }
     }
-    const snapshot = [...pipelineSteps];
+
     _persistInFlight = true;
+    const setFields = stepToWrite !== undefined
+      ? { processingLog: log, currentStep: stepToWrite }
+      : { processingLog: log };
+
     db.update(jobsTable)
-      .set({ processingLog: snapshot })
+      .set(setFields)
       .where(eq(jobsTable.id, jobId))
       .then(() => {
         _persistInFlight = false;
-        if (_pendingSnapshot !== null && _pendingSnapshot.length > snapshot.length) {
+        if (_pendingSnapshot !== null && _pendingSnapshot.length > log.length) {
           const toFlush = _pendingSnapshot;
           _pendingSnapshot = null;
-          // Flush the newer staged snapshot now
-          _persistInFlight = true;
-          db.update(jobsTable)
-            .set({ processingLog: toFlush })
-            .where(eq(jobsTable.id, jobId))
-            .then(() => { _persistInFlight = false; })
-            .catch(() => { _persistInFlight = false; });
+          flushNow(toFlush); // also absorbs any currentStep staged while the write was in flight
         } else {
           _pendingSnapshot = null;
         }
@@ -125,6 +155,15 @@ export async function runPdfProcessor(jobId: string, opts: PdfProcessorOptions =
         _persistInFlight = false;
         _pendingSnapshot = null;
       });
+  }
+
+  function persistStepsNow(): void {
+    if (isFileRetry) return; // Retry finalization merges from DB; skip live writes
+    if (_persistInFlight) {
+      _pendingSnapshot = [...pipelineSteps]; // stage latest for after current write
+      return;
+    }
+    flushNow([...pipelineSteps]);
   }
 
   function recordStep(
@@ -144,6 +183,12 @@ export async function runPdfProcessor(jobId: string, opts: PdfProcessorOptions =
     });
     persistStepsNow();
   }
+
+  // ── Processing body ───────────────────────────────────────────────────────
+  // Wrapped in try/finally so cancelCurrentStepTimer() always runs on exit,
+  // preventing any deferred setCurrentStep write from firing after the
+  // terminal DB update (status: failed/completed, currentStep: null).
+  try {
 
   // ── Preserve verified + manually-added signs ─────────────────────────────
   // All auto-extracted signs (heuristic and AI) are wiped on rescan and re-derived
@@ -257,7 +302,7 @@ export async function runPdfProcessor(jobId: string, opts: PdfProcessorOptions =
 
   // Extract raw text from spec files for metadata (no AI)
   if (specFiles.length > 0 && hasDataFiles) {
-    await setCurrentStep("Processing spec files…");
+    setCurrentStep("Processing spec files…");
     const t_spec = Date.now();
     for (const specFile of specFiles) {
       try {
@@ -360,7 +405,7 @@ export async function runPdfProcessor(jobId: string, opts: PdfProcessorOptions =
   const detectedIssueDate = primaryIntake?.issueDate ?? null;
   const detectedDrawingIndexPageNum = primaryIntake?.drawingIndexPageNum ?? null;
 
-  await setCurrentStep("Extracting floor plans…");
+  setCurrentStep("Extracting floor plans…");
   const t_extraction = Date.now();
 
   await Promise.all(
@@ -1301,7 +1346,7 @@ export async function runPdfProcessor(jobId: string, opts: PdfProcessorOptions =
   // ── Word-match coordinate assignment for preserved signs ──────────────────
   // Re-run coordinate matching for preserved signs that may have lost their positions.
   if (preservedSigns.length > 0) {
-    await setCurrentStep("Matching coordinates…");
+    setCurrentStep("Matching coordinates…");
     const t_wordmatch = Date.now();
     const filePathById = new Map<string, string>(filesToProcess.map((f) => [f.id, f.storedPath]));
 
@@ -1430,4 +1475,10 @@ export async function runPdfProcessor(jobId: string, opts: PdfProcessorOptions =
     { jobId, preservedSigns: preservedSigns.length, failed: failedCount, buildingType: detectedBuildingType },
     "[PDF Processor] Processing complete"
   );
+
+  } finally {
+    // Always cancel the deferred currentStep timer so it cannot fire after the
+    // terminal DB write (currentStep: null) on success, failure, or exception.
+    cancelCurrentStepTimer();
+  }
 }
