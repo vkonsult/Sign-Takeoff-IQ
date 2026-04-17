@@ -248,6 +248,15 @@ function TimelineStepRow({ step, maxMs, fileSummaries }: { step: ProcessingStep;
   const detailStr = formatDetails(step.details);
   const hasChildren = fileSummaries && fileSummaries.length > 0;
   const [childOpen, setChildOpen] = useState(false);
+  const [sortBy, setSortBy] = useState<"duration" | "name">("duration");
+
+  const sortedSummaries = hasChildren
+    ? [...fileSummaries].sort((a, b) =>
+        sortBy === "duration"
+          ? b.combinedDurationMs - a.combinedDurationMs
+          : a.fileName.localeCompare(b.fileName)
+      )
+    : [];
 
   return (
     <div>
@@ -289,10 +298,40 @@ function TimelineStepRow({ step, maxMs, fileSummaries }: { step: ProcessingStep;
         </div>
       </div>
       {hasChildren && childOpen && (
-        <div className="border-l-2 border-border/30 ml-3 mb-1 divide-y divide-border/20">
-          {fileSummaries.map((s) => (
-            <FileSubRow key={s.fileId} summary={s} maxMs={maxMs} />
-          ))}
+        <div className="border-l-2 border-border/30 ml-3 mb-1">
+          <div
+            className="flex items-center gap-1.5 px-6 py-1 border-b border-border/20"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <span className="text-[10px] text-muted-foreground/50 font-display uppercase tracking-wider mr-1">Sort:</span>
+            <button
+              onClick={() => setSortBy("duration")}
+              className={`flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] font-mono transition-colors ${
+                sortBy === "duration"
+                  ? "bg-primary/20 text-primary/90"
+                  : "text-muted-foreground/50 hover:text-muted-foreground"
+              }`}
+            >
+              <Clock className="w-2.5 h-2.5" />
+              duration
+            </button>
+            <button
+              onClick={() => setSortBy("name")}
+              className={`flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] font-mono transition-colors ${
+                sortBy === "name"
+                  ? "bg-primary/20 text-primary/90"
+                  : "text-muted-foreground/50 hover:text-muted-foreground"
+              }`}
+            >
+              <FileText className="w-2.5 h-2.5" />
+              name
+            </button>
+          </div>
+          <div className="divide-y divide-border/20">
+            {sortedSummaries.map((s) => (
+              <FileSubRow key={s.fileId} summary={s} maxMs={maxMs} />
+            ))}
+          </div>
         </div>
       )}
     </div>
