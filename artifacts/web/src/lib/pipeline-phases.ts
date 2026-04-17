@@ -159,6 +159,7 @@ export const PIPELINE_PHASES: PipelinePhase[] = [
     color: "emerald",
     stepKeys: [
       { key: "room_inventory_", prefix: true },
+      { key: "room_inventory_ai_", prefix: true },
       { key: "occupant_loads", prefix: false },
       { key: "occupant_loads_", prefix: true },
     ],
@@ -166,7 +167,7 @@ export const PIPELINE_PHASES: PipelinePhase[] = [
     legacyModulesReplaced: [
       "No equivalent in legacy pipeline — new capability",
     ],
-    newModule: "room-inventory.ts → buildRoomInventory()",
+    newModule: "room-inventory.ts → buildRoomInventory() + enrichAmbiguousRoomsWithAI()",
     taskRef: "#357",
   },
   {

@@ -39,6 +39,7 @@ export interface RoomRecord {
 
   boundingBox: { x: number; y: number; w: number; h: number } | null;
   extractionConfidence: number;
+  aiEnriched?: boolean;
 }
 
 export interface RoomInventory {
@@ -48,6 +49,7 @@ export interface RoomInventory {
   occupantLoadRoomsMatched: number;
   warnings: string[];
   sourcePages: number[];
+  aiEnrichedCount?: number;
 }
 
 // ── Internal types ────────────────────────────────────────────────────────────
@@ -533,6 +535,218 @@ function deduplicateRooms(labels: RawRoomLabel[]): RawRoomLabel[] {
   }
 
   return kept;
+}
+
+// ── AI enrichment for ambiguous rooms ────────────────────────────────────────
+
+/**
+ * Returns true if a room record could not be reliably classified by text
+ * heuristics alone and should be sent to Gemini for classification.
+ *
+ * Criteria (any one is sufficient):
+ *   1. Low extraction confidence (< 0.5)
+ *   2. Very short room name (< 4 chars) — likely an abbreviation
+ *   3. No boolean flags were derived — the label matched no known keyword
+ */
+function isAmbiguousRoom(room: RoomRecord): boolean {
+  if (room.extractionConfidence < 0.5) return true;
+  if (room.roomName.replace(/\s+/g, "").length < 4) return true;
+
+  const hasAnyFlag =
+    room.isRestroom ||
+    room.isStair ||
+    room.isElevator ||
+    room.isVestibule ||
+    room.isCorridorOrHall ||
+    room.isVehicleBay ||
+    room.isMepUnoccupied ||
+    room.isVariableUse ||
+    room.isPublicFacing ||
+    room.isStaffOnly ||
+    room.isAssembly;
+
+  return !hasAnyFlag;
+}
+
+interface GeminiRoomClassification {
+  index: number;
+  roomName: string;
+  roomType:
+    | "RESTROOM"
+    | "STAIR"
+    | "ELEVATOR"
+    | "VESTIBULE"
+    | "CORRIDOR"
+    | "VEHICLE_BAY"
+    | "MEP_UNOCCUPIED"
+    | "VARIABLE_USE"
+    | "PUBLIC_FACING"
+    | "STAFF_ONLY"
+    | "ASSEMBLY"
+    | "OFFICE"
+    | "STORAGE"
+    | "OTHER";
+  confidence: number;
+}
+
+/**
+ * Sends ambiguous room records to Gemini for classification.
+ * Returns an updated copy of the rooms array with aiEnriched flags and
+ * corrected roomName / flags for enriched records.
+ *
+ * Non-fatal: if Gemini fails the original rooms are returned unchanged.
+ */
+export async function enrichAmbiguousRoomsWithAI(
+  rooms: RoomRecord[],
+  fileId: string,
+  jobId: string,
+): Promise<{ rooms: RoomRecord[]; enrichedCount: number }> {
+  const ambiguousIndices: number[] = [];
+  for (let i = 0; i < rooms.length; i++) {
+    if (isAmbiguousRoom(rooms[i]!)) ambiguousIndices.push(i);
+  }
+
+  if (ambiguousIndices.length === 0) {
+    return { rooms, enrichedCount: 0 };
+  }
+
+  const candidates = ambiguousIndices.map((idx) => {
+    const r = rooms[idx]!;
+    return { index: idx, roomName: r.roomName, roomNumber: r.roomNumber ?? null, level: r.level };
+  });
+
+  const prompt = `You are a building architecture expert analyzing floor plan room labels from a construction document set.
+
+The following room labels were extracted from a PDF floor plan but could not be confidently classified by keyword heuristics because they are very short abbreviations, unusual names, or non-standard labels.
+
+For each room, determine the most likely room type from the list below, and if the label is an abbreviation, expand it to the full standard room name.
+
+Room type options:
+- RESTROOM: toilets, restrooms, bathrooms, showers, WC, lavatory
+- STAIR: stairwells, stair towers
+- ELEVATOR: elevators, lifts
+- VESTIBULE: vestibules, airlocks, transition spaces
+- CORRIDOR: hallways, corridors, passages, aisles, lobbies, foyers
+- VEHICLE_BAY: apparatus bays, vehicle bays, garages, sally ports
+- MEP_UNOCCUPIED: mechanical rooms, electrical rooms, data/IT rooms, janitor closets, storage closets, telecom rooms
+- VARIABLE_USE: conference rooms, training rooms, multipurpose rooms, classrooms, meeting rooms
+- PUBLIC_FACING: public lobbies, reception areas, waiting rooms, visitor areas
+- STAFF_ONLY: staff rooms, employee areas, crew quarters
+- ASSEMBLY: assembly areas, auditoriums, large gathering spaces
+- OFFICE: offices, workstations, administrative areas
+- STORAGE: storage areas, warehouses, stock rooms
+- OTHER: anything that doesn't fit the above
+
+Respond with ONLY a valid JSON array. Each element must have:
+- "index": the original index number (integer)
+- "roomName": the expanded/corrected room name in ALL CAPS (keep original if already clear)
+- "roomType": one of the room type strings above
+- "confidence": a number from 0.0 to 1.0 indicating your certainty
+
+Rooms to classify:
+${JSON.stringify(candidates, null, 2)}`;
+
+  try {
+    const response = await ai.models.generateContent({
+      model: "gemini-2.5-flash",
+      contents: [{ role: "user", parts: [{ text: prompt }] }],
+      config: { temperature: 0.1 },
+    });
+
+    const text = response.text ?? "";
+    const jsonMatch = text.match(/\[[\s\S]*\]/);
+    if (!jsonMatch) {
+      logger.warn({ fileId, jobId }, "[RoomInventory] Gemini returned no JSON array for AI enrichment");
+      return { rooms, enrichedCount: 0 };
+    }
+
+    const classifications: GeminiRoomClassification[] = JSON.parse(jsonMatch[0]);
+
+    const updatedRooms = rooms.map((r) => ({ ...r }));
+    let enrichedCount = 0;
+
+    for (const c of classifications) {
+      const roomIdx = c.index;
+      if (roomIdx < 0 || roomIdx >= updatedRooms.length) continue;
+
+      const room = updatedRooms[roomIdx]!;
+
+      const expandedName = c.roomName && c.roomName.trim().length > 0
+        ? c.roomName.trim().toUpperCase()
+        : room.roomName;
+
+      const newFlags = deriveFlags(expandedName, room.occupantLoad, room.occupancyGroup);
+
+      // Also apply flags from the Gemini roomType in case the name alone won't trigger them
+      const typeFlags = roomTypeToFlags(c.roomType);
+
+      updatedRooms[roomIdx] = {
+        ...room,
+        roomName: expandedName,
+        extractionConfidence: Math.max(room.extractionConfidence, c.confidence),
+        aiEnriched: true,
+        ...newFlags,
+        // Override specific flags from Gemini's explicit type determination
+        isRestroom: newFlags.isRestroom || typeFlags.isRestroom,
+        isStair: newFlags.isStair || typeFlags.isStair,
+        isElevator: newFlags.isElevator || typeFlags.isElevator,
+        isVestibule: newFlags.isVestibule || typeFlags.isVestibule,
+        isCorridorOrHall: newFlags.isCorridorOrHall || typeFlags.isCorridorOrHall,
+        isVehicleBay: newFlags.isVehicleBay || typeFlags.isVehicleBay,
+        isMepUnoccupied: newFlags.isMepUnoccupied || typeFlags.isMepUnoccupied,
+        isVariableUse: newFlags.isVariableUse || typeFlags.isVariableUse,
+        isPublicFacing: newFlags.isPublicFacing || typeFlags.isPublicFacing,
+        isStaffOnly: newFlags.isStaffOnly || typeFlags.isStaffOnly,
+        isAssembly: newFlags.isAssembly || typeFlags.isAssembly,
+      };
+
+      enrichedCount++;
+    }
+
+    logger.info(
+      { fileId, jobId, ambiguous: ambiguousIndices.length, enriched: enrichedCount },
+      "[RoomInventory] AI enrichment complete",
+    );
+
+    return { rooms: updatedRooms, enrichedCount };
+  } catch (err) {
+    logger.warn({ err, fileId, jobId }, "[RoomInventory] AI enrichment failed — non-fatal, using heuristic results");
+    return { rooms, enrichedCount: 0 };
+  }
+}
+
+/**
+ * Maps a Gemini roomType string to the set of boolean flags it implies.
+ */
+function roomTypeToFlags(
+  roomType: GeminiRoomClassification["roomType"],
+): Pick<
+  RoomRecord,
+  | "isRestroom"
+  | "isStair"
+  | "isElevator"
+  | "isVestibule"
+  | "isCorridorOrHall"
+  | "isVehicleBay"
+  | "isMepUnoccupied"
+  | "isVariableUse"
+  | "isPublicFacing"
+  | "isStaffOnly"
+  | "isAssembly"
+> {
+  return {
+    isRestroom: roomType === "RESTROOM",
+    isStair: roomType === "STAIR",
+    isElevator: roomType === "ELEVATOR",
+    isVestibule: roomType === "VESTIBULE",
+    isCorridorOrHall: roomType === "CORRIDOR",
+    isVehicleBay: roomType === "VEHICLE_BAY",
+    isMepUnoccupied: roomType === "MEP_UNOCCUPIED",
+    isVariableUse: roomType === "VARIABLE_USE",
+    isPublicFacing: roomType === "PUBLIC_FACING",
+    isStaffOnly: roomType === "STAFF_ONLY",
+    isAssembly: roomType === "ASSEMBLY",
+  };
 }
 
 // ── Main export ───────────────────────────────────────────────────────────────

@@ -39,7 +39,7 @@ import {
 import { extractSignSchedule } from "./sign-schedule-extractor";
 import { applySignRules, assignmentToRows, type PlaqueEntry } from "./rule-engine";
 import { verifyRuleEngineResult } from "./verifier";
-import { buildRoomInventory, type RoomInventory } from "./room-inventory";
+import { buildRoomInventory, enrichAmbiguousRoomsWithAI, type RoomInventory } from "./room-inventory";
 
 export async function runPdfProcessor(jobId: string): Promise<void> {
   const pipelineSteps: ProcessingStep[] = [];
@@ -572,6 +572,55 @@ export async function runPdfProcessor(jobId: string): Promise<void> {
                 },
                 "phase-3",
               );
+
+              // ── Step 4: AI enrichment for ambiguous rooms ──────────────
+              const t_ai = Date.now();
+              const ambiguousCount = fileRoomInventory.rooms.filter((r) => {
+                const c = r.extractionConfidence < 0.5;
+                const s = r.roomName.replace(/\s+/g, "").length < 4;
+                const f = !(r.isRestroom || r.isStair || r.isElevator || r.isVestibule ||
+                  r.isCorridorOrHall || r.isVehicleBay || r.isMepUnoccupied ||
+                  r.isVariableUse || r.isPublicFacing || r.isStaffOnly || r.isAssembly);
+                return c || s || f;
+              }).length;
+              try {
+                const { rooms: enrichedRooms, enrichedCount } = await enrichAmbiguousRoomsWithAI(
+                  fileRoomInventory.rooms,
+                  file.id,
+                  jobId,
+                );
+                fileRoomInventory = {
+                  ...fileRoomInventory,
+                  rooms: enrichedRooms,
+                  aiEnrichedCount: enrichedCount,
+                };
+                recordStep(
+                  `room_inventory_ai_${file.id}`,
+                  filesToProcess.length > 1
+                    ? `Room AI Enrichment — ${file.originalName}`
+                    : "Room AI Enrichment",
+                  t_ai,
+                  {
+                    ambiguousSubmitted: ambiguousCount,
+                    enrichedCount,
+                    skipped: ambiguousCount === 0,
+                  },
+                );
+              } catch (err) {
+                logger.warn({ err, fileId: file.id, jobId }, "[PDF Processor] Room AI enrichment failed — non-fatal");
+                recordStep(
+                  `room_inventory_ai_${file.id}`,
+                  filesToProcess.length > 1
+                    ? `Room AI Enrichment — ${file.originalName}`
+                    : "Room AI Enrichment",
+                  t_ai,
+                  {
+                    ambiguousSubmitted: ambiguousCount,
+                    enrichedCount: 0,
+                    error: err instanceof Error ? err.message : String(err),
+                  },
+                );
+              }
             } catch (err) {
               logger.warn({ err, fileId: file.id, jobId }, "[PDF Processor] Room inventory failed — non-fatal");
               // Still emit a step so the timeline always shows Phase 4b

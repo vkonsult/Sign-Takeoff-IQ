@@ -2787,6 +2787,7 @@ interface RoomRecord {
   isStaffOnly: boolean;
   isAssembly: boolean;
   extractionConfidence: number;
+  aiEnriched?: boolean;
 }
 
 interface RoomInventoryData {
@@ -2927,13 +2928,18 @@ function RoomInventoryPanel({ inventory }: { inventory: RoomInventoryData }) {
                         {room.level}
                       </td>
                       <td className="px-2 py-1">
-                        {flags.length > 0 ? (
-                          <div className="flex flex-wrap gap-0.5">
-                            {flags.map((f) => <RoomFlagChip key={f} label={f} />)}
-                          </div>
-                        ) : (
-                          <span className="text-muted-foreground/40">—</span>
-                        )}
+                        <div className="flex flex-wrap gap-0.5 items-center">
+                          {room.aiEnriched && (
+                            <span className="inline-flex items-center px-1.5 py-0.5 rounded border text-[8px] font-bold uppercase tracking-wider bg-violet-500/10 text-violet-400 border-violet-500/25 whitespace-nowrap">
+                              AI
+                            </span>
+                          )}
+                          {flags.length > 0 ? (
+                            flags.map((f) => <RoomFlagChip key={f} label={f} />)
+                          ) : (
+                            !room.aiEnriched && <span className="text-muted-foreground/40">—</span>
+                          )}
+                        </div>
                       </td>
                       <td className="px-2 py-1 text-muted-foreground font-mono">
                         {room.occupantLoad != null ? room.occupantLoad : "—"}
