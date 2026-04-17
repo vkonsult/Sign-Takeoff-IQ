@@ -104,6 +104,7 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
         <NavTooltip label={label}>
           <Link
             href={href}
+            aria-label={label}
             className={cn(
               "flex items-center justify-center w-9 h-9 rounded-md transition-all duration-200 outline-none",
               isActive
@@ -111,7 +112,7 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
                 : "text-muted-foreground hover:bg-secondary/50 hover:text-foreground"
             )}
           >
-            <Icon className={cn("w-4 h-4", isActive ? "text-primary" : "opacity-70")} />
+            <Icon className={cn("w-4 h-4", isActive ? "text-primary" : "opacity-70")} aria-hidden="true" />
           </Link>
         </NavTooltip>
       );
@@ -289,17 +290,19 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
             <NavTooltip label={guestMode ? "Exit guest mode" : "Sign out"}>
               <button
                 onClick={handleSignOut}
+                aria-label={guestMode ? "Exit guest mode" : "Sign out"}
                 className="flex items-center justify-center w-9 h-9 rounded-md text-muted-foreground hover:bg-destructive/10 hover:text-destructive transition-all"
               >
-                <LogOut className="w-4 h-4 opacity-70" />
+                <LogOut className="w-4 h-4 opacity-70" aria-hidden="true" />
               </button>
             </NavTooltip>
             <NavTooltip label="Expand sidebar">
               <button
                 onClick={onToggle}
+                aria-label="Expand sidebar"
                 className="flex items-center justify-center w-9 h-9 rounded-md text-muted-foreground hover:bg-secondary/50 hover:text-foreground transition-all"
               >
-                <ChevronRight className="w-4 h-4" />
+                <ChevronRight className="w-4 h-4" aria-hidden="true" />
               </button>
             </NavTooltip>
           </>
