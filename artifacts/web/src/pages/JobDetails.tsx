@@ -81,6 +81,10 @@ interface FileSummary {
   combinedDurationMs: number;
   pageCount: number | null;
   classificationLabel: string | null;
+  hasError: boolean;
+  errorMessage: string | null;
+  isSkipped: boolean;
+  skipReason: string | null;
 }
 
 /** Derive a short classification label from a per-file step's details */
@@ -144,11 +148,33 @@ function buildFileSummaries(allSteps: ProcessingStep[]): FileSummary[] {
     const manifestStep = steps.find((s) => s.step.startsWith("sheet_manifest_"));
     if (manifestStep?.details) classificationLabel = getClassificationLabel(manifestStep.details);
 
-    summaries.push({ fileId, fileName, combinedDurationMs, pageCount, classificationLabel });
+    // Error / skip state — check all per-file steps for this file
+    let hasError = false;
+    let errorMessage: string | null = null;
+    let isSkipped = false;
+    let skipReason: string | null = null;
+    for (const s of steps) {
+      const d = s.details ?? {};
+      if (d.error) {
+        hasError = true;
+        if (typeof d.error === "string") errorMessage = d.error;
+      }
+      if (d.skipped) {
+        isSkipped = true;
+        if (typeof d.skipReason === "string") skipReason = d.skipReason;
+      }
+    }
+
+    summaries.push({ fileId, fileName, combinedDurationMs, pageCount, classificationLabel, hasError, errorMessage, isSkipped, skipReason });
   }
 
-  // Sort by combined duration descending so slowest file is always at the top
-  summaries.sort((a, b) => b.combinedDurationMs - a.combinedDurationMs);
+  // Sort: failed first, then skipped, then by combined duration descending
+  summaries.sort((a, b) => {
+    const rankA = a.hasError ? 0 : a.isSkipped ? 1 : 2;
+    const rankB = b.hasError ? 0 : b.isSkipped ? 1 : 2;
+    if (rankA !== rankB) return rankA - rankB;
+    return b.combinedDurationMs - a.combinedDurationMs;
+  });
 
   return summaries;
 }
@@ -212,15 +238,43 @@ interface PhaseGroup {
 /** A single per-file summary sub-row inside an expandable step */
 function FileSubRow({ summary, maxMs }: { summary: FileSummary; maxMs: number }) {
   const widthPct = Math.max(1, (summary.combinedDurationMs / maxMs) * 100);
+  const isProblematic = summary.hasError || summary.isSkipped;
+
+  const barColor = summary.hasError
+    ? "bg-red-500/40"
+    : summary.isSkipped
+    ? "bg-amber-500/30"
+    : "bg-primary/30";
+
+  const rowBg = summary.hasError
+    ? "bg-red-500/5"
+    : summary.isSkipped
+    ? "bg-amber-500/5"
+    : "";
+
+  const tooltipText = summary.hasError
+    ? (summary.errorMessage ? `Error: ${summary.errorMessage}` : "File failed during extraction")
+    : summary.isSkipped
+    ? (summary.skipReason ? `Skipped: ${summary.skipReason}` : "File was skipped")
+    : summary.fileName;
+
   return (
-    <div className="flex items-center gap-3 py-1 pl-6 text-xs text-muted-foreground">
-      <div className="w-44 shrink-0 truncate leading-tight" title={summary.fileName}>
-        <FileText className="inline w-3 h-3 mr-1 opacity-50" />
-        {summary.fileName}
+    <div className={`flex items-center gap-3 py-1 pl-6 text-xs text-muted-foreground rounded ${rowBg}`}>
+      <div className="w-44 shrink-0 truncate leading-tight flex items-center gap-1" title={tooltipText}>
+        {summary.hasError ? (
+          <AlertTriangle className="inline w-3 h-3 mr-0.5 shrink-0 text-red-400" />
+        ) : summary.isSkipped ? (
+          <AlertTriangle className="inline w-3 h-3 mr-0.5 shrink-0 text-amber-400" />
+        ) : (
+          <FileText className="inline w-3 h-3 mr-1 opacity-50 shrink-0" />
+        )}
+        <span className={`truncate ${summary.hasError ? "text-red-400" : summary.isSkipped ? "text-amber-400" : ""}`}>
+          {summary.fileName}
+        </span>
       </div>
       <div className="flex-1 h-2.5 bg-muted/30 rounded overflow-hidden">
         <div
-          className="h-full rounded bg-primary/30"
+          className={`h-full rounded ${barColor}`}
           style={{ width: `${widthPct}%` }}
         />
       </div>
@@ -228,14 +282,34 @@ function FileSubRow({ summary, maxMs }: { summary: FileSummary; maxMs: number })
         {formatDuration(summary.combinedDurationMs)}
       </div>
       <div className="w-64 shrink-0 flex items-center gap-1.5">
-        {summary.pageCount != null && (
+        {summary.hasError && (
+          <span className="px-1 py-0.5 rounded bg-red-500/20 text-red-400 text-[10px] font-semibold border border-red-500/30 shrink-0">
+            failed
+          </span>
+        )}
+        {!summary.hasError && summary.isSkipped && (
+          <span className="px-1 py-0.5 rounded bg-amber-500/20 text-amber-400 text-[10px] font-semibold border border-amber-500/30 shrink-0">
+            skipped
+          </span>
+        )}
+        {!isProblematic && summary.pageCount != null && (
           <span className="px-1 py-0.5 rounded bg-muted/40 text-[10px]">
             {summary.pageCount}p
           </span>
         )}
-        {summary.classificationLabel && (
+        {!isProblematic && summary.classificationLabel && (
           <span className="px-1 py-0.5 rounded bg-muted/40 text-[10px] truncate max-w-[10rem]">
             {summary.classificationLabel}
+          </span>
+        )}
+        {summary.hasError && summary.errorMessage && (
+          <span className="text-[10px] text-red-400/70 truncate max-w-[10rem]" title={summary.errorMessage}>
+            {summary.errorMessage}
+          </span>
+        )}
+        {!summary.hasError && summary.isSkipped && summary.skipReason && (
+          <span className="text-[10px] text-amber-400/70 truncate max-w-[10rem]" title={summary.skipReason}>
+            {summary.skipReason}
           </span>
         )}
       </div>
@@ -247,7 +321,16 @@ function TimelineStepRow({ step, maxMs, fileSummaries }: { step: ProcessingStep;
   const widthPct = Math.max(2, ((step.durationMs ?? 0) / maxMs) * 100);
   const detailStr = formatDetails(step.details);
   const hasChildren = fileSummaries && fileSummaries.length > 0;
-  const [childOpen, setChildOpen] = useState(false);
+
+  const failedCount = fileSummaries ? fileSummaries.filter((s) => s.hasError).length : 0;
+  const skippedCount = fileSummaries ? fileSummaries.filter((s) => !s.hasError && s.isSkipped).length : 0;
+  const hasProblems = failedCount > 0 || skippedCount > 0;
+
+  // Auto-expand when there are failures so users don't miss them (also reacts to live updates)
+  const [childOpen, setChildOpen] = useState(hasProblems);
+  useEffect(() => {
+    if (hasProblems) setChildOpen(true);
+  }, [hasProblems]);
   const [sortBy, setSortBy] = useState<"duration" | "name">("duration");
 
   const sortedSummaries = hasChildren
@@ -273,6 +356,9 @@ function TimelineStepRow({ step, maxMs, fileSummaries }: { step: ProcessingStep;
                 : <ChevronRight className="w-3 h-3 text-muted-foreground/60" />}
             </span>
           )}
+          {hasProblems && (
+            <AlertTriangle className="w-3 h-3 shrink-0 text-red-400" />
+          )}
           {step.label}
         </div>
         <div className="flex-1 h-4 bg-muted/40 rounded overflow-hidden">
@@ -288,6 +374,16 @@ function TimelineStepRow({ step, maxMs, fileSummaries }: { step: ProcessingStep;
           {detailStr && (
             <span className="inline-flex items-center px-1.5 py-0.5 rounded bg-muted/50 text-[11px] text-muted-foreground truncate max-w-full">
               {detailStr}
+            </span>
+          )}
+          {failedCount > 0 && (
+            <span className="shrink-0 px-1 py-0.5 rounded bg-red-500/20 text-red-400 text-[10px] font-semibold border border-red-500/30 font-mono">
+              {failedCount} failed
+            </span>
+          )}
+          {skippedCount > 0 && (
+            <span className="shrink-0 px-1 py-0.5 rounded bg-amber-500/20 text-amber-400 text-[10px] font-semibold border border-amber-500/30 font-mono">
+              {skippedCount} skipped
             </span>
           )}
           {hasChildren && (
