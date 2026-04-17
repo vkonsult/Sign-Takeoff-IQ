@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { AppShell } from "@/components/layout/Shell";
-import { useJobsList } from "@/hooks/use-takeoff";
+import { useJobsList, downloadExport } from "@/hooks/use-takeoff";
 import { apiFetch, openPdfInNewTab } from "@/lib/apiClient";
 import { useQueryClient } from "@tanstack/react-query";
 import { getListJobsQueryKey } from "@workspace/api-client-react";
@@ -10,7 +10,7 @@ import { useToast } from "@/hooks/use-toast";
 import {
   FolderOpen, Eye, FileText, CheckCircle2, Cpu,
   AlertTriangle, Trash2, X, Square, CheckSquare, MinusSquare,
-  Archive, EyeOff, Table2, FileDown, Loader2,
+  Archive, EyeOff, Table2, FileDown, FileSpreadsheet, Loader2,
 } from "lucide-react";
 import { Link } from "wouter";
 import { exportMarkedupPdf, type MarkerSign } from "@/lib/exportMarkedupPdf";
@@ -64,6 +64,7 @@ export default function JobsList() {
   const [bulkConfirming, setBulkConfirming] = useState(false);
   const [bulkDeleting, setBulkDeleting] = useState(false);
   const [exportingPdf, setExportingPdf] = useState<Set<string>>(new Set());
+  const [exportingXlsx, setExportingXlsx] = useState<Set<string>>(new Set());
   const { toast } = useToast();
 
   const handleMarkedPdf = async (jobId: string, jobName: string | null | undefined, e: React.MouseEvent) => {
@@ -94,6 +95,22 @@ export default function JobsList() {
       setExportingPdf((prev) => { const n = new Set(prev); n.delete(jobId); return n; });
     }
   };
+  const handleXlsxExport = async (jobId: string, e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (exportingXlsx.has(jobId)) return;
+    setExportingXlsx((prev) => new Set(prev).add(jobId));
+    try {
+      await downloadExport(jobId);
+      toast({ title: "XLSX downloaded" });
+    } catch (err) {
+      console.error("XLSX export failed:", err);
+      toast({ title: "XLSX export failed", description: "Please try again", variant: "destructive" });
+    } finally {
+      setExportingXlsx((prev) => { const n = new Set(prev); n.delete(jobId); return n; });
+    }
+  };
+
   const jobs = (data?.jobs ?? []) as Array<{
     id: string;
     name?: string | null;
@@ -377,6 +394,17 @@ export default function JobsList() {
                             ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
                             : <FileDown className="w-3.5 h-3.5" />}
                           PDF
+                        </button>
+                        <button
+                          onClick={(e) => handleXlsxExport(job.id, e)}
+                          disabled={exportingXlsx.has(job.id)}
+                          title="Download XLSX export"
+                          className="flex items-center gap-1 px-2 py-1 rounded text-[11px] font-display font-semibold text-foreground/70 bg-secondary border border-border hover:text-foreground hover:bg-secondary/80 transition-all disabled:opacity-50"
+                        >
+                          {exportingXlsx.has(job.id)
+                            ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                            : <FileSpreadsheet className="w-3.5 h-3.5" />}
+                          XLSX
                         </button>
                       </div>
                     )}

@@ -4,6 +4,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { AppShell } from "@/components/layout/Shell";
 import { apiFetch, openPdfInNewTab } from "@/lib/apiClient";
 import { useJobDetails, useStartExtraction, downloadExport, useUpdateJobName } from "@/hooks/use-takeoff";
+import { useToast } from "@/hooks/use-toast";
 import { UnifiedPlanViewer } from "@/components/UnifiedPlanViewer";
 import type { ExtractedSign as SignMarker } from "@/components/UnifiedPlanViewer";
 import { SignSpecModal, type PlaqueTableData } from "@/components/SignSpecModal";
@@ -909,6 +910,7 @@ export default function JobDetails() {
   const { data, isLoading, isError, error } = useJobDetails(jobId);
   const extractMutation = useStartExtraction();
   const queryClient = useQueryClient();
+  const { toast } = useToast();
 
   type SignRow = NonNullable<typeof data>["extractedSigns"][number];
   const [reviewSign, setReviewSign] = useState<SignRow | null>(null);
@@ -950,7 +952,12 @@ export default function JobDetails() {
 
   const handleExport = () => {
     if (jobId) {
-      downloadExport(jobId).catch((err) => console.error("Export failed:", err));
+      downloadExport(jobId)
+        .then(() => toast({ title: "XLSX downloaded" }))
+        .catch((err) => {
+          console.error("Export failed:", err);
+          toast({ title: "XLSX export failed", description: "Please try again", variant: "destructive" });
+        });
     }
   };
 
