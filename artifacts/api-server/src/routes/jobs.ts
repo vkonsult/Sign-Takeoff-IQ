@@ -1662,7 +1662,7 @@ router.post("/jobs/:jobId/ai-scan", async (req, res) => {
 type DbSign = typeof extractedSignsTable.$inferSelect;
 type DbFile = typeof jobFilesTable.$inferSelect;
 
-async function mergeAiSignRows(
+export async function mergeAiSignRows(
   rows: import("../lib/extraction").ExtractedSignRow[],
   jobId: string,
   fileId: string,
@@ -1672,6 +1672,17 @@ async function mergeAiSignRows(
 ): Promise<{ newCount: number; updateCount: number }> {
   let newCount = 0;
   let updateCount = 0;
+
+  // Accumulates occurrence-group keys whose membership changed during this run.
+  // INSERT path: a new member joins (or creates) a group → must recompute the whole group.
+  // UPDATE path: the additive patch currently never rewrites signType/location (those fields
+  // are part of the composite dedup key, so a key match guarantees they are already equal).
+  // The set below tracks BOTH cases so that any future extension of the update payload
+  // (e.g. AI-driven corrections of signType/location) is automatically handled.
+  const changedOccGroupKeys = new Set<string>();
+
+  const occGroupKey = (loc: string | null | undefined, type: string | null | undefined) =>
+    `${(type ?? "").toLowerCase().trim()}||${(loc ?? "").toLowerCase().trim()}`;
 
   for (const row of rows) {
     const key = `${fileId}||${row.page_number ?? ""}||${(row.location ?? "").toLowerCase().trim()}||${(row.sign_type ?? "").toLowerCase().trim()}`;
@@ -1695,6 +1706,20 @@ async function mergeAiSignRows(
         if (!existingSign.messageContent && row.message_content) update.messageContent = row.message_content;
         if (!existingSign.notes && row.notes) update.notes = row.notes;
         if (!existingSign.signIdentifier && row.sign_identifier) update.signIdentifier = row.sign_identifier;
+
+        // Defensive key-change detection: if a future code change adds signType or location
+        // to the update payload the old group loses this member while the new group gains it.
+        // Capture both sides so the recomputation pass below can fix both groups.
+        const oldKey = occGroupKey(existingSign.location, existingSign.signType);
+        const newKey = occGroupKey(
+          "location" in update ? (update.location as string | null | undefined) : existingSign.location,
+          "signType" in update ? (update.signType as string | null | undefined) : existingSign.signType,
+        );
+        if (oldKey !== newKey) {
+          changedOccGroupKeys.add(oldKey);
+          changedOccGroupKeys.add(newKey);
+        }
+
         try {
           await db.update(extractedSignsTable).set(update).where(eq(extractedSignsTable.id, existingSign.id));
           updateCount++;
@@ -1737,10 +1762,37 @@ async function mergeAiSignRows(
       await db.insert(extractedSignsTable).values(insertRow);
       existingSignKeys.add(key);
       newCount++;
+      // A new sign joins (or creates) its occurrence group — mark that group for
+      // index recomputation after the loop.
+      changedOccGroupKeys.add(occGroupKey(row.location, row.sign_type));
     } catch {
       // non-fatal: skip duplicate
     }
   }
+
+  // Recompute occurrence indices for every group whose membership changed during
+  // this run (new inserts, or any future update that changes signType/location).
+  if (changedOccGroupKeys.size > 0) {
+    const allJobSigns = await db
+      .select()
+      .from(extractedSignsTable)
+      .where(eq(extractedSignsTable.jobId, jobId))
+      .orderBy(asc(extractedSignsTable.id));
+
+    for (const gk of changedOccGroupKeys) {
+      const group = allJobSigns.filter((s) => occGroupKey(s.location, s.signType) === gk);
+      for (let i = 0; i < group.length; i++) {
+        await db
+          .update(extractedSignsTable)
+          .set({
+            occurrenceIndex: group.length > 1 ? i + 1 : null,
+            occurrenceTotal: group.length > 1 ? group.length : null,
+          })
+          .where(eq(extractedSignsTable.id, group[i].id));
+      }
+    }
+  }
+
   return { newCount, updateCount };
 }
 
