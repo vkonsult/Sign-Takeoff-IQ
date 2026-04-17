@@ -217,7 +217,7 @@ const PURE_TEXT_ROOM_TYPE_KEYWORDS = new Set([
 ]);
 
 /** Returns true if a line is just a room heading (room number alone or room number + name). */
-function parseRoomHeading(line: TextLine): { roomNumber: string; roomName: string } | null {
+export function parseRoomHeading(line: TextLine): { roomNumber: string; roomName: string } | null {
   const items = line.filter((it) => it.text.trim().length > 0);
   if (items.length === 0) return null;
   const first = items[0]!.text.trim();

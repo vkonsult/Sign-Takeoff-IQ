@@ -144,7 +144,7 @@ const SIGN_ABBREV_CANON: Record<string, string> = {
   TECHNOLOGY: "TECHNOLOGY",
 };
 
-function canonToken(tok: string): string {
+export function canonToken(tok: string): string {
   const upper = tok.toUpperCase();
   const canon = SIGN_ABBREV_CANON[upper];
   return canon ? canon.toLowerCase() : tok.toLowerCase();
