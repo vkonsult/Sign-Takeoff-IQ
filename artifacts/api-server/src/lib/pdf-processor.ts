@@ -19,8 +19,7 @@ import {
 } from "@workspace/db";
 
 import { extractTextFromPdf, isSpecFile } from "./extraction";
-import { extractSignsHeuristic } from "./extraction-heuristic";
-import { isCodeOnlyLocation } from "./sign-vocabulary";
+import { FLOOR_PLAN_EXCLUSION_PHRASES, SIGN_SCHEDULE_PHRASES, isCodeOnlyLocation } from "./sign-vocabulary";
 import { saveParsedResult, getFilePageImagesDir, PAGES_DIR } from "./storage";
 import { renderFloorPlanPages } from "./pdf-render";
 import { logger } from "./logger";
@@ -29,7 +28,7 @@ import {
   extractRawPageItems,
   matchLocationToCoords,
   extractTitleBlockBuildingType,
-  extractCodeProximityPairs,
+  extractPdfMetadata,
   type PdfPhrase,
 } from "./pdf-words";
 import { buildSheetManifest } from "./sheet-manifest";
@@ -39,6 +38,7 @@ import {
   type ScheduleEntry,
 } from "./signage-schedule-parser";
 import { extractSignSchedule } from "./sign-schedule-extractor";
+import { applySignRules, assignmentToRows, type PlaqueEntry } from "./rule-engine";
 
 export async function runPdfProcessor(jobId: string): Promise<void> {
   const pipelineSteps: ProcessingStep[] = [];
@@ -283,88 +283,101 @@ export async function runPdfProcessor(jobId: string): Promise<void> {
           }
         }
 
-        // ── Heuristic sign extraction (no AI) ────────────────────────────
-        // Extract sign rows using the regex/spatial algorithm, then insert into DB.
-        // These become the initial sign data for the job (dataSource: "pdf").
+        // ── Rule engine sign extraction (Phase 5: R1-R15) ─────────────────
+        // Apply the deterministic rule engine to produce sign assignments.
+        // The engine builds a room inventory inline from floor plan pages,
+        // then applies rules R1-R15 using the room flags and plaque table.
+        // Results are inserted into extractedSignsTable as extraction_method="rule_engine".
+        // Per-file decisions log + verification questions are stored in step details.
         try {
-          const t_heuristic = Date.now();
-          const fpPagesForHeuristic = fileFloorPlanPages.get(file.id);
-          const { rows: heuristicRows } = await extractSignsHeuristic(file.storedPath, file.id, fpPagesForHeuristic, detectedBuildingType);
-          if (heuristicRows.length > 0) {
-            const insertRows = heuristicRows.map((row) => ({
-              ...row,
+          const t_rule = Date.now();
+          const fpPagesForRules = fileFloorPlanPages.get(file.id) ?? new Set<number>();
+          const levelMapForFile = allSpatialFloorLevelNames.get(file.id) ?? new Map<number, string>();
+
+          if (fpPagesForRules.size > 0) {
+            // Build plaque table from already-inserted schedule entries for this file
+            // Note: at this point, schedule entries have not yet been persisted (they are
+            // accumulated and inserted after the per-file loop). Use in-memory allScheduleEntries.
+            const plaqueTableForFile: PlaqueEntry[] = allScheduleEntries
+              .filter((e) => e.fileId === file.id)
+              .map((e) => ({
+                roomNumber: e.roomNumber ?? null,
+                roomName: e.roomName ?? null,
+                signTypeCode: e.signTypeCode,
+                quantity: e.quantity ?? null,
+              }));
+
+            const ruleResult = await applySignRules(
+              file.storedPath,
+              file.id,
+              fpPagesForRules,
+              levelMapForFile,
+              plaqueTableForFile,
               jobId,
-              jobFileId: file.id,
-              dataSource: "pdf" as const,
-              userVerified: false,
-              manuallyAdded: false,
-            }));
-            const CHUNK = 200;
-            for (let i = 0; i < insertRows.length; i += CHUNK) {
-              await db.insert(extractedSignsTable).values(insertRows.slice(i, i + CHUNK));
-            }
-            logger.info({ jobId, fileId: file.id, inserted: heuristicRows.length, durationMs: Date.now() - t_heuristic }, "[PDF Processor] Heuristic sign extraction complete");
-          }
-        } catch (err) {
-          logger.warn({ err, fileId: file.id }, "[PDF Processor] Heuristic extraction failed — non-fatal");
-        }
+            );
 
-        // ── Code-proximity extraction (raw_text rows) ─────────────────────
-        // Scan every floor-plan page for callout codes (e.g. A-101) spatially
-        // adjacent to room/area text labels (WORSHIP, STAGE, LOBBY, etc.) and
-        // store them as extraction_method="raw_text" rows.  These rows surface in
-        // the Sign Table and Coordinates Tab as "Code + TEXT" candidates.
-        try {
-          const t_cp = Date.now();
-          const fpPages = Array.from(fileFloorPlanPages.get(file.id) ?? []).sort((a, b) => a - b);
-          if (fpPages.length > 0) {
-            const allCpPairs = (
-              await Promise.all(
-                fpPages.map(async (pageNum) => {
-                  try {
-                    const pw = await extractPagePhrases(file.storedPath, file.id, pageNum);
-                    return extractCodeProximityPairs(pw, pageNum);
-                  } catch {
-                    return [];
-                  }
-                })
-              )
-            ).flat();
+            // Convert SignAssignments → extractedSignsTable rows
+            const allSignRows = ruleResult.assignments.flatMap((assignment) =>
+              assignmentToRows(assignment).map((row) => ({
+                jobId,
+                jobFileId: file.id,
+                signType: row.signType,
+                signIdentifier: row.signIdentifier,
+                quantity: row.quantity,
+                location: row.location,
+                notes: row.notes,
+                pageNumber: row.pageNumber,
+                confidenceScore: row.confidenceScore,
+                reviewFlag: row.reviewFlag,
+                extractionMethod: row.extractionMethod,
+                placementSource: row.placementSource,
+                exceptionReason: row.exceptionReason,
+                rawJson: row.rawJson,
+                dataSource: "pdf" as const,
+                userVerified: false,
+                manuallyAdded: false,
+              }))
+            );
 
-            if (allCpPairs.length > 0) {
-              // Deduplicate by code+location+page
-              const seen = new Set<string>();
-              const cpInsertRows = allCpPairs
-                .filter((pair) => {
-                  const key = `${pair.code.toUpperCase()}||${pair.label.toUpperCase()}||${pair.page}`;
-                  if (seen.has(key)) return false;
-                  seen.add(key);
-                  return true;
-                })
-                .map((pair) => ({
-                  jobId,
-                  jobFileId: file.id,
-                  signIdentifier: pair.code,
-                  location: pair.label,
-                  pageNumber: pair.page,
-                  xPos: pair.x,
-                  yPos: pair.y,
-                  confidenceScore: 0.7,
-                  extractionMethod: "raw_text" as const,
-                  dataSource: "pdf" as const,
-                  userVerified: false,
-                  manuallyAdded: false,
-                  reviewFlag: false,
-                }));
+            if (allSignRows.length > 0) {
               const CHUNK = 200;
-              for (let i = 0; i < cpInsertRows.length; i += CHUNK) {
-                await db.insert(extractedSignsTable).values(cpInsertRows.slice(i, i + CHUNK));
+              for (let i = 0; i < allSignRows.length; i += CHUNK) {
+                await db.insert(extractedSignsTable).values(allSignRows.slice(i, i + CHUNK));
               }
-              logger.info({ jobId, fileId: file.id, inserted: cpInsertRows.length, durationMs: Date.now() - t_cp }, "[PDF Processor] Code-proximity (raw_text) extraction complete");
             }
+
+            const durationMs = Date.now() - t_rule;
+            pipelineSteps.push({
+              step: `rule_application_${file.id}`,
+              label: filesToProcess.length > 1
+                ? `Apply Rules R1-R15 — ${file.originalName}`
+                : "Apply Rules R1–R15",
+              durationMs,
+              startedAt: new Date(t_rule).toISOString(),
+              details: {
+                roomCount: ruleResult.roomCount,
+                assignmentCount: ruleResult.assignments.length,
+                signRowsInserted: allSignRows.length,
+                ambiguousCount: ruleResult.assignments.filter((a) => a.ambiguous).length,
+                verificationErrors: ruleResult.verificationErrors,
+                decisionsLog: ruleResult.decisionsLog,
+                questionsForVerification: ruleResult.questionsForVerification,
+              },
+            });
+
+            logger.info(
+              {
+                jobId,
+                fileId: file.id,
+                roomCount: ruleResult.roomCount,
+                signRowsInserted: allSignRows.length,
+                durationMs,
+              },
+              "[PDF Processor] Rule engine (Phase 5) complete",
+            );
           }
         } catch (err) {
-          logger.warn({ err, fileId: file.id }, "[PDF Processor] Code-proximity extraction failed — non-fatal");
+          logger.warn({ err, fileId: file.id }, "[PDF Processor] Rule engine extraction failed — non-fatal");
         }
 
         // ── Signage schedule spatial parsing (no AI) ──────────────────────
@@ -502,6 +515,34 @@ export async function runPdfProcessor(jobId: string): Promise<void> {
     succeeded: parsedResults.filter((r) => !("error" in r)).length,
     failed: parsedResults.filter((r) => "error" in r).length,
   }, "phase-3");
+
+  // ── Aggregate rule_application step (Phase 5 summary) ────────────────────
+  // Collects per-file rule_application_<fileId> steps into a single job-level
+  // summary so the Timeline tab can show a Phase 5 card even for multi-file jobs.
+  {
+    const ruleSteps = pipelineSteps.filter((s) => s.step.startsWith("rule_application_"));
+    if (ruleSteps.length > 0) {
+      const totalRooms = ruleSteps.reduce((sum, s) => sum + ((s.details?.roomCount as number) ?? 0), 0);
+      const totalSigns = ruleSteps.reduce((sum, s) => sum + ((s.details?.signRowsInserted as number) ?? 0), 0);
+      const allDecisionsLog = ruleSteps.flatMap((s) => (s.details?.decisionsLog as string[]) ?? []);
+      const allQuestions = ruleSteps.flatMap((s) => (s.details?.questionsForVerification as string[]) ?? []);
+      const allErrors = ruleSteps.flatMap((s) => (s.details?.verificationErrors as string[]) ?? []);
+      pipelineSteps.push({
+        step: "rule_application",
+        label: "Apply Rules R1–R15 (all files)",
+        durationMs: ruleSteps.reduce((sum, s) => sum + s.durationMs, 0),
+        startedAt: ruleSteps[0]!.startedAt,
+        details: {
+          fileCount: ruleSteps.length,
+          totalRooms,
+          totalSignsAssigned: totalSigns,
+          decisionsLog: allDecisionsLog,
+          questionsForVerification: allQuestions,
+          verificationErrors: allErrors,
+        },
+      });
+    }
+  }
 
   // ── Persist schedule parser results (sign_type_specs + signage_schedule_entries) ──
   // Always clear previous schedule rows first (re-run support, prevents stale data

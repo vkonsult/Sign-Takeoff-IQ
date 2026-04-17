@@ -8,7 +8,6 @@ import {
   extractPagePhrases,
   extractTitleBlockBuildingType,
   extractFloorPlanTextCandidates,
-  extractCodeProximityPairs,
   type RoomCandidate,
 } from "./pdf-words";
 import type { PdfOutlineSection } from "./pdf-words";
@@ -2255,46 +2254,7 @@ Pages:
     "Extraction complete"
   );
 
-  // ── Code-proximity pass: capture label+code pairs directly from PDF text ─────
-  // For each floor plan page, find text labels that are spatially adjacent to a
-  // sign callout code (e.g. "A-101"). Store them as raw_text rows so that labels
-  // like WORSHIP, LOBBY, STAGE appear in both tables even when the AI misses them.
-  const codeProximityRows: ExtractedSignRow[] = [];
-  const seenLabelCodePairs = new Set<string>();
-  for (const fpPage of floorPlanPages) {
-    try {
-      const pw = await extractPagePhrases(filePath, fileId, fpPage.pageNum);
-      const pairs = extractCodeProximityPairs(pw, fpPage.pageNum);
-      for (const pair of pairs) {
-        const dedupeKey = `${pair.code}||${pair.label.toUpperCase()}||${fpPage.pageNum}`;
-        if (seenLabelCodePairs.has(dedupeKey)) continue;
-        seenLabelCodePairs.add(dedupeKey);
-        codeProximityRows.push({
-          sheet_number: null,
-          detail_reference: null,
-          sign_type: null,
-          sign_identifier: pair.code,
-          quantity: null,
-          location: pair.label,
-          dimensions: null,
-          mounting_type: null,
-          finish_color: null,
-          illumination: null,
-          materials: null,
-          message_content: null,
-          notes: null,
-          page_number: pair.page,
-          x_pos: pair.x,
-          y_pos: pair.y,
-          confidence_score: 0.7,
-          review_flag: false,
-          extraction_method: "raw_text",
-        });
-      }
-    } catch { /* non-fatal */ }
-  }
-
-  return { rows: dedupedRows, rawTextRows: codeProximityRows, pageCount: numPages, rawText, inputTokens: totalInputTokens, outputTokens: totalOutputTokens, pageStats };
+  return { rows: dedupedRows, rawTextRows: [], pageCount: numPages, rawText, inputTokens: totalInputTokens, outputTokens: totalOutputTokens, pageStats };
 }
 
 // ─── VISUAL LOCATE ──────────────────────────────────────────────────────────

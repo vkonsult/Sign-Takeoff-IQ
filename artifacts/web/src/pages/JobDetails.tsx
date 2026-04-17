@@ -78,8 +78,10 @@ function formatDetails(details: Record<string, unknown> | undefined): string | n
   if (!details) return null;
   const parts: string[] = [];
   const d = details as Record<string, number | string | boolean | undefined>;
-  const { rows, pages, inputTokens, outputTokens, verified, discoveries, matched, totalSigns, textAfter, imageAfter, textRows, imageRows, signsExtracted, specFileCount, succeeded, failed, textBefore, imageBefore, classified, floorPlan, signSchedule, filesWithBboxes, pagesWithBboxes, fileCount } = d;
+  const { rows, pages, inputTokens, outputTokens, verified, discoveries, matched, totalSigns, textAfter, imageAfter, textRows, imageRows, signsExtracted, specFileCount, succeeded, failed, textBefore, imageBefore, classified, floorPlan, signSchedule, filesWithBboxes, pagesWithBboxes, fileCount, totalRooms, totalSignsAssigned } = d;
   const { skipReason, skipped } = details as Record<string, string | boolean | undefined>;
+  if (totalRooms != null) parts.push(`${totalRooms} rooms`);
+  if (totalSignsAssigned != null) parts.push(`${totalSignsAssigned} signs`);
   if (specFileCount != null) parts.push(`${specFileCount} spec file${Number(specFileCount) !== 1 ? "s" : ""}`);
   if (fileCount != null) parts.push(`${fileCount} file${Number(fileCount) !== 1 ? "s" : ""}`);
   if (rows != null) parts.push(`${rows} rows`);
@@ -337,6 +339,74 @@ function ProcessingTimeline({ steps, isLoading }: { steps: ProcessingStep[]; isL
           </div>
         </div>
       )}
+
+      {/* ── Decisions Log (Phase 5 — Rules R1–R15) ──────────────────────────── */}
+      {(() => {
+        const ruleStep = steps.find((s) => s.step === "rule_application");
+        const decisionsLog = ruleStep?.details?.decisionsLog as string[] | undefined;
+        const questions = ruleStep?.details?.questionsForVerification as string[] | undefined;
+        const errors = ruleStep?.details?.verificationErrors as string[] | undefined;
+        const totalRooms = ruleStep?.details?.totalRooms as number | undefined;
+        const totalSigns = ruleStep?.details?.totalSignsAssigned as number | undefined;
+
+        if (!ruleStep) return null;
+
+        return (
+          <div>
+            <div className="text-[10px] font-display font-bold uppercase tracking-widest text-muted-foreground mb-3">
+              Decisions Log — Phase 5 (Rules R1–R15)
+            </div>
+            {totalRooms != null && totalSigns != null && (
+              <div className="flex gap-4 text-xs font-mono text-foreground/60 mb-3">
+                <span>{totalRooms} room{totalRooms !== 1 ? "s" : ""} inventoried</span>
+                <span>·</span>
+                <span>{totalSigns} sign assignment{totalSigns !== 1 ? "s" : ""}</span>
+              </div>
+            )}
+            {decisionsLog && decisionsLog.length > 0 && (
+              <div className="mb-4">
+                <div className="text-xs font-semibold text-foreground/60 mb-1.5">
+                  Sign Assignments ({decisionsLog.length})
+                </div>
+                <div className="max-h-48 overflow-y-auto rounded-lg border border-border/30 bg-muted/10 p-2.5 space-y-0.5">
+                  {decisionsLog.map((entry, i) => (
+                    <div key={i} className="text-[11px] font-mono text-foreground/65 leading-snug">{entry}</div>
+                  ))}
+                </div>
+              </div>
+            )}
+            {questions && questions.length > 0 && (
+              <div className="mb-4">
+                <div className="text-xs font-semibold text-amber-400/80 mb-1.5">
+                  ⚠ Questions for Verification ({questions.length})
+                </div>
+                <div className="max-h-36 overflow-y-auto rounded-lg border border-amber-400/25 bg-amber-400/5 p-2.5 space-y-1">
+                  {questions.map((q, i) => (
+                    <div key={i} className="text-[11px] text-amber-300/80 leading-snug">• {q}</div>
+                  ))}
+                </div>
+              </div>
+            )}
+            {errors && errors.length > 0 && (
+              <div className="mb-4">
+                <div className="text-xs font-semibold text-red-400/80 mb-1.5">
+                  ✗ Verification Errors ({errors.length})
+                </div>
+                <div className="max-h-36 overflow-y-auto rounded-lg border border-red-400/25 bg-red-400/5 p-2.5 space-y-1">
+                  {errors.map((e, i) => (
+                    <div key={i} className="text-[11px] text-red-300/80 leading-snug">• {e}</div>
+                  ))}
+                </div>
+              </div>
+            )}
+            {(!decisionsLog?.length && !questions?.length && !errors?.length) && (
+              <div className="text-xs text-muted-foreground/50 italic">
+                No rule engine output recorded for this job. Re-run extraction to populate.
+              </div>
+            )}
+          </div>
+        );
+      })()}
 
       {totalStep && (
         <div className="pt-3 border-t border-border/60 flex items-center justify-between">
