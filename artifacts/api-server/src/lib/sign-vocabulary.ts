@@ -154,6 +154,25 @@ export const FLOOR_PLAN_EXCLUSION_PHRASES: string[] = [
 ];
 
 /**
+ * Multi-word discipline identifiers that unambiguously identify a non-floor-plan
+ * drawing type even when the phrase contains a floor-plan keyword (e.g. "plan").
+ * Checked against candidate title-block phrases only (those that already triggered
+ * an inclusion keyword) so that incidental corner-zone text cannot veto a valid
+ * floor-plan classification.
+ *
+ * Unlike the single-word entries in FLOOR_PLAN_EXCLUSION_PHRASES, these require the
+ * full phrase to match — e.g. "framing plan" must not veto "first floor plan".
+ */
+export const HARD_DISCIPLINE_IDENTIFIERS: readonly string[] = [
+  "framing plan",
+  "reflected ceiling plan",
+  "demolition plan",
+  "attic plan",
+  "roof framing",
+  "structural plan",
+];
+
+/**
  * Canonical floor-level names in heuristic ascending order.
  * (lower → main → upper → attic)
  * Used for level detection and fallback ordering.

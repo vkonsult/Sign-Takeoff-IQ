@@ -2,6 +2,7 @@ import fs from "fs/promises";
 import {
   FLOOR_PLAN_INCLUSION_PHRASES,
   FLOOR_PLAN_EXCLUSION_PHRASES,
+  HARD_DISCIPLINE_IDENTIFIERS,
   CANONICAL_LEVEL_NAMES as CANONICAL_LEVEL_NAMES_FROM_VOCAB,
   KNOWN_ROOM_ABBREVIATIONS,
   detectBuildingType,
@@ -682,15 +683,6 @@ export function classifyPageFromPhrases(phrases: PdfPhrase[]): ClassifyPageResul
   // Incidental corner-zone text that does not itself trigger inclusion cannot veto the
   // page — e.g. "REFLECTED CEILING PLAN" appearing as a separate note alongside
   // "FIRST FLOOR" must not prevent the floor-plan classification.
-  const HARD_DISCIPLINE_IDENTIFIERS = [
-    "framing plan",
-    "reflected ceiling plan",
-    "demolition plan",
-    "attic plan",
-    "roof framing",
-    "structural plan",
-  ] as const;
-
   const candidatePhrases = titleBlockPhrases.filter((p) => {
     const lower = p.text.toLowerCase();
     return (
