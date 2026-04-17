@@ -253,6 +253,15 @@ All significant user actions are recorded to the `activity_logs` table (fire-and
 
 **Frontend**: `/activity` route → `ActivityPage.tsx` (filterable table, event badges, user initials display, relative timestamps). Activity sidebar link added between "All Jobs" and "Training Import".
 
+## Sentry Error Monitoring
+
+Sentry is used for production error reporting in the API server.
+
+- **`SENTRY_DSN`** — Replit Secret; consumed by `@sentry/node` at startup.
+- Alert rules (error-rate spike, new unhandled issue, high-frequency issue) and
+  notification channels (email + Slack) are documented in
+  **`docs/sentry-alerts.md`**.
+
 ## Development Commands
 
 ```bash
