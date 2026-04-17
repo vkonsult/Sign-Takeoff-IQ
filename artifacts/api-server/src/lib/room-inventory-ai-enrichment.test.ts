@@ -375,6 +375,159 @@ describe("enrichAmbiguousRoomsWithAI — no_json_array failure rate alerting", (
   });
 });
 
+// ── Text-only path ────────────────────────────────────────────────────────────
+
+describe("enrichAmbiguousRoomsWithAI — text-only path (no pdfPath)", () => {
+  beforeEach(() => {
+    vi.mocked(ai.models.generateContent).mockReset().mockResolvedValue(EMPTY_GEMINI_RESPONSE);
+    vi.mocked(renderFloorPlanPages).mockReset();
+    vi.mocked(logger.warn).mockReset();
+  });
+
+  it("sends a text-only prompt (no inlineData parts) when pdfPath is omitted", async () => {
+    const rooms: RoomRecord[] = [makeAmbiguousRoom("WC"), makeAmbiguousRoom("STR")];
+
+    await enrichAmbiguousRoomsWithAI(rooms, "file-t1", "job-t1");
+
+    const parts = vi.mocked(ai.models.generateContent).mock.calls[0]![0]
+      .contents[0]!.parts as Array<Record<string, unknown>>;
+
+    expect(countImageParts(parts)).toBe(0);
+    expect(parts.length).toBeGreaterThan(0);
+    expect(parts.every((p) => "text" in p)).toBe(true);
+  });
+
+  it("still calls Gemini exactly once when pdfPath is omitted and rooms fit in one batch", async () => {
+    const rooms: RoomRecord[] = [makeAmbiguousRoom("WC"), makeAmbiguousRoom("STR")];
+
+    await enrichAmbiguousRoomsWithAI(rooms, "file-t2", "job-t2");
+
+    expect(vi.mocked(ai.models.generateContent)).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not call renderFloorPlanPages when pdfPath is omitted", async () => {
+    const rooms: RoomRecord[] = [makeAmbiguousRoom("CORR")];
+
+    await enrichAmbiguousRoomsWithAI(rooms, "file-t3", "job-t3");
+
+    expect(vi.mocked(renderFloorPlanPages)).not.toHaveBeenCalled();
+  });
+});
+
+describe("enrichAmbiguousRoomsWithAI — text-only path (pdfPath present, no boundingBox)", () => {
+  beforeEach(() => {
+    vi.mocked(ai.models.generateContent).mockReset().mockResolvedValue(EMPTY_GEMINI_RESPONSE);
+    vi.mocked(renderFloorPlanPages).mockReset().mockResolvedValue(new Map([[1, testPngPath]]));
+    vi.mocked(logger.warn).mockReset();
+  });
+
+  it("sends a text-only prompt when all ambiguous rooms lack a boundingBox", async () => {
+    const rooms: RoomRecord[] = [
+      makeAmbiguousRoom("WC", { boundingBox: null }),
+      makeAmbiguousRoom("STR", { boundingBox: null }),
+    ];
+
+    await enrichAmbiguousRoomsWithAI(rooms, "file-t4", "job-t4", "/fake/plan.pdf");
+
+    const parts = vi.mocked(ai.models.generateContent).mock.calls[0]![0]
+      .contents[0]!.parts as Array<Record<string, unknown>>;
+
+    expect(countImageParts(parts)).toBe(0);
+    expect(parts.every((p) => "text" in p)).toBe(true);
+  });
+
+  it("includes every room index in the text prompt when no boundingBox is present", async () => {
+    const rooms: RoomRecord[] = [
+      makeAmbiguousRoom("WC", { boundingBox: null }),
+      makeAmbiguousRoom("STR", { boundingBox: null }),
+    ];
+
+    await enrichAmbiguousRoomsWithAI(rooms, "file-t5", "job-t5", "/fake/plan.pdf");
+
+    const parts = vi.mocked(ai.models.generateContent).mock.calls[0]![0]
+      .contents[0]!.parts as Array<Record<string, unknown>>;
+
+    const allText = parts.map((p) => (p["text"] as string) ?? "").join("\n");
+    expect(allText).toContain("WC");
+    expect(allText).toContain("STR");
+  });
+});
+
+// ── Response parsing ──────────────────────────────────────────────────────────
+
+describe("enrichAmbiguousRoomsWithAI — Gemini response parsing", () => {
+  beforeEach(() => {
+    vi.mocked(ai.models.generateContent).mockReset();
+    vi.mocked(renderFloorPlanPages).mockReset();
+    vi.mocked(logger.warn).mockReset();
+  });
+
+  it("applies a valid JSON array classification to the correct room", async () => {
+    const rooms: RoomRecord[] = [makeAmbiguousRoom("WC", { boundingBox: null })];
+
+    vi.mocked(ai.models.generateContent).mockResolvedValue({
+      text: JSON.stringify([
+        { index: 0, roomName: "RESTROOM", roomType: "RESTROOM", confidence: 0.95 },
+      ]),
+    });
+
+    const result = await enrichAmbiguousRoomsWithAI(rooms, "file-p1", "job-p1");
+
+    expect(result.enrichedCount).toBe(1);
+    expect(result.rooms[0]!.aiEnriched).toBe(true);
+    expect(result.rooms[0]!.roomName).toBe("RESTROOM");
+    expect(result.rooms[0]!.isRestroom).toBe(true);
+    expect(result.rooms[0]!.extractionConfidence).toBeGreaterThanOrEqual(0.95);
+  });
+
+  it("returns rooms unchanged when Gemini response contains no JSON array", async () => {
+    const rooms: RoomRecord[] = [makeAmbiguousRoom("WC", { boundingBox: null })];
+
+    vi.mocked(ai.models.generateContent).mockResolvedValue({
+      text: "Sorry, I cannot classify these rooms.",
+    });
+
+    const result = await enrichAmbiguousRoomsWithAI(rooms, "file-p2", "job-p2");
+
+    expect(result.enrichedCount).toBe(0);
+    expect(result.rooms[0]!.aiEnriched).toBe(false);
+    expect(result.rooms[0]!.roomName).toBe("WC");
+  });
+
+  it("returns rooms unchanged when Gemini response is malformed JSON inside brackets", async () => {
+    const rooms: RoomRecord[] = [makeAmbiguousRoom("STR", { boundingBox: null })];
+
+    vi.mocked(ai.models.generateContent).mockResolvedValue({
+      text: "[{not valid json}]",
+    });
+
+    const result = await enrichAmbiguousRoomsWithAI(rooms, "file-p3", "job-p3");
+
+    expect(result.enrichedCount).toBe(0);
+    expect(result.rooms[0]!.aiEnriched).toBe(false);
+  });
+
+  it("only enriches rooms that appear in the JSON response, leaving others unchanged", async () => {
+    const rooms: RoomRecord[] = [
+      makeAmbiguousRoom("WC", { boundingBox: null }),
+      makeAmbiguousRoom("STR", { boundingBox: null }),
+    ];
+
+    vi.mocked(ai.models.generateContent).mockResolvedValue({
+      text: JSON.stringify([
+        { index: 0, roomName: "RESTROOM", roomType: "RESTROOM", confidence: 0.9 },
+      ]),
+    });
+
+    const result = await enrichAmbiguousRoomsWithAI(rooms, "file-p4", "job-p4");
+
+    expect(result.enrichedCount).toBe(1);
+    expect(result.rooms[0]!.aiEnriched).toBe(true);
+    expect(result.rooms[1]!.aiEnriched).toBe(false);
+    expect(result.rooms[1]!.roomName).toBe("STR");
+  });
+});
+
 describe("enrichAmbiguousRoomsWithAI — batch progress logging", () => {
   beforeEach(() => {
     vi.mocked(ai.models.generateContent).mockReset().mockResolvedValue(EMPTY_GEMINI_RESPONSE);
