@@ -22,6 +22,7 @@ import fsSync from "fs";
 import { z } from "zod/v4";
 import { requireRole } from "../middlewares/authMiddleware";
 import { recordActivity } from "../lib/record-activity";
+import { occurrenceGroupKey } from "../lib/occurrence-group-key";
 
 const router: IRouter = Router();
 
@@ -1163,7 +1164,8 @@ router.delete("/extracted-signs/:signId", async (req, res) => {
 
 // NOTE: occurrenceIndex and occurrenceTotal are intentionally absent from this schema.
 // Those columns are recomputed by the PATCH handler whenever the occurrence group key
-// (location + signType) changes.  They must NOT be accepted as raw client input.
+// (signType + signIdentifier + location + pageNumber) changes.
+// They must NOT be accepted as raw client input.
 // Do NOT add them here — add a regression test to sign-occurrence-bulk.test.ts instead.
 const UpdateSignSchema = z.object({
   sheetNumber: z.string().nullable().optional(),
@@ -1235,17 +1237,19 @@ router.patch("/extracted-signs/:signId", async (req, res) => {
       .where(eq(extractedSignsTable.id, signId))
       .returning();
 
-    // Recompute occurrence indices when the group key (location + signType) changes.
+    // Recompute occurrence indices when the group key changes.
     // The group key determines which signs share an "(index/total)" label, so any
-    // rename of either field must recalculate both the old group (now missing this
-    // sign) and the new group (which this sign just joined).
-    const groupKeyChanged = parsed.data.location !== undefined || parsed.data.signType !== undefined;
+    // change to signType, signIdentifier, location, or pageNumber must recalculate
+    // both the old group (now missing this sign) and the new group (which this sign
+    // just joined).
+    const groupKeyChanged =
+      parsed.data.location !== undefined ||
+      parsed.data.signType !== undefined ||
+      parsed.data.signIdentifier !== undefined ||
+      parsed.data.pageNumber !== undefined;
     if (groupKeyChanged) {
-      const groupKey = (loc: string | null | undefined, type: string | null | undefined) =>
-        `${(type ?? "").toLowerCase().trim()}||${(loc ?? "").toLowerCase().trim()}`;
-
-      const oldKey = groupKey(existing.location, existing.signType);
-      const newKey = groupKey(updated.location, updated.signType);
+      const oldKey = occurrenceGroupKey(existing);
+      const newKey = occurrenceGroupKey(updated);
 
       if (oldKey !== newKey) {
         // Fetch all signs in the job so we can recompute both affected groups in one query.
@@ -1258,10 +1262,10 @@ router.patch("/extracted-signs/:signId", async (req, res) => {
           .orderBy(asc(extractedSignsTable.id));
 
         const oldGroup = allJobSigns.filter(
-          (s) => groupKey(s.location, s.signType) === oldKey && s.id !== signId,
+          (s) => occurrenceGroupKey(s) === oldKey && s.id !== signId,
         );
         const newGroup = allJobSigns.filter(
-          (s) => groupKey(s.location, s.signType) === newKey,
+          (s) => occurrenceGroupKey(s) === newKey,
         );
 
         const assignOccurrences = (group: typeof allJobSigns) =>

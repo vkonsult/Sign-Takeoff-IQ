@@ -40,6 +40,7 @@ import { extractSignSchedule } from "./sign-schedule-extractor";
 import { applySignRules, assignmentToRows, type PlaqueEntry, type RuleEngineResult as EngineRuleEngineResult, type SignAssignment } from "./rule-engine";
 import { verifyRuleEngineResult } from "./verifier";
 import { buildRoomInventory, enrichAmbiguousRoomsWithAI, type RoomInventory, type RoomRecord } from "./room-inventory";
+import { occurrenceGroupKey } from "./occurrence-group-key";
 
 /**
  * Clear all sign-type data that is re-derived on every rescan so a fresh run
@@ -803,13 +804,13 @@ export async function runPdfProcessor(jobId: string, opts: PdfProcessorOptions =
             // when a user moves a marker.
             const occurrenceGroups = new Map<string, number[]>();
             rawSignRows.forEach((row, idx) => {
-              const key = `${row.signType}||${row.signIdentifier}||${(row.location ?? "").toLowerCase().trim()}||${row.pageNumber}`;
+              const key = occurrenceGroupKey(row);
               if (!occurrenceGroups.has(key)) occurrenceGroups.set(key, []);
               occurrenceGroups.get(key)!.push(idx);
             });
 
             const allSignRows = rawSignRows.map((row, idx) => {
-              const key = `${row.signType}||${row.signIdentifier}||${(row.location ?? "").toLowerCase().trim()}||${row.pageNumber}`;
+              const key = occurrenceGroupKey(row);
               const group = occurrenceGroups.get(key)!;
               if (group.length <= 1) return { ...row, occurrenceIndex: null, occurrenceTotal: null };
               const posInGroup = group.indexOf(idx) + 1;
