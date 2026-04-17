@@ -677,13 +677,11 @@ export function classifyPageFromPhrases(phrases: PdfPhrase[]): ClassifyPageResul
   );
 
   // Priority 1: Exclusion veto.
-  // Primary check: scan candidate phrases (those containing an fp/ss keyword) so that
-  // incidental notes elsewhere in the corner zone cannot veto the page.
-  // Secondary check: scan ALL title-block phrases for unambiguous multi-word discipline
-  // identifiers — these are safe to detect anywhere in the zone because they would not
-  // appear incidentally in a legitimate architectural floor plan title strip.
-  // Single-word veto terms (fire, water, site…) are intentionally excluded from the
-  // secondary list because they appear routinely in floor-plan body notes and disclaimers.
+  // Both the short-form exclusion phrases and the hard discipline identifiers are only
+  // checked against candidate phrases (those that individually contain an fp/ss keyword).
+  // Incidental corner-zone text that does not itself trigger inclusion cannot veto the
+  // page — e.g. "REFLECTED CEILING PLAN" appearing as a separate note alongside
+  // "FIRST FLOOR" must not prevent the floor-plan classification.
   const HARD_DISCIPLINE_IDENTIFIERS = [
     "framing plan",
     "reflected ceiling plan",
@@ -702,10 +700,9 @@ export function classifyPageFromPhrases(phrases: PdfPhrase[]): ClassifyPageResul
     );
   });
   const candidateCombined = candidatePhrases.map((p) => p.text).join(" ").toLowerCase();
-  const allTitleBlockCombined = titleBlockPhrases.map((p) => p.text).join(" ").toLowerCase();
   const hasExclusion =
     FLOOR_PLAN_EXCLUSION_PHRASES.some((phrase) => candidateCombined.includes(phrase.toLowerCase())) ||
-    HARD_DISCIPLINE_IDENTIFIERS.some((id) => allTitleBlockCombined.includes(id));
+    HARD_DISCIPLINE_IDENTIFIERS.some((id) => candidateCombined.includes(id));
   if (hasExclusion) return { type: "unknown", titlePhrases: [] };
 
   let type: SpatialPageType;
