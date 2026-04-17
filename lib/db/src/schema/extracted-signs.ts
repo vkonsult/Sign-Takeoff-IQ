@@ -56,6 +56,8 @@ export const extractedSignsTable = pgTable("extracted_signs", {
   aiBbox: boolean("ai_bbox").notNull().default(false),
   dataSource: text("data_source").default("pdf"),
   rawJson: json("raw_json"),
+  occurrenceIndex: integer("occurrence_index"),
+  occurrenceTotal: integer("occurrence_total"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 

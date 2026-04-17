@@ -623,15 +623,27 @@ function PageViewer({
   );
 
   // ── Duplicate-room occurrence index ───────────────────────────────────────
-  // For rooms with duplicate names (no room number), signs share the same
-  // signIdentifier + location. Cluster by xPos/yPos to identify distinct
-  // physical rooms, then assign a 1-based occurrence index so canvas markers
-  // can show "Room Name (2/5)" disambiguating labels.
+  // Prefer the persisted occurrenceIndex/occurrenceTotal stored on each sign
+  // record (set server-side at extraction time, stable across repositions).
+  // Fall back to coordinate-based clustering only for legacy records that were
+  // extracted before these columns existed.
   const signOccurrenceMap = useMemo(() => {
     const map = new Map<string, { index: number; total: number }>();
 
-    const groups = new Map<string, typeof signsOnCurrentPage>();
+    // Partition signs into those that already carry stored occurrence data and
+    // those that need the legacy coordinate-clustering fallback.
+    const legacySigns: typeof signsOnCurrentPage = [];
     for (const s of signsOnCurrentPage) {
+      if (s.occurrenceIndex != null && s.occurrenceTotal != null && s.occurrenceTotal > 1) {
+        map.set(s.id, { index: s.occurrenceIndex, total: s.occurrenceTotal });
+      } else {
+        legacySigns.push(s);
+      }
+    }
+
+    // Legacy fallback: cluster by xPos/yPos (pre-occurrence-column records).
+    const groups = new Map<string, typeof signsOnCurrentPage>();
+    for (const s of legacySigns) {
       const key = `${(s.signIdentifier ?? "").toLowerCase().trim()}||${(s.location ?? "").toLowerCase().trim()}`;
       if (!groups.has(key)) groups.set(key, []);
       groups.get(key)!.push(s);
@@ -652,8 +664,8 @@ function PageViewer({
       if (total <= 1) continue;
 
       const orderedPosGroups = [...posGroups.entries()].sort((a, b) => {
-        const aIdx = signsOnCurrentPage.findIndex((s) => a[1].includes(s.id));
-        const bIdx = signsOnCurrentPage.findIndex((s) => b[1].includes(s.id));
+        const aIdx = legacySigns.findIndex((s) => a[1].includes(s.id));
+        const bIdx = legacySigns.findIndex((s) => b[1].includes(s.id));
         return aIdx - bIdx;
       });
 

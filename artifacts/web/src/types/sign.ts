@@ -32,4 +32,6 @@ export interface ExtractedSign {
   aiBboxH?: number | null;
   aiBbox?: boolean | null;
   dataSource?: "pdf" | "ai" | "manual" | null;
+  occurrenceIndex?: number | null;
+  occurrenceTotal?: number | null;
 }

@@ -680,7 +680,7 @@ export async function runPdfProcessor(jobId: string, opts: PdfProcessorOptions =
             allEngineRuleResults.push(ruleResult);
 
             // Convert SignAssignments → extractedSignsTable rows
-            const allSignRows = ruleResult.assignments.flatMap((assignment) =>
+            const rawSignRows = ruleResult.assignments.flatMap((assignment) =>
               assignmentToRows(assignment).map((row) => ({
                 jobId,
                 jobFileId: file.id,
@@ -701,6 +701,32 @@ export async function runPdfProcessor(jobId: string, opts: PdfProcessorOptions =
                 manuallyAdded: false,
               }))
             );
+
+            // Assign stable occurrence indices before insertion.
+            // Group by signType + signIdentifier + location + pageNumber.
+            // Groups with >1 member get a 1-based occurrenceIndex so the
+            // frontend can display "Room Name (2/5)" without relying on
+            // xPos/yPos coordinates (which change when a sign is repositioned).
+            //
+            // Ordering source of truth: the position of each row in the
+            // ruleResult.assignments.flatMap output, which reflects the order
+            // rooms were encountered in the PDF room inventory. This is stable
+            // across re-renders and persisted to the DB so it never reorders
+            // when a user moves a marker.
+            const occurrenceGroups = new Map<string, number[]>();
+            rawSignRows.forEach((row, idx) => {
+              const key = `${row.signType}||${row.signIdentifier}||${(row.location ?? "").toLowerCase().trim()}||${row.pageNumber}`;
+              if (!occurrenceGroups.has(key)) occurrenceGroups.set(key, []);
+              occurrenceGroups.get(key)!.push(idx);
+            });
+
+            const allSignRows = rawSignRows.map((row, idx) => {
+              const key = `${row.signType}||${row.signIdentifier}||${(row.location ?? "").toLowerCase().trim()}||${row.pageNumber}`;
+              const group = occurrenceGroups.get(key)!;
+              if (group.length <= 1) return { ...row, occurrenceIndex: null, occurrenceTotal: null };
+              const posInGroup = group.indexOf(idx) + 1;
+              return { ...row, occurrenceIndex: posInGroup, occurrenceTotal: group.length };
+            });
 
             if (allSignRows.length > 0) {
               const CHUNK = 200;
