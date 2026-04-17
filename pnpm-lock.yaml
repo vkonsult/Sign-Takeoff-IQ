@@ -175,6 +175,9 @@ importers:
       '@napi-rs/canvas':
         specifier: ^0.1.97
         version: 0.1.97
+      '@opentelemetry/api':
+        specifier: ^1.9.1
+        version: 1.9.1
       '@sentry/node':
         specifier: ^10.48.0
         version: 10.48.0
