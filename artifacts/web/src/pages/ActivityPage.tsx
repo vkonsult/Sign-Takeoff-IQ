@@ -352,7 +352,17 @@ function AiCallsTab({ isAdmin, isSuperAdmin }: { isAdmin: boolean; isSuperAdmin:
                   </div>
 
                   <div className="text-xs text-muted-foreground">
-                    {row.pageNumber != null ? `Page ${row.pageNumber}` : "—"}
+                    {row.pageNumber != null ? (
+                      <span
+                        title={
+                          row.callType === "floor_plan_text" || row.callType === "bbox_detection"
+                            ? `First page of this API call's batch (tokens cover all pages in the batch)`
+                            : `Page ${row.pageNumber}`
+                        }
+                      >
+                        Page {row.pageNumber}
+                      </span>
+                    ) : "—"}
                   </div>
 
                   <button

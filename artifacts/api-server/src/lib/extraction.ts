@@ -35,6 +35,7 @@ export interface GeminiCallEntry {
   outputTokens: number;
   durationMs: number;
   label: string;
+  pageNumber?: number;
   error?: string;
 }
 
@@ -970,7 +971,8 @@ interface GeminiCallResult {
 async function callGemini(
   prompt: string,
   ai: GeminiAI,
-  label: string
+  label: string,
+  pageNumber?: number
 ): Promise<GeminiCallResult> {
   const MAX_RETRIES = 4;
 
@@ -992,7 +994,7 @@ async function callGemini(
       const outputTokens = response.usageMetadata?.candidatesTokenCount ?? 0;
       const durationMs = Date.now() - callStart;
       logger.info({ label, responseLength: text.length, inputTokens, outputTokens }, "Gemini call complete");
-      _geminiLoggerStorage.getStore()?.({ prompt, rawResponse: text, inputTokens, outputTokens, durationMs, label });
+      _geminiLoggerStorage.getStore()?.({ prompt, rawResponse: text, inputTokens, outputTokens, durationMs, label, pageNumber });
       return { text, inputTokens, outputTokens };
     } catch (err: unknown) {
       const isRateLimit =
@@ -1011,7 +1013,7 @@ async function callGemini(
       const durationMs = Date.now() - callStart;
       const errMsg = err instanceof Error ? err.message : String(err);
       logger.error({ err, label }, "Gemini call failed");
-      _geminiLoggerStorage.getStore()?.({ prompt, rawResponse: "", inputTokens: 0, outputTokens: 0, durationMs, label, error: errMsg });
+      _geminiLoggerStorage.getStore()?.({ prompt, rawResponse: "", inputTokens: 0, outputTokens: 0, durationMs, label, pageNumber, error: errMsg });
       throw err;
     }
   }
@@ -1033,7 +1035,8 @@ async function callGeminiMultimodal(
   prompt: string,
   pdfOrParts: string | GeminiInlinePart[],
   ai: GeminiAI,
-  label: string
+  label: string,
+  pageNumber?: number
 ): Promise<GeminiCallResult> {
   const MAX_RETRIES = 4;
 
@@ -1067,7 +1070,7 @@ async function callGeminiMultimodal(
       const outputTokens = response.usageMetadata?.candidatesTokenCount ?? 0;
       const durationMs = Date.now() - callStart;
       logger.info({ label, responseLength: text.length, inputTokens, outputTokens }, "Gemini multimodal call complete");
-      _geminiLoggerStorage.getStore()?.({ prompt, rawResponse: text, inputTokens, outputTokens, durationMs, label });
+      _geminiLoggerStorage.getStore()?.({ prompt, rawResponse: text, inputTokens, outputTokens, durationMs, label, pageNumber });
       return { text, inputTokens, outputTokens };
     } catch (err: unknown) {
       const isRateLimit =
@@ -1086,7 +1089,7 @@ async function callGeminiMultimodal(
       const durationMs = Date.now() - callStart;
       const errMsg = err instanceof Error ? err.message : String(err);
       logger.error({ err, label }, "Gemini multimodal call failed");
-      _geminiLoggerStorage.getStore()?.({ prompt, rawResponse: "", inputTokens: 0, outputTokens: 0, durationMs, label, error: errMsg });
+      _geminiLoggerStorage.getStore()?.({ prompt, rawResponse: "", inputTokens: 0, outputTokens: 0, durationMs, label, pageNumber, error: errMsg });
       throw err;
     }
   }
@@ -1636,7 +1639,7 @@ export async function extractSignCalloutsPng(
     const label = `scan-${fileName}-p${firstPage}-${lastPage}-png`;
 
     try {
-      const { text, inputTokens, outputTokens } = await callGeminiMultimodal(prompt, inlineParts, ai, label);
+      const { text, inputTokens, outputTokens } = await callGeminiMultimodal(prompt, inlineParts, ai, label, firstPage);
       const batchCallouts = parseScanResponse(text, label);
 
       // When multiple pages are batched, Gemini sees them as page 1, 2, 3... in the batch.
@@ -2482,9 +2485,16 @@ export async function extractFloorPlanOnly(
     batches.map(async (batch, batchIdx) => {
       const sorted = [...batch].sort((a, b) => a.pageNum - b.pageNum);
       const block = sorted.map((p) => `--- PAGE ${p.pageNum} ---\n${p.text}`).join("\n\n");
-      const label = `floor-plan-only-batch-${batchIdx + 1}-of-${batches.length}`;
+      const firstPageNum = sorted[0]?.pageNum;
+      const lastPageNum = sorted[sorted.length - 1]?.pageNum;
+      const pageRange = firstPageNum !== undefined
+        ? firstPageNum === lastPageNum
+          ? `p${firstPageNum}`
+          : `p${firstPageNum}-${lastPageNum}`
+        : `batch${batchIdx + 1}`;
+      const label = `floor-plan-text-${pageRange}-of-${batches.length}`;
       logger.info({ batchPages: batch.length, label }, "extractFloorPlanOnly: running pass");
-      const { text, inputTokens, outputTokens } = await callGemini(floorPlanPromptPrefix + block, ai, label);
+      const { text, inputTokens, outputTokens } = await callGemini(floorPlanPromptPrefix + block, ai, label, firstPageNum);
       const rows = parseGeminiResponse(text, label);
       logger.info({ count: rows.length, label }, "extractFloorPlanOnly: pass complete");
       return { rows, inputTokens, outputTokens };

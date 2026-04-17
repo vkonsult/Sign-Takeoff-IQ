@@ -49,7 +49,7 @@ function makeCallLogHandler(jobId: string | undefined, callType: string) {
   return (entry: GeminiCallEntry) => {
     logAiCall({
       jobId,
-      pageNumber: parsePageFromLabel(entry.label),
+      pageNumber: entry.pageNumber ?? parsePageFromLabel(entry.label),
       callType,
       prompt: entry.prompt,
       responseJson: parseResponseJson(entry.rawResponse, entry.error),
