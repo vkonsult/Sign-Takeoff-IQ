@@ -2078,6 +2078,21 @@ function primarySourceBadge(rows: ManifestRow[]): string {
   return "~ Inferred";
 }
 
+const BUCKET_LABEL: Record<string, string> = {
+  floor_plan: "Floor Plans",
+  "floor_plan + signage": "Floor Plan + Signage",
+  signage_schedule: "Sign Schedules",
+  life_safety: "Life Safety",
+  key_plan: "Key Plans",
+  general_notes: "General Notes",
+  accessibility: "Accessibility",
+  millwork_interiors: "Millwork / Interiors",
+  specifications: "Specifications",
+  ignore: "Ignored",
+  other: "Other",
+  inferred: "Inferred",
+};
+
 function PageManifestTable({
   stats,
   fileId,
@@ -2090,6 +2105,7 @@ function PageManifestTable({
   originalName: string;
 }) {
   const [open, setOpen] = useState(false);
+  const [filterBucket, setFilterBucket] = useState<string | null>(null);
 
   if (!stats) return null;
 
@@ -2108,6 +2124,15 @@ function PageManifestTable({
   const fpCount = rows.filter((r) => r.bucket === "floor_plan" || r.bucket === "floor_plan + signage").length;
   const ssCount = rows.filter((r) => r.bucket === "signage_schedule" || r.bucket === "floor_plan + signage").length;
   const sourceSummary = hasManifest ? primarySourceBadge(rows) : "~ Inferred";
+
+  // Unique buckets and per-bucket counts computed in a single pass
+  const bucketCounts = new Map<string, number>();
+  for (const row of rows) {
+    bucketCounts.set(row.bucket, (bucketCounts.get(row.bucket) ?? 0) + 1);
+  }
+  const presentBuckets = Array.from(bucketCounts.keys());
+
+  const filteredRows = filterBucket ? rows.filter((r) => r.bucket === filterBucket) : rows;
 
   return (
     <div className="mt-3 pt-2 border-t border-border/40">
@@ -2140,6 +2165,33 @@ function PageManifestTable({
               ⚠ {w}
             </div>
           ))}
+
+          {/* Filter pills — only shown when more than one bucket is present */}
+          {presentBuckets.length > 1 && (
+            <div className="flex flex-wrap gap-1 mb-2">
+              {presentBuckets.map((bucket) => {
+                const bucketKey = bucket in BUCKET_CLASS ? bucket : "other";
+                const dot = BUCKET_DOT[bucketKey] ?? "⬜";
+                const count = bucketCounts.get(bucket) ?? 0;
+                const label = BUCKET_LABEL[bucket] ?? "Other";
+                const isActive = filterBucket === bucket;
+                const activeStyles = isActive
+                  ? BUCKET_CLASS[bucketKey] ?? BUCKET_CLASS.other
+                  : "bg-secondary/60 text-muted-foreground border-border hover:border-border/80 hover:bg-secondary";
+                return (
+                  <button
+                    key={bucket}
+                    onClick={() => setFilterBucket(isActive ? null : bucket)}
+                    aria-pressed={isActive}
+                    className={`inline-flex items-center gap-1 px-2 py-0.5 rounded border text-[9px] font-bold uppercase tracking-wider transition-colors ${activeStyles}`}
+                  >
+                    {dot} {label} <span className="font-mono font-normal opacity-70">({count})</span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+
           <div className="max-h-96 overflow-y-auto rounded border border-border/60">
             <table className="w-full text-left border-collapse text-[10px] font-mono">
               <thead className="sticky top-0 bg-card z-10">
@@ -2152,7 +2204,7 @@ function PageManifestTable({
                 </tr>
               </thead>
               <tbody>
-                {rows.map((row, i) => {
+                {filteredRows.map((row, i) => {
                   const bucketKey = row.bucket in BUCKET_CLASS ? row.bucket : "other";
                   const dot = BUCKET_DOT[bucketKey] ?? "⬜";
                   const pillCls = BUCKET_CLASS[bucketKey] ?? BUCKET_CLASS.other;
