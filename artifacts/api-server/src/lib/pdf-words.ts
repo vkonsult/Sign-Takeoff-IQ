@@ -5,6 +5,7 @@ import {
   HARD_DISCIPLINE_IDENTIFIERS,
   CANONICAL_LEVEL_NAMES as CANONICAL_LEVEL_NAMES_FROM_VOCAB,
   KNOWN_ROOM_ABBREVIATIONS,
+  ROOM_LABEL_MAP,
   detectBuildingType,
   type CanonicalBuildingType,
 } from "./sign-vocabulary";
@@ -1063,6 +1064,59 @@ export function extractFloorPlanTextCandidates(
   // Exclude title-block phrases so drawing title text is not proposed as rooms.
   const drawingPhrases = phrases.filter((p) => !isInTitleBlockZone(p));
 
+  // ── Detect and exclude embedded schedule-table columns ────────────────────
+  // Commercial floor plans often embed a sign-schedule table alongside the drawing.
+  // Such tables produce a dense grid of text that, if included, causes markers to
+  // snap to table cells instead of real room labels.
+  //
+  // Heuristic: identify vertical columns of 6+ phrases whose x-centres cluster
+  // within 2% of page width AND whose consecutive y-spacings are regular (median
+  // spacing ± 15 pts). Phrases in these columns are excluded from candidates.
+  //
+  // The heuristic targets grid-like tabular layouts; irregular room label clusters
+  // (which don't have uniform y-spacing) are not affected.
+  const TABLE_COL_MIN_PHRASES = 6;
+  const TABLE_COL_X_TOLERANCE = 0.02;   // normalised page-width units
+  const TABLE_COL_Y_SPACING_MAX = 15;   // pts — max deviation from median row gap
+
+  const tableExcludedPhrases = new Set<PdfPhrase>();
+
+  // Group phrases by similar normalised x-centre
+  const xBuckets = new Map<number, PdfPhrase[]>();
+  for (const p of drawingPhrases) {
+    const nx = (p.x0 + p.x1) / 2;
+    // Round to nearest TABLE_COL_X_TOLERANCE bucket
+    const bucket = Math.round(nx / TABLE_COL_X_TOLERANCE) * TABLE_COL_X_TOLERANCE;
+    let list = xBuckets.get(bucket);
+    if (!list) { list = []; xBuckets.set(bucket, list); }
+    list.push(p);
+  }
+
+  for (const [, col] of xBuckets) {
+    if (col.length < TABLE_COL_MIN_PHRASES) continue;
+    // Sort by y-centre
+    const sorted = [...col].sort((a, b) => ((a.y0 + a.y1) / 2) - ((b.y0 + b.y1) / 2));
+    // Compute consecutive y-gaps in pts
+    const gaps: number[] = [];
+    for (let i = 1; i < sorted.length; i++) {
+      const prevCy = (sorted[i - 1]!.y0 + sorted[i - 1]!.y1) / 2 * pageHeight;
+      const currCy = (sorted[i]!.y0 + sorted[i]!.y1) / 2 * pageHeight;
+      gaps.push(currCy - prevCy);
+    }
+    if (gaps.length === 0) continue;
+    // Compute median gap
+    const sortedGaps = [...gaps].sort((a, b) => a - b);
+    const medianGap = sortedGaps[Math.floor(sortedGaps.length / 2)]!;
+    if (medianGap <= 0) continue;
+    // Check regularity: all gaps within TABLE_COL_Y_SPACING_MAX of the median
+    const isRegular = gaps.every((g) => Math.abs(g - medianGap) <= TABLE_COL_Y_SPACING_MAX);
+    if (isRegular) {
+      for (const p of sorted) tableExcludedPhrases.add(p);
+    }
+  }
+
+  const candidatePhrases = drawingPhrases.filter((p) => !tableExcludedPhrases.has(p));
+
   // ── Per-phrase filtering ──────────────────────────────────────────────────
   function isValidCandidate(text: string): boolean {
     const t = text.trim();
@@ -1096,7 +1150,7 @@ export function extractFloorPlanTextCandidates(
 
   const flat: FlatCandidate[] = [];
 
-  for (const p of drawingPhrases) {
+  for (const p of candidatePhrases) {
     const text = p.text.trim();
     if (!isValidCandidate(text)) continue;
 
@@ -1111,16 +1165,22 @@ export function extractFloorPlanTextCandidates(
     });
   }
 
-  // ── Group adjacent short tokens into multi-word labels ────────────────────
+  // ── Group adjacent tokens into multi-word labels ──────────────────────────
   // Two candidates are "adjacent" when:
   //   - Their vertical centres are within 20 pts of each other (same visual line)
   //   - Their horizontal gap is within 60 pts
-  // When such a pair is found and BOTH tokens are short (< 8 chars), merge them.
-  // This handles "ART" + "ROOM" → "ART ROOM" without merging unrelated labels
-  // that happen to be on the same baseline.
+  // A pair is merged when EITHER:
+  //   (a) BOTH tokens are short (< 8 chars) — handles "ART" + "ROOM" → "ART ROOM"
+  //   (b) one token is a known room-type keyword (key in ROOM_LABEL_MAP) — handles
+  //       "Collaboration" (13 chars) + "Room" → "Collaboration Room"
+  // This prevents merging two unrelated labels on the same baseline.
   const PROXIMITY_X = 60;  // pts
   const PROXIMITY_Y = 20;  // pts
   const SHORT_TOKEN_LEN = 8;
+
+  function isRoomTypeKeyword(text: string): boolean {
+    return ROOM_LABEL_MAP[text.toLowerCase()] !== undefined;
+  }
 
   const used = new Set<number>();
   const grouped: FlatCandidate[] = [];
@@ -1130,11 +1190,19 @@ export function extractFloorPlanTextCandidates(
     const a = flat[i]!;
 
     // Attempt to find a mergeable neighbour to the right of a
-    if (a.text.length < SHORT_TOKEN_LEN) {
+    const aBothShortEligible = a.text.length < SHORT_TOKEN_LEN;
+    const aIsRoomKeyword = isRoomTypeKeyword(a.text);
+    if (aBothShortEligible || aIsRoomKeyword) {
       for (let j = i + 1; j < flat.length; j++) {
         if (used.has(j)) continue;
         const b = flat[j]!;
-        if (b.text.length >= SHORT_TOKEN_LEN) continue; // both must be short
+        const bBothShortEligible = b.text.length < SHORT_TOKEN_LEN;
+        const bIsRoomKeyword = isRoomTypeKeyword(b.text);
+        // Rule (a): both short; Rule (b): either is a room keyword
+        const canMerge =
+          (aBothShortEligible && bBothShortEligible) ||
+          aIsRoomKeyword || bIsRoomKeyword;
+        if (!canMerge) continue;
         const dy = Math.abs(a.cy - b.cy);
         const dx = b.cx - a.cx; // positive = b is to the right of a
         if (dy <= PROXIMITY_Y && dx > 0 && dx <= PROXIMITY_X) {

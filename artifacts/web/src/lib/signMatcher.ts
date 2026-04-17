@@ -79,6 +79,8 @@ const SIGN_ABBREV_CANON: Record<string, string> = {
   VESTIBULE: "VESTIBULE",
   CONF: "CONFERENCE",
   CONFERENCE: "CONFERENCE",
+  COLLAB: "COLLABORATION",
+  COLLABORATION: "COLLABORATION",
   RECEPT: "RECEPTION",
   RECEPTION: "RECEPTION",
   LAUND: "LAUNDRY",
@@ -94,12 +96,15 @@ const SIGN_ABBREV_CANON: Record<string, string> = {
   OFFICE: "OFFICE",
   OFC: "OFFICE",
   RESTROOM: "RESTROOM",
+  WRR: "RESTROOM",
+  MRR: "RESTROOM",
   RR: "RESTROOM",
   TOILET: "RESTROOM",
   BATH: "BATHROOM",
   BATHROOM: "BATHROOM",
   BREAK: "BREAKROOM",
   BREAKROOM: "BREAKROOM",
+  BREAKOUT: "BREAKOUT",
   COPY: "COPYROOM",
   COPYROOM: "COPYROOM",
   SERVER: "SERVERROOM",
@@ -530,10 +535,10 @@ export function findSignLocationFromPhrases(
   const sdp = hasSpatialBias ? drawingPhrases.filter(phraseInRange) : drawingPhrases;
   const sap = hasSpatialBias ? phrases.filter(phraseInRange) : phrases;
 
-  // ── Pre-Pass A: verbatim signIdentifier in any phrase ─────────────────────
+  // ── Pre-Pass A: verbatim signIdentifier in drawing phrases only ──────────
   if (sign.signIdentifier && sign.signIdentifier.trim().length >= 2) {
     const idVerbatim = sign.signIdentifier.trim().toUpperCase();
-    for (const p of sap) {
+    for (const p of sdp) {
       if (p.text.trim().toUpperCase().includes(idVerbatim)) {
         return {
           x: (p.x0 + p.x1) / 2,
@@ -653,7 +658,7 @@ export function findSignLocationFromPhrases(
       );
       if (clusterResult === "ambiguous") return null;
       if (clusterResult !== null) return clusterResult;
-      return null;
+      // cluster search found no pair — fall through to Pass 1, 2, 3
     }
   }
 

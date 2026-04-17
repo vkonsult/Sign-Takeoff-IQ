@@ -14,6 +14,7 @@
 import path from "path";
 import fs from "fs/promises";
 import { logger as rootLogger } from "./logger";
+import { KNOWN_ROOM_ABBREVIATIONS } from "./sign-vocabulary";
 
 const logger = rootLogger.child({ module: "signage-schedule-parser" });
 
@@ -188,6 +189,33 @@ function isKeynoteLegendHeader(text: string): boolean {
  */
 const LOCATION_KEYWORD_PREFIXES = new Set(["UNIT", "SUITE", "ROOM", "APT", "STE", "RM"]);
 
+/**
+ * Room-type keywords that, when they appear as the first or only token of an
+ * all-alphabetic 1–4 token line, indicate a pure-text room heading
+ * (e.g. "COLLABORATION ROOM", "WOMEN'S RESTROOM", "WRR", "MRR").
+ */
+const PURE_TEXT_ROOM_TYPE_KEYWORDS = new Set([
+  "COLLAB", "COLLABORATION",
+  "CONFERENCE", "CONF",
+  "WOMEN", "WOMENS",
+  "MEN", "MENS",
+  "RESTROOM", "RESTROOMS",
+  "BREAKOUT", "BREAKROOM",
+  "LOUNGE", "LOBBY",
+  "CORRIDOR", "HALLWAY",
+  "RECEPTION", "OFFICE",
+  "SANCTUARY", "CHAPEL",
+  "FELLOWSHIP", "COMMONS",
+  "VESTIBULE", "NARTHEX",
+  "STORAGE", "UTILITY",
+  "JANITOR", "MECHANICAL",
+  "ELECTRICAL", "SERVER",
+  "KITCHEN", "CAFE",
+  "GYMNASIUM", "GYM",
+  "CLASSROOM", "LIBRARY",
+  "AUDITORIUM", "STAGE",
+]);
+
 /** Returns true if a line is just a room heading (room number alone or room number + name). */
 function parseRoomHeading(line: TextLine): { roomNumber: string; roomName: string } | null {
   const items = line.filter((it) => it.text.trim().length > 0);
@@ -208,6 +236,25 @@ function parseRoomHeading(line: TextLine): { roomNumber: string; roomName: strin
     // The code portion is the second token; full line is the room name
     const verbatimLine = lineText(items);
     return { roomNumber: second, roomName: verbatimLine };
+  }
+
+  // Case 3: pure-text room headings with no digits (e.g. "WRR", "MRR",
+  // "COLLABORATION ROOM", "WOMEN'S RESTROOM", "CONFERENCE ROOM").
+  // Conditions: all tokens are alpha-only (apostrophes allowed), 1–4 tokens,
+  // first token is in KNOWN_ROOM_ABBREVIATIONS OR in PURE_TEXT_ROOM_TYPE_KEYWORDS,
+  // and the line does not match a sign-row pattern.
+  const allTokens = items.map((it) => it.text.trim());
+  const allAlphaOnly = allTokens.every((t) => /^[A-Za-z']+$/.test(t));
+  if (allAlphaOnly && allTokens.length >= 1 && allTokens.length <= 4) {
+    const firstUpper = first.toUpperCase().replace(/'/g, "");
+    const isKnownAbbrev = KNOWN_ROOM_ABBREVIATIONS.has(first.toLowerCase());
+    const isKnownTypeKw = PURE_TEXT_ROOM_TYPE_KEYWORDS.has(firstUpper);
+    if (isKnownAbbrev || isKnownTypeKw) {
+      // Guard: reject if it looks like a sign-type code (1–2 digit prefix)
+      if (SIGN_TYPE_CODE_RE.test(first)) return null;
+      const verbatimLine = lineText(items);
+      return { roomNumber: verbatimLine, roomName: verbatimLine };
+    }
   }
 
   // Case 2: line starts with a room number pattern (original logic)
