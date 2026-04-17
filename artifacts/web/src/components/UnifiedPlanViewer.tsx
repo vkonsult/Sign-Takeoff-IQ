@@ -622,6 +622,51 @@ function PageViewer({
     [localSigns, file.id, file.pageStats, pageNumber]
   );
 
+  // ── Duplicate-room occurrence index ───────────────────────────────────────
+  // For rooms with duplicate names (no room number), signs share the same
+  // signIdentifier + location. Cluster by xPos/yPos to identify distinct
+  // physical rooms, then assign a 1-based occurrence index so canvas markers
+  // can show "Room Name (2/5)" disambiguating labels.
+  const signOccurrenceMap = useMemo(() => {
+    const map = new Map<string, { index: number; total: number }>();
+
+    const groups = new Map<string, typeof signsOnCurrentPage>();
+    for (const s of signsOnCurrentPage) {
+      const key = `${(s.signIdentifier ?? "").toLowerCase().trim()}||${(s.location ?? "").toLowerCase().trim()}`;
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key)!.push(s);
+    }
+
+    for (const [, groupSigns] of groups) {
+      const posGroups = new Map<string, string[]>();
+      for (const s of groupSigns) {
+        const posKey =
+          s.xPos != null && s.yPos != null
+            ? `${s.xPos.toFixed(4)},${s.yPos.toFixed(4)}`
+            : "unplaced";
+        if (!posGroups.has(posKey)) posGroups.set(posKey, []);
+        posGroups.get(posKey)!.push(s.id);
+      }
+
+      const total = posGroups.size;
+      if (total <= 1) continue;
+
+      const orderedPosGroups = [...posGroups.entries()].sort((a, b) => {
+        const aIdx = signsOnCurrentPage.findIndex((s) => a[1].includes(s.id));
+        const bIdx = signsOnCurrentPage.findIndex((s) => b[1].includes(s.id));
+        return aIdx - bIdx;
+      });
+
+      orderedPosGroups.forEach(([, signIds], idx) => {
+        for (const signId of signIds) {
+          map.set(signId, { index: idx + 1, total });
+        }
+      });
+    }
+
+    return map;
+  }, [signsOnCurrentPage]);
+
   // ── Modes ──────────────────────────────────────────────────────────────────
   const [showOverlay, setShowOverlay] = useState(true);
   const [debugMode, setDebugMode] = useState(false);
@@ -695,6 +740,12 @@ function PageViewer({
     let currentSignFound = false;
     const phrases = serverPhrases?.phrases ?? [];
 
+    const buildLabel = (s: (typeof signsOnCurrentPage)[number]): string => {
+      const base = s.signIdentifier ?? s.signType?.slice(0, 6) ?? "SIGN";
+      const occ = signOccurrenceMap.get(s.id);
+      return occ ? `${base} (${occ.index}/${occ.total})` : base;
+    };
+
     for (const s of signsOnCurrentPage) {
       const isCurrent = s.id === activeSignId;
       const color = isCurrent ? "#22c55e" : (s.manuallyAdded ? "#a855f7" : "#eab308");
@@ -703,7 +754,7 @@ function PageViewer({
         markers.push({
           x: s.xPos, y: s.yPos,
           signId: s.id, color,
-          label: s.signIdentifier ?? s.signType?.slice(0, 6) ?? "SIGN",
+          label: buildLabel(s),
           isCurrent, placementScore: 1.0,
         });
         if (isCurrent) currentSignFound = true;
@@ -723,7 +774,7 @@ function PageViewer({
           x: mx, y: my,
           phraseCenter,
           signId: s.id, color,
-          label: s.signIdentifier ?? s.signType?.slice(0, 6) ?? "SIGN",
+          label: buildLabel(s),
           isCurrent, placementScore: loc.score,
           matchedPhrase: loc.phrase,
           rejectedCandidates: loc.rejectedCandidates,
@@ -733,7 +784,7 @@ function PageViewer({
         markers.push({
           x: 0.5, y: 0.5,
           signId: s.id, color,
-          label: s.signIdentifier ?? s.signType?.slice(0, 6) ?? "SIGN",
+          label: buildLabel(s),
           isCurrent, placementScore: 0, isGhost: true,
         });
         if (isCurrent) currentSignFound = true;
@@ -769,7 +820,7 @@ function PageViewer({
       setTextSearchStatus("idle");
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [serverPhrases, phrasesFetchFailed, pageNumber, signPlacementKey, activeSignId, visualLocateFailed, visualCandidates]);
+  }, [serverPhrases, phrasesFetchFailed, pageNumber, signPlacementKey, activeSignId, visualLocateFailed, visualCandidates, signOccurrenceMap]);
 
   // Write-back for tab mode
   useEffect(() => {
@@ -1347,6 +1398,7 @@ function PageViewer({
                 const cy = m.y * renderedH;
                 const tipLeft = Math.min(cx + 12, renderedW - 140);
                 const tipTop = cy - 38;
+                const occ = signOccurrenceMap.get(s.id);
                 return (
                   <div
                     key={`tooltip-${hoveredMarkerId}`}
@@ -1357,7 +1409,11 @@ function PageViewer({
                     {s.signType && s.signIdentifier && (
                       <div className="text-muted-foreground truncate">{s.signType}</div>
                     )}
-                    {s.location && <div className="text-muted-foreground/70 truncate">{s.location}</div>}
+                    {s.location && (
+                      <div className="text-muted-foreground/70 truncate">
+                        {s.location}{occ ? ` (${occ.index} of ${occ.total})` : ""}
+                      </div>
+                    )}
                     {mode === "tab" && onEditSign && (
                       <div className="text-muted-foreground/50 truncate mt-0.5" style={{ fontSize: 9 }}>Double-click to edit</div>
                     )}
