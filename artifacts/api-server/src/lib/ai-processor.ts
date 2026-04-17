@@ -23,34 +23,9 @@ import { extractPagePhrases, classifyPageFromPhrases, CANONICAL_LEVEL_NAMES } fr
 import path from "path";
 import { db } from "@workspace/db";
 import { eq } from "drizzle-orm";
-import { signTypeSpecsTable, jobFilesTable, aiCallLogsTable } from "@workspace/db";
+import { signTypeSpecsTable, jobFilesTable } from "@workspace/db";
 import { enrichWithGemini } from "./signage-schedule-parser";
-
-// ── Fire-and-forget AI call logger ────────────────────────────────────────────
-
-function logAiCall(entry: {
-  jobId?: string;
-  pageNumber?: number;
-  callType: string;
-  prompt: string;
-  responseJson: unknown;
-  inputTokens: number;
-  outputTokens: number;
-  durationMs: number;
-}): void {
-  db.insert(aiCallLogsTable).values({
-    jobId: entry.jobId ?? null,
-    pageNumber: entry.pageNumber ?? null,
-    callType: entry.callType,
-    prompt: entry.prompt,
-    responseJson: entry.responseJson as Record<string, unknown>,
-    inputTokens: entry.inputTokens,
-    outputTokens: entry.outputTokens,
-    durationMs: entry.durationMs,
-  }).catch((err: unknown) => {
-    logger.warn({ err }, "logAiCall: failed to insert ai_call_log (non-fatal)");
-  });
-}
+import { logAiCall } from "./ai-call-logger";
 
 // ── Per-call logging via AsyncLocalStorage-scoped hook ────────────────────────
 // runWithGeminiCallLogger runs fn inside a job-scoped async context so that
