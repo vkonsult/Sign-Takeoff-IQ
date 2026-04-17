@@ -76,6 +76,8 @@ const MEP_KEYWORDS = [
 const VARIABLE_USE_KEYWORDS = [
   "TRAINING", "COMMUNITY", "EOC", "MULTIPURPOSE", "MULTI-PURPOSE",
   "CONFERENCE", "MEETING", "BREAKOUT", "CLASSROOM", "ASSEMBLY ROOM",
+  "COLLABORATION", "COLLAB", "COLLABORATIVE", "CO-WORKING", "COWORKING",
+  "IDEATION", "WORKSHOP", "HUDDLE", "FLEX", "FLEXIBLE",
 ];
 const PUBLIC_FACING_KEYWORDS = ["LOBBY", "RECEPTION", "WAITING", "ENTRY", "ENTRANCE", "VISITOR", "ATRIUM", "CONCOURSE", "FOYER"];
 const STAFF_KEYWORDS = ["STAFF", "EMPLOYEE", "CREW", "PERSONNEL"];
@@ -966,6 +968,16 @@ export async function buildRoomInventory(
       try {
         const labels = await extractRoomLabelsFromPage(pdfPath, fileId, pageNum);
         allRawLabels.push(...labels);
+        logger.info(
+          {
+            jobId,
+            fileId,
+            pageNum,
+            labelsFound: labels.length,
+            roomNames: labels.map((l) => (l.number ? `${l.number} ${l.name}` : l.name)),
+          },
+          "[RoomInventory] Page labels extracted",
+        );
       } catch (err) {
         logger.warn(
           { err, fileId, pageNum, jobId },

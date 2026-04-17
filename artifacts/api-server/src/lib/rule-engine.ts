@@ -186,6 +186,8 @@ const VARIABLE_USE_TOKENS = new Set([
   "training", "multipurpose", "multi-purpose", "flex", "flexible",
   "adaptable", "convertible", "assembly", "conference", "seminar",
   "meeting", "classroom", "lecture",
+  "collaboration", "collab", "collaborative", "breakout", "co-working",
+  "coworking", "ideation", "workshop", "huddle",
 ]);
 const RESTROOM_TOKENS = new Set([
   "restroom", "bathroom", "toilet", "wc", "lavatory", "washroom",
@@ -612,6 +614,9 @@ export function applySignRules(
   // (isGenderedRestroom, isUnisexRestroom, isAccessibleRestroom, isMezzanine).
   // Phase 4 flags are OR-merged so both systems must agree a room is NOT a
   // restroom/stair/etc. before it loses that designation.
+  // Note: Phase 4 (room-inventory.ts) handles deduplication using spatial
+  // proximity, preserving distinct same-named rooms at different positions
+  // (e.g. 5× "COLLABORATION ROOM" each become separate RoomRecord entries).
   const rooms: RoomRecord[] = inventory.rooms.map(bridgeInventoryRoom);
 
   logger.info(
@@ -757,6 +762,41 @@ export function applySignRules(
     },
     "[RuleEngine] Rule application complete",
   );
+
+  // ── Per-page marker audit log ─────────────────────────────────────────────
+  // Emit one structured log entry per processed page listing:
+  //   rooms_found   — how many rooms were extracted from that page
+  //   signs_extracted — how many distinct sign-type assignments were made for those rooms
+  //   markers_placed  — total sign quantity (sum of all assigned counts)
+  // This lets operators identify pages where Collaboration Rooms (or any rooms)
+  // were found but received no markers, without running a full re-scan.
+  {
+    const pageAudit = new Map<number, { rooms_found: number; signs_extracted: number; markers_placed: number }>();
+    for (const room of rooms) {
+      const entry = pageAudit.get(room.pdfPage) ?? { rooms_found: 0, signs_extracted: 0, markers_placed: 0 };
+      entry.rooms_found++;
+      pageAudit.set(room.pdfPage, entry);
+    }
+    for (const a of assignments) {
+      const entry = pageAudit.get(a.pdfPage) ?? { rooms_found: 0, signs_extracted: 0, markers_placed: 0 };
+      const signRows = assignmentToRows(a);
+      entry.signs_extracted += signRows.length;
+      entry.markers_placed += signRows.reduce((sum, r) => sum + r.quantity, 0);
+      pageAudit.set(a.pdfPage, entry);
+    }
+    for (const [page, stats] of [...pageAudit.entries()].sort((a, b) => a[0] - b[0])) {
+      logger.info(
+        {
+          jobId,
+          page,
+          rooms_found: stats.rooms_found,
+          signs_extracted: stats.signs_extracted,
+          markers_placed: stats.markers_placed,
+        },
+        "[RuleEngine] Per-page marker audit",
+      );
+    }
+  }
 
   return {
     assignments,
