@@ -94,7 +94,7 @@ const KEY_PLAN_PHRASES = ["key plan", "overall key"];
 const IGNORE_PHRASES = [
   "reflected ceiling",
   "roof plan",
-  "foundation plan",
+  "foundation",
   "demolition plan",
   "site plan",
   "framing plan",
