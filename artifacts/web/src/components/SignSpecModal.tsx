@@ -16,6 +16,7 @@ import {
   PanelRightClose,
   CheckCircle2,
   AlertCircle,
+  ArrowUpRight,
 } from "lucide-react";
 pdfjs.GlobalWorkerOptions.workerSrc = `${import.meta.env.BASE_URL}pdf.worker.min.mjs`;
 
@@ -48,6 +49,7 @@ interface SignTypeSpec {
   geminiNotes: Record<string, unknown> | null;
   geminiEnriched: boolean;
   hasDrawing: boolean;
+  cropBox: { x: number; y: number; w: number; h: number; pageNum: number } | null;
 }
 
 interface GeminiNotesFields {
@@ -78,6 +80,9 @@ export function SignSpecModal({ jobId, fileId, fileName, specPages, plaqueTable,
   const [showPanel, setShowPanel] = useState(true);
   const [specs, setSpecs] = useState<SignTypeSpec[]>([]);
   const [specsLoading, setSpecsLoading] = useState(false);
+  const [activeSpecId, setActiveSpecId] = useState<string | null>(null);
+
+  const activeSpecRowRefs = useRef<Map<string, HTMLDivElement>>(new Map());
 
   const viewerRef = useRef<HTMLDivElement>(null);
   const pdfContentRef = useRef<HTMLDivElement>(null);
@@ -164,6 +169,22 @@ export function SignSpecModal({ jobId, fileId, fileName, specPages, plaqueTable,
     setIsPanning(false);
     e.currentTarget.releasePointerCapture(e.pointerId);
   }, []);
+
+  const jumpToSpec = useCallback((spec: SignTypeSpec) => {
+    setActiveSpecId(spec.id);
+    const targetPage = spec.cropBox?.pageNum ?? null;
+    if (targetPage === null) return;
+    const idx = specPages.indexOf(targetPage);
+    if (idx !== -1) {
+      setSpecIdx(idx);
+    }
+  }, [specPages]);
+
+  useEffect(() => {
+    if (!activeSpecId) return;
+    const el = activeSpecRowRefs.current.get(activeSpecId);
+    el?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  }, [activeSpecId]);
 
   const computeFitScale = useCallback(() => {
     if (!viewerRef.current || !pdfContentRef.current) return null;
@@ -403,12 +424,44 @@ export function SignSpecModal({ jobId, fileId, fileName, specPages, plaqueTable,
                   // Use Phase 3 schedule extraction method from plaqueTable (not geminiEnriched,
                   // which tracks a separate diagram-enrichment step)
                   const rowIsVisual = extractionMethod === "visual";
+                  const isActive = activeSpecId === spec.id;
+                  const hasPage = spec.cropBox?.pageNum != null;
 
                   return (
-                    <div key={spec.id} className="px-3 py-2.5 border-b border-border/40 hover:bg-secondary/30 transition-colors">
-                      {/* Type code + extraction badge */}
+                    <div
+                      key={spec.id}
+                      ref={(el) => {
+                        if (el) activeSpecRowRefs.current.set(spec.id, el);
+                        else activeSpecRowRefs.current.delete(spec.id);
+                      }}
+                      onClick={() => jumpToSpec(spec)}
+                      className={`px-3 py-2.5 border-b border-border/40 transition-colors ${
+                        hasPage ? "cursor-pointer" : ""
+                      } ${
+                        isActive
+                          ? "bg-accent/10 border-l-2 border-l-accent"
+                          : "hover:bg-secondary/30"
+                      }`}
+                    >
+                      {/* Type code + jump button + extraction badge */}
                       <div className="flex items-center justify-between gap-2 mb-1">
-                        <span className="text-xs font-display font-bold text-foreground">{spec.typeCode}</span>
+                        <div className="flex items-center gap-1.5 min-w-0">
+                          <span className="text-xs font-display font-bold text-foreground">{spec.typeCode}</span>
+                          {hasPage && (
+                            <button
+                              onClick={() => jumpToSpec(spec)}
+                              title={`Jump to PDF page ${spec.cropBox!.pageNum}`}
+                              className={`flex items-center gap-0.5 px-1 py-0.5 rounded text-[9px] font-mono transition-colors flex-shrink-0 ${
+                                isActive
+                                  ? "bg-accent text-background"
+                                  : "bg-accent/15 text-accent border border-accent/30 hover:bg-accent/30"
+                              }`}
+                            >
+                              <ArrowUpRight className="w-2.5 h-2.5" />
+                              pg {spec.cropBox!.pageNum}
+                            </button>
+                          )}
+                        </div>
                         <span className={`px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider flex-shrink-0 ${
                           rowIsVisual
                             ? "bg-emerald-500/15 text-emerald-400 border border-emerald-500/30"
