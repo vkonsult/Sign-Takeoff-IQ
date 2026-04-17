@@ -10,7 +10,7 @@ import { useToast } from "@/hooks/use-toast";
 import {
   FolderOpen, Eye, FileText, CheckCircle2, Cpu,
   AlertTriangle, Trash2, X, Square, CheckSquare, MinusSquare,
-  Archive, EyeOff, Table2, FileDown, FileSpreadsheet, Loader2,
+  Archive, EyeOff, FileDown, FileSpreadsheet, Loader2,
 } from "lucide-react";
 import { Link, useLocation } from "wouter";
 import { exportMarkedupPdf, type MarkerSign } from "@/lib/exportMarkedupPdf";
@@ -375,6 +375,30 @@ export default function JobsList() {
                               : `${skippedFileCount} skipped`}
                           </button>
                         )}
+                        {job.status === "completed" && (
+                          <div className="flex items-center gap-1">
+                            <button
+                              onClick={(e) => handleMarkedPdf(job.id, job.name, e)}
+                              disabled={exportingPdf.has(job.id)}
+                              title="Download marked-up PDF"
+                              className="p-1 rounded text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50"
+                            >
+                              {exportingPdf.has(job.id)
+                                ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                : <FileDown className="w-3.5 h-3.5" />}
+                            </button>
+                            <button
+                              onClick={(e) => handleXlsxExport(job.id, e)}
+                              disabled={exportingXlsx.has(job.id)}
+                              title="Download XLSX export"
+                              className="p-1 rounded text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50"
+                            >
+                              {exportingXlsx.has(job.id)
+                                ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                : <FileSpreadsheet className="w-3.5 h-3.5" />}
+                            </button>
+                          </div>
+                        )}
                       </div>
 
                       <div className="flex justify-center py-4">
@@ -395,43 +419,6 @@ export default function JobsList() {
                         <Eye className="w-5 h-5" />
                       </div>
                     </Link>
-
-                    {/* Quick-action buttons for completed jobs */}
-                    {!isChecked && job.status === "completed" && (
-                      <div className="absolute right-[88px] top-1/2 -translate-y-1/2 flex items-center gap-1 z-10 opacity-0 group-hover:opacity-100 transition-opacity">
-                        <Link
-                          href={`/jobs/${job.id}?tab=signs`}
-                          onClick={(e: React.MouseEvent) => e.stopPropagation()}
-                          title="View sign table results"
-                          className="flex items-center gap-1 px-2 py-1 rounded text-[11px] font-display font-semibold text-primary bg-primary/10 border border-primary/30 hover:bg-primary/20 transition-all"
-                        >
-                          <Table2 className="w-3.5 h-3.5" />
-                          Results
-                        </Link>
-                        <button
-                          onClick={(e) => handleMarkedPdf(job.id, job.name, e)}
-                          disabled={exportingPdf.has(job.id)}
-                          title="Download marked-up PDF"
-                          className="flex items-center gap-1 px-2 py-1 rounded text-[11px] font-display font-semibold text-foreground/70 bg-secondary border border-border hover:text-foreground hover:bg-secondary/80 transition-all disabled:opacity-50"
-                        >
-                          {exportingPdf.has(job.id)
-                            ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                            : <FileDown className="w-3.5 h-3.5" />}
-                          PDF
-                        </button>
-                        <button
-                          onClick={(e) => handleXlsxExport(job.id, e)}
-                          disabled={exportingXlsx.has(job.id)}
-                          title="Download XLSX export"
-                          className="flex items-center gap-1 px-2 py-1 rounded text-[11px] font-display font-semibold text-foreground/70 bg-secondary border border-border hover:text-foreground hover:bg-secondary/80 transition-all disabled:opacity-50"
-                        >
-                          {exportingXlsx.has(job.id)
-                            ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                            : <FileSpreadsheet className="w-3.5 h-3.5" />}
-                          XLSX
-                        </button>
-                      </div>
-                    )}
 
                     {/* Single-row delete — always visible, destructive red */}
                     {!isChecked && (
