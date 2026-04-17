@@ -37,9 +37,9 @@ import {
   type ScheduleEntry,
 } from "./signage-schedule-parser";
 import { extractSignSchedule } from "./sign-schedule-extractor";
-import { applySignRules, assignmentToRows, type PlaqueEntry } from "./rule-engine";
-import { verifyRuleEngineResult } from "./verifier";
-import { buildRoomInventory, enrichAmbiguousRoomsWithAI, type RoomInventory } from "./room-inventory";
+import { applySignRules, assignmentToRows, type PlaqueEntry, type RuleEngineResult as EngineRuleEngineResult, type SignAssignment } from "./rule-engine";
+import { verifyRuleEngineResult, type Room as VerifierRoom, type RoomAssignment as VerifierRoomAssignment, type RuleEngineResult as VerifierRuleEngineResult, type RoomInventory as VerifierRoomInventory, type SheetManifest } from "./verifier";
+import { buildRoomInventory, enrichAmbiguousRoomsWithAI, type RoomInventory, type RoomRecord } from "./room-inventory";
 
 export async function runPdfProcessor(jobId: string): Promise<void> {
   const pipelineSteps: ProcessingStep[] = [];
@@ -169,6 +169,10 @@ export async function runPdfProcessor(jobId: string): Promise<void> {
 
   // Track schedule pages per file so extractSignSchedule() can be called after the parallel loop
   const fileSchedulePages = new Map<string, number[]>();
+
+  // Accumulate Phase 4 (room inventory) and Phase 5 (rule engine) results for Phase 6 wiring.
+  const allEngineRuleResults: EngineRuleEngineResult[] = [];
+  const allFileRoomInventories: RoomInventory[] = [];
 
   // ── Phase 1 Intake pre-pass (filesToProcess, parallel) ──────────────────────
   // Run Phase 1 for every file in `filesToProcess` (data files when data files
@@ -379,6 +383,9 @@ export async function runPdfProcessor(jobId: string): Promise<void> {
               jobId,
             );
 
+            // Collect for Phase 6 verification wiring
+            allEngineRuleResults.push(ruleResult);
+
             // Convert SignAssignments → extractedSignsTable rows
             const allSignRows = ruleResult.assignments.flatMap((assignment) =>
               assignmentToRows(assignment).map((row) => ({
@@ -555,6 +562,9 @@ export async function runPdfProcessor(jobId: string): Promise<void> {
                 // Phase 4b: life safety page for Gemini-first occupant loads extraction
                 lifeSafetyPageNum,
               );
+
+              // Collect for Phase 6 verification wiring
+              allFileRoomInventories.push(fileRoomInventory);
 
               recordStep(
                 `room_inventory_${file.id}`,
@@ -824,17 +834,145 @@ export async function runPdfProcessor(jobId: string): Promise<void> {
 
   // ── Phase 6: Verify & Output ───────────────────────────────────────────────
   // Run structured pre-output verification checks (V1–V7) from the SignTakeoff
-  // System Prompt v1.1.  Phase 4 (RoomInventory) and Phase 5 (RuleEngine) are
-  // not yet implemented; empty inputs are passed so all checks pass trivially
-  // until those modules ship.  The step is always recorded so the Timeline UI
-  // shows Phase 6 as complete.
+  // System Prompt v1.1, wired to real Phase 4 (RoomInventory) and Phase 5
+  // (RuleEngine) outputs collected during the per-file processing loop above.
   {
     const t_verify = Date.now();
-    const report = verifyRuleEngineResult(
-      { assignments: [], byLevel: {} },
-      { rooms: [], elevatorCount: 0, stairCount: 0, levelNames: [] },
-      { levels: [], pageCount: filesToProcess.length },
+
+    // ── Shared deterministic key derivation ──────────────────────────────────
+    // Both adapters must produce the same roomId for the same room so that
+    // verifier V1/V6/V7 lookups (assignmentMap.get(room.roomId)) succeed.
+    // Level is always included in the key to prevent cross-level collisions
+    // when the same room number appears on multiple floors or in multi-file jobs.
+    // When roomNumber is absent we use the normalised name and pdfPage instead
+    // of an array index (array index varies by async insertion order across files).
+    function deriveRoomId(
+      roomNumber: string | null,
+      level: string,
+      roomName: string,
+      pdfPage: number,
+    ): string {
+      if (roomNumber) return `${level}|${roomNumber.toUpperCase().trim()}`;
+      return `${level}|${roomName.trim().toUpperCase()}|${pdfPage}`;
+    }
+
+    // ── Adapter: SignAssignment (Phase 5) → VerifierRoomAssignment ───────────
+    // Converts rule-engine SignAssignment (nullable counts, no signs[] field)
+    // to the shape verifier.ts expects (non-nullable counts, signs[] derived).
+    function toVerifierAssignment(a: SignAssignment): VerifierRoomAssignment {
+      const signs: string[] = [];
+      if (a.roomId && a.roomId > 0) signs.push("Room ID");
+      if (a.roomIdWithInsert && a.roomIdWithInsert > 0) signs.push("Room ID w/ Insert");
+      if (a.restroom && a.restroom > 0) signs.push("Restroom");
+      if (a.exit && a.exit > 0) signs.push("EXIT");
+      if (a.stairCorridor && a.stairCorridor > 0) signs.push("Stair Corridor");
+      if (a.stairLanding && a.stairLanding > 0) signs.push("Stair Landing");
+      if (a.inCaseOfFire && a.inCaseOfFire > 0) signs.push("In Case of Fire");
+      if (a.maxOccupancy && a.maxOccupancy > 0) signs.push("Max Occupancy");
+      if (a.evacuationMap && a.evacuationMap > 0) signs.push("Evacuation Map");
+      if (a.officeDirectory && a.officeDirectory > 0) signs.push("Office Directory");
+      return {
+        roomId: deriveRoomId(a.roomNumber, a.level, a.roomName, a.pdfPage),
+        roomNumber: a.roomNumber ?? "",
+        roomName: a.roomName,
+        level: a.level,
+        signs,
+        exclusionReasons: a.exclusionReasons,
+        restroom: a.restroom ?? 0,
+        exit: a.exit ?? 0,
+        stairCorridor: a.stairCorridor ?? 0,
+        stairLanding: a.stairLanding ?? 0,
+        inCaseOfFire: a.inCaseOfFire ?? 0,
+        maxOccupancy: a.maxOccupancy ?? 0,
+      };
+    }
+
+    // ── Adapter: RoomRecord (Phase 4) → VerifierRoom ─────────────────────────
+    // passedR1Filter: true for occupied rooms that aren't MEP, vehicle bays,
+    // or corridors (mirroring the R1 eligibility logic in rule-engine.ts).
+    function toVerifierRoom(r: RoomRecord): VerifierRoom {
+      const passedR1Filter =
+        !r.isMepUnoccupied &&
+        !r.isVehicleBay &&
+        !r.isCorridorOrHall;
+      return {
+        roomId: deriveRoomId(r.roomNumber, r.level, r.roomName, r.pdfPage),
+        roomNumber: r.roomNumber ?? "",
+        roomName: r.roomName,
+        level: r.level,
+        isRestroom: r.isRestroom,
+        isStair: r.isStair,
+        isElevator: r.isElevator,
+        isAssembly: r.isAssembly,
+        isMepUnoccupied: r.isMepUnoccupied,
+        occupantLoad: r.occupantLoad ?? undefined,
+        passedR1Filter,
+        // levelsServed / corridorEntries not yet available from Phase 4
+      };
+    }
+
+    // ── Aggregate across files ────────────────────────────────────────────────
+    const allEngineAssignments = allEngineRuleResults.flatMap((r) => r.assignments);
+    const allRoomRecords = allFileRoomInventories.flatMap((ri) => ri.rooms);
+
+    const verifierAssignments = allEngineAssignments.map((a) => toVerifierAssignment(a));
+    const verifierRooms = allRoomRecords.map((r) => toVerifierRoom(r));
+
+    // ── Build byLevel ─────────────────────────────────────────────────────────
+    // Group verifier assignments by level; sum occupant loads from Phase 4 rooms.
+    const byLevel: VerifierRuleEngineResult["byLevel"] = {};
+    for (const va of verifierAssignments) {
+      if (!byLevel[va.level]) {
+        byLevel[va.level] = { assignments: [] };
+      }
+      byLevel[va.level]!.assignments.push(va);
+    }
+    // Accumulate per-level occupant loads from Phase 4 room records
+    for (const r of allRoomRecords) {
+      if (r.occupantLoad !== null && r.occupantLoad > 0) {
+        if (!byLevel[r.level]) {
+          byLevel[r.level] = { assignments: [] };
+        }
+        byLevel[r.level]!.totalOccupantLoad =
+          (byLevel[r.level]!.totalOccupantLoad ?? 0) + r.occupantLoad;
+      }
+    }
+
+    // ── Build verifier inputs ─────────────────────────────────────────────────
+    const uniqueLevelNames = [
+      ...new Set([
+        ...allRoomRecords.map((r) => r.level),
+        ...allEngineAssignments.map((a) => a.level),
+      ]),
+    ];
+    // Sum actual page counts from per-file results; fall back to file count
+    // when page count data is absent (e.g., a file failed to process).
+    const totalPageCount = parsedResults.reduce(
+      (sum, r) => sum + (typeof r.pageCount === "number" ? r.pageCount : 1),
+      0,
     );
+
+    const verifierRuleResult: VerifierRuleEngineResult = {
+      assignments: verifierAssignments,
+      byLevel,
+    };
+    const verifierRoomInventory: VerifierRoomInventory = {
+      rooms: verifierRooms,
+      elevatorCount: allRoomRecords.filter((r) => r.isElevator).length,
+      stairCount: allRoomRecords.filter((r) => r.isStair).length,
+      levelNames: uniqueLevelNames,
+    };
+    const verifierManifest: SheetManifest = {
+      levels: uniqueLevelNames,
+      pageCount: totalPageCount,
+    };
+
+    const report = verifyRuleEngineResult(
+      verifierRuleResult,
+      verifierRoomInventory,
+      verifierManifest,
+    );
+
     recordStep("verification", "Phase 6 — Verify & Output", t_verify, {
       passed: report.passed,
       errors: report.errors.length,
@@ -845,6 +983,8 @@ export async function runPdfProcessor(jobId: string): Promise<void> {
       warningDetails: report.warnings,
       questionDetails: report.questionsForVerification,
       checksPassed: report.checksPassed,
+      roomsFromInventory: verifierRooms.length,
+      assignmentsFromEngine: verifierAssignments.length,
       ...report.summary.byType,
     });
   }
