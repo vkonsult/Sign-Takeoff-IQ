@@ -113,12 +113,24 @@ router.get("/activity", async (req, res) => {
   }
 });
 
+const VALID_CALL_TYPES = [
+  "project_info",
+  "floor_plan_text",
+  "vision_fallback",
+  "bbox_detection",
+  "title_block_vision",
+  "sign_schedule_enrich",
+] as const;
+
 // GET /activity/ai-calls — returns AI call log rows, scoped to the caller's org
 const AiCallsQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(200).default(50),
   offset: z.coerce.number().int().min(0).default(0),
   jobId: z.string().uuid().optional(),
   page: z.coerce.number().int().min(1).optional(),
+  callType: z.enum(VALID_CALL_TYPES).optional(),
+  from: z.string().optional(),
+  to: z.string().optional(),
 });
 
 router.get("/activity/ai-calls", async (req, res) => {
@@ -130,7 +142,7 @@ router.get("/activity/ai-calls", async (req, res) => {
     return;
   }
 
-  const { limit, offset, jobId, page } = parsed.data;
+  const { limit, offset, jobId, page, callType, from, to } = parsed.data;
 
   const isAdmin = ["ADMIN", "SUPER_ADMIN"].includes(user.role);
   if (!isAdmin && !user.isSuperAdmin) {
@@ -152,6 +164,21 @@ router.get("/activity/ai-calls", async (req, res) => {
 
     if (page != null) {
       conditions.push(eq(aiCallLogsTable.pageNumber, page));
+    }
+
+    if (callType) {
+      conditions.push(eq(aiCallLogsTable.callType, callType));
+    }
+
+    if (from) {
+      const dt = new Date(from);
+      if (!isNaN(dt.getTime())) conditions.push(gte(aiCallLogsTable.createdAt, dt));
+    }
+
+    if (to) {
+      const dt = new Date(to);
+      dt.setDate(dt.getDate() + 1);
+      if (!isNaN(dt.getTime())) conditions.push(lte(aiCallLogsTable.createdAt, dt));
     }
 
     if (!user.isSuperAdmin && user.organizationId) {

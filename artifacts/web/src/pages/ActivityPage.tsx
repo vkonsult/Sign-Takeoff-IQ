@@ -139,9 +139,21 @@ interface JobOption {
   name: string;
 }
 
+const AI_CALL_TYPES = [
+  "project_info",
+  "floor_plan_text",
+  "vision_fallback",
+  "bbox_detection",
+  "title_block_vision",
+  "sign_schedule_enrich",
+] as const;
+
 function AiCallsTab({ isAdmin, isSuperAdmin }: { isAdmin: boolean; isSuperAdmin: boolean }) {
   const [offset, setOffset] = useState(0);
   const [selectedJobId, setSelectedJobId] = useState("");
+  const [selectedCallType, setSelectedCallType] = useState("");
+  const [filterFrom, setFilterFrom] = useState("");
+  const [filterTo, setFilterTo] = useState("");
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
 
   const { data: jobsData } = useQuery({
@@ -161,11 +173,14 @@ function AiCallsTab({ isAdmin, isSuperAdmin }: { isAdmin: boolean; isSuperAdmin:
     params.set("limit", String(PAGE_SIZE));
     params.set("offset", String(offset));
     if (selectedJobId) params.set("jobId", selectedJobId);
+    if (selectedCallType) params.set("callType", selectedCallType);
+    if (filterFrom) params.set("from", filterFrom);
+    if (filterTo) params.set("to", filterTo);
     return params.toString();
-  }, [offset, selectedJobId]);
+  }, [offset, selectedJobId, selectedCallType, filterFrom, filterTo]);
 
   const { data, isLoading } = useQuery({
-    queryKey: ["ai-calls", offset, selectedJobId],
+    queryKey: ["ai-calls", offset, selectedJobId, selectedCallType, filterFrom, filterTo],
     queryFn: async () => {
       const res = await apiFetch(`/api/activity/ai-calls?${buildQuery()}`);
       if (!res.ok) throw new Error("Failed to load AI call logs");
@@ -187,8 +202,13 @@ function AiCallsTab({ isAdmin, isSuperAdmin }: { isAdmin: boolean; isSuperAdmin:
     });
   };
 
-  const clearFilter = () => {
+  const hasActiveFilters = !!(selectedJobId || selectedCallType || filterFrom || filterTo);
+
+  const clearFilters = () => {
     setSelectedJobId("");
+    setSelectedCallType("");
+    setFilterFrom("");
+    setFilterTo("");
     setOffset(0);
   };
 
@@ -202,15 +222,15 @@ function AiCallsTab({ isAdmin, isSuperAdmin }: { isAdmin: boolean; isSuperAdmin:
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center gap-3 flex-wrap">
-        <div className="flex items-center gap-2">
+      <div className="flex items-end gap-3 flex-wrap">
+        <div className="flex flex-col gap-1">
           <label className="text-xs font-display font-semibold uppercase tracking-wider text-muted-foreground whitespace-nowrap">
-            Filter by Job
+            Job
           </label>
           <select
             value={selectedJobId}
             onChange={(e) => { setSelectedJobId(e.target.value); setOffset(0); }}
-            className="h-8 rounded-md border border-border bg-background text-sm px-2 text-foreground w-64"
+            className="h-8 rounded-md border border-border bg-background text-sm px-2 text-foreground w-56"
           >
             <option value="">All jobs</option>
             {jobOptions.map((j) => (
@@ -218,16 +238,52 @@ function AiCallsTab({ isAdmin, isSuperAdmin }: { isAdmin: boolean; isSuperAdmin:
             ))}
           </select>
         </div>
-        {selectedJobId && (
-          <Button onClick={clearFilter} size="sm" variant="ghost">
+
+        <div className="flex flex-col gap-1">
+          <label className="text-xs font-display font-semibold uppercase tracking-wider text-muted-foreground whitespace-nowrap">
+            Call Type
+          </label>
+          <select
+            value={selectedCallType}
+            onChange={(e) => { setSelectedCallType(e.target.value); setOffset(0); }}
+            className="h-8 rounded-md border border-border bg-background text-sm px-2 text-foreground w-48"
+          >
+            <option value="">All types</option>
+            {AI_CALL_TYPES.map((t) => (
+              <option key={t} value={t}>{CALL_TYPE_LABELS[t] ?? t}</option>
+            ))}
+          </select>
+        </div>
+
+        <div className="flex flex-col gap-1">
+          <label className="text-xs font-display font-semibold uppercase tracking-wider text-muted-foreground whitespace-nowrap">
+            From
+          </label>
+          <input
+            type="date"
+            value={filterFrom}
+            onChange={(e) => { setFilterFrom(e.target.value); setOffset(0); }}
+            className="h-8 rounded-md border border-border bg-background text-sm px-2 text-foreground"
+          />
+        </div>
+
+        <div className="flex flex-col gap-1">
+          <label className="text-xs font-display font-semibold uppercase tracking-wider text-muted-foreground whitespace-nowrap">
+            To
+          </label>
+          <input
+            type="date"
+            value={filterTo}
+            onChange={(e) => { setFilterTo(e.target.value); setOffset(0); }}
+            className="h-8 rounded-md border border-border bg-background text-sm px-2 text-foreground"
+          />
+        </div>
+
+        {hasActiveFilters && (
+          <Button onClick={clearFilters} size="sm" variant="ghost" className="mb-0.5">
             <X className="w-3.5 h-3.5" />
             Clear
           </Button>
-        )}
-        {selectedJobId && (
-          <span className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-primary/10 text-primary text-xs font-medium border border-primary/30">
-            {jobOptions.find((j) => j.id === selectedJobId)?.name ?? selectedJobId.slice(0, 8) + "…"}
-          </span>
         )}
       </div>
 
