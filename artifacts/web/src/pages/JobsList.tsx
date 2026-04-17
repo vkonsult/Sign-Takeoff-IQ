@@ -381,7 +381,7 @@ export default function JobsList() {
                               onClick={(e) => handleMarkedPdf(job.id, job.name, e)}
                               disabled={exportingPdf.has(job.id)}
                               title="Download marked-up PDF"
-                              className="p-1 rounded text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50"
+                              className="p-1.5 rounded text-muted-foreground hover:text-foreground hover:bg-muted transition-colors disabled:opacity-50"
                             >
                               {exportingPdf.has(job.id)
                                 ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
@@ -391,7 +391,7 @@ export default function JobsList() {
                               onClick={(e) => handleXlsxExport(job.id, e)}
                               disabled={exportingXlsx.has(job.id)}
                               title="Download XLSX export"
-                              className="p-1 rounded text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50"
+                              className="p-1.5 rounded text-muted-foreground hover:text-foreground hover:bg-muted transition-colors disabled:opacity-50"
                             >
                               {exportingXlsx.has(job.id)
                                 ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
