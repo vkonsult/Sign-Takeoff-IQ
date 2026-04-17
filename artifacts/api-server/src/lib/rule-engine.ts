@@ -18,6 +18,7 @@ import {
   type RoomInventory as Phase4RoomInventory,
   type RoomRecord as Phase4RoomRecord,
 } from "./room-inventory";
+import { OFFICE_TOKENS, SUITE_TOKENS } from "./room-classification-tokens";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -273,13 +274,7 @@ const PUBLIC_FACING_TOKENS = new Set([
   "atrium", "reception", "front desk", "welcome", "concourse",
   "main entry", "public", "grand",
 ]);
-const OFFICE_TOKENS = new Set([
-  "office", "admin", "administration", "administrative", "executive",
-  "manager", "director", "principal", "workroom", "workspace",
-]);
-const SUITE_TOKENS = new Set([
-  "suite", "tenant space", "tenant",
-]);
+// OFFICE_TOKENS and SUITE_TOKENS are imported from room-classification-tokens.ts
 /**
  * Occupied-use tokens: rooms with any of these in their name are clearly
  * human-occupied spaces and must NOT trigger the R15 mezzanine MEP veto even

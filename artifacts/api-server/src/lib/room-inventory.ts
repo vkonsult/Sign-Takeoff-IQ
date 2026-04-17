@@ -14,6 +14,7 @@ import { renderFloorPlanPages } from "./pdf-render";
 import { getFilePageImagesDir } from "./storage";
 import { ai } from "@workspace/integrations-gemini-ai";
 import fs from "fs/promises";
+import { OFFICE_TOKENS, SUITE_TOKENS } from "./room-classification-tokens";
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
@@ -120,9 +121,7 @@ const STORAGE_QUALIFIER_KEYWORDS = ["STORAGE", "CLOSET", "STOREROOM"];
 const PUBLIC_FACING_KEYWORDS = ["LOBBY", "RECEPTION", "WAITING", "ENTRY", "ENTRANCE", "VISITOR", "ATRIUM", "CONCOURSE", "FOYER"];
 const STAFF_KEYWORDS = ["STAFF", "EMPLOYEE", "CREW", "PERSONNEL"];
 
-/** Token sets for R5 (office) and R6 (suite) detection — must match rule-engine.ts. */
-const OFFICE_TOKENS = new Set(["OFFICE", "OFFICES", "EXEC ", "EXECUTIVE", "DIRECTOR", "PRINCIPAL", "MANAGER", "PARTNER", "ADMIN OFFICE", "PRIVATE OFFICE"]);
-const SUITE_TOKENS = new Set(["SUITE", "SUITES", "STE ", "TENANT SUITE", "OFFICE SUITE"]);
+// OFFICE_TOKENS and SUITE_TOKENS are imported from room-classification-tokens.ts
 
 // Dimension / scale text patterns — these are NOT room labels
 const DIMENSION_RE = /[\d]+'|[\d]+"|\d+\s*[-x]\s*\d|1\s*\/\s*\d{1,3}\s*=|^\d+[\s.]*$/;
@@ -179,8 +178,8 @@ export function deriveFlags(
     (occupancyGroup != null && /^A[-\s]?[0-9]/.test(occupancyGroup)) ||
     (occupantLoad != null && occupantLoad >= 50);
 
-  const isOffice = [...OFFICE_TOKENS].some((tok) => u.includes(tok.trim()));
-  const isSuite = [...SUITE_TOKENS].some((tok) => u.includes(tok.trim()));
+  const isOffice = [...OFFICE_TOKENS].some((tok) => u.includes(tok.toUpperCase()));
+  const isSuite = [...SUITE_TOKENS].some((tok) => u.includes(tok.toUpperCase()));
 
   return {
     isRestroom,
