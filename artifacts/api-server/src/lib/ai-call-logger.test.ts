@@ -13,10 +13,11 @@ vi.mock("@workspace/db", () => ({
 }));
 
 vi.mock("./logger", () => ({
-  logger: { warn: vi.fn() },
+  logger: { warn: vi.fn(), error: vi.fn() },
 }));
 
-import { logAiCall } from "./ai-call-logger";
+import { logAiCall, getAiLogFailureCount } from "./ai-call-logger";
+import { logger } from "./logger";
 import * as dbModule from "@workspace/db";
 
 describe("logAiCall", () => {
@@ -131,5 +132,69 @@ describe("logAiCall", () => {
     ).not.toThrow();
 
     await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+
+  it("increments getAiLogFailureCount() when the error handler fires", () => {
+    logAiCall({
+      callType: "project_info",
+      prompt: "test",
+      responseJson: {},
+      inputTokens: 1,
+      outputTokens: 1,
+      durationMs: 1,
+    });
+
+    const countBefore = getAiLogFailureCount();
+
+    const errorHandler = dbMocks.catchFn.mock.calls[0]![0] as (
+      err: unknown
+    ) => void;
+    errorHandler(new Error("db unavailable"));
+
+    expect(getAiLogFailureCount()).toBe(countBefore + 1);
+  });
+
+  it("calls logger.error (not logger.warn) when the error handler fires", () => {
+    logAiCall({
+      callType: "project_info",
+      prompt: "test",
+      responseJson: {},
+      inputTokens: 1,
+      outputTokens: 1,
+      durationMs: 1,
+    });
+
+    const errorHandler = dbMocks.catchFn.mock.calls[0]![0] as (
+      err: unknown
+    ) => void;
+    const err = new Error("schema drift");
+    errorHandler(err);
+
+    expect(logger.error).toHaveBeenCalledOnce();
+    expect(logger.error).toHaveBeenCalledWith(
+      expect.objectContaining({ err }),
+      expect.stringContaining("logAiCall")
+    );
+    expect(logger.warn).not.toHaveBeenCalled();
+  });
+
+  it("includes the running aiLogFailureCount in the error log", () => {
+    logAiCall({
+      callType: "project_info",
+      prompt: "test",
+      responseJson: {},
+      inputTokens: 1,
+      outputTokens: 1,
+      durationMs: 1,
+    });
+
+    const errorHandler = dbMocks.catchFn.mock.calls[0]![0] as (
+      err: unknown
+    ) => void;
+    errorHandler(new Error("connection timeout"));
+
+    const [logArg] = (logger.error as ReturnType<typeof vi.fn>).mock.calls[0]!;
+    expect(logArg).toHaveProperty("aiLogFailureCount");
+    expect(typeof logArg.aiLogFailureCount).toBe("number");
   });
 });

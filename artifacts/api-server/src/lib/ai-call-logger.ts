@@ -13,9 +13,21 @@ export interface AiCallEntry {
   durationMs: number;
 }
 
+let aiLogFailureCount = 0;
+
+/**
+ * Returns the total number of times logAiCall has failed to persist a row.
+ * Expose via a health/metrics endpoint so operators can detect persistent
+ * failures without relying solely on log scraping.
+ */
+export function getAiLogFailureCount(): number {
+  return aiLogFailureCount;
+}
+
 /**
  * Fire-and-forget helper that inserts one row into ai_call_logs.
- * Errors are swallowed with a warning so a DB hiccup never breaks a scan.
+ * A DB failure is logged at ERROR level and counted so monitoring can surface
+ * the problem. The error is still swallowed so a DB hiccup never breaks a scan.
  */
 export function logAiCall(entry: AiCallEntry): void {
   db.insert(aiCallLogsTable)
@@ -30,6 +42,10 @@ export function logAiCall(entry: AiCallEntry): void {
       durationMs: entry.durationMs,
     })
     .catch((err: unknown) => {
-      logger.warn({ err }, "logAiCall: failed to insert ai_call_log (non-fatal)");
+      aiLogFailureCount += 1;
+      logger.error(
+        { err, aiLogFailureCount },
+        "logAiCall: failed to insert ai_call_log (non-fatal) — audit trail may be incomplete"
+      );
     });
 }
