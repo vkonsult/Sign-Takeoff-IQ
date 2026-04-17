@@ -2931,9 +2931,20 @@ function RoomInventoryPanel({ inventory }: { inventory: RoomInventoryData }) {
           <span className="ml-1 text-[9px] font-mono text-emerald-400/60 bg-emerald-500/10 border border-emerald-500/20 px-1 rounded">occ loads ✓</span>
         )}
         {aiEnrichedCount != null && aiEnrichedCount > 0 && (
-          <span className="ml-1 text-[9px] font-mono text-violet-400/70 bg-violet-500/10 border border-violet-500/20 px-1 rounded">
-            {aiEnrichedCount} {aiEnrichedCount === 1 ? "room" : "rooms"} AI-labeled
-          </span>
+          <TooltipProvider>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span className="ml-1 text-[9px] font-mono text-violet-400/70 bg-violet-500/10 border border-violet-500/20 px-1 rounded cursor-default">
+                  {aiEnrichedCount} {aiEnrichedCount === 1 ? "room" : "rooms"} AI-labeled
+                </span>
+              </TooltipTrigger>
+              <TooltipContent>
+                <p className="max-w-xs text-xs">
+                  {aiEnrichedCount === 1 ? "1 room was" : `${aiEnrichedCount} rooms were`} classified by AI because {aiEnrichedCount === 1 ? "its name was" : "their names were"} ambiguous.
+                </p>
+              </TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
         )}
       </button>
 
