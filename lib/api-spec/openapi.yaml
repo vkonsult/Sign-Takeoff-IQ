@@ -403,6 +403,11 @@ components:
           $ref: '#/components/schemas/PageStats'
           nullable: true
           description: Per-page classification breakdown from the extraction pass
+        roomInventory:
+          type: object
+          nullable: true
+          description: Phase 4 room inventory — extracted room labels, occupant loads, and derived flags
+          additionalProperties: true
         createdAt:
           type: string
           format: date-time

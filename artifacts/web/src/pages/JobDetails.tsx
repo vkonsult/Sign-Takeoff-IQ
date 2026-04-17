@@ -1376,7 +1376,7 @@ export default function JobDetails() {
                 </div>
               ) : activeTab === "sheets" ? (
                 <SheetsPanel
-                  files={files}
+                  files={files as FileWithInventory[]}
                   onOpenSpec={setSpecViewer}
                   allSigns={extractedSigns}
                   hiddenSigns={hiddenSigns}
@@ -2067,6 +2067,9 @@ function SignSummaryPanel({ signs }: { signs: AnySign[] }) {
 }
 
 type FileWithStats = NonNullable<ReturnType<typeof useJobDetails>["data"]>["files"][number];
+// Augment with Phase 4 field that is returned by the API but not yet in the generated client types.
+// Remove this augmentation once the API client is regenerated from the updated OpenAPI spec.
+type FileWithInventory = FileWithStats & { roomInventory?: RoomInventoryData | null };
 type SpecViewerState = { fileId: string; fileName: string; specPages: number[] };
 
 type OutlineSection = NonNullable<NonNullable<FileWithStats["pageStats"]>["outlineSections"]>[number];
@@ -2510,6 +2513,190 @@ function PageManifestTable({
   );
 }
 
+// ─── ROOM INVENTORY PANEL ─────────────────────────────────────────────────────
+
+interface RoomRecord {
+  roomNumber: string | null;
+  roomName: string;
+  level: string;
+  pdfPage: number;
+  occupantLoad: number | null;
+  occupancyGroup: string | null;
+  isRestroom: boolean;
+  isStair: boolean;
+  isElevator: boolean;
+  isVestibule: boolean;
+  isCorridorOrHall: boolean;
+  isVehicleBay: boolean;
+  isMepUnoccupied: boolean;
+  isVariableUse: boolean;
+  isPublicFacing: boolean;
+  isStaffOnly: boolean;
+  isAssembly: boolean;
+  extractionConfidence: number;
+}
+
+interface RoomInventoryData {
+  rooms: RoomRecord[];
+  occupantLoadTableFound: boolean;
+  warnings: string[];
+  sourcePages: number[];
+}
+
+function RoomFlagChip({ label }: { label: string }) {
+  return (
+    <span className="inline-flex items-center px-1.5 py-0.5 rounded border text-[8px] font-bold uppercase tracking-wider bg-emerald-500/10 text-emerald-400 border-emerald-500/25 whitespace-nowrap">
+      {label}
+    </span>
+  );
+}
+
+function roomFlags(r: RoomRecord): string[] {
+  const flags: string[] = [];
+  if (r.isRestroom) flags.push("Restroom");
+  if (r.isStair) flags.push("Stair");
+  if (r.isElevator) flags.push("Elevator");
+  if (r.isVestibule) flags.push("Vestibule");
+  if (r.isCorridorOrHall) flags.push("Corridor");
+  if (r.isVehicleBay) flags.push("Vehicle Bay");
+  if (r.isMepUnoccupied) flags.push("MEP");
+  if (r.isVariableUse) flags.push("Variable Use");
+  if (r.isPublicFacing) flags.push("Public");
+  if (r.isStaffOnly) flags.push("Staff Only");
+  if (r.isAssembly) flags.push("Assembly");
+  return flags;
+}
+
+function RoomInventoryPanel({ inventory }: { inventory: RoomInventoryData }) {
+  const [open, setOpen] = useState(false);
+  const { rooms, occupantLoadTableFound, warnings } = inventory;
+
+  if (rooms.length === 0) return null;
+
+  const restroomCount = rooms.filter((r) => r.isRestroom).length;
+  const stairCount = rooms.filter((r) => r.isStair).length;
+  const elevatorCount = rooms.filter((r) => r.isElevator).length;
+  const assemblyCount = rooms.filter((r) => r.isAssembly).length;
+  const corridorCount = rooms.filter((r) => r.isCorridorOrHall).length;
+
+  return (
+    <div className="mt-3 pt-2 border-t border-border/40">
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className="flex items-center gap-1.5 w-full text-left group"
+      >
+        {open
+          ? <ChevronDown className="w-3 h-3 text-muted-foreground/50 flex-shrink-0" />
+          : <ChevronRight className="w-3 h-3 text-muted-foreground/50 flex-shrink-0" />
+        }
+        <span className="text-[10px] font-display font-bold uppercase tracking-wider text-emerald-400">
+          Room Inventory
+        </span>
+        <span className="text-[10px] font-mono text-muted-foreground/60">
+          {rooms.length} rooms
+        </span>
+        <span className="text-[10px] font-mono text-muted-foreground/45">·</span>
+        {restroomCount > 0 && (
+          <span className="text-[10px] font-mono text-muted-foreground/60">{restroomCount} restroom{restroomCount !== 1 ? "s" : ""}</span>
+        )}
+        {stairCount > 0 && (
+          <>
+            <span className="text-[10px] font-mono text-muted-foreground/45">·</span>
+            <span className="text-[10px] font-mono text-muted-foreground/60">{stairCount} stair{stairCount !== 1 ? "s" : ""}</span>
+          </>
+        )}
+        {elevatorCount > 0 && (
+          <>
+            <span className="text-[10px] font-mono text-muted-foreground/45">·</span>
+            <span className="text-[10px] font-mono text-muted-foreground/60">{elevatorCount} elevator{elevatorCount !== 1 ? "s" : ""}</span>
+          </>
+        )}
+        {assemblyCount > 0 && (
+          <>
+            <span className="text-[10px] font-mono text-muted-foreground/45">·</span>
+            <span className="text-[10px] font-mono text-muted-foreground/60">{assemblyCount} assembly</span>
+          </>
+        )}
+        {corridorCount > 0 && (
+          <>
+            <span className="text-[10px] font-mono text-muted-foreground/45">·</span>
+            <span className="text-[10px] font-mono text-muted-foreground/60">{corridorCount} corridor{corridorCount !== 1 ? "s" : ""}</span>
+          </>
+        )}
+        {occupantLoadTableFound && (
+          <span className="ml-1 text-[9px] font-mono text-emerald-400/60 bg-emerald-500/10 border border-emerald-500/20 px-1 rounded">occ loads ✓</span>
+        )}
+      </button>
+
+      {open && (
+        <div className="mt-2">
+          {warnings.length > 0 && (
+            <div className="mb-1 space-y-0.5">
+              {warnings.slice(0, 3).map((w, i) => (
+                <div key={i} className="text-[10px] text-amber-400 bg-amber-500/10 border border-amber-500/20 rounded px-2 py-1">
+                  ⚠ {w}
+                </div>
+              ))}
+              {warnings.length > 3 && (
+                <div className="text-[10px] text-muted-foreground/50 font-mono px-2">
+                  +{warnings.length - 3} more warnings
+                </div>
+              )}
+            </div>
+          )}
+
+          <div className="max-h-80 overflow-y-auto rounded border border-border/60">
+            <table className="w-full text-left border-collapse text-[10px] font-mono">
+              <thead className="sticky top-0 bg-card z-10">
+                <tr className="border-b border-border/60">
+                  <th className="px-2 py-1 text-[10px] font-display font-bold uppercase tracking-wider text-muted-foreground whitespace-nowrap">Room #</th>
+                  <th className="px-2 py-1 text-[10px] font-display font-bold uppercase tracking-wider text-muted-foreground">Name</th>
+                  <th className="px-2 py-1 text-[10px] font-display font-bold uppercase tracking-wider text-muted-foreground whitespace-nowrap">Level</th>
+                  <th className="px-2 py-1 text-[10px] font-display font-bold uppercase tracking-wider text-muted-foreground">Flags</th>
+                  <th className="px-2 py-1 text-[10px] font-display font-bold uppercase tracking-wider text-muted-foreground whitespace-nowrap">Occ Load</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rooms.map((room, i) => {
+                  const flags = roomFlags(room);
+                  return (
+                    <tr
+                      key={`${room.roomName}-${room.roomNumber}-${i}`}
+                      className={`border-b border-border/30 last:border-0 ${i % 2 === 0 ? "" : "bg-secondary/30"}`}
+                    >
+                      <td className="px-2 py-1 text-muted-foreground font-mono">
+                        {room.roomNumber ?? "—"}
+                      </td>
+                      <td className="px-2 py-1 text-foreground/80 max-w-[140px] truncate font-mono" title={room.roomName}>
+                        {room.roomName}
+                      </td>
+                      <td className="px-2 py-1 text-muted-foreground font-mono">
+                        {room.level}
+                      </td>
+                      <td className="px-2 py-1">
+                        {flags.length > 0 ? (
+                          <div className="flex flex-wrap gap-0.5">
+                            {flags.map((f) => <RoomFlagChip key={f} label={f} />)}
+                          </div>
+                        ) : (
+                          <span className="text-muted-foreground/40">—</span>
+                        )}
+                      </td>
+                      <td className="px-2 py-1 text-muted-foreground font-mono">
+                        {room.occupantLoad != null ? room.occupantLoad : "—"}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function SheetsPanel({
   files,
   onOpenSpec,
@@ -2519,7 +2706,7 @@ function SheetsPanel({
   jobId,
   toggleRejectedPage,
 }: {
-  files: FileWithStats[];
+  files: FileWithInventory[];
   onOpenSpec: (v: SpecViewerState) => void;
   allSigns: Array<{ id: string; pageNumber?: number | null; jobFileId?: string | null; hidden?: boolean }>;
   hiddenSigns: Array<{ id: string; pageNumber?: number | null; jobFileId?: string | null; hidden?: boolean }>;
@@ -2753,6 +2940,13 @@ function SheetsPanel({
                         jobId={jobId}
                         originalName={f.originalName}
                       />
+
+                      {/* Room Inventory — Phase 4 */}
+                      {(() => {
+                        const ri = f.roomInventory;
+                        if (!ri || ri.rooms.length === 0) return null;
+                        return <RoomInventoryPanel inventory={ri} />;
+                      })()}
                     </>
                   ) : (
                     <p className="text-[10px] text-muted-foreground/40 font-mono">

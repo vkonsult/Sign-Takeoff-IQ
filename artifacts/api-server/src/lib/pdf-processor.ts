@@ -40,6 +40,7 @@ import {
 import { extractSignSchedule } from "./sign-schedule-extractor";
 import { applySignRules, assignmentToRows, type PlaqueEntry } from "./rule-engine";
 import { verifyRuleEngineResult } from "./verifier";
+import { buildRoomInventory, type RoomInventory } from "./room-inventory";
 
 export async function runPdfProcessor(jobId: string): Promise<void> {
   const pipelineSteps: ProcessingStep[] = [];
@@ -98,10 +99,12 @@ export async function runPdfProcessor(jobId: string): Promise<void> {
       )
     );
 
-  // Reset page classification so the UI shows a clean state while re-processing
+  // Reset page classification and room inventory so re-runs start clean.
+  // roomInventory is not re-emitted when a file has no floor-plan pages, so clearing
+  // here prevents stale data from a prior run persisting after a re-scan.
   await db
     .update(jobFilesTable)
-    .set({ pageStats: null, pageCount: null })
+    .set({ pageStats: null, pageCount: null, roomInventory: null })
     .where(eq(jobFilesTable.jobId, jobId));
 
   await db
@@ -437,6 +440,61 @@ export async function runPdfProcessor(jobId: string): Promise<void> {
           }
         }
 
+        // ── Phase 4: Room Inventory ───────────────────────────────────────
+        // Build a room inventory from floor plan pages identified above.
+        // Non-fatal: if this step fails the rest of the pipeline continues normally.
+        let fileRoomInventory: RoomInventory | null = null;
+        {
+          const fpPagesForInventory = Array.from(fileFloorPlanPages.get(file.id) ?? []).sort((a, b) => a - b);
+          if (fpPagesForInventory.length > 0) {
+            try {
+              const t_ri = Date.now();
+
+              // Derive a representative level label for this file.
+              // Use the most common level from the spatial pre-pass, or "L1" as default.
+              let level = "L1";
+              if (spatialFloorLevelNames && spatialFloorLevelNames.size > 0) {
+                const levelCounts = new Map<string, number>();
+                for (const lv of spatialFloorLevelNames.values()) {
+                  levelCounts.set(lv, (levelCounts.get(lv) ?? 0) + 1);
+                }
+                let maxCount = 0;
+                for (const [lv, count] of levelCounts) {
+                  if (count > maxCount) { maxCount = count; level = lv; }
+                }
+              }
+
+              fileRoomInventory = await buildRoomInventory(
+                file.storedPath,
+                file.id,
+                fpPagesForInventory,
+                level,
+                jobId,
+                // Pass the per-page level map from the spatial pre-pass so each
+                // RoomRecord gets the correct level (L1, L2, MEZZ…) rather than
+                // a single file-wide default.
+                spatialFloorLevelNames ?? undefined,
+              );
+
+              recordStep(
+                `room_inventory_${file.id}`,
+                filesToProcess.length > 1
+                  ? `Room Inventory — ${file.originalName}`
+                  : "Room Inventory",
+                t_ri,
+                {
+                  rooms: fileRoomInventory.rooms.length,
+                  floorPlanPages: fpPagesForInventory.length,
+                  occupantLoadFound: fileRoomInventory.occupantLoadTableFound,
+                  warnings: fileRoomInventory.warnings.length,
+                },
+              );
+            } catch (err) {
+              logger.warn({ err, fileId: file.id, jobId }, "[PDF Processor] Room inventory failed — non-fatal");
+            }
+          }
+        }
+
         // ── Persist file metadata ─────────────────────────────────────────
         // Exclude any previously-rejected pages from all classification lists.
         const rejectedSet = new Set(existingRejectedPages);
@@ -500,7 +558,12 @@ export async function runPdfProcessor(jobId: string): Promise<void> {
 
         await db
           .update(jobFilesTable)
-          .set({ pageCount: numPages, extractedText: rawText.slice(0, 10000), pageStats })
+          .set({
+            pageCount: numPages,
+            extractedText: rawText.slice(0, 10000),
+            pageStats,
+            ...(fileRoomInventory ? { roomInventory: fileRoomInventory } : {}),
+          })
           .where(eq(jobFilesTable.id, file.id));
 
         parsedResults.push({ fileId: file.id, fileName: file.originalName, pageCount: numPages });

@@ -338,6 +338,7 @@ router.get("/jobs/:jobId", async (req, res) => {
         originalName: f.originalName,
         pageCount: f.pageCount,
         pageStats: f.pageStats ?? null,
+        roomInventory: f.roomInventory ?? null,
         createdAt: f.createdAt,
       })),
       extractedSigns,

@@ -1,4 +1,4 @@
-import { pgTable, uuid, text, integer, timestamp, json } from "drizzle-orm/pg-core";
+import { pgTable, uuid, text, integer, timestamp, json, jsonb } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod/v4";
 import { jobsTable } from "./jobs";
@@ -26,6 +26,7 @@ export const jobFilesTable = pgTable("job_files", {
       type: "floor_plan" | "sign_schedule" | "other" | null;
     }>;
   }>(),
+  roomInventory: jsonb("room_inventory").$type<object | null>(),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 

@@ -163,8 +163,8 @@ export const PIPELINE_PHASES: PipelinePhase[] = [
     legacyModulesReplaced: [
       "No equivalent in legacy pipeline — new capability",
     ],
-    newModule: "room-inventory.ts (planned)",
-    taskRef: null,
+    newModule: "room-inventory.ts → buildRoomInventory()",
+    taskRef: "#357",
   },
   {
     id: 5,
