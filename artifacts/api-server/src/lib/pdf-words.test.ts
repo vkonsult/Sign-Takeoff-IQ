@@ -1,10 +1,67 @@
+/**
+ * ════════════════════════════════════════════════════════════════════════════
+ * TESTING CONTRACT FOR pdf-words.ts
+ * ════════════════════════════════════════════════════════════════════════════
+ *
+ * Every public export in pdf-words.ts MUST have at least a smoke test here.
+ * The table below tracks current coverage.  Update it whenever you add or
+ * rename an export.
+ *
+ * COVERED ✅
+ *   sanitizePhraseCoords          — full suite (see "sanitizePhraseCoords" describe)
+ *   extractRawPageItems           — full suite (see "extractRawPageItems" describe)
+ *   extractPagePhrases            — full suite (see "extractPagePhrases" describe)
+ *   classifyPageFromPhrases       — full suite (see "classifyPageFromPhrases — exclusion veto scope" describe)
+ *   invalidatePdfCaches           — smoke tests (see "invalidatePdfCaches" describe)
+ *   matchLocationToCoords         — smoke tests (see "matchLocationToCoords" describe)
+ *   extractFloorLevelName         — smoke tests (see "extractFloorLevelName" describe)
+ *   detectLevelInLocation         — smoke tests (see "detectLevelInLocation" describe)
+ *   extractTitleBlockBuildingType — smoke tests (see "extractTitleBlockBuildingType" describe)
+ *   extractFloorPlanTextCandidates — smoke tests (see "extractFloorPlanTextCandidates" describe)
+ *   extractCodeProximityPairs     — smoke tests (see "extractCodeProximityPairs" describe)
+ *   getPdfPageCount               — smoke test  (see "getPdfPageCount" describe)
+ *   buildPageTextsFromPhraseCache — smoke test  (see "buildPageTextsFromPhraseCache" describe)
+ *
+ * NOT DIRECTLY TESTED (by design)
+ *   extractPdfMetadata   — opens its own pdfjs document and is covered indirectly by
+ *                          the integration/PDF fixture tests; its outline-classification
+ *                          helper (classifyOutlineSection) is exercised via the full
+ *                          extraction pipeline.
+ *   getOrOpenPdfjsDoc    — internal helper; exercised by extractPagePhrases tests.
+ *   CANONICAL_LEVEL_NAMES — constant re-export; used in extractFloorLevelName tests.
+ *   __pdfjsDocCache / __phraseCache / __PDFJS_DOC_CACHE_MAX / __resetPdfjsLibForTesting
+ *                        — test-only hooks; used inside this file.
+ *
+ * HOW TO ADD A NEW EXPORT
+ * ─────────────────────────────────────────────────────────────────────────
+ *   1. Add the export to the "COVERED" list above with a brief description.
+ *   2. Add a describe("yourNewFunction", () => { … }) block in this file.
+ *   3. Provide at minimum:
+ *      a) A smoke test that exercises the happy path.
+ *      b) A test for the null/empty/edge input case.
+ *   4. Run `pnpm --filter api-server test` to confirm the new tests pass.
+ * ════════════════════════════════════════════════════════════════════════════
+ */
+
 import { vi, describe, it, expect, beforeEach } from "vitest";
 import {
   classifyPageFromPhrases,
   extractRawPageItems,
   extractPagePhrases,
   sanitizePhraseCoords,
+  matchLocationToCoords,
+  extractFloorLevelName,
+  detectLevelInLocation,
+  invalidatePdfCaches,
+  extractTitleBlockBuildingType,
+  extractFloorPlanTextCandidates,
+  extractCodeProximityPairs,
+  getPdfPageCount,
+  buildPageTextsFromPhraseCache,
+  __pdfjsDocCache,
+  __phraseCache,
   type PdfPhrase,
+  type PageWords,
 } from "./pdf-words";
 
 // ── pdfjs-dist mock ─────────────────────────────────────────────────────────
@@ -545,5 +602,332 @@ describe("sanitizePhraseCoords", () => {
     expect(r.x1).toBe(1);
     expect(r.y0).toBeCloseTo(0.4);
     expect(r.y1).toBeCloseTo(0.4);
+  });
+});
+
+// ── Helpers shared by the smoke-test suites below ────────────────────────────
+
+/** Build a PdfPhrase positioned in the title-block zone (bottom-right). */
+function tbPhrase(text: string, cx = 0.75, cy = 0.75): PdfPhrase {
+  const half = 0.04;
+  return { text, x0: cx - half, x1: cx + half, y0: cy - half, y1: cy + half };
+}
+
+/** Build a PdfPhrase NOT in the title-block zone. */
+function bodyPhrase(text: string, cx = 0.30, cy = 0.30): PdfPhrase {
+  const half = 0.04;
+  return { text, x0: cx - half, x1: cx + half, y0: cy - half, y1: cy + half };
+}
+
+/** Build a minimal PageWords object. */
+function makePageWords(phrases: PdfPhrase[], pageWidth = 600, pageHeight = 800): PageWords {
+  return { pageWidth, pageHeight, phrases };
+}
+
+// ── invalidatePdfCaches ───────────────────────────────────────────────────────
+
+describe("invalidatePdfCaches", () => {
+  it("removes matching phraseCache entries for the given fileId", () => {
+    __phraseCache.set("fileA:1", makePageWords([]));
+    __phraseCache.set("fileA:2", makePageWords([]));
+    __phraseCache.set("fileB:1", makePageWords([]));
+
+    invalidatePdfCaches("/tmp/some.pdf", "fileA");
+
+    expect(__phraseCache.has("fileA:1")).toBe(false);
+    expect(__phraseCache.has("fileA:2")).toBe(false);
+    expect(__phraseCache.has("fileB:1")).toBe(true);
+
+    // clean up
+    __phraseCache.delete("fileB:1");
+  });
+
+  it("removes the pdfjsDocCache entry for the given pdfPath", () => {
+    const fakeDoc = { numPages: 1, getPage: vi.fn(), destroy: vi.fn() };
+    __pdfjsDocCache.set("/tmp/evict-me.pdf", Promise.resolve(fakeDoc));
+
+    invalidatePdfCaches("/tmp/evict-me.pdf", "unused-file-id");
+
+    expect(__pdfjsDocCache.has("/tmp/evict-me.pdf")).toBe(false);
+  });
+
+  it("does not throw when the path or fileId are not in the caches", () => {
+    expect(() =>
+      invalidatePdfCaches("/tmp/nonexistent.pdf", "no-such-file"),
+    ).not.toThrow();
+  });
+});
+
+// ── matchLocationToCoords ─────────────────────────────────────────────────────
+
+describe("matchLocationToCoords", () => {
+  it("returns null for empty phrases", () => {
+    expect(matchLocationToCoords([], "OFFICE 101", null)).toBeNull();
+  });
+
+  it("returns null when both location and signIdentifier are empty", () => {
+    const phrases = [bodyPhrase("OFFICE 101")];
+    expect(matchLocationToCoords(phrases, null, undefined)).toBeNull();
+  });
+
+  it("returns centre coords for a high-confidence match", () => {
+    const p = bodyPhrase("OFFICE 101", 0.4, 0.4);
+    const result = matchLocationToCoords([p], "OFFICE 101", null);
+    expect(result).not.toBeNull();
+    expect(result!.xPos).toBeCloseTo(0.4, 3);
+    expect(result!.yPos).toBeCloseTo(0.4, 3);
+  });
+
+  it("returns null when the best score is below 0.5 (no confident match)", () => {
+    const p = bodyPhrase("ZZZZ QQQQ");
+    expect(matchLocationToCoords([p], "OFFICE 101", null)).toBeNull();
+  });
+
+  it("skips coordinates already claimed by another sign (excludeCoords)", () => {
+    const p = bodyPhrase("LOBBY", 0.5, 0.5);
+    const exclude = new Set([`0.5,0.5`]);
+    const result = matchLocationToCoords([p], "LOBBY", null, exclude);
+    expect(result).toBeNull();
+  });
+
+  it("applies room-number bonus: room-number token in phrase lifts score above threshold", () => {
+    const p = bodyPhrase("A-101", 0.35, 0.55);
+    const result = matchLocationToCoords([p], "Room A-101", null);
+    expect(result).not.toBeNull();
+  });
+});
+
+// ── extractFloorLevelName ─────────────────────────────────────────────────────
+
+describe("extractFloorLevelName", () => {
+  it("returns null for an empty phrase list", () => {
+    expect(extractFloorLevelName([])).toBeNull();
+  });
+
+  it("detects 'lower level' in a title-block phrase", () => {
+    const result = extractFloorLevelName([tbPhrase("LOWER LEVEL FLOOR PLAN")]);
+    expect(result).toBe("lower level");
+  });
+
+  it("detects 'upper level' in a title-block phrase", () => {
+    const result = extractFloorLevelName([tbPhrase("UPPER LEVEL PLAN")]);
+    expect(result).toBe("upper level");
+  });
+
+  it("returns null when no canonical level name is present", () => {
+    expect(extractFloorLevelName([tbPhrase("ELEVATION A-101")])).toBeNull();
+  });
+
+  it("falls back to all phrases when no title-block phrases exist", () => {
+    const result = extractFloorLevelName([bodyPhrase("MAIN LEVEL PLAN")]);
+    expect(result).toBe("main level");
+  });
+});
+
+// ── detectLevelInLocation ─────────────────────────────────────────────────────
+
+describe("detectLevelInLocation", () => {
+  it("returns null for null input", () => {
+    expect(detectLevelInLocation(null)).toBeNull();
+  });
+
+  it("returns null for undefined input", () => {
+    expect(detectLevelInLocation(undefined)).toBeNull();
+  });
+
+  it("returns null when no canonical level name is present", () => {
+    expect(detectLevelInLocation("Room 101")).toBeNull();
+  });
+
+  it("detects 'lower level' in a location string", () => {
+    expect(detectLevelInLocation("Room 101 — Lower Level")).toBe("lower level");
+  });
+
+  it("detects 'upper level' in a mixed-case location string", () => {
+    expect(detectLevelInLocation("101 PORCH - Upper Level")).toBe("upper level");
+  });
+
+  it("detects 'main level' in a parenthesised location string", () => {
+    expect(detectLevelInLocation("Lobby (Main Level)")).toBe("main level");
+  });
+});
+
+// ── extractTitleBlockBuildingType ─────────────────────────────────────────────
+
+describe("extractTitleBlockBuildingType", () => {
+  it("returns null for an empty phrase list", () => {
+    expect(extractTitleBlockBuildingType([])).toBeNull();
+  });
+
+  it("returns null when no building type is detectable from title-block phrases", () => {
+    const phrases = [tbPhrase("FLOOR PLAN - LEVEL 1")];
+    expect(extractTitleBlockBuildingType(phrases)).toBeNull();
+  });
+
+  it("detects 'hotel' from a title-block phrase containing the word 'hotel'", () => {
+    const phrases = [tbPhrase("GRAND HOTEL - FIRST FLOOR PLAN")];
+    expect(extractTitleBlockBuildingType(phrases)).toBe("hotel");
+  });
+
+  it("detects 'school' from a title-block phrase containing the word 'school'", () => {
+    const phrases = [tbPhrase("ELEMENTARY SCHOOL - GROUND FLOOR")];
+    expect(extractTitleBlockBuildingType(phrases)).toBe("school");
+  });
+
+  it("falls back to all phrases (including body) when no title-block phrases exist", () => {
+    // No title-block phrase present → function falls back to the full phrase list
+    const phrases = [bodyPhrase("HOTEL LOBBY")];
+    expect(extractTitleBlockBuildingType(phrases)).toBe("hotel");
+  });
+});
+
+// ── extractFloorPlanTextCandidates ────────────────────────────────────────────
+
+describe("extractFloorPlanTextCandidates", () => {
+  it("returns an empty array for a blank page", () => {
+    expect(extractFloorPlanTextCandidates(makePageWords([]), 1)).toHaveLength(0);
+  });
+
+  it("drops 1–2 character tokens", () => {
+    const pw = makePageWords([bodyPhrase("A"), bodyPhrase("AB"), bodyPhrase("OFFICE")]);
+    const result = extractFloorPlanTextCandidates(pw, 1);
+    const texts = result.map((c) => c.text);
+    expect(texts).not.toContain("A");
+    expect(texts).not.toContain("AB");
+    expect(texts).toContain("OFFICE");
+  });
+
+  it("drops pure numeric tokens", () => {
+    const pw = makePageWords([bodyPhrase("1234"), bodyPhrase("LOBBY")]);
+    const result = extractFloorPlanTextCandidates(pw, 1);
+    const texts = result.map((c) => c.text);
+    expect(texts).not.toContain("1234");
+    expect(texts).toContain("LOBBY");
+  });
+
+  it("excludes phrases from the title-block zone", () => {
+    const pw = makePageWords([
+      tbPhrase("FIRST FLOOR PLAN"),
+      bodyPhrase("OFFICE SUITE"),
+    ]);
+    const result = extractFloorPlanTextCandidates(pw, 2);
+    const texts = result.map((c) => c.text);
+    expect(texts).not.toContain("FIRST FLOOR PLAN");
+    expect(texts).toContain("OFFICE SUITE");
+  });
+
+  it("stores the correct page number on each candidate", () => {
+    const pw = makePageWords([bodyPhrase("BREAKROOM")]);
+    const result = extractFloorPlanTextCandidates(pw, 7);
+    expect(result[0]!.page).toBe(7);
+  });
+
+  it("merges two short adjacent tokens into a multi-word candidate", () => {
+    // Place "ART" and "ROOM" 30 pts apart horizontally on the same line.
+    // Page 600×800; normalised centres: 0.1 and 0.15 in x, 0.3 in y.
+    // In pts: cx_ART = 60, cx_ROOM = 90, cy = 240. Gap = 30 < PROXIMITY_X (60 pts).
+    const art:  PdfPhrase = { text: "ART",  x0: 0.09, x1: 0.11, y0: 0.29, y1: 0.31 };
+    const room: PdfPhrase = { text: "ROOM", x0: 0.14, x1: 0.16, y0: 0.29, y1: 0.31 };
+    const pw = makePageWords([art, room]);
+    const result = extractFloorPlanTextCandidates(pw, 1);
+    const texts = result.map((c) => c.text);
+    expect(texts.some((t) => t === "ART ROOM")).toBe(true);
+  });
+});
+
+// ── extractCodeProximityPairs ─────────────────────────────────────────────────
+
+describe("extractCodeProximityPairs", () => {
+  it("returns an empty array for a blank page", () => {
+    expect(extractCodeProximityPairs(makePageWords([]), 1)).toHaveLength(0);
+  });
+
+  it("returns an empty array when there are no code tokens", () => {
+    const pw = makePageWords([bodyPhrase("CONFERENCE ROOM")]);
+    expect(extractCodeProximityPairs(pw, 1)).toHaveLength(0);
+  });
+
+  it("returns an empty array when there are no label candidates", () => {
+    const code: PdfPhrase = { text: "A-101", x0: 0.29, x1: 0.31, y0: 0.29, y1: 0.31 };
+    expect(extractCodeProximityPairs(makePageWords([code]), 1)).toHaveLength(0);
+  });
+
+  it("returns a pair when a code and a label are within proximity thresholds", () => {
+    // Page 600×800. Code "A-101" at centre (300, 400) = (0.5, 0.5) in norm.
+    // Label "LOBBY" at centre (340, 402) = (0.567, 0.503) in norm.
+    // dx ≈ 40 pts < 250, dy ≈ 2 pts < 25.
+    const code:  PdfPhrase = { text: "A-101", x0: 0.49, x1: 0.51, y0: 0.49, y1: 0.51 };
+    const label: PdfPhrase = { text: "LOBBY", x0: 0.56, x1: 0.58, y0: 0.49, y1: 0.51 };
+    const result = extractCodeProximityPairs(makePageWords([code, label]), 3);
+    expect(result).toHaveLength(1);
+    expect(result[0]!.code).toBe("A-101");
+    expect(result[0]!.label).toBe("LOBBY");
+    expect(result[0]!.page).toBe(3);
+  });
+
+  it("does not pair a label with a code that is too far away vertically", () => {
+    // dy > 25 pts  (25 / 800 = 0.03125 in normalised units; we use 0.1 here)
+    const code:  PdfPhrase = { text: "B-2",   x0: 0.49, x1: 0.51, y0: 0.10, y1: 0.12 };
+    const label: PdfPhrase = { text: "OFFICE", x0: 0.49, x1: 0.51, y0: 0.60, y1: 0.62 };
+    const result = extractCodeProximityPairs(makePageWords([code, label]), 1);
+    expect(result).toHaveLength(0);
+  });
+
+  it("excludes title-block phrases from both code and label pools", () => {
+    const code:  PdfPhrase = { text: "A-1",   x0: 0.74, x1: 0.76, y0: 0.74, y1: 0.76 };
+    const label: PdfPhrase = { text: "LOBBY", x0: 0.76, x1: 0.78, y0: 0.74, y1: 0.76 };
+    const result = extractCodeProximityPairs(makePageWords([code, label]), 1);
+    expect(result).toHaveLength(0);
+  });
+});
+
+// ── getPdfPageCount ───────────────────────────────────────────────────────────
+
+describe("getPdfPageCount", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("returns the numPages value from the pdfjs document", async () => {
+    const doc = { numPages: 42, getPage: mockGetPage, destroy: vi.fn() };
+    mockDocumentPromise.mockResolvedValue(doc);
+    mockGetDocument.mockReturnValue({ promise: mockDocumentPromise() });
+
+    const count = await getPdfPageCount(uniquePath());
+    expect(count).toBe(42);
+  });
+});
+
+// ── buildPageTextsFromPhraseCache ─────────────────────────────────────────────
+
+describe("buildPageTextsFromPhraseCache", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("returns concatenated phrase text for each page", async () => {
+    const pdfPath = uniquePath();
+    const fileId = uniqueFileId();
+
+    // Seed the phrase cache directly so extractPagePhrases returns known data.
+    const p1: PdfPhrase = { text: "HELLO", x0: 0.1, x1: 0.2, y0: 0.1, y1: 0.2 };
+    const p2: PdfPhrase = { text: "WORLD", x0: 0.3, x1: 0.4, y0: 0.1, y1: 0.2 };
+    __phraseCache.set(`${fileId}:1`, { pageWidth: 100, pageHeight: 200, phrases: [p1] });
+    __phraseCache.set(`${fileId}:2`, { pageWidth: 100, pageHeight: 200, phrases: [p2] });
+
+    const texts = await buildPageTextsFromPhraseCache(pdfPath, fileId, 2);
+    expect(texts).toHaveLength(2);
+    expect(texts[0]).toBe("HELLO");
+    expect(texts[1]).toBe("WORLD");
+
+    // clean up
+    __phraseCache.delete(`${fileId}:1`);
+    __phraseCache.delete(`${fileId}:2`);
+  });
+
+  it("returns an empty string for a page with no phrases", async () => {
+    const fileId = uniqueFileId();
+    __phraseCache.set(`${fileId}:1`, { pageWidth: 100, pageHeight: 200, phrases: [] });
+
+    const texts = await buildPageTextsFromPhraseCache(uniquePath(), fileId, 1);
+    expect(texts[0]).toBe("");
+
+    __phraseCache.delete(`${fileId}:1`);
   });
 });
