@@ -1,6 +1,6 @@
 import { Router, type IRouter } from "express";
 import { db, activityLogsTable, organizationsTable, aiCallLogsTable, jobsTable } from "@workspace/db";
-import { desc, eq, and, gte, lte, inArray, like } from "drizzle-orm";
+import { desc, eq, and, gte, lte, inArray, like, ilike } from "drizzle-orm";
 import { z } from "zod/v4";
 
 const router: IRouter = Router();
@@ -131,6 +131,7 @@ const AiCallsQuerySchema = z.object({
   callType: z.enum(VALID_CALL_TYPES).optional(),
   from: z.string().optional(),
   to: z.string().optional(),
+  prompt: z.string().optional(),
 });
 
 router.get("/activity/ai-calls", async (req, res) => {
@@ -142,7 +143,7 @@ router.get("/activity/ai-calls", async (req, res) => {
     return;
   }
 
-  const { limit, offset, jobId, page, callType, from, to } = parsed.data;
+  const { limit, offset, jobId, page, callType, from, to, prompt } = parsed.data;
 
   const isAdmin = ["ADMIN", "SUPER_ADMIN"].includes(user.role);
   if (!isAdmin && !user.isSuperAdmin) {
@@ -179,6 +180,10 @@ router.get("/activity/ai-calls", async (req, res) => {
       const dt = new Date(to);
       dt.setDate(dt.getDate() + 1);
       if (!isNaN(dt.getTime())) conditions.push(lte(aiCallLogsTable.createdAt, dt));
+    }
+
+    if (prompt) {
+      conditions.push(ilike(aiCallLogsTable.prompt, `%${prompt}%`));
     }
 
     if (!user.isSuperAdmin && user.organizationId) {

@@ -154,6 +154,7 @@ function AiCallsTab({ isAdmin, isSuperAdmin }: { isAdmin: boolean; isSuperAdmin:
   const [selectedCallType, setSelectedCallType] = useState("");
   const [filterFrom, setFilterFrom] = useState("");
   const [filterTo, setFilterTo] = useState("");
+  const [promptSearch, setPromptSearch] = useState("");
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
 
   const { data: jobsData } = useQuery({
@@ -176,11 +177,12 @@ function AiCallsTab({ isAdmin, isSuperAdmin }: { isAdmin: boolean; isSuperAdmin:
     if (selectedCallType) params.set("callType", selectedCallType);
     if (filterFrom) params.set("from", filterFrom);
     if (filterTo) params.set("to", filterTo);
+    if (promptSearch.trim()) params.set("prompt", promptSearch.trim());
     return params.toString();
-  }, [offset, selectedJobId, selectedCallType, filterFrom, filterTo]);
+  }, [offset, selectedJobId, selectedCallType, filterFrom, filterTo, promptSearch]);
 
   const { data, isLoading } = useQuery({
-    queryKey: ["ai-calls", offset, selectedJobId, selectedCallType, filterFrom, filterTo],
+    queryKey: ["ai-calls", offset, selectedJobId, selectedCallType, filterFrom, filterTo, promptSearch],
     queryFn: async () => {
       const res = await apiFetch(`/api/activity/ai-calls?${buildQuery()}`);
       if (!res.ok) throw new Error("Failed to load AI call logs");
@@ -202,13 +204,14 @@ function AiCallsTab({ isAdmin, isSuperAdmin }: { isAdmin: boolean; isSuperAdmin:
     });
   };
 
-  const hasActiveFilters = !!(selectedJobId || selectedCallType || filterFrom || filterTo);
+  const hasActiveFilters = !!(selectedJobId || selectedCallType || filterFrom || filterTo || promptSearch.trim());
 
   const clearFilters = () => {
     setSelectedJobId("");
     setSelectedCallType("");
     setFilterFrom("");
     setFilterTo("");
+    setPromptSearch("");
     setOffset(0);
   };
 
@@ -276,6 +279,19 @@ function AiCallsTab({ isAdmin, isSuperAdmin }: { isAdmin: boolean; isSuperAdmin:
             value={filterTo}
             onChange={(e) => { setFilterTo(e.target.value); setOffset(0); }}
             className="h-8 rounded-md border border-border bg-background text-sm px-2 text-foreground"
+          />
+        </div>
+
+        <div className="flex flex-col gap-1">
+          <label className="text-xs font-display font-semibold uppercase tracking-wider text-muted-foreground whitespace-nowrap">
+            Prompt
+          </label>
+          <input
+            type="text"
+            value={promptSearch}
+            onChange={(e) => { setPromptSearch(e.target.value); setOffset(0); }}
+            placeholder="Search prompt text…"
+            className="h-8 rounded-md border border-border bg-background text-sm px-2 text-foreground w-52"
           />
         </div>
 
