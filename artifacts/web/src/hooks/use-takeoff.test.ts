@@ -1,10 +1,14 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { renderHook } from "@testing-library/react";
-import { useJobsList, useJobDetails } from "./use-takeoff";
+import { renderHook, act } from "@testing-library/react";
+import { useJobsList, useJobDetails, useUploadJobFiles, useStartExtraction, useUpdateJobName } from "./use-takeoff";
 
 let capturedStandardOptions: { query: { refetchInterval: (q: unknown) => unknown } } | null = null;
 let capturedArchivedOptions: { refetchInterval: (q: unknown) => unknown } | null = null;
 let capturedJobDetailOptions: { query: { refetchInterval: (q: unknown) => unknown } } | null = null;
+let capturedUploadMutationOptions: { onSuccess?: (result: unknown, variables: unknown) => void } | null = null;
+let capturedProcessMutationOptions: { onSuccess?: (result: unknown, variables: unknown) => void } | null = null;
+
+const mockInvalidateQueries = vi.fn();
 
 vi.mock("@workspace/api-client-react", () => ({
   useListJobs: vi.fn((options: typeof capturedStandardOptions) => {
@@ -15,8 +19,14 @@ vi.mock("@workspace/api-client-react", () => ({
     capturedJobDetailOptions = options;
     return {};
   }),
-  useUploadFiles: vi.fn(() => ({})),
-  useProcessJob: vi.fn(() => ({})),
+  useUploadFiles: vi.fn((options: { mutation?: typeof capturedUploadMutationOptions }) => {
+    capturedUploadMutationOptions = options?.mutation ?? null;
+    return {};
+  }),
+  useProcessJob: vi.fn((options: { mutation?: typeof capturedProcessMutationOptions }) => {
+    capturedProcessMutationOptions = options?.mutation ?? null;
+    return {};
+  }),
   getListJobsQueryKey: vi.fn(() => ["jobs"]),
   getGetJobQueryKey: vi.fn((id: string) => ["job", id]),
 }));
@@ -29,7 +39,7 @@ vi.mock("@tanstack/react-query", async (importOriginal) => {
       capturedArchivedOptions = options;
       return {};
     }),
-    useQueryClient: vi.fn(() => ({ invalidateQueries: vi.fn() })),
+    useQueryClient: vi.fn(() => ({ invalidateQueries: mockInvalidateQueries })),
   };
 });
 
@@ -198,5 +208,121 @@ describe("useJobDetails — refetchInterval", () => {
       makeJobQuery(undefined)
     );
     expect(interval).toBe(false);
+  });
+});
+
+describe("useUploadJobFiles — cache invalidation", () => {
+  beforeEach(() => {
+    capturedUploadMutationOptions = null;
+    mockInvalidateQueries.mockClear();
+  });
+
+  it("invalidates the jobs list query on success", () => {
+    renderHook(() => useUploadJobFiles());
+    expect(capturedUploadMutationOptions).not.toBeNull();
+    capturedUploadMutationOptions!.onSuccess?.(undefined, undefined);
+    expect(mockInvalidateQueries).toHaveBeenCalledTimes(1);
+    expect(mockInvalidateQueries).toHaveBeenCalledWith({ queryKey: ["jobs"] });
+  });
+});
+
+describe("useStartExtraction — cache invalidation", () => {
+  beforeEach(() => {
+    capturedProcessMutationOptions = null;
+    mockInvalidateQueries.mockClear();
+  });
+
+  it("invalidates the individual job query on success", () => {
+    renderHook(() => useStartExtraction());
+    expect(capturedProcessMutationOptions).not.toBeNull();
+    capturedProcessMutationOptions!.onSuccess?.(undefined, { jobId: "job-42" });
+    expect(mockInvalidateQueries).toHaveBeenCalledWith({ queryKey: ["job", "job-42"] });
+  });
+
+  it("invalidates the jobs list query on success", () => {
+    renderHook(() => useStartExtraction());
+    capturedProcessMutationOptions!.onSuccess?.(undefined, { jobId: "job-42" });
+    expect(mockInvalidateQueries).toHaveBeenCalledWith({ queryKey: ["jobs"] });
+  });
+
+  it("invalidates both the job detail and jobs list queries on success", () => {
+    renderHook(() => useStartExtraction());
+    capturedProcessMutationOptions!.onSuccess?.(undefined, { jobId: "job-99" });
+    expect(mockInvalidateQueries).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("useUpdateJobName — PATCH request and cache invalidation", () => {
+  beforeEach(() => {
+    mockInvalidateQueries.mockClear();
+  });
+
+  it("sends a PATCH request to the correct endpoint", async () => {
+    const { apiFetch } = await import("@/lib/apiClient");
+    const mockApiFetch = vi.mocked(apiFetch);
+    mockApiFetch.mockResolvedValue({ ok: true } as Response);
+
+    const { result } = renderHook(() => useUpdateJobName("job-7"));
+    await act(async () => {
+      await result.current("New Name");
+    });
+
+    expect(mockApiFetch).toHaveBeenCalledWith("/api/jobs/job-7", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: "New Name" }),
+    });
+  });
+
+  it("invalidates the individual job query after a successful PATCH", async () => {
+    const { apiFetch } = await import("@/lib/apiClient");
+    const mockApiFetch = vi.mocked(apiFetch);
+    mockApiFetch.mockResolvedValue({ ok: true } as Response);
+
+    const { result } = renderHook(() => useUpdateJobName("job-7"));
+    await act(async () => {
+      await result.current("New Name");
+    });
+
+    expect(mockInvalidateQueries).toHaveBeenCalledWith({ queryKey: ["job", "job-7"] });
+  });
+
+  it("invalidates the jobs list query after a successful PATCH", async () => {
+    const { apiFetch } = await import("@/lib/apiClient");
+    const mockApiFetch = vi.mocked(apiFetch);
+    mockApiFetch.mockResolvedValue({ ok: true } as Response);
+
+    const { result } = renderHook(() => useUpdateJobName("job-7"));
+    await act(async () => {
+      await result.current("New Name");
+    });
+
+    expect(mockInvalidateQueries).toHaveBeenCalledWith({ queryKey: ["jobs"] });
+  });
+
+  it("throws when the PATCH request fails", async () => {
+    const { apiFetch } = await import("@/lib/apiClient");
+    const mockApiFetch = vi.mocked(apiFetch);
+    mockApiFetch.mockResolvedValue({ ok: false } as Response);
+
+    const { result } = renderHook(() => useUpdateJobName("job-7"));
+    await expect(
+      act(async () => {
+        await result.current("Bad Name");
+      })
+    ).rejects.toThrow("Failed to update job name");
+  });
+
+  it("does not invalidate queries when the PATCH request fails", async () => {
+    const { apiFetch } = await import("@/lib/apiClient");
+    const mockApiFetch = vi.mocked(apiFetch);
+    mockApiFetch.mockResolvedValue({ ok: false } as Response);
+
+    const { result } = renderHook(() => useUpdateJobName("job-7"));
+    await act(async () => {
+      await result.current("Bad Name").catch(() => {});
+    });
+
+    expect(mockInvalidateQueries).not.toHaveBeenCalled();
   });
 });
