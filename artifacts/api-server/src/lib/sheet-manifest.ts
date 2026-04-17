@@ -163,6 +163,41 @@ const MILLWORK_SHEET_RE = /^A[-.]?[78]\d{2}$/i;
 const LEVEL_PLAN_RE = /\b\w+ level plan\b/;
 
 /**
+ * Discipline-specific drawing-type words that veto the sheet-number-only
+ * fallback promotion for floor plans.  Even a single token like "ELEVATION"
+ * or "DETAIL" in the title block text is a stronger signal than an A-2xx/A-3xx
+ * sheet number and should prevent the page from being promoted to floor_plan.
+ *
+ * These words are intentionally NOT in FLOOR_PLAN_EXCLUSION_PHRASES (which
+ * targets multi-discipline sheet names that contain those words anywhere) —
+ * "elevation" by itself is not in the P4 ignore bucket because it can appear
+ * in compound titles like "FIRST FLOOR ELEVATION" which should not be ignored.
+ * Instead we use them only here, in the sheet-number fallback gate, where the
+ * presence of any discipline word on a short/ambiguous title is conclusive.
+ */
+const FLOOR_PLAN_SHEET_FALLBACK_VETO = [
+  "elevation",
+  "section",
+  "detail",
+  "stair",
+  "wall",
+  "diagram",
+  "perspective",
+];
+
+/**
+ * Matches reference-only floor plan mentions such as "SEE FLOOR PLAN A-301",
+ * "PER FLOOR PLAN", "REF FLOOR PLAN", etc.  These cross-references appear on
+ * non-floor-plan sheets (elevations, sections, details) and must not trigger
+ * the floor_plan inclusion check.
+ *
+ * The replacement approach: strip these reference phrases from the working text
+ * before running inclusion-phrase matching.
+ */
+const FLOOR_PLAN_REFERENCE_RE =
+  /\b(?:see|per|ref(?:erence)?|refer\s+to|as\s+shown\s+on|shown\s+on)\s+floor\s+plan\b/gi;
+
+/**
  * Classify a sheet title + optional sheet number into one of 10 buckets.
  * Priority order is fixed — first match wins.
  */
@@ -184,17 +219,43 @@ export function classifyTitle(text: string, sheetNumber?: string | null): SheetB
   if (IGNORE_PHRASES.some((p) => t.includes(p.toLowerCase()))) return "ignore";
 
   // P5 — floor_plan
+  // Strip reference-only "floor plan" mentions ("SEE FLOOR PLAN", "PER FLOOR PLAN",
+  // "REF FLOOR PLAN", etc.) before checking inclusion phrases.  These appear on
+  // elevation/section/detail sheets that refer to a floor plan but are not one.
+  const tWithoutRefs = t.replace(FLOOR_PLAN_REFERENCE_RE, "");
+
   // Must match an inclusion phrase AND pass the discipline modifier veto.
   const hasFpInclusion =
-    FLOOR_PLAN_INCLUSION_PHRASES.some((p) => t.includes(p.toLowerCase())) ||
-    LEVEL_PLAN_RE.test(t);
+    FLOOR_PLAN_INCLUSION_PHRASES.some((p) => tWithoutRefs.includes(p.toLowerCase())) ||
+    LEVEL_PLAN_RE.test(tWithoutRefs);
   const hasDisciplineVeto = FLOOR_PLAN_DISCIPLINE_VETO.some((p) =>
     t.includes(p.toLowerCase())
   );
   if (hasFpInclusion && !hasDisciplineVeto) return "floor_plan";
 
-  // Sheet number fallback for floor plans (A-1XX, A-2XX, A-3XX)
-  if (sheetNumber && FLOOR_PLAN_SHEET_RE.test(sheetNumber.trim())) return "floor_plan";
+  // Sheet number fallback for floor plans (A-1XX, A-2XX, A-3XX).
+  // Only fires when ALL three conditions hold:
+  //   1. The title block text is short/ambiguous (fewer than 6 words).
+  //      Substantial non-matching text is a stronger signal than the sheet number.
+  //   2. The text is NOT a reference-only mention of a floor plan
+  //      (e.g. "SEE FLOOR PLAN A-301").  Reference phrases mean another sheet is
+  //      the floor plan — the current sheet should not be promoted.
+  //   3. The text does NOT contain a discipline-specific drawing-type word
+  //      that identifies this as an elevation, section, detail, or stair sheet.
+  //      Even a single token like "ELEVATION" or "DETAIL" is a stronger signal
+  //      than the A-2xx sheet number and must suppress the fallback.
+  const wordCount = t.split(/\s+/).filter(Boolean).length;
+  const isReferenceOnly = FLOOR_PLAN_REFERENCE_RE.test(t);
+  // Reset lastIndex after the stateful global regex test above
+  FLOOR_PLAN_REFERENCE_RE.lastIndex = 0;
+  const hasFallbackDisciplineVeto = FLOOR_PLAN_SHEET_FALLBACK_VETO.some((w) => t.includes(w));
+  if (
+    sheetNumber &&
+    FLOOR_PLAN_SHEET_RE.test(sheetNumber.trim()) &&
+    wordCount < 6 &&
+    !isReferenceOnly &&
+    !hasFallbackDisciplineVeto
+  ) return "floor_plan";
 
   // P6 — general_notes (phrase OR sheet-number A-000 / A-001 / G-series)
   if (GENERAL_NOTES_PHRASES.some((p) => t.includes(p.toLowerCase()))) return "general_notes";

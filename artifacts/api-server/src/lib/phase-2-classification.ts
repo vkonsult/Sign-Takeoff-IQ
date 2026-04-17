@@ -109,6 +109,27 @@ export async function runPhase2Classification(
     if (!classifiedSet.has(p)) otherPages.push(p);
   }
 
+  // ── Per-page diagnostic log for floor_plan and signage_schedule pages ───────
+  // Emitted at Phase 2 completion so future misclassifications can be diagnosed
+  // without re-running in debug mode.  Includes the source (bookmark / index_page /
+  // title_block / full_page_fallback) and the text / sheet number that triggered
+  // the match.
+  for (const entry of manifest.entries) {
+    if (entry.bucket === "floor_plan" || entry.bucket === "signage_schedule") {
+      logger.info(
+        {
+          fileId,
+          page: entry.pdfPage,
+          bucket: entry.bucket,
+          source: entry.source,
+          sheetTitle: entry.sheetTitle,
+          sheetNumber: entry.sheetNumber,
+        },
+        "[Phase 2] Classified page",
+      );
+    }
+  }
+
   logger.info(
     {
       fileId,

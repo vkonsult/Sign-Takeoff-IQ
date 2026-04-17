@@ -299,12 +299,12 @@ describe("classifyTitle — P5 floor_plan — sheet number fallback", () => {
     expect(classifyTitle("ARCHITECTURAL DRAWING", "A-201")).toBe("floor_plan");
   });
 
-  it("A-301 → floor_plan", () => {
-    expect(classifyTitle("DETAIL SHEET", "A-301")).toBe("floor_plan");
+  it("A-301 with ambiguous title → floor_plan", () => {
+    expect(classifyTitle("ARCHITECTURAL", "A-301")).toBe("floor_plan");
   });
 
-  it("A3.2 → floor_plan", () => {
-    expect(classifyTitle("DETAIL SHEET", "A3.2")).toBe("floor_plan");
+  it("A3.2 with ambiguous title → floor_plan", () => {
+    expect(classifyTitle("ARCHITECTURAL", "A3.2")).toBe("floor_plan");
   });
 
   it("A-401 does NOT match floor plan sheet regex (only 1xx, 2xx, 3xx)", () => {
@@ -313,6 +313,103 @@ describe("classifyTitle — P5 floor_plan — sheet number fallback", () => {
 
   it("A-001 → general_notes (not floor_plan)", () => {
     expect(classifyTitle("DRAWING", "A-001")).toBe("general_notes");
+  });
+
+  it("A-201 with 6+ words of non-floor-plan text is NOT promoted by sheet number alone", () => {
+    // Task requirement: tightened regex — sheet number fallback suppressed when
+    // the title block has substantial text that did not phrase-match.
+    expect(classifyTitle("ELEVATION EAST SIDE ENTRY CANOPY DETAIL", "A-201")).not.toBe("floor_plan");
+  });
+
+  it("A-101 with long elevation text is NOT promoted by sheet number alone", () => {
+    expect(classifyTitle("EXTERIOR ELEVATION NORTH WALL SECTION DETAIL", "A-101")).not.toBe("floor_plan");
+  });
+});
+
+describe("classifyTitle — P5 sheet-number fallback discipline-word veto", () => {
+  it('"ELEVATION" with sheet A-201 is NOT promoted to floor_plan', () => {
+    expect(classifyTitle("ELEVATION", "A-201")).not.toBe("floor_plan");
+  });
+
+  it('"SECTION" with sheet A-301 is NOT promoted to floor_plan', () => {
+    expect(classifyTitle("SECTION", "A-301")).not.toBe("floor_plan");
+  });
+
+  it('"DETAIL" with sheet A-101 is NOT promoted to floor_plan', () => {
+    expect(classifyTitle("DETAIL", "A-101")).not.toBe("floor_plan");
+  });
+
+  it('"STAIR" with sheet A-201 is NOT promoted to floor_plan', () => {
+    expect(classifyTitle("STAIR", "A-201")).not.toBe("floor_plan");
+  });
+
+  it('"WALL" with sheet A-101 is NOT promoted to floor_plan', () => {
+    expect(classifyTitle("WALL", "A-101")).not.toBe("floor_plan");
+  });
+
+  it('"ARCHITECTURAL DRAWING" (no discipline word, 2 words) with A-101 still promotes to floor_plan', () => {
+    expect(classifyTitle("ARCHITECTURAL DRAWING", "A-101")).toBe("floor_plan");
+  });
+});
+
+describe("classifyTitle — reference-only floor plan mentions are not false positives", () => {
+  it('"SEE FLOOR PLAN A-301" alone does not classify as floor_plan', () => {
+    expect(classifyTitle("SEE FLOOR PLAN A-301")).toBe("other");
+  });
+
+  it('"PER FLOOR PLAN" alone does not classify as floor_plan', () => {
+    expect(classifyTitle("PER FLOOR PLAN")).toBe("other");
+  });
+
+  it('"REF FLOOR PLAN A-201 FOR DIMENSIONS" does not classify as floor_plan', () => {
+    expect(classifyTitle("REF FLOOR PLAN A-201 FOR DIMENSIONS")).toBe("other");
+  });
+
+  it('"EXTERIOR ELEVATION — SEE FLOOR PLAN A-101" does not classify as floor_plan', () => {
+    expect(classifyTitle("EXTERIOR ELEVATION — SEE FLOOR PLAN A-101")).toBe("other");
+  });
+
+  it('"REFERENCE TO FLOOR PLAN" does not classify as floor_plan', () => {
+    expect(classifyTitle("REFER TO FLOOR PLAN")).toBe("other");
+  });
+
+  it('"FIRST FLOOR PLAN" (without reference prefix) still classifies as floor_plan', () => {
+    expect(classifyTitle("FIRST FLOOR PLAN")).toBe("floor_plan");
+  });
+
+  it('"SEE FLOOR PLAN A-301" with sheet number A-301 is NOT promoted by the sheet-number fallback', () => {
+    // Real title-block path: extractSheetNumber finds A-301 from the phrase,
+    // classifyTitle is called with both text AND sheetNumber.  The reference-only
+    // guard must block sheet-number promotion in this scenario.
+    expect(classifyTitle("SEE FLOOR PLAN A-301", "A-301")).toBe("other");
+  });
+
+  it('"PER FLOOR PLAN" with sheet number A-201 is NOT promoted by the sheet-number fallback', () => {
+    expect(classifyTitle("PER FLOOR PLAN", "A-201")).toBe("other");
+  });
+
+  it('"REF FLOOR PLAN" with sheet number A-101 is NOT promoted by the sheet-number fallback', () => {
+    expect(classifyTitle("REF FLOOR PLAN", "A-101")).toBe("other");
+  });
+});
+
+describe("buildSheetManifest — reference-only floor plan text + matching sheet number stays non-floor_plan", () => {
+  it("title-block with 'SEE FLOOR PLAN A-201' and sheet A-201 is not classified floor_plan", async () => {
+    // Both phrases are placed at cy > 0.90 so they are picked up together in the
+    // narrow title strip (Pass 1).  The combined text "SEE FLOOR PLAN A-201"
+    // must not promote the page to floor_plan even though A-201 matches the regex.
+    mockPageCount.mockResolvedValue(1);
+    setupPageMocks({
+      1: [
+        phrase("SEE FLOOR PLAN", 0.50, 0.80, 0.91, 0.95),
+        phrase("A-201", 0.70, 0.78, 0.92, 0.96),
+      ],
+    });
+
+    const manifest = await buildSheetManifest("/fake/file.pdf", "test-file");
+
+    const page1 = manifest.entries.find((e) => e.pdfPage === 1);
+    expect(page1?.bucket).not.toBe("floor_plan");
   });
 });
 
@@ -716,6 +813,34 @@ describe("buildSheetManifest — drawing index table detection", () => {
     const page2 = manifest.entries.find((e) => e.pdfPage === 2);
     expect(page2?.source).toBe("index_page");
     expect(page2?.sheetTitle).toBe("FIRST FLOOR PLAN");
+  });
+
+  it("bookmark-classified ignore page is NOT re-promoted to floor_plan by title block scrape", async () => {
+    // Task requirement: bookmarks act as a hard veto.  If a page's bookmark
+    // classified it as `ignore`, title-block scraping must never override it,
+    // even when the title block text contains a floor plan phrase.
+    mockPageCount.mockResolvedValue(2);
+    mockMeta.mockResolvedValue({
+      pageLabels: [],
+      outlineSections: [
+        { title: "Exterior Elevations", pageStart: 2, pageEnd: 2, type: "other" },
+      ],
+    });
+
+    setupPageMocks({
+      1: [],
+      2: [
+        phrase("FLOOR PLAN", 0.60, 0.90, 0.92, 0.96),
+        phrase("SEE FLOOR PLAN A-201", 0.50, 0.85, 0.85, 0.89),
+        phrase("A-201", 0.70, 0.80, 0.80, 0.84),
+      ],
+    });
+
+    const manifest = await buildSheetManifest("/fake/file.pdf", "test-file");
+
+    const page2 = manifest.entries.find((e) => e.pdfPage === 2);
+    expect(page2?.source).toBe("bookmark");
+    expect(page2?.bucket).not.toBe("floor_plan");
   });
 
   it("rejects a candidate index page when sheet numbers are horizontally scattered", async () => {
