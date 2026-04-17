@@ -874,33 +874,15 @@ function isSignageLeaf(title: string): boolean {
 }
 
 function classifyOutlineSection(title: string): PdfOutlineSection["type"] {
-  const t = title.toLowerCase();
-
-  // Priority 1: High-confidence "other" standalone keyword veto — always wins.
-  // Bookmark titles like "Building Elevations" or "Cover Sheet" must not be
-  // promoted to sign_schedule even when they contain incidental sign-related text.
-  const hasOtherStandalone = OTHER_TITLE_KEYWORDS_STANDALONE.some((p) => t.includes(p.toLowerCase()));
-  if (hasOtherStandalone) return "other";
-
-  // Priority 2: Exclusion veto — MEP/discipline sheets are never floor plans or sign schedules.
-  const hasExclusion = FLOOR_PLAN_EXCLUSION_PHRASES.some((p) => t.includes(p.toLowerCase()));
-  if (hasExclusion) return "other";
-
-  const LEVEL_PLAN_RE = /\b\w+ level plan\b/;
-  const hasFpPhrase =
-    FLOOR_PLAN_INCLUSION_PHRASES.some((p) => t.includes(p.toLowerCase()))
-    || LEVEL_PLAN_RE.test(t);
-  const hasSsPhrase = SIGN_SCHEDULE_PHRASES.some((p) => t.includes(p.toLowerCase()));
-
-  // Priority 3: Both floor plan and sign schedule indicators present.
-  if (hasFpPhrase && hasSsPhrase) return "both";
-
-  // Priority 4: Sign schedule.
-  if (hasSsPhrase) return "sign_schedule";
-
-  // Priority 5: Floor plan.
-  if (hasFpPhrase) return "floor_plan";
-
+  // Delegate to the 10-bucket classifyTitle from sheet-manifest.ts.
+  // We use require() here to avoid a circular ESM import cycle
+  // (sheet-manifest imports pdf-words; pdf-words must not statically import sheet-manifest).
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { classifyTitle } = require("./sheet-manifest") as { classifyTitle: (text: string) => string };
+  const bucket = classifyTitle(title);
+  if (bucket === "floor_plan") return "floor_plan";
+  if (bucket === "signage_schedule") return "sign_schedule";
+  if (bucket === "life_safety") return "sign_schedule";
   return "other";
 }
 

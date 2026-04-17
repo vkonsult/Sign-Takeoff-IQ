@@ -52,7 +52,7 @@ export interface SheetManifestEntry {
   levelRaw: string | null;
   area: string | null;
   building: string | null;
-  source: "bookmark" | "title_block" | "excerpt_fallback";
+  source: "bookmark" | "title_block" | "full_page_fallback" | "excerpt_fallback";
 }
 
 export interface SheetManifest {
@@ -152,8 +152,13 @@ const MILLWORK_PHRASES = [
 
 const SPEC_PHRASES = ["specifications", "specs"];
 
-// Sheet number patterns for floor plan fallback
-const FLOOR_PLAN_SHEET_RE = /^A[-.]?[123]\d{2}$/i;
+// Sheet number patterns — P2.3 sheet-number fallbacks
+// Floor plan: A-1XX, A-2XX, A-3XX (dash or dot separator) plus A3.2-style
+const FLOOR_PLAN_SHEET_RE = /^A(?:[-.]?[123]\d{2}|[123]\.\d+)$/i;
+// General notes: A-000, A-001, or any G-series sheet
+const GENERAL_NOTES_SHEET_RE = /^(?:A[-.]?00[01]|G[-.]?\d+)$/i;
+// Millwork / interiors: A-7XX or A-8XX
+const MILLWORK_SHEET_RE = /^A[-.]?[78]\d{2}$/i;
 
 const LEVEL_PLAN_RE = /\b\w+ level plan\b/;
 
@@ -172,10 +177,13 @@ export function classifyTitle(text: string, sheetNumber?: string | null): SheetB
   // P2 — life_safety
   if (LIFE_SAFETY_PHRASES.some((p) => t.includes(p.toLowerCase()))) return "life_safety";
 
-  // P3 — ignore (must be before floor_plan so discipline sheets never promote)
+  // P3 — key_plan
+  if (KEY_PLAN_PHRASES.some((p) => t.includes(p.toLowerCase()))) return "key_plan";
+
+  // P4 — ignore (must be before floor_plan so discipline sheets never promote)
   if (IGNORE_PHRASES.some((p) => t.includes(p.toLowerCase()))) return "ignore";
 
-  // P4 — floor_plan
+  // P5 — floor_plan
   // Must match an inclusion phrase AND pass the discipline modifier veto.
   const hasFpInclusion =
     FLOOR_PLAN_INCLUSION_PHRASES.some((p) => t.includes(p.toLowerCase())) ||
@@ -188,18 +196,16 @@ export function classifyTitle(text: string, sheetNumber?: string | null): SheetB
   // Sheet number fallback for floor plans (A-1XX, A-2XX, A-3XX)
   if (sheetNumber && FLOOR_PLAN_SHEET_RE.test(sheetNumber.trim())) return "floor_plan";
 
-  // P5 — key_plan (after floor_plan — a "key plan" reference inside a floor plan sheet
-  //   must NOT override the floor plan classification)
-  if (KEY_PLAN_PHRASES.some((p) => t.includes(p.toLowerCase()))) return "key_plan";
-
-  // P6 — general_notes
+  // P6 — general_notes (phrase OR sheet-number A-000 / A-001 / G-series)
   if (GENERAL_NOTES_PHRASES.some((p) => t.includes(p.toLowerCase()))) return "general_notes";
+  if (sheetNumber && GENERAL_NOTES_SHEET_RE.test(sheetNumber.trim())) return "general_notes";
 
   // P7 — accessibility
   if (ACCESSIBILITY_PHRASES.some((p) => t.includes(p.toLowerCase()))) return "accessibility";
 
-  // P8 — millwork_interiors
+  // P8 — millwork_interiors (phrase OR sheet-number A-7XX / A-8XX)
   if (MILLWORK_PHRASES.some((p) => t.includes(p.toLowerCase()))) return "millwork_interiors";
+  if (sheetNumber && MILLWORK_SHEET_RE.test(sheetNumber.trim())) return "millwork_interiors";
 
   // P9 — specifications
   if (SPEC_PHRASES.some((p) => t.includes(p.toLowerCase()))) return "specifications";
@@ -301,7 +307,7 @@ async function classifyPagePhrases(
   fileId: string,
   pageNum: number,
   isExcerptCandidate: boolean,
-): Promise<{ bucket: SheetBucket; sheetTitle: string; sheetNumber: string | null; source: "title_block" | "excerpt_fallback" } | null> {
+): Promise<{ bucket: SheetBucket; sheetTitle: string; sheetNumber: string | null; source: "title_block" | "full_page_fallback" } | null> {
   let phrases: PdfPhrase[];
   try {
     const result = await extractPagePhrases(pdfPath, fileId, pageNum);
@@ -334,13 +340,13 @@ async function classifyPagePhrases(
     }
   }
 
-  // Pass 3 — full page scan (only for excerpt candidates — ≤10 pages, no bookmarks)
+  // Pass 3 — full page scan (excerpt safeguard — only when numPages ≤ 10)
   if (isExcerptCandidate) {
     const text = phrasesToText(phrases);
     const sheetNumber = extractSheetNumber(phrases);
     const bucket = classifyTitle(text, sheetNumber);
     if (bucket !== "other") {
-      return { bucket, sheetTitle: text.trim().slice(0, 120), sheetNumber, source: "excerpt_fallback" };
+      return { bucket, sheetTitle: text.trim().slice(0, 120), sheetNumber, source: "full_page_fallback" };
     }
   }
 
@@ -433,26 +439,24 @@ export async function buildSheetManifest(
 
   // ── Step C: Excerpt flag ────────────────────────────────────────────────────
   const isExcerpt = isExcerptCandidate;
-  if (isExcerpt) {
-    warnings.push(
-      "Upload appears to be a plan excerpt (≤10 pages, no bookmarks) — signage schedule and life-safety sheets may not be included."
-    );
-  }
 
   // ── Hard-stop warnings (P2.9) — non-blocking ───────────────────────────────
   const hasFloorPlan = entries.some((e) => e.bucket === "floor_plan");
-  const hasSchedule = entries.some(
-    (e) => e.bucket === "signage_schedule" || e.bucket === "life_safety"
-  );
+  const hasSignageSchedule = entries.some((e) => e.bucket === "signage_schedule");
 
   if (!hasFloorPlan) {
     warnings.push(
-      "No floor plan sheets identified — sign extraction will produce 0 signs. Check that floor plan pages are included in the upload."
+      "No floor plan sheets identified — extraction will produce 0 signs"
     );
   }
-  if (!hasSchedule) {
+  if (!hasSignageSchedule) {
     warnings.push(
-      "No signage schedule or life-safety sheet found — sign types will be inferred from floor plan labels only."
+      "No signage schedule found; sign types inferred from floor plan only"
+    );
+  }
+  if (isExcerpt) {
+    warnings.push(
+      "Upload is a plan excerpt (≤10 pages, no bookmarks); key reference sheets may be missing"
     );
   }
 

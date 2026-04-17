@@ -250,6 +250,7 @@ export async function runPdfProcessor(jobId: string): Promise<void> {
           if (!classifiedManifestSet.has(page.pageNum)) otherPages.push(page.pageNum);
         }
 
+
         recordStep(`text_extraction_${file.id}`,
           filesToProcess.length > 1 ? `Text extraction — ${file.originalName}` : "Text extraction",
           t_text,
@@ -479,6 +480,8 @@ export async function runPdfProcessor(jobId: string): Promise<void> {
           ...(floorPageLevels ? { floorPageLevels } : {}),
           ...(Object.keys(bookmarkTitles).length > 0 ? { bookmarkTitles } : {}),
           ...(outlineSections.length > 0 ? { outlineSections } : {}),
+          ...(manifest.isExcerpt ? { isExcerpt: manifest.isExcerpt } : {}),
+          ...(manifest.warnings.length > 0 ? { manifestWarnings: manifest.warnings } : {}),
         };
 
         await db
