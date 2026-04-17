@@ -35,6 +35,7 @@ import {
   isResidentialUnitLocation,
   findPairedClusterMatch,
 } from "@/lib/signMatcher";
+import { buildSignOccurrenceMap } from "@/lib/build-sign-occurrence-map";
 
 
 // ── Public Types ─────────────────────────────────────────────────────────────
@@ -627,76 +628,10 @@ function PageViewer({
   // record (set server-side at extraction time, stable across repositions).
   // Fall back to coordinate-based clustering only for legacy records that were
   // extracted before these columns existed.
-  const signOccurrenceMap = useMemo(() => {
-    const map = new Map<string, { index: number; total: number }>();
-
-    // Partition signs into those that already carry stored occurrence data and
-    // those that need the legacy coordinate-clustering fallback.
-    const legacySigns: typeof signsOnCurrentPage = [];
-    for (const s of signsOnCurrentPage) {
-      if (s.occurrenceIndex != null && s.occurrenceTotal != null && s.occurrenceTotal > 1) {
-        map.set(s.id, { index: s.occurrenceIndex, total: s.occurrenceTotal });
-      } else {
-        legacySigns.push(s);
-      }
-    }
-
-    // Legacy fallback: cluster by xPos/yPos (pre-occurrence-column records).
-    const groups = new Map<string, typeof signsOnCurrentPage>();
-    for (const s of legacySigns) {
-      const key = `${(s.signIdentifier ?? "").toLowerCase().trim()}||${(s.location ?? "").toLowerCase().trim()}`;
-      if (!groups.has(key)) groups.set(key, []);
-      groups.get(key)!.push(s);
-    }
-
-    for (const [, groupSigns] of groups) {
-      const posGroups = new Map<string, string[]>();
-      for (const s of groupSigns) {
-        const posKey =
-          s.xPos != null && s.yPos != null
-            ? `${s.xPos.toFixed(4)},${s.yPos.toFixed(4)}`
-            : "unplaced";
-        if (!posGroups.has(posKey)) posGroups.set(posKey, []);
-        posGroups.get(posKey)!.push(s.id);
-      }
-
-      const total = posGroups.size;
-      if (total <= 1) continue;
-
-      // Sort position groups by spatial coordinates so the occurrence index
-      // (1/N, 2/N, …) matches the top-to-bottom / left-to-right order that
-      // the PDF room extractor uses when building ri.rooms — keeping the table
-      // sub-row numbering consistent with the canvas marker numbering.
-      const orderedPosGroups = [...posGroups.entries()].sort((a, b) => {
-        const parseCoords = (posKey: string): { x: number; y: number } | null => {
-          if (posKey === "unplaced") return null;
-          const parts = posKey.split(",");
-          if (parts.length !== 2) return null;
-          const x = parseFloat(parts[0]);
-          const y = parseFloat(parts[1]);
-          return isNaN(x) || isNaN(y) ? null : { x, y };
-        };
-        const aC = parseCoords(a[0]);
-        const bC = parseCoords(b[0]);
-        // Unplaced markers go last.
-        if (aC === null && bC === null) return 0;
-        if (aC === null) return 1;
-        if (bC === null) return -1;
-        // Primary: top-to-bottom (ascending yPos — origin is top-left in canvas space).
-        if (aC.y !== bC.y) return aC.y - bC.y;
-        // Secondary: left-to-right (ascending xPos).
-        return aC.x - bC.x;
-      });
-
-      orderedPosGroups.forEach(([, signIds], idx) => {
-        for (const signId of signIds) {
-          map.set(signId, { index: idx + 1, total });
-        }
-      });
-    }
-
-    return map;
-  }, [signsOnCurrentPage]);
+  const signOccurrenceMap = useMemo(
+    () => buildSignOccurrenceMap(signsOnCurrentPage),
+    [signsOnCurrentPage],
+  );
 
   // ── Modes ──────────────────────────────────────────────────────────────────
   const [showOverlay, setShowOverlay] = useState(true);
