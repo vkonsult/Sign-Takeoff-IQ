@@ -362,7 +362,7 @@ interface PageAuditEntryShape {
   fileName?: string | null;
 }
 
-function PageAuditRow({ entry }: { entry: PageAuditEntryShape }) {
+function PageAuditRow({ entry, onNavigateToPage }: { entry: PageAuditEntryShape; onNavigateToPage?: (page: number, fileId?: string) => void }) {
   const [expanded, setExpanded] = useState(false);
   const hasRooms = entry.roomNames.length > 0;
   return (
@@ -381,7 +381,17 @@ function PageAuditRow({ entry }: { entry: PageAuditEntryShape }) {
               ? <ChevronDown className="w-3 h-3 inline-block" />
               : <ChevronRight className="w-3 h-3 inline-block" />
           )}
-          <span>p{entry.page}</span>
+          {onNavigateToPage ? (
+            <button
+              className="hover:text-primary hover:underline transition-colors"
+              title={`Open floor plan page ${entry.page}`}
+              onClick={(e) => { e.stopPropagation(); onNavigateToPage(entry.page, entry.fileId); }}
+            >
+              p{entry.page}
+            </button>
+          ) : (
+            <span>p{entry.page}</span>
+          )}
         </span>
         <span className="text-foreground/70 truncate">{entry.rooms_found} room{entry.rooms_found !== 1 ? "s" : ""}</span>
         <span className="text-right tabular-nums text-foreground/55">{entry.signs_extracted} type{entry.signs_extracted !== 1 ? "s" : ""}</span>
@@ -406,7 +416,7 @@ function PageAuditRow({ entry }: { entry: PageAuditEntryShape }) {
   );
 }
 
-function PageAuditTable({ entries }: { entries: PageAuditEntryShape[] }) {
+function PageAuditTable({ entries, onNavigateToPage }: { entries: PageAuditEntryShape[]; onNavigateToPage?: (page: number, fileId?: string) => void }) {
   // Detect multi-file scenario: more than one distinct fileId present
   const fileIds = [...new Set(entries.map((e) => e.fileId).filter(Boolean))];
   const isMultiFile = fileIds.length > 1;
@@ -455,7 +465,7 @@ function PageAuditTable({ entries }: { entries: PageAuditEntryShape[] }) {
             )}
             <div className="divide-y divide-border/15">
               {group.entries.map((entry) => (
-                <PageAuditRow key={`${entry.fileId ?? ""}:${entry.page}`} entry={entry} />
+                <PageAuditRow key={`${entry.fileId ?? ""}:${entry.page}`} entry={entry} onNavigateToPage={onNavigateToPage} />
               ))}
             </div>
           </div>
@@ -465,7 +475,7 @@ function PageAuditTable({ entries }: { entries: PageAuditEntryShape[] }) {
   );
 }
 
-function TimelineStepRow({ step, maxMs, fileSummaries, onRetryFile, retryingFileId }: { step: ProcessingStep; maxMs: number; fileSummaries?: FileSummary[]; onRetryFile?: (fileId: string) => void; retryingFileId?: string | null }) {
+function TimelineStepRow({ step, maxMs, fileSummaries, onRetryFile, retryingFileId, onNavigateToPage }: { step: ProcessingStep; maxMs: number; fileSummaries?: FileSummary[]; onRetryFile?: (fileId: string) => void; retryingFileId?: string | null; onNavigateToPage?: (page: number, fileId?: string) => void }) {
   const widthPct = Math.max(2, ((step.durationMs ?? 0) / maxMs) * 100);
   const detailStr = formatDetails(step.details);
   const hasChildren = fileSummaries && fileSummaries.length > 0;
@@ -588,7 +598,7 @@ function TimelineStepRow({ step, maxMs, fileSummaries, onRetryFile, retryingFile
   );
 }
 
-function PhaseSection({ group, maxMs, defaultOpen, extractionFileSummaries, isSlowest, onRetryFile, retryingFileId }: { group: PhaseGroup; maxMs: number; defaultOpen: boolean; extractionFileSummaries: FileSummary[]; isSlowest?: boolean; onRetryFile?: (fileId: string) => void; retryingFileId?: string | null }) {
+function PhaseSection({ group, maxMs, defaultOpen, extractionFileSummaries, isSlowest, onRetryFile, retryingFileId, onNavigateToPage }: { group: PhaseGroup; maxMs: number; defaultOpen: boolean; extractionFileSummaries: FileSummary[]; isSlowest?: boolean; onRetryFile?: (fileId: string) => void; retryingFileId?: string | null; onNavigateToPage?: (page: number, fileId?: string) => void }) {
   const [open, setOpen] = useState(defaultOpen);
   const isLegacy = group.phase === null;
   return (
@@ -625,6 +635,7 @@ function PhaseSection({ group, maxMs, defaultOpen, extractionFileSummaries, isSl
               fileSummaries={step.step === "extraction" ? extractionFileSummaries : undefined}
               onRetryFile={onRetryFile}
               retryingFileId={retryingFileId}
+              onNavigateToPage={onNavigateToPage}
             />
           ))}
         </div>
@@ -654,7 +665,7 @@ function PhaseBarSegment({ seg }: PhaseBarSegmentProps) {
   );
 }
 
-function ProcessingTimeline({ steps, isLoading, onRetryFile, retryingFileId }: { steps: ProcessingStep[]; isLoading?: boolean; onRetryFile?: (fileId: string) => void; retryingFileId?: string | null }) {
+function ProcessingTimeline({ steps, isLoading, onRetryFile, retryingFileId, onNavigateToPage }: { steps: ProcessingStep[]; isLoading?: boolean; onRetryFile?: (fileId: string) => void; retryingFileId?: string | null; onNavigateToPage?: (page: number, fileId?: string) => void }) {
   if (isLoading) {
     return (
       <div className="space-y-3 animate-pulse">
@@ -976,6 +987,7 @@ function ProcessingTimeline({ steps, isLoading, onRetryFile, retryingFileId }: {
                   isSlowest={slowestGroup !== null && group === slowestGroup}
                   onRetryFile={onRetryFile}
                   retryingFileId={retryingFileId}
+                  onNavigateToPage={onNavigateToPage}
                 />
               ));
             })()}
@@ -1071,7 +1083,7 @@ function ProcessingTimeline({ steps, isLoading, onRetryFile, retryingFileId }: {
 
             {/* Per-page breakdown table */}
             {pageAudit && pageAudit.length > 0 && (
-              <PageAuditTable entries={pageAudit} />
+              <PageAuditTable entries={pageAudit} onNavigateToPage={onNavigateToPage} />
             )}
 
             {decisionsLog && decisionsLog.length > 0 && (
@@ -1446,6 +1458,11 @@ export default function JobDetails() {
     const params = new URLSearchParams(search);
     params.set("tab", tab);
     navigate(`/jobs/${jobId}?${params.toString()}`);
+  };
+  const [floorplanTarget, setFloorplanTarget] = useState<{ page: number; fileId?: string } | null>(null);
+  const handleNavigateToPage = (page: number, fileId?: string) => {
+    setFloorplanTarget({ page, fileId });
+    setTab("floorplans");
   };
   const [showAiHighlight, setShowAiHighlight] = useState(false);
 
@@ -2137,11 +2154,14 @@ export default function JobDetails() {
               {activeTab === "floorplans" ? (
                 <div className="flex-1 min-h-0">
                   <UnifiedPlanViewer
+                    key={floorplanTarget ? `${floorplanTarget.fileId ?? ""}:${floorplanTarget.page}` : "default"}
                     mode="tab"
                     jobId={jobId}
                     files={files}
                     signs={extractedSigns}
                     showAiHighlight={showAiHighlight}
+                    initialPage={floorplanTarget?.page}
+                    initialFileId={floorplanTarget?.fileId}
                     onSignAdded={handleSignAdded}
                     onSignUpdated={handleSignUpdated}
                     onEditSign={(s) => setReviewSign(s as SignRow)}
@@ -2185,13 +2205,14 @@ export default function JobDetails() {
                     {(() => {
                       const jobLog = (job as Record<string, unknown>).processingLog as ProcessingStep[] | null | undefined;
                       if (isProcessingNow && (!jobLog || jobLog.length === 0)) {
-                        return <ProcessingTimeline steps={[]} isLoading />;
+                        return <ProcessingTimeline steps={[]} isLoading onNavigateToPage={handleNavigateToPage} />;
                       }
                       return jobLog && jobLog.length > 0 ? (
                         <ProcessingTimeline
                           steps={jobLog}
                           onRetryFile={handleRetryFile}
                           retryingFileId={retryingFileId}
+                          onNavigateToPage={handleNavigateToPage}
                         />
                       ) : (
                         <p className="text-sm text-muted-foreground">No processing log available for this job.</p>

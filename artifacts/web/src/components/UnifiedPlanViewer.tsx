@@ -66,6 +66,10 @@ export interface UnifiedPlanViewerProps {
   signs?: ExtractedSign[];
   allSigns?: ExtractedSign[];
   initialSignId?: string;
+  /** Jump straight to this PDF page number on mount (tab mode). */
+  initialPage?: number;
+  /** Pre-select this file by ID on mount (tab mode). */
+  initialFileId?: string;
   showAiHighlight?: boolean;
   showMarkers?: boolean;
   pageType?: "floor_plan" | "sign_schedule";
@@ -1635,6 +1639,8 @@ export function UnifiedPlanViewer({
   signs,
   allSigns: allSignsProp,
   initialSignId,
+  initialPage,
+  initialFileId,
   showAiHighlight,
   showMarkers = true,
   pageType = "floor_plan",
@@ -1897,6 +1903,7 @@ export function UnifiedPlanViewer({
   }, [files, pageType]);
 
   const [selectedFileId, setSelectedFileId] = useState<string>(() => {
+    if (initialFileId) return initialFileId;
     if (activeSign?.jobFileId) return activeSign.jobFileId;
     return floorPlanFiles[0]?.id ?? files[0]?.id ?? "";
   });
@@ -1925,6 +1932,7 @@ export function UnifiedPlanViewer({
 
   // ── Page number ────────────────────────────────────────────────────────────
   const [pageNumber, setPageNumber] = useState<number>(() => {
+    if (initialPage) return initialPage;
     if (activeSign?.pageNumber) return activeSign.pageNumber;
     return navigablePages[0] ?? 1;
   });
