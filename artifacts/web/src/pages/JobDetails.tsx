@@ -321,6 +321,122 @@ function FileSubRow({ summary, maxMs }: { summary: FileSummary; maxMs: number })
   );
 }
 
+// ── Per-page audit table (Phase 5 room breakdown) ─────────────────────────────
+
+interface PageAuditEntryShape {
+  page: number;
+  rooms_found: number;
+  signs_extracted: number;
+  markers_placed: number;
+  roomNames: string[];
+  /** Present in multi-file jobs to distinguish overlapping page numbers. */
+  fileId?: string;
+  fileName?: string | null;
+}
+
+function PageAuditRow({ entry }: { entry: PageAuditEntryShape }) {
+  const [expanded, setExpanded] = useState(false);
+  const hasRooms = entry.roomNames.length > 0;
+  return (
+    <div>
+      <div
+        className={`grid gap-2 px-3 py-1.5 text-[11px] font-mono rounded transition-colors ${
+          hasRooms ? "cursor-pointer hover:bg-muted/30 select-none" : ""
+        }`}
+        style={{ gridTemplateColumns: "3rem 1fr 4rem 4rem 5rem" }}
+        onClick={hasRooms ? () => setExpanded((v) => !v) : undefined}
+        title={hasRooms ? "Click to see room names" : undefined}
+      >
+        <span className="flex items-center gap-1 text-foreground/50 shrink-0">
+          {hasRooms && (
+            expanded
+              ? <ChevronDown className="w-3 h-3 inline-block" />
+              : <ChevronRight className="w-3 h-3 inline-block" />
+          )}
+          <span>p{entry.page}</span>
+        </span>
+        <span className="text-foreground/70 truncate">{entry.rooms_found} room{entry.rooms_found !== 1 ? "s" : ""}</span>
+        <span className="text-right tabular-nums text-foreground/55">{entry.signs_extracted} type{entry.signs_extracted !== 1 ? "s" : ""}</span>
+        <span className="text-right tabular-nums text-primary/70">{entry.markers_placed} sign{entry.markers_placed !== 1 ? "s" : ""}</span>
+        <span />
+      </div>
+      {expanded && hasRooms && (
+        <div className="ml-8 mb-1 px-2 py-1.5 rounded bg-muted/20 border border-border/20">
+          <div className="text-[10px] font-display font-semibold uppercase tracking-wider text-muted-foreground mb-1">
+            Rooms on page {entry.page}
+          </div>
+          <div className="flex flex-col gap-0.5">
+            {entry.roomNames.map((name, i) => (
+              <span key={i} className="text-[11px] font-mono text-foreground/65 leading-snug">
+                {name}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function PageAuditTable({ entries }: { entries: PageAuditEntryShape[] }) {
+  // Detect multi-file scenario: more than one distinct fileId present
+  const fileIds = [...new Set(entries.map((e) => e.fileId).filter(Boolean))];
+  const isMultiFile = fileIds.length > 1;
+
+  // Build groups: in multi-file mode, group entries by fileId in encounter order
+  const groups: Array<{ fileId: string | undefined; fileName: string | null | undefined; entries: PageAuditEntryShape[] }> = [];
+  if (isMultiFile) {
+    const seen = new Map<string, typeof groups[0]>();
+    for (const entry of entries) {
+      const key = entry.fileId ?? "";
+      if (!seen.has(key)) {
+        const group = { fileId: entry.fileId, fileName: entry.fileName, entries: [] as PageAuditEntryShape[] };
+        seen.set(key, group);
+        groups.push(group);
+      }
+      seen.get(key)!.entries.push(entry);
+    }
+  } else {
+    groups.push({ fileId: undefined, fileName: undefined, entries });
+  }
+
+  return (
+    <div className="mb-4">
+      <div className="text-xs font-semibold text-foreground/60 mb-1.5">
+        Per-Page Breakdown ({entries.length} page{entries.length !== 1 ? "s" : ""})
+      </div>
+      <div className="rounded-lg border border-border/30 bg-muted/10 overflow-hidden">
+        {/* Header */}
+        <div
+          className="grid gap-2 px-3 py-1 text-[10px] font-display font-semibold uppercase tracking-wider text-muted-foreground/60 border-b border-border/20 bg-muted/20"
+          style={{ gridTemplateColumns: "3rem 1fr 4rem 4rem 5rem" }}
+        >
+          <span>Page</span>
+          <span>Rooms found</span>
+          <span className="text-right">Sign types</span>
+          <span className="text-right">Markers</span>
+          <span />
+        </div>
+        {/* Rows — grouped by file in multi-file jobs */}
+        {groups.map((group) => (
+          <div key={group.fileId ?? "__single__"}>
+            {isMultiFile && group.fileName && (
+              <div className="px-3 py-1 text-[10px] font-display font-semibold uppercase tracking-wider text-muted-foreground/50 bg-muted/15 border-b border-border/15 truncate">
+                {group.fileName}
+              </div>
+            )}
+            <div className="divide-y divide-border/15">
+              {group.entries.map((entry) => (
+                <PageAuditRow key={`${entry.fileId ?? ""}:${entry.page}`} entry={entry} />
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function TimelineStepRow({ step, maxMs, fileSummaries }: { step: ProcessingStep; maxMs: number; fileSummaries?: FileSummary[] }) {
   const widthPct = Math.max(2, ((step.durationMs ?? 0) / maxMs) * 100);
   const detailStr = formatDetails(step.details);
@@ -897,6 +1013,8 @@ function ProcessingTimeline({ steps, isLoading }: { steps: ProcessingStep[]; isL
         const errors = ruleStep?.details?.verificationErrors as string[] | undefined;
         const totalRooms = ruleStep?.details?.totalRooms as number | undefined;
         const totalSigns = ruleStep?.details?.totalSignsAssigned as number | undefined;
+        type PageAuditEntry = { page: number; rooms_found: number; signs_extracted: number; markers_placed: number; roomNames: string[]; fileId?: string; fileName?: string | null };
+        const pageAudit = ruleStep?.details?.pageAudit as PageAuditEntry[] | undefined;
 
         if (!ruleStep) return null;
 
@@ -912,6 +1030,12 @@ function ProcessingTimeline({ steps, isLoading }: { steps: ProcessingStep[]; isL
                 <span>{totalSigns} sign assignment{totalSigns !== 1 ? "s" : ""}</span>
               </div>
             )}
+
+            {/* Per-page breakdown table */}
+            {pageAudit && pageAudit.length > 0 && (
+              <PageAuditTable entries={pageAudit} />
+            )}
+
             {decisionsLog && decisionsLog.length > 0 && (
               <div className="mb-4">
                 <div className="text-xs font-semibold text-foreground/60 mb-1.5">
@@ -948,7 +1072,7 @@ function ProcessingTimeline({ steps, isLoading }: { steps: ProcessingStep[]; isL
                 </div>
               </div>
             )}
-            {(!decisionsLog?.length && !questions?.length && !errors?.length) && (
+            {(!pageAudit?.length && !decisionsLog?.length && !questions?.length && !errors?.length) && (
               <div className="text-xs text-muted-foreground/50 italic">
                 No rule engine output recorded for this job. Re-run extraction to populate.
               </div>

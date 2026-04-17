@@ -660,6 +660,7 @@ export async function runPdfProcessor(jobId: string): Promise<void> {
                 : "Sign extraction (rules)",
               t_rule,
               {
+                fileName: file.originalName,
                 roomCount: ruleResult.roomCount,
                 assignmentCount: ruleResult.assignments.length,
                 signRowsInserted: allSignRows.length,
@@ -668,6 +669,7 @@ export async function runPdfProcessor(jobId: string): Promise<void> {
                 decisionsLog: ruleResult.decisionsLog,
                 questionsForVerification: ruleResult.questionsForVerification,
                 assignments: ruleResult.assignments,
+                pageAudit: ruleResult.pageAudit,
               },
               "phase-3",
             );
@@ -821,6 +823,19 @@ export async function runPdfProcessor(jobId: string): Promise<void> {
       const allDecisionsLog = ruleSteps.flatMap((s) => (s.details?.decisionsLog as string[]) ?? []);
       const allQuestions = ruleSteps.flatMap((s) => (s.details?.questionsForVerification as string[]) ?? []);
       const allErrors = ruleSteps.flatMap((s) => (s.details?.verificationErrors as string[]) ?? []);
+      // Merge per-file pageAudit arrays, tagging each entry with its source file so
+      // multi-file jobs with overlapping page numbers (e.g. two "page 1"s) remain
+      // distinguishable in the UI.
+      type RawPageAuditEntry = { page: number; rooms_found: number; signs_extracted: number; markers_placed: number; roomNames: string[] };
+      const allPageAudit = ruleSteps.flatMap((s) => {
+        const fileId = s.step.slice("rule_application_".length);
+        const fileName = (s.details?.fileName as string | undefined) ?? null;
+        return ((s.details?.pageAudit as RawPageAuditEntry[]) ?? []).map((entry) => ({
+          ...entry,
+          fileId,
+          fileName,
+        }));
+      });
       pipelineSteps.push({
         step: "rule_application",
         label: "Apply Rules R1–R15 (all files)",
@@ -833,6 +848,7 @@ export async function runPdfProcessor(jobId: string): Promise<void> {
           decisionsLog: allDecisionsLog,
           questionsForVerification: allQuestions,
           verificationErrors: allErrors,
+          pageAudit: allPageAudit,
         },
       });
     }

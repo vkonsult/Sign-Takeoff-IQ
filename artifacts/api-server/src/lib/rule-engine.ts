@@ -108,6 +108,18 @@ export interface SignAssignment {
   ambiguityNote: string | null;
 }
 
+/**
+ * Per-page summary emitted by the rule engine for Timeline display.
+ */
+export interface PageAuditEntry {
+  page: number;
+  rooms_found: number;
+  signs_extracted: number;
+  markers_placed: number;
+  /** Names (and room numbers) of every room extracted from this page. */
+  roomNames: string[];
+}
+
 export interface RuleEngineResult {
   assignments: SignAssignment[];
   verificationErrors: string[];
@@ -127,6 +139,8 @@ export interface RuleEngineResult {
    * number of "In Case of Fire" signs were assigned.
    */
   rawElevatorCount: number;
+  /** Per-page audit entries for Processing Timeline display. */
+  pageAudit: PageAuditEntry[];
 }
 
 // ── Bridge: Phase 4 → Phase 5 room record ─────────────────────────────────────
@@ -782,34 +796,39 @@ export function applySignRules(
   //   rooms_found   — how many rooms were extracted from that page
   //   signs_extracted — how many distinct sign-type assignments were made for those rooms
   //   markers_placed  — total sign quantity (sum of all assigned counts)
+  //   roomNames       — display label for each room on this page
   // This lets operators identify pages where Collaboration Rooms (or any rooms)
   // were found but received no markers, without running a full re-scan.
-  {
-    const pageAudit = new Map<number, { rooms_found: number; signs_extracted: number; markers_placed: number }>();
-    for (const room of rooms) {
-      const entry = pageAudit.get(room.pdfPage) ?? { rooms_found: 0, signs_extracted: 0, markers_placed: 0 };
-      entry.rooms_found++;
-      pageAudit.set(room.pdfPage, entry);
-    }
-    for (const a of assignments) {
-      const entry = pageAudit.get(a.pdfPage) ?? { rooms_found: 0, signs_extracted: 0, markers_placed: 0 };
-      const signRows = assignmentToRows(a);
-      entry.signs_extracted += signRows.length;
-      entry.markers_placed += signRows.reduce((sum, r) => sum + r.quantity, 0);
-      pageAudit.set(a.pdfPage, entry);
-    }
-    for (const [page, stats] of [...pageAudit.entries()].sort((a, b) => a[0] - b[0])) {
-      logger.info(
-        {
-          jobId,
-          page,
-          rooms_found: stats.rooms_found,
-          signs_extracted: stats.signs_extracted,
-          markers_placed: stats.markers_placed,
-        },
-        "[RuleEngine] Per-page marker audit",
-      );
-    }
+  const pageAuditMap = new Map<number, { rooms_found: number; signs_extracted: number; markers_placed: number; roomNames: string[] }>();
+  for (const room of rooms) {
+    const entry = pageAuditMap.get(room.pdfPage) ?? { rooms_found: 0, signs_extracted: 0, markers_placed: 0, roomNames: [] };
+    entry.rooms_found++;
+    const label = room.roomNumber ? `${room.roomNumber} ${room.roomName}` : room.roomName;
+    entry.roomNames.push(label);
+    pageAuditMap.set(room.pdfPage, entry);
+  }
+  for (const a of assignments) {
+    const entry = pageAuditMap.get(a.pdfPage) ?? { rooms_found: 0, signs_extracted: 0, markers_placed: 0, roomNames: [] };
+    const signRows = assignmentToRows(a);
+    entry.signs_extracted += signRows.length;
+    entry.markers_placed += signRows.reduce((sum, r) => sum + r.quantity, 0);
+    pageAuditMap.set(a.pdfPage, entry);
+  }
+  const pageAudit: PageAuditEntry[] = [...pageAuditMap.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .map(([page, stats]) => ({ page, ...stats }));
+
+  for (const entry of pageAudit) {
+    logger.info(
+      {
+        jobId,
+        page: entry.page,
+        rooms_found: entry.rooms_found,
+        signs_extracted: entry.signs_extracted,
+        markers_placed: entry.markers_placed,
+      },
+      "[RuleEngine] Per-page marker audit",
+    );
   }
 
   return {
@@ -820,6 +839,7 @@ export function applySignRules(
     roomCount: rooms.length,
     rawStairCount,
     rawElevatorCount,
+    pageAudit,
   };
 }
 
