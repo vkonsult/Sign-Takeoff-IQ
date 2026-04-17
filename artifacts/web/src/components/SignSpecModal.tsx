@@ -17,6 +17,7 @@ import {
   CheckCircle2,
   AlertCircle,
   ArrowUpRight,
+  ImageOff,
 } from "lucide-react";
 pdfjs.GlobalWorkerOptions.workerSrc = `${import.meta.env.BASE_URL}pdf.worker.min.mjs`;
 
@@ -50,6 +51,7 @@ interface SignTypeSpec {
   geminiEnriched: boolean;
   hasDrawing: boolean;
   cropBox: { x: number; y: number; w: number; h: number; pageNum: number } | null;
+  cropImageUrl: string | null;
 }
 
 interface GeminiNotesFields {
@@ -444,7 +446,7 @@ export function SignSpecModal({ jobId, fileId, fileName, specPages, plaqueTable,
                       }`}
                     >
                       {/* Type code + jump button + extraction badge */}
-                      <div className="flex items-center justify-between gap-2 mb-1">
+                      <div className="flex items-center justify-between gap-2 mb-1.5">
                         <div className="flex items-center gap-1.5 min-w-0">
                           <span className="text-xs font-display font-bold text-foreground">{spec.typeCode}</span>
                           {hasPage && (
@@ -470,6 +472,23 @@ export function SignSpecModal({ jobId, fileId, fileName, specPages, plaqueTable,
                           {rowIsVisual ? "Visual" : "Text Fallback"}
                         </span>
                       </div>
+
+                      {/* Crop image thumbnail */}
+                      {spec.hasDrawing && spec.cropImageUrl ? (
+                        <div className="mb-2 rounded overflow-hidden border border-border/60 bg-white">
+                          <img
+                            src={`${import.meta.env.BASE_URL}${spec.cropImageUrl.replace(/^\//, "")}`}
+                            alt={`Drawing for ${spec.typeCode}`}
+                            className="w-full h-auto object-contain max-h-32"
+                            loading="lazy"
+                          />
+                        </div>
+                      ) : (
+                        <div className="mb-2 flex items-center justify-center gap-1.5 rounded border border-dashed border-border/50 bg-secondary/20 py-2.5">
+                          <ImageOff className="w-3.5 h-3.5 text-muted-foreground/40" />
+                          <span className="text-[10px] font-mono text-muted-foreground/40">No drawing</span>
+                        </div>
+                      )}
 
                       {/* Display name */}
                       {notes.displayName && notes.displayName !== spec.typeCode && (
