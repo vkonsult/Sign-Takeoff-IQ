@@ -149,6 +149,7 @@ export function SignSpecModal({ jobId, fileId, fileName, specPages, plaqueTable,
   const lbImgRef = useRef<HTMLImageElement>(null);
   const lbScaleRef = useRef(1);
   const [lbIsDragging, setLbIsDragging] = useState(false);
+  const [lbIsPinching, setLbIsPinching] = useState(false);
 
   const lbClampAxis = useCallback((value: number, scale: number, axis: "x" | "y"): number => {
     const container = lbContainerRef.current;
@@ -246,6 +247,7 @@ export function SignSpecModal({ jobId, fileId, fileName, specPages, plaqueTable,
       };
       lbPanStartRef.current = null;
       setLbIsDragging(false);
+      setLbIsPinching(true);
     } else if (pointers.length === 1) {
       lbPanStartRef.current = {
         panX: lbPanX,
@@ -254,6 +256,7 @@ export function SignSpecModal({ jobId, fileId, fileName, specPages, plaqueTable,
         startY: e.clientY,
       };
       lbPinchRef.current = null;
+      setLbIsPinching(false);
       setLbIsDragging(true);
     }
   }, [lbPanX, lbPanY]);
@@ -271,12 +274,15 @@ export function SignSpecModal({ jobId, fileId, fileName, specPages, plaqueTable,
       if (!rect) return;
       const cx = midX - rect.left - rect.width / 2;
       const cy = midY - rect.top - rect.height / 2;
-      const newPanX = lbClampAxis(cx * (1 - ratio) + initialPanX * ratio, nextScale, "x");
-      const newPanY = lbClampAxis(cy * (1 - ratio) + initialPanY * ratio, nextScale, "y");
       lbScaleRef.current = nextScale;
       setLbScale(nextScale);
-      setLbPanX(newPanX);
-      setLbPanY(newPanY);
+      if (nextScale === 1) {
+        setLbPanX(0);
+        setLbPanY(0);
+      } else {
+        setLbPanX(lbClampAxis(cx * (1 - ratio) + initialPanX * ratio, nextScale, "x"));
+        setLbPanY(lbClampAxis(cy * (1 - ratio) + initialPanY * ratio, nextScale, "y"));
+      }
     } else if (pointers.length === 1 && lbPanStartRef.current) {
       const dx = e.clientX - lbPanStartRef.current.startX;
       const dy = e.clientY - lbPanStartRef.current.startY;
@@ -293,8 +299,10 @@ export function SignSpecModal({ jobId, fileId, fileName, specPages, plaqueTable,
       lbPanStartRef.current = null;
       lbPinchRef.current = null;
       setLbIsDragging(false);
+      setLbIsPinching(false);
     } else if (remaining === 1) {
       lbPinchRef.current = null;
+      setLbIsPinching(false);
       const [ptr] = Array.from(lbPointersRef.current.entries());
       lbPanStartRef.current = {
         panX: lbPanX,
@@ -892,7 +900,7 @@ export function SignSpecModal({ jobId, fileId, fileName, specPages, plaqueTable,
                     style={{
                       transform: `translate(${lbPanX}px, ${lbPanY}px) scale(${lbScale})`,
                       transformOrigin: "center",
-                      transition: lbIsDragging ? "none" : "transform 0.05s ease-out",
+                      transition: (lbIsDragging || lbIsPinching) ? "none" : "transform 0.05s ease-out",
                     }}
                     draggable={false}
                   />
