@@ -1161,6 +1161,10 @@ router.delete("/extracted-signs/:signId", async (req, res) => {
   }
 });
 
+// NOTE: occurrenceIndex and occurrenceTotal are intentionally absent from this schema.
+// Those columns are computed at extraction time (deduplicateSignRows) and must never
+// be overwritten via the single-sign PATCH endpoint or any bulk-update path.
+// Do NOT add them here — add a regression test to sign-occurrence-bulk.test.ts instead.
 const UpdateSignSchema = z.object({
   sheetNumber: z.string().nullable().optional(),
   detailReference: z.string().nullable().optional(),
