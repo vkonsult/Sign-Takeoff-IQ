@@ -6,6 +6,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { getListJobsQueryKey } from "@workspace/api-client-react";
 import { format, formatDistanceToNow } from "date-fns";
 import { Button } from "@/components/ui/button";
+import { useToast } from "@/hooks/use-toast";
 import {
   FolderOpen, Eye, FileText, CheckCircle2, Cpu,
   AlertTriangle, Trash2, X, Square, CheckSquare, MinusSquare,
@@ -63,6 +64,7 @@ export default function JobsList() {
   const [bulkConfirming, setBulkConfirming] = useState(false);
   const [bulkDeleting, setBulkDeleting] = useState(false);
   const [exportingPdf, setExportingPdf] = useState<Set<string>>(new Set());
+  const { toast } = useToast();
 
   const handleMarkedPdf = async (jobId: string, jobName: string | null | undefined, e: React.MouseEvent) => {
     e.preventDefault();
@@ -84,8 +86,10 @@ export default function JobsList() {
         signs
       );
       apiFetch(`/api/jobs/${jobId}/log-pdf-export`, { method: "POST" }).catch(() => {});
+      toast({ title: "Marked PDF downloaded" });
     } catch (err) {
       console.error("Marked PDF export failed:", err);
+      toast({ title: "PDF export failed", description: "Please try again", variant: "destructive" });
     } finally {
       setExportingPdf((prev) => { const n = new Set(prev); n.delete(jobId); return n; });
     }
