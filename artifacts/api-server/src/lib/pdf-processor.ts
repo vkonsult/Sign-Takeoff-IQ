@@ -407,6 +407,7 @@ export async function runPdfProcessor(jobId: string): Promise<void> {
           }
         }
 
+
         // ── Phase 4: Room Inventory ───────────────────────────────────────
         // Build a room inventory from floor plan pages identified above.
         // Must run before Phase 5 so the rule engine can consume the inventory.
