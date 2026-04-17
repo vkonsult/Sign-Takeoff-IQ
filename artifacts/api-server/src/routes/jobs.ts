@@ -33,6 +33,7 @@ import fsSync from "fs";
 import { z } from "zod/v4";
 
 import { recordActivity } from "../lib/record-activity";
+import { unwatchPdfFile } from "../lib/pdf-file-watcher";
 
 const router: IRouter = Router();
 
@@ -221,6 +222,7 @@ router.delete("/jobs/:jobId", async (req, res) => {
     }
 
     for (const f of files) {
+      unwatchPdfFile(f.storedPath);
       try {
         await fs.unlink(f.storedPath);
       } catch {
@@ -276,6 +278,7 @@ router.delete("/jobs", async (req, res) => {
     // Only unlink disk files for jobs that were actually deleted.
     for (const f of filesToDelete) {
       if (!deletedIds.has(f.jobId)) continue;
+      unwatchPdfFile(f.storedPath);
       try {
         await fs.unlink(f.storedPath);
       } catch {

@@ -209,6 +209,46 @@ describe("watcher error handling", () => {
   });
 });
 
+describe("file-delete path — unwatchPdfFile removes watcher entry", () => {
+  it("removes the registry entry when the file is deleted (single-file delete path)", () => {
+    const pdfPath = "/uploads/jobs/10/report.pdf";
+    watchPdfFile(pdfPath, "file-del-1");
+
+    expect(__watchers.has(pdfPath)).toBe(true);
+
+    unwatchPdfFile(pdfPath);
+
+    expect(__watchers.has(pdfPath)).toBe(false);
+    const instance = mockWatcherInstances.get(pdfPath);
+    expect(instance?.close).toHaveBeenCalledOnce();
+  });
+
+  it("removes all registry entries when multiple files are deleted (batch-delete path)", () => {
+    const paths = [
+      "/uploads/jobs/20/a.pdf",
+      "/uploads/jobs/20/b.pdf",
+      "/uploads/jobs/20/c.pdf",
+    ];
+    paths.forEach((p, i) => watchPdfFile(p, `file-batch-${i}`));
+
+    expect(__watcherCount()).toBe(3);
+
+    for (const p of paths) {
+      unwatchPdfFile(p);
+    }
+
+    expect(__watcherCount()).toBe(0);
+    for (const p of paths) {
+      expect(__watchers.has(p)).toBe(false);
+      expect(mockWatcherInstances.get(p)?.close).toHaveBeenCalledOnce();
+    }
+  });
+
+  it("does not throw when unwatching a path that was never watched (safe for already-gone files)", () => {
+    expect(() => unwatchPdfFile("/uploads/jobs/99/never-watched.pdf")).not.toThrow();
+  });
+});
+
 describe("unwatchAllPdfFiles — shutdown path", () => {
   it("closes all open watchers and clears the registry", () => {
     const paths = ["/uploads/jobs/1/a.pdf", "/uploads/jobs/2/b.pdf", "/uploads/jobs/3/c.pdf"];
