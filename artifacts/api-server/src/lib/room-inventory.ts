@@ -600,11 +600,12 @@ const CROP_MIN_PX = 64;
 /**
  * Maximum number of inline room-image crops sent in a single Gemini request.
  * Large drawings can have dozens of ambiguous rooms; exceeding Gemini's
- * per-request input limits causes the entire call to fail. Rooms beyond this
- * cap are still classified but without a visual crop (text-only context).
+ * per-request input limits causes the entire call to fail.
  *
- * Priority when trimming: rooms with names shorter than 4 characters are kept
- * first (they benefit most from visual context), then by ascending name length.
+ * When the total number of ambiguous rooms exceeds this limit, candidates are
+ * split into sequential batches of this size. Each batch is sent as a separate
+ * Gemini call so every room receives a visual crop rather than having
+ * lower-priority rooms fall back to text-only context.
  */
 const MAX_VISUAL_CROPS = 20;
 
@@ -740,36 +741,21 @@ export async function enrichAmbiguousRoomsWithAI(
       }),
     );
 
-    // ── Cap visual crops to MAX_VISUAL_CROPS ────────────────────────────────
-    // Count positions that have a real crop, then evict lower-priority ones
-    // if we would exceed the limit. Priority: shorter names first (< 4 chars
-    // benefit most from visual context), then ascending name length.
-    const positionsWithCrop = candidates
-      .map((c, pos) => ({ pos, nameLen: c.roomName.replace(/\s+/g, "").length }))
-      .filter(({ pos }) => crops.get(pos) != null);
-
-    if (positionsWithCrop.length > MAX_VISUAL_CROPS) {
-      logger.warn(
-        { fileId, jobId, total: positionsWithCrop.length, cap: MAX_VISUAL_CROPS },
-        "[RoomInventory] Visual crop count exceeds cap — dropping lowest-priority crops",
-      );
-
-      // Sort ascending: shortest names (most ambiguous) get highest priority
-      positionsWithCrop.sort((a, b) => a.nameLen - b.nameLen);
-
-      // Zero out crops for positions beyond the cap
-      for (const { pos } of positionsWithCrop.slice(MAX_VISUAL_CROPS)) {
-        crops.set(pos, null);
-      }
-    }
-
-    // Determine whether any crops survived the cap
+    // Determine whether any crops are available
     for (const [, b64] of crops) {
       if (b64) { anyVisual = true; break; }
     }
   }
 
-  // ── Build the Gemini prompt ───────────────────────────────────────────────
+  // ── Split candidates into batches of MAX_VISUAL_CROPS ─────────────────────
+  // Each batch becomes a separate sequential Gemini call so every room gets a
+  // visual crop instead of having low-priority rooms dropped when the total
+  // exceeds MAX_VISUAL_CROPS.
+  const batches: (typeof candidates)[] = [];
+  for (let i = 0; i < candidates.length; i += MAX_VISUAL_CROPS) {
+    batches.push(candidates.slice(i, i + MAX_VISUAL_CROPS));
+  }
+
   const ROOM_TYPE_OPTIONS = `Room type options:
 - RESTROOM: toilets, restrooms, bathrooms, showers, WC, lavatory
 - STAIR: stairwells, stair towers
@@ -786,65 +772,19 @@ export async function enrichAmbiguousRoomsWithAI(
 - STORAGE: storage areas, warehouses, stock rooms
 - OTHER: anything that doesn't fit the above`;
 
-  const parts: GeminiPart[] = [];
-
-  if (anyVisual) {
-    // Multimodal prompt: interleave images with per-room text descriptions
-    parts.push({
-      text:
-        `You are a building architecture expert analyzing floor plan room labels from a construction document set.\n\n` +
-        `The following room labels were extracted from a PDF floor plan but could not be confidently classified by ` +
-        `keyword heuristics because they are very short abbreviations, unusual names, or non-standard labels.\n\n` +
-        `For each room you will see the text label and, where available, a cropped image from the floor plan showing ` +
-        `the surrounding area. Use both sources of information to determine the room type and, if the label is an ` +
-        `abbreviation, expand it to the full standard room name.\n\n` +
-        ROOM_TYPE_OPTIONS,
-    });
-
-    for (let pos = 0; pos < candidates.length; pos++) {
-      const c = candidates[pos]!;
-      const crop = crops.get(pos) ?? null;
-      parts.push({
-        text: `\nRoom entry (index ${c.index}): "${c.roomName}"${c.roomNumber ? ` / room number ${c.roomNumber}` : ""}${c.level ? ` on level ${c.level}` : ""}`,
-      });
-      if (crop) {
-        parts.push({ inlineData: { mimeType: "image/png", data: crop } });
-      }
-    }
-
-    parts.push({
-      text:
-        `\nRespond with ONLY a valid JSON array. Each element must have:\n` +
-        `- "index": the original index number (integer)\n` +
-        `- "roomName": the expanded/corrected room name in ALL CAPS (keep original if already clear)\n` +
-        `- "roomType": one of the room type strings above\n` +
-        `- "confidence": a number from 0.0 to 1.0 indicating your certainty`,
-    });
-  } else {
-    // Text-only prompt (no pdfPath or no bounding boxes available)
-    const prompt = `You are a building architecture expert analyzing floor plan room labels from a construction document set.
-
-The following room labels were extracted from a PDF floor plan but could not be confidently classified by keyword heuristics because they are very short abbreviations, unusual names, or non-standard labels.
-
-For each room, determine the most likely room type from the list below, and if the label is an abbreviation, expand it to the full standard room name.
-
-${ROOM_TYPE_OPTIONS}
-
-Respond with ONLY a valid JSON array. Each element must have:
-- "index": the original index number (integer)
-- "roomName": the expanded/corrected room name in ALL CAPS (keep original if already clear)
-- "roomType": one of the room type strings above
-- "confidence": a number from 0.0 to 1.0 indicating your certainty
-
-Rooms to classify:
-${JSON.stringify(candidates, null, 2)}`;
-    parts.push({ text: prompt });
-  }
+  const JSON_RESPONSE_FOOTER =
+    `\nRespond with ONLY a valid JSON array. Each element must have:\n` +
+    `- "index": the original index number (integer)\n` +
+    `- "roomName": the expanded/corrected room name in ALL CAPS (keep original if already clear)\n` +
+    `- "roomType": one of the room type strings above\n` +
+    `- "confidence": a number from 0.0 to 1.0 indicating your certainty`;
 
   logger.info(
-    { fileId, jobId, ambiguous: ambiguousIndices.length, visual: anyVisual },
+    { fileId, jobId, ambiguous: ambiguousIndices.length, batches: batches.length, visual: anyVisual },
     "[RoomInventory] Sending ambiguous rooms to Gemini for classification",
   );
+
+  const allClassifications: GeminiRoomClassification[] = [];
 
   try {
     const geminiClient = ai as {
@@ -857,25 +797,89 @@ ${JSON.stringify(candidates, null, 2)}`;
       };
     };
 
-    const response = await geminiClient.models.generateContent({
-      model: "gemini-2.5-flash",
-      contents: [{ role: "user", parts }],
-      config: { temperature: 0.1 },
-    });
+    for (let batchIdx = 0; batchIdx < batches.length; batchIdx++) {
+      const batch = batches[batchIdx]!;
+      // candidateOffset maps batch-local positions back to the original crops Map
+      const candidateOffset = batchIdx * MAX_VISUAL_CROPS;
 
-    const text = response.text ?? "";
-    const jsonMatch = text.match(/\[[\s\S]*\]/);
-    if (!jsonMatch) {
-      logger.warn({ fileId, jobId }, "[RoomInventory] Gemini returned no JSON array for AI enrichment");
-      return { rooms, enrichedCount: 0 };
+      const batchHasVisual = batch.some((_, i) => (crops.get(candidateOffset + i) ?? null) !== null);
+
+      const parts: GeminiPart[] = [];
+
+      if (batchHasVisual) {
+        // Multimodal prompt: interleave images with per-room text descriptions
+        parts.push({
+          text:
+            `You are a building architecture expert analyzing floor plan room labels from a construction document set.\n\n` +
+            `The following room labels were extracted from a PDF floor plan but could not be confidently classified by ` +
+            `keyword heuristics because they are very short abbreviations, unusual names, or non-standard labels.\n\n` +
+            `For each room you will see the text label and, where available, a cropped image from the floor plan showing ` +
+            `the surrounding area. Use both sources of information to determine the room type and, if the label is an ` +
+            `abbreviation, expand it to the full standard room name.\n\n` +
+            ROOM_TYPE_OPTIONS,
+        });
+
+        for (let i = 0; i < batch.length; i++) {
+          const c = batch[i]!;
+          const crop = crops.get(candidateOffset + i) ?? null;
+          parts.push({
+            text: `\nRoom entry (index ${c.index}): "${c.roomName}"${c.roomNumber ? ` / room number ${c.roomNumber}` : ""}${c.level ? ` on level ${c.level}` : ""}`,
+          });
+          if (crop) {
+            parts.push({ inlineData: { mimeType: "image/png", data: crop } });
+          }
+        }
+
+        parts.push({ text: JSON_RESPONSE_FOOTER });
+      } else {
+        // Text-only prompt (no pdfPath, no bounding boxes, or all crops failed)
+        const prompt =
+          `You are a building architecture expert analyzing floor plan room labels from a construction document set.\n\n` +
+          `The following room labels were extracted from a PDF floor plan but could not be confidently classified by ` +
+          `keyword heuristics because they are very short abbreviations, unusual names, or non-standard labels.\n\n` +
+          `For each room, determine the most likely room type from the list below, and if the label is an abbreviation, ` +
+          `expand it to the full standard room name.\n\n` +
+          ROOM_TYPE_OPTIONS +
+          `\n\nRespond with ONLY a valid JSON array. Each element must have:\n` +
+          `- "index": the original index number (integer)\n` +
+          `- "roomName": the expanded/corrected room name in ALL CAPS (keep original if already clear)\n` +
+          `- "roomType": one of the room type strings above\n` +
+          `- "confidence": a number from 0.0 to 1.0 indicating your certainty\n\n` +
+          `Rooms to classify:\n${JSON.stringify(batch, null, 2)}`;
+        parts.push({ text: prompt });
+      }
+
+      if (batches.length > 1) {
+        logger.info(
+          { fileId, jobId, batch: batchIdx + 1, totalBatches: batches.length, batchSize: batch.length },
+          "[RoomInventory] Processing AI enrichment batch",
+        );
+      }
+
+      const response = await geminiClient.models.generateContent({
+        model: "gemini-2.5-flash",
+        contents: [{ role: "user", parts }],
+        config: { temperature: 0.1 },
+      });
+
+      const text = response.text ?? "";
+      const jsonMatch = text.match(/\[[\s\S]*\]/);
+      if (!jsonMatch) {
+        logger.warn(
+          { fileId, jobId, batch: batchIdx + 1, totalBatches: batches.length },
+          "[RoomInventory] Gemini returned no JSON array for AI enrichment batch — skipping batch",
+        );
+        continue;
+      }
+
+      const batchClassifications: GeminiRoomClassification[] = JSON.parse(jsonMatch[0]);
+      allClassifications.push(...batchClassifications);
     }
-
-    const classifications: GeminiRoomClassification[] = JSON.parse(jsonMatch[0]);
 
     const updatedRooms = rooms.map((r) => ({ ...r }));
     let enrichedCount = 0;
 
-    for (const c of classifications) {
+    for (const c of allClassifications) {
       const roomIdx = c.index;
       if (roomIdx < 0 || roomIdx >= updatedRooms.length) continue;
 
@@ -914,7 +918,7 @@ ${JSON.stringify(candidates, null, 2)}`;
     }
 
     logger.info(
-      { fileId, jobId, ambiguous: ambiguousIndices.length, enriched: enrichedCount },
+      { fileId, jobId, ambiguous: ambiguousIndices.length, enriched: enrichedCount, batches: batches.length },
       "[RoomInventory] AI enrichment complete",
     );
 
