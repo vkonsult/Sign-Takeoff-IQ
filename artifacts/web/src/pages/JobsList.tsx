@@ -12,7 +12,7 @@ import {
   AlertTriangle, Trash2, X, Square, CheckSquare, MinusSquare,
   Archive, EyeOff, Table2, FileDown, FileSpreadsheet, Loader2,
 } from "lucide-react";
-import { Link } from "wouter";
+import { Link, useLocation } from "wouter";
 import { exportMarkedupPdf, type MarkerSign } from "@/lib/exportMarkedupPdf";
 
 
@@ -57,6 +57,7 @@ export default function JobsList() {
   const [showArchived, setShowArchived] = useState(false);
   const { data, isLoading } = useJobsList(showArchived);
   const queryClient = useQueryClient();
+  const [, navigate] = useLocation();
 
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
@@ -121,6 +122,8 @@ export default function JobsList() {
     currentStep?: string | null;
     recentUsers?: RecentUser[];
     files?: { id: string; originalName: string }[];
+    failedFileCount?: number;
+    skippedFileCount?: number;
   }>;
   const allIds = jobs.map((j) => j.id);
   const allSelected = allIds.length > 0 && allIds.every((id) => selected.has(id));
@@ -290,6 +293,9 @@ export default function JobsList() {
 
                 const isProcessing = job.status === "processing";
                 const currentStep = isProcessing ? (jobAny as typeof job & { currentStep?: string | null }).currentStep : null;
+                const failedFileCount = job.failedFileCount ?? 0;
+                const skippedFileCount = job.skippedFileCount ?? 0;
+                const hasExtractionIssues = failedFileCount > 0 || skippedFileCount > 0;
 
                 return (
                   <div key={job.id} className="flex flex-col">
@@ -350,6 +356,24 @@ export default function JobsList() {
                           <span className="text-[10px] font-mono text-primary/70 tabular-nums">
                             <ElapsedTimer createdAt={job.createdAt} />
                           </span>
+                        )}
+                        {hasExtractionIssues && !isProcessing && (
+                          <button
+                            onClick={(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              navigate(`/jobs/${job.id}?tab=timeline`);
+                            }}
+                            title="Some files had extraction issues — click to see the timeline"
+                            className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-display font-bold uppercase tracking-wider bg-amber-500/15 text-amber-400 border border-amber-500/30 hover:bg-amber-500/25 transition-colors cursor-pointer"
+                          >
+                            <AlertTriangle className="w-2.5 h-2.5 flex-shrink-0" />
+                            {failedFileCount > 0 && skippedFileCount > 0
+                              ? `${failedFileCount} failed · ${skippedFileCount} skipped`
+                              : failedFileCount > 0
+                              ? `${failedFileCount} file${failedFileCount > 1 ? "s" : ""} failed`
+                              : `${skippedFileCount} skipped`}
+                          </button>
                         )}
                       </div>
 

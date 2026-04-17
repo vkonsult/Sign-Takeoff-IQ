@@ -25,6 +25,29 @@ import { recordActivity } from "../lib/record-activity";
 
 const router: IRouter = Router();
 
+// UUID pattern matching the per-file step convention used by the extraction pipeline
+const PER_FILE_STEP_RE = /^(.+?)_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/;
+const EXTRACTION_STEP_PREFIXES = new Set(["sheet_manifest", "text_extraction", "sign_schedule_extract"]);
+
+/**
+ * Parse a job's processingLog and return how many distinct files had errors
+ * or were skipped during extraction.
+ */
+function countExtractionFailures(processingLog: { step: string; details?: Record<string, unknown> }[] | null | undefined): { failedFileCount: number; skippedFileCount: number } {
+  if (!processingLog || processingLog.length === 0) return { failedFileCount: 0, skippedFileCount: 0 };
+  const fileErrors = new Map<string, boolean>();
+  const fileSkipped = new Map<string, boolean>();
+  for (const s of processingLog) {
+    const m = PER_FILE_STEP_RE.exec(s.step);
+    if (!m || !EXTRACTION_STEP_PREFIXES.has(m[1])) continue;
+    const fileId = m[2];
+    const d = s.details ?? {};
+    if (d.error) fileErrors.set(fileId, true);
+    if (d.skipped) fileSkipped.set(fileId, true);
+  }
+  return { failedFileCount: fileErrors.size, skippedFileCount: fileSkipped.size };
+}
+
 function orgFilter(req: Request): SQL | undefined | "FORBIDDEN" {
   const user = req.authUser;
   if (!user || user.isSuperAdmin) return undefined;
@@ -124,10 +147,13 @@ router.get("/jobs", async (req, res) => {
 
     const enriched = jobs.map((j) => {
       const users = recentUsersByJob.get(j.id) ?? [];
+      const { failedFileCount, skippedFileCount } = countExtractionFailures(j.processingLog);
       return {
         ...j,
         files: filesByJob.get(j.id) ?? [],
         recentUsers: users.map((u) => ({ userName: u.userName, userInitials: u.userInitials, at: u.at, eventType: u.eventType })),
+        failedFileCount,
+        skippedFileCount,
       };
     });
 
