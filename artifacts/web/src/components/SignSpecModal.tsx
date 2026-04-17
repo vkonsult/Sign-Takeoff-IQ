@@ -141,7 +141,9 @@ export function SignSpecModal({ jobId, fileId, fileName, specPages, plaqueTable,
   const [lbScale, setLbScale] = useState(1);
   const [lbPanX, setLbPanX] = useState(0);
   const [lbPanY, setLbPanY] = useState(0);
-  const lbDragRef = useRef<{ startX: number; startY: number; startPanX: number; startPanY: number; pointerId: number } | null>(null);
+  const lbPointersRef = useRef<Map<number, { x: number; y: number }>>(new Map());
+  const lbPanStartRef = useRef<{ panX: number; panY: number; startX: number; startY: number } | null>(null);
+  const lbPinchRef = useRef<{ initialDist: number; initialScale: number; initialPanX: number; initialPanY: number; midX: number; midY: number } | null>(null);
   const lbContainerRef = useRef<HTMLDivElement>(null);
   const lbImgRef = useRef<HTMLImageElement>(null);
   const lbScaleRef = useRef(1);
@@ -172,6 +174,9 @@ export function SignSpecModal({ jobId, fileId, fileName, specPages, plaqueTable,
     setLbScale(1);
     setLbPanX(0);
     setLbPanY(0);
+    lbPointersRef.current.clear();
+    lbPanStartRef.current = null;
+    lbPinchRef.current = null;
   }, []);
 
 
@@ -185,6 +190,9 @@ export function SignSpecModal({ jobId, fileId, fileName, specPages, plaqueTable,
     setLbScale(1);
     setLbPanX(0);
     setLbPanY(0);
+    lbPointersRef.current.clear();
+    lbPanStartRef.current = null;
+    lbPinchRef.current = null;
   }, []);
 
   const lbHandleWheel = useCallback((e: React.WheelEvent<HTMLDivElement>) => {
@@ -209,33 +217,84 @@ export function SignSpecModal({ jobId, fileId, fileName, specPages, plaqueTable,
   }, [lbClampAxis]);
 
   const lbHandlePointerDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
-    if (e.button !== 0) return;
+    if (e.pointerType === "mouse" && e.button !== 0) return;
     e.currentTarget.setPointerCapture(e.pointerId);
-    lbDragRef.current = {
-      startX: e.clientX,
-      startY: e.clientY,
-      startPanX: lbPanX,
-      startPanY: lbPanY,
-      pointerId: e.pointerId,
-    };
-    setLbIsDragging(true);
+    lbPointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    const pointers = Array.from(lbPointersRef.current.values());
+    if (pointers.length === 2) {
+      const [a, b] = pointers;
+      const dist = Math.hypot(b.x - a.x, b.y - a.y);
+      const midX = (a.x + b.x) / 2;
+      const midY = (a.y + b.y) / 2;
+      lbPinchRef.current = {
+        initialDist: dist,
+        initialScale: lbScaleRef.current,
+        initialPanX: lbPanX,
+        initialPanY: lbPanY,
+        midX,
+        midY,
+      };
+      lbPanStartRef.current = null;
+      setLbIsDragging(false);
+    } else if (pointers.length === 1) {
+      lbPanStartRef.current = {
+        panX: lbPanX,
+        panY: lbPanY,
+        startX: e.clientX,
+        startY: e.clientY,
+      };
+      lbPinchRef.current = null;
+      setLbIsDragging(true);
+    }
   }, [lbPanX, lbPanY]);
 
   const lbHandlePointerMove = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
-    if (!lbDragRef.current || lbDragRef.current.pointerId !== e.pointerId) return;
-    const dx = e.clientX - lbDragRef.current.startX;
-    const dy = e.clientY - lbDragRef.current.startY;
-    const s = lbScaleRef.current;
-    setLbPanX(lbClampAxis(lbDragRef.current.startPanX + dx, s, "x"));
-    setLbPanY(lbClampAxis(lbDragRef.current.startPanY + dy, s, "y"));
+    lbPointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    const pointers = Array.from(lbPointersRef.current.values());
+    if (pointers.length === 2 && lbPinchRef.current) {
+      const [a, b] = pointers;
+      const dist = Math.hypot(b.x - a.x, b.y - a.y);
+      const { initialDist, initialScale, initialPanX, initialPanY, midX, midY } = lbPinchRef.current;
+      const nextScale = Math.min(10, Math.max(1, initialScale * (dist / initialDist)));
+      const ratio = nextScale / initialScale;
+      const rect = lbContainerRef.current?.getBoundingClientRect();
+      if (!rect) return;
+      const cx = midX - rect.left - rect.width / 2;
+      const cy = midY - rect.top - rect.height / 2;
+      const newPanX = lbClampAxis(cx * (1 - ratio) + initialPanX * ratio, nextScale, "x");
+      const newPanY = lbClampAxis(cy * (1 - ratio) + initialPanY * ratio, nextScale, "y");
+      lbScaleRef.current = nextScale;
+      setLbScale(nextScale);
+      setLbPanX(newPanX);
+      setLbPanY(newPanY);
+    } else if (pointers.length === 1 && lbPanStartRef.current) {
+      const dx = e.clientX - lbPanStartRef.current.startX;
+      const dy = e.clientY - lbPanStartRef.current.startY;
+      const s = lbScaleRef.current;
+      setLbPanX(lbClampAxis(lbPanStartRef.current.panX + dx, s, "x"));
+      setLbPanY(lbClampAxis(lbPanStartRef.current.panY + dy, s, "y"));
+    }
   }, [lbClampAxis]);
 
   const lbHandlePointerUp = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
-    if (lbDragRef.current?.pointerId === e.pointerId) {
-      lbDragRef.current = null;
+    lbPointersRef.current.delete(e.pointerId);
+    const remaining = lbPointersRef.current.size;
+    if (remaining === 0) {
+      lbPanStartRef.current = null;
+      lbPinchRef.current = null;
       setLbIsDragging(false);
+    } else if (remaining === 1) {
+      lbPinchRef.current = null;
+      const [ptr] = Array.from(lbPointersRef.current.entries());
+      lbPanStartRef.current = {
+        panX: lbPanX,
+        panY: lbPanY,
+        startX: ptr[1].x,
+        startY: ptr[1].y,
+      };
+      setLbIsDragging(true);
     }
-  }, []);
+  }, [lbPanX, lbPanY]);
 
   const lightboxIndexRef = useRef<number | null>(null);
   useEffect(() => { lightboxIndexRef.current = lightboxIndex; }, [lightboxIndex]);
@@ -809,7 +868,7 @@ export function SignSpecModal({ jobId, fileId, fileName, specPages, plaqueTable,
                 onPointerMove={lbHandlePointerMove}
                 onPointerUp={lbHandlePointerUp}
                 onPointerCancel={lbHandlePointerUp}
-                style={{ cursor: lbScale > 1 ? (lbIsDragging ? "grabbing" : "grab") : "default" }}
+                style={{ cursor: lbScale > 1 ? (lbIsDragging ? "grabbing" : "grab") : "default", touchAction: "none" }}
               >
                 <div
                   className="w-full h-full flex items-center justify-center"
