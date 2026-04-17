@@ -582,6 +582,27 @@ function ProcessingTimeline({ steps, isLoading }: { steps: ProcessingStep[]; isL
               />
             ))}
           </div>
+          {/* Grand total row */}
+          {(() => {
+            const grandTotalMs = totalStep?.durationMs ?? groups.reduce((sum, g) => sum + g.totalMs, 0);
+            if (grandTotalMs == null) return null;
+            return (
+              <div className="mt-3 flex items-center gap-3 px-4 py-2.5 rounded-lg border border-border/60 bg-muted/20">
+                <span className="text-xs font-display font-bold uppercase tracking-wider text-foreground/70">
+                  Total
+                </span>
+                <span className="flex-1" />
+                {totalStep && (
+                  <span className="text-[10px] text-muted-foreground font-mono mr-2">
+                    pipeline total
+                  </span>
+                )}
+                <span className="inline-flex items-center px-2.5 py-0.5 rounded bg-foreground/10 text-xs font-mono font-bold tabular-nums text-foreground/80">
+                  {formatDuration(grandTotalMs)}
+                </span>
+              </div>
+            );
+          })()}
         </div>
       )}
 
@@ -653,12 +674,6 @@ function ProcessingTimeline({ steps, isLoading }: { steps: ProcessingStep[]; isL
         );
       })()}
 
-      {totalStep && (
-        <div className="pt-3 border-t border-border/60 flex items-center justify-between">
-          <span className="text-sm text-muted-foreground font-display font-semibold uppercase tracking-wide">Grand Total</span>
-          <span className="text-base font-bold font-mono text-foreground tabular-nums">{formatDuration(totalStep.durationMs)}</span>
-        </div>
-      )}
     </div>
   );
 }
