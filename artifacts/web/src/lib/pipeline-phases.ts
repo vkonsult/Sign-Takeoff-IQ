@@ -217,7 +217,7 @@ export const PIPELINE_PHASES: PipelinePhase[] = [
       "pdf-processor.ts → db_insert block",
     ],
     newModule: "verifier.ts → verifyRuleEngineResult()",
-    taskRef: "#359",
+    taskRef: "#372",
   },
 ];
 

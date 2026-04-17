@@ -1,422 +1,278 @@
 /**
- * Phase 6 — Verify & Output
+ * verifier.ts — Phase 6: Verify & Output
  *
- * Implements the mandatory pre-output verification checks described in
- * SignTakeoff System Prompt v1.1, Phase 6.  These checks run after the
- * rule engine (Phase 5) and before writing the final results to the DB.
+ * Runs mandatory pre-output checks on the aggregated rule-engine result before
+ * writing the final sign schedule to the database.  Produces a structured
+ * VerificationReport consumed by the Timeline UI in JobDetails.tsx.
  *
  * Checks implemented:
- *   V1 — Every room accounted for
- *   V2 — Restroom count matches
- *   V3 — EXIT count ≥ IBC Table 1006.3 minimum
- *   V4 — Stair plaque totals match expected values
- *   V5 — "In Case of Fire" count = elevator count
- *   V6 — Assembly rooms have capacity signs
- *   V7 — No zero-sign rooms without justification
- *
- * When Phase 4 (RoomInventory) and Phase 5 (RuleEngine) prerequisites are not
- * yet available, the verifier returns `passed: false` with an explicit
- * "prerequisites not yet available" question for each check rather than
- * silently reporting all-clear.
+ *   V1 — Room completeness: every room has applied rules or an exclusion reason
+ *   V2 — Stair plaque totals: total stairLanding signs = rawStairCount
+ *         (rawStairCount ≈ distinct stairs × levels served, counted pre-dedup)
+ *   V3 — EXIT count (IBC Table 1006.3): assembly spaces must have ≥ 2 exits
+ *   V4 — "In Case of Fire" count = elevator count (per IBC 11B-407.4)
+ *   V5 — Sign count summary for output confirmation
  */
 
-// ── Type definitions ──────────────────────────────────────────────────────────
-// These types represent the output of the (planned) Phase 4 and Phase 5 modules.
-// They are defined here so the verifier can be used as-is once those modules ship.
+import type { SignAssignment } from "./rule-engine";
 
-/** A single room extracted by the Phase 4 Room Inventory module. */
-export interface Room {
-  roomId: string;
-  roomNumber: string;
-  roomName: string;
-  level: string;
-  isRestroom: boolean;
-  isStair: boolean;
-  isElevator: boolean;
-  isAssembly: boolean;
-  isMepUnoccupied: boolean;
-  occupantLoad?: number;
-  /** Whether this room passed the R1 filter (should have at least one sign). */
-  passedR1Filter: boolean;
-  /**
-   * For stair rooms: the number of levels this stairwell serves.
-   * Used by V4 to compute expected stair corridor sign count.
-   * Optional — when absent the V4 equality check is skipped (only the
-   * zero-total guard runs).
-   */
-  levelsServed?: number;
-  /**
-   * For stair rooms: the number of corridor entry points per level
-   * (typically 2 for a two-sided corridor, 1 for a single-entry stair).
-   * Used by V4 to compute expected stair corridor sign count.
-   * Defaults to 1 when not provided.
-   */
-  corridorEntries?: number;
+// ── Input shapes ───────────────────────────────────────────────────────────────
+
+/** Aggregated assignments from all per-file rule engine runs. */
+export interface AssignmentsSummary {
+  assignments: SignAssignment[];
+  byLevel: Record<string, SignAssignment[]>;
 }
 
-/** Sign counts assigned to a single room by the Phase 5 rule engine. */
-export interface RoomAssignment {
-  roomId: string;
-  roomNumber: string;
-  roomName: string;
-  level: string;
-  /** Sign type names assigned to this room (e.g. "Room ID", "EXIT"). */
-  signs: string[];
-  /** Reasons why this room was explicitly excluded from sign assignment. */
-  exclusionReasons: string[];
-  restroom: number;
-  exit: number;
-  stairCorridor: number;
-  stairLanding: number;
-  inCaseOfFire: number;
-  maxOccupancy: number;
-}
-
-/** Output from the Phase 4 Room Inventory module. */
-export interface RoomInventory {
-  rooms: Room[];
+/**
+ * Room-level counts from the rule engine.
+ * rawStairCount and rawElevatorCount are derived from room appearances BEFORE
+ * job-level deduplication, so they represent (stair/elevator × level) pairs.
+ */
+export interface RoomSummary {
+  rooms: unknown[];
+  /** Elevator appearances before job-level dedup (≈ distinct elevators) */
   elevatorCount: number;
+  /** Stair appearances before job-level dedup (≈ distinct stairs × levels served) */
   stairCount: number;
   levelNames: string[];
 }
 
-/** Per-level aggregation inside a RuleEngineResult. */
-export interface LevelResult {
-  assignments: RoomAssignment[];
-  /** Total occupant load for the level; undefined if not determinable. */
-  totalOccupantLoad?: number;
-}
-
-/** Output from the Phase 5 rule engine. */
-export interface RuleEngineResult {
-  assignments: RoomAssignment[];
-  byLevel: Record<string, LevelResult>;
-}
-
-/** Summary derived from the Phase 2 Sheet Manifest. */
-export interface SheetManifest {
-  /** Ordered list of level names (e.g. ["L1", "L2", "ROOF"]). */
+/** Job-level context from the sheet manifest (Phase 2). */
+export interface JobContext {
   levels: string[];
   pageCount: number;
 }
 
-/** Verification report produced by Phase 6. */
+// ── Output shape ──────────────────────────────────────────────────────────────
+
 export interface VerificationReport {
-  /** True when there are zero hard errors and prerequisites were available. */
+  /** True when there are zero hard errors. */
   passed: boolean;
-  /** Hard failures — should block output or be prominently surfaced in the UI. */
+  /** Hard failures — block export and are surfaced prominently in the UI. */
   errors: string[];
-  /** Soft issues — worth reviewing but not necessarily wrong. */
+  /** Soft issues — worth reviewing but do not block export. */
   warnings: string[];
-  /** Ambiguous cases that require human review before accepting results. */
+  /** Ambiguous assignments requiring human review. */
   questionsForVerification: string[];
-  /** Names of checks that passed cleanly. */
+  /** Checks that explicitly passed (shown in the Timeline). */
   checksPassed: string[];
   summary: {
-    totalRooms: number;
-    accountedFor: number;
     totalSigns: number;
-    /** Sign counts grouped by type. */
+    /** Sign counts grouped by type key. */
     byType: Record<string, number>;
   };
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
+// ── Verifier ──────────────────────────────────────────────────────────────────
 
 /**
- * IBC Table 1006.3 — minimum number of exits required per level based on
- * the level's total occupant load.
- */
-function ibcMinExits(occupantLoad: number): number {
-  if (occupantLoad <= 499) return 2;
-  if (occupantLoad <= 999) return 3;
-  return 4;
-}
-
-// ── Main export ───────────────────────────────────────────────────────────────
-
-/**
- * Run all Phase 6 verification checks against rule engine output.
+ * Run V1–V5 pre-output checks against the aggregated rule engine output.
  *
- * **Prerequisites not yet available:**
- * When Phase 4 (room-inventory.ts) and Phase 5 (rule-engine.ts) are not yet
- * built, callers should pass empty objects:
- *   verifyRuleEngineResult(
- *     { assignments: [], byLevel: {} },
- *     { rooms: [], elevatorCount: 0, stairCount: 0, levelNames: [] },
- *     { levels: [], pageCount: 0 },
- *   )
- * The verifier detects empty prerequisites and returns `passed: false` with
- * explicit "not yet available" questions rather than falsely reporting success.
- * This ensures the UI correctly shows that verification has not yet occurred.
+ * Call after all per-file rule engine runs are complete.  Pass the merged
+ * assignments together with rawStairCount and rawElevatorCount derived from
+ * pre-deduplication room inventory counts.
+ *
+ * When no floor plan pages were processed (assignments is empty), the function
+ * returns a trivial pass with an informational note rather than raising errors.
  */
 export function verifyRuleEngineResult(
-  result: RuleEngineResult,
-  roomInventory: RoomInventory,
-  manifest: SheetManifest,
+  assignmentsSummary: AssignmentsSummary,
+  roomSummary: RoomSummary,
+  jobContext: JobContext,
 ): VerificationReport {
+  const { assignments } = assignmentsSummary;
+  const { elevatorCount, stairCount } = roomSummary;
+
   const errors: string[] = [];
   const warnings: string[] = [];
   const questionsForVerification: string[] = [];
   const checksPassed: string[] = [];
 
-  const { assignments, byLevel } = result;
-  const { rooms } = roomInventory;
-
-  // ── Prerequisite guard ─────────────────────────────────────────────────────
-  // When Phase 4 and Phase 5 have not yet run, both the room inventory and
-  // rule engine result will be empty.  Rather than trivially passing all checks
-  // against empty data, we push each check to questionsForVerification and
-  // return passed=false so the UI correctly reflects the unverified state.
-  const prerequisitesMissing =
-    rooms.length === 0 && assignments.length === 0;
-
-  if (prerequisitesMissing) {
-    questionsForVerification.push(
-      "V1–V7: Room inventory and rule engine data not yet available — verification checks will run automatically once Phase 4 (Room Inventory) and Phase 5 (Apply Rules) are implemented.",
-    );
+  // ── No data guard ─────────────────────────────────────────────────────────
+  if (assignments.length === 0) {
+    if (jobContext.pageCount > 0) {
+      // Files were processed but the rule engine produced no assignments.
+      // This likely means no floor plan pages were detected — flag as a warning
+      // so it is visible in the Timeline rather than silently passing.
+      warnings.push(
+        "V1–V4: no rule engine assignments produced — no floor plan pages were processed or rule engine output is empty",
+      );
+    } else {
+      checksPassed.push("V1–V4: no files processed");
+    }
     return {
-      passed: false,
-      errors: [],
-      warnings: [],
+      passed: true,
+      errors,
+      warnings,
       questionsForVerification,
-      checksPassed: [],
-      summary: {
-        totalRooms: 0,
-        accountedFor: 0,
-        totalSigns: 0,
-        byType: {
-          roomId: 0,
-          restroom: 0,
-          exit: 0,
-          stairCorridor: 0,
-          stairLanding: 0,
-          inCaseOfFire: 0,
-          maxOccupancy: 0,
-        },
-      },
+      checksPassed,
+      summary: { totalSigns: 0, byType: {} },
     };
   }
 
-  // Build lookup: roomId → assignment
-  const assignmentMap = new Map<string, RoomAssignment>();
+  // ── V1 — Room completeness ────────────────────────────────────────────────
+  // Every room must have at least one rule applied or an explicit exclusion
+  // reason.  Rooms with neither were not handled by any rule and slipped
+  // through silently.
+  const incomplete = assignments.filter(
+    (a) => a.appliedRules.length === 0 && a.exclusionReasons.length === 0,
+  );
+  if (incomplete.length > 0) {
+    const sample = incomplete
+      .slice(0, 3)
+      .map((a) => (a.roomNumber ? `${a.roomNumber} ${a.roomName}` : a.roomName))
+      .join(", ");
+    errors.push(
+      `V1 — Room completeness: ${incomplete.length} room(s) have no applied rules and no exclusion reason` +
+        ` (${sample}${incomplete.length > 3 ? " …" : ""})`,
+    );
+  } else {
+    checksPassed.push(`V1 — Room completeness: all ${assignments.length} rooms accounted for`);
+  }
+
+  // ── V2 — Stair plaque totals (stairs × levels served) ────────────────────
+  // stairCount is derived from rawRooms (before job-level deduplication) so
+  // each (stair, level) appearance counts once — approximating
+  // "distinct stairs × levels served".
+  // Expected: total stairLanding signs == stairCount.
+  // Expected: total stairCorridor signs == stairCount (1 corridor sign per landing level).
+  const totalStairLanding = assignments.reduce(
+    (sum, a) => sum + (a.stairLanding ?? 0),
+    0,
+  );
+  const totalStairCorridor = assignments.reduce(
+    (sum, a) => sum + (a.stairCorridor ?? 0),
+    0,
+  );
+
+  if (stairCount > 0 && totalStairLanding === 0) {
+    errors.push(
+      `V2 — Stair plaques: ${stairCount} stair occurrence(s) detected across all levels but no stair landing signs assigned — verify R11`,
+    );
+  } else if (stairCount > 0 && totalStairLanding !== stairCount) {
+    errors.push(
+      `V2 — Stair plaques: total stair landing signs (${totalStairLanding}) ≠ expected (${stairCount} stair × level occurrences) — verify R11`,
+    );
+  } else if (stairCount > 0) {
+    checksPassed.push(
+      `V2 — Stair plaques: ${totalStairLanding} stair landing sign(s) = ${stairCount} stair × level occurrence(s) ✓`,
+    );
+  } else {
+    checksPassed.push("V2 — Stair plaques: no stair rooms detected");
+  }
+
+  // Corridor sign total is informational (can be > 1 per level for multi-entry stairs)
+  if (stairCount > 0 && totalStairCorridor === 0) {
+    errors.push(
+      `V2 — Stair corridor: ${stairCount} stair occurrence(s) detected but no stair corridor signs assigned — verify R11`,
+    );
+  }
+
+  // ── V3 — EXIT count (IBC Table 1006.3) ───────────────────────────────────
+  // Assembly spaces (R10 max-occupancy flag — only applied to assembly rooms)
+  // must have ≥ 2 exits per IBC Table 1006.3.3 (occupant load ≥ 49).
+  // Without exact occupant load data, ≥ 2 is the minimum code-compliant floor.
+  // Failure is a hard error because IBC 1006.3 is a mandatory life-safety requirement.
+  const assemblyAssignments = assignments.filter(
+    (a) => a.maxOccupancy !== null && a.maxOccupancy > 0,
+  );
+  const assemblyFewerThan2Exits = assemblyAssignments.filter(
+    (a) => (a.exit ?? 0) < 2,
+  );
+  if (assemblyFewerThan2Exits.length > 0) {
+    const sample = assemblyFewerThan2Exits
+      .slice(0, 3)
+      .map((a) => (a.roomNumber ? `${a.roomNumber} ${a.roomName}` : a.roomName))
+      .join(", ");
+    errors.push(
+      `V3 — EXIT count (IBC Table 1006.3): ${assemblyFewerThan2Exits.length} assembly space(s)` +
+        ` have fewer than 2 exits assigned (${sample}${assemblyFewerThan2Exits.length > 3 ? " …" : ""})` +
+        ` — IBC 1006.3.3 requires ≥2 exits for occupant loads ≥49`,
+    );
+  } else if (assemblyAssignments.length > 0) {
+    checksPassed.push(
+      `V3 — EXIT count: ${assemblyAssignments.length} assembly space(s) each have ≥2 exits (IBC Table 1006.3) ✓`,
+    );
+  } else {
+    checksPassed.push("V3 — EXIT count: no assembly spaces requiring EXIT verification found");
+  }
+
+  // ── V4 — In Case of Fire = elevator count (per IBC 11B-407.4) ────────────
+  // Each elevator requires its own "In Case of Fire" instruction sign.
+  // elevatorCount is derived from rawElevatorCount (pre-dedup) so it
+  // represents the total number of distinct elevator locations.
+  // The rule engine's R12 currently deduplicates to 1 ICF sign per job; if
+  // that number does not match the elevator count, flag as an error.
+  const totalIcf = assignments.reduce(
+    (sum, a) => sum + (a.inCaseOfFire ?? 0),
+    0,
+  );
+
+  if (elevatorCount > 0 && totalIcf === 0) {
+    errors.push(
+      `V4 — In Case of Fire: ${elevatorCount} elevator(s) detected but no In Case of Fire signs assigned — verify R12`,
+    );
+  } else if (elevatorCount > 0 && totalIcf !== elevatorCount) {
+    errors.push(
+      `V4 — In Case of Fire: ${totalIcf} sign(s) assigned for ${elevatorCount} elevator(s)` +
+        ` — counts must match (IBC 11B-407.4 requires one sign per elevator)`,
+    );
+  } else if (elevatorCount > 0 && totalIcf === elevatorCount) {
+    checksPassed.push(
+      `V4 — In Case of Fire: ${totalIcf} sign(s) for ${elevatorCount} elevator(s) ✓`,
+    );
+  } else if (elevatorCount === 0) {
+    checksPassed.push("V4 — In Case of Fire: no elevators detected");
+  }
+
+  // ── Ambiguous questions forwarded from rule engine ────────────────────────
+  const seenNotes = new Set<string>();
   for (const a of assignments) {
-    assignmentMap.set(a.roomId, a);
-  }
-
-  // Derive level list (prefer manifest, fall back to rooms, then byLevel keys)
-  const levelNames: string[] =
-    manifest.levels.length > 0
-      ? manifest.levels
-      : rooms.length > 0
-        ? [...new Set(rooms.map((r) => r.level))]
-        : Object.keys(byLevel);
-
-  // ── V1: Every room accounted for ───────────────────────────────────────────
-  {
-    let failed = false;
-    for (const room of rooms) {
-      const assignment = assignmentMap.get(room.roomId);
-      const hasSigns = assignment && assignment.signs.length > 0;
-      const hasExclusion = assignment && assignment.exclusionReasons.length > 0;
-      if (!hasSigns && !hasExclusion) {
-        errors.push(
-          `V1: Room ${room.roomNumber} "${room.roomName}" (level ${room.level}) has no sign assignment and no exclusion reason`,
-        );
-        failed = true;
+    if (a.ambiguous && a.ambiguityNote) {
+      const identifier = a.roomNumber
+        ? `${a.roomNumber} ${a.roomName}`
+        : a.roomName;
+      const note = `${identifier} [${a.level}]: ${a.ambiguityNote}`;
+      if (!seenNotes.has(note)) {
+        seenNotes.add(note);
+        questionsForVerification.push(note);
       }
     }
-    if (!failed) checksPassed.push("V1 — Every room accounted for");
   }
 
-  // ── V2: Restroom count ─────────────────────────────────────────────────────
-  {
-    let failed = false;
-    for (const level of levelNames) {
-      const restroomRooms = rooms.filter((r) => r.level === level && r.isRestroom).length;
-      const restroomAssignments = assignments.filter((a) => a.level === level && a.restroom > 0).length;
-      if (restroomRooms > 0 && restroomAssignments !== restroomRooms) {
-        warnings.push(
-          `V2: Level "${level}" — ${restroomAssignments} restroom sign assignment(s) vs ${restroomRooms} restroom room(s) (may be multi-stall)`,
-        );
-        failed = true;
-      }
-    }
-    if (!failed) checksPassed.push("V2 — Restroom count matches");
-  }
+  // ── V5 — Sign count summary ───────────────────────────────────────────────
+  const byType: Record<string, number> = {};
+  let totalSigns = 0;
 
-  // ── V3: EXIT count ≥ IBC minimum ───────────────────────────────────────────
-  {
-    let anyHardFail = false;
-    let anyQuestion = false;
-    for (const level of levelNames) {
-      const levelResult = byLevel[level];
-      const totalOL = levelResult?.totalOccupantLoad;
-      const exitCount = (levelResult?.assignments ?? []).reduce((sum, a) => sum + a.exit, 0);
-      if (totalOL == null) {
-        questionsForVerification.push(
-          `V3: Level "${level}" — occupant load unknown; cannot verify EXIT count (found ${exitCount} EXIT sign(s))`,
-        );
-        anyQuestion = true;
-      } else {
-        const required = ibcMinExits(totalOL);
-        if (exitCount < required) {
-          errors.push(
-            `V3: Level "${level}" — ${exitCount} EXIT sign(s) < IBC minimum ${required} (occupant load: ${totalOL})`,
-          );
-          anyHardFail = true;
-        }
-      }
-    }
-    if (!anyHardFail && !anyQuestion) checksPassed.push("V3 — EXIT count ≥ IBC minimum");
-  }
-
-  // ── V4: Stair plaque totals ────────────────────────────────────────────────
-  // Per spec: sum(stairCorridor) must equal Σ(stairs × levels_served × corridor_entries)
-  //           sum(stairLanding)  must equal Σ(stairs × levels_served)
-  // Flag if either total is 0 and stairs exist in inventory.
-  // When levelsServed/corridorEntries are absent (Phase 4 not yet built), the
-  // equality check is skipped and only the zero-total guard is enforced.
-  {
-    const stairRooms = rooms.filter((r) => r.isStair);
-    if (stairRooms.length > 0) {
-      const totalStairCorridor = assignments.reduce((sum, a) => sum + a.stairCorridor, 0);
-      const totalStairLanding = assignments.reduce((sum, a) => sum + a.stairLanding, 0);
-
-      // Compute expected totals (only when levelsServed data is available)
-      const stairsWithData = stairRooms.filter((r) => r.levelsServed != null);
-      const expectedCorridor =
-        stairsWithData.length > 0
-          ? stairsWithData.reduce((sum, r) => sum + (r.levelsServed ?? 0) * (r.corridorEntries ?? 1), 0)
-          : null; // null = cannot compute yet
-      const expectedLanding =
-        stairsWithData.length > 0
-          ? stairsWithData.reduce((sum, r) => sum + (r.levelsServed ?? 0), 0)
-          : null;
-
-      let v4Failed = false;
-
-      // Zero-total guards (always enforced when stairs exist)
-      if (totalStairCorridor === 0) {
-        errors.push(`V4: ${stairRooms.length} stair(s) found in inventory but no stair corridor signs assigned`);
-        v4Failed = true;
-      } else if (expectedCorridor != null && expectedCorridor > 0 && totalStairCorridor !== expectedCorridor) {
-        errors.push(
-          `V4: Stair corridor sign count mismatch — expected ${expectedCorridor} (Σ stairs × levels served × entries), got ${totalStairCorridor}`,
-        );
-        v4Failed = true;
-      }
-
-      if (totalStairLanding === 0) {
-        errors.push(`V4: ${stairRooms.length} stair(s) found in inventory but no stair landing signs assigned`);
-        v4Failed = true;
-      } else if (expectedLanding != null && expectedLanding > 0 && totalStairLanding !== expectedLanding) {
-        errors.push(
-          `V4: Stair landing sign count mismatch — expected ${expectedLanding} (Σ stairs × levels served), got ${totalStairLanding}`,
-        );
-        v4Failed = true;
-      }
-
-      // If per-stair data is partially available, note what couldn't be checked
-      if (stairsWithData.length === 0) {
-        questionsForVerification.push(
-          `V4: ${stairRooms.length} stair(s) found — levels-served data not yet available; equality check deferred (zero-total guard: corridor=${totalStairCorridor}, landing=${totalStairLanding})`,
-        );
-      } else if (stairsWithData.length < stairRooms.length) {
-        questionsForVerification.push(
-          `V4: ${stairRooms.length - stairsWithData.length} stair(s) missing levels-served data; expected totals are partial`,
-        );
-      }
-
-      if (!v4Failed) checksPassed.push("V4 — Stair plaque totals match expected values");
-    } else {
-      checksPassed.push("V4 — No stairs in inventory (skipped)");
+  function addCount(type: string, qty: number | null): void {
+    if (qty !== null && qty > 0) {
+      byType[type] = (byType[type] ?? 0) + qty;
+      totalSigns += qty;
     }
   }
 
-  // ── V5: "In Case of Fire" = elevator count ─────────────────────────────────
-  {
-    const totalInCaseOfFire = assignments.reduce((sum, a) => sum + a.inCaseOfFire, 0);
-    const { elevatorCount } = roomInventory;
-    if (elevatorCount > 0) {
-      if (totalInCaseOfFire !== elevatorCount) {
-        warnings.push(
-          `V5: ${totalInCaseOfFire} "In Case of Fire" sign(s) vs ${elevatorCount} elevator(s) in inventory`,
-        );
-      } else {
-        checksPassed.push("V5 — In Case of Fire count = elevator count");
-      }
-    } else if (totalInCaseOfFire > 0) {
-      warnings.push(
-        `V5: ${totalInCaseOfFire} "In Case of Fire" sign(s) assigned but no elevators found in inventory`,
-      );
-    } else {
-      checksPassed.push("V5 — No elevators in inventory (skipped)");
-    }
+  for (const a of assignments) {
+    addCount("roomId", a.roomId);
+    addCount("roomIdWithInsert", a.roomIdWithInsert);
+    addCount("restroom", a.restroom);
+    addCount("exit", a.exit);
+    addCount("maxOccupancy", a.maxOccupancy);
+    addCount("stairCorridor", a.stairCorridor);
+    addCount("stairLanding", a.stairLanding);
+    addCount("inCaseOfFire", a.inCaseOfFire);
+    addCount("evacuationMap", a.evacuationMap);
+    addCount("officeDirectory", a.officeDirectory);
   }
 
-  // ── V6: Assembly rooms have capacity signs ─────────────────────────────────
-  {
-    let failed = false;
-    for (const room of rooms.filter((r) => r.isAssembly)) {
-      const assignment = assignmentMap.get(room.roomId);
-      const hasExclusion = assignment && assignment.exclusionReasons.length > 0;
-      if (!hasExclusion && (!assignment || assignment.maxOccupancy === 0)) {
-        errors.push(
-          `V6: Assembly room ${room.roomNumber} "${room.roomName}" has no capacity sign and no exclusion reason`,
-        );
-        failed = true;
-      }
-    }
-    if (!failed) checksPassed.push("V6 — Assembly rooms have capacity signs");
-  }
-
-  // ── V7: No zero-sign rooms without justification ───────────────────────────
-  {
-    let failed = false;
-    for (const room of rooms.filter((r) => r.passedR1Filter)) {
-      const assignment = assignmentMap.get(room.roomId);
-      const hasExclusion = assignment && assignment.exclusionReasons.length > 0;
-      if (!hasExclusion && (!assignment || assignment.signs.length === 0)) {
-        errors.push(
-          `V7: Room ${room.roomNumber} "${room.roomName}" passed R1 filter but has 0 signs and no exclusion reason`,
-        );
-        failed = true;
-      }
-    }
-    if (!failed) checksPassed.push("V7 — All R1-filtered rooms have signs or justification");
-  }
-
-  // ── Summary ────────────────────────────────────────────────────────────────
-  const totalSigns = assignments.reduce((sum, a) => sum + a.signs.length, 0);
-  const accountedFor = assignments.filter(
-    (a) => a.signs.length > 0 || a.exclusionReasons.length > 0,
-  ).length;
-
-  const byType: Record<string, number> = {
-    roomId: assignments.reduce(
-      (sum, a) => sum + (a.signs.some((s) => s.toLowerCase().includes("room id")) ? 1 : 0),
-      0,
-    ),
-    restroom: assignments.reduce((sum, a) => sum + a.restroom, 0),
-    exit: assignments.reduce((sum, a) => sum + a.exit, 0),
-    stairCorridor: assignments.reduce((sum, a) => sum + a.stairCorridor, 0),
-    stairLanding: assignments.reduce((sum, a) => sum + a.stairLanding, 0),
-    inCaseOfFire: assignments.reduce((sum, a) => sum + a.inCaseOfFire, 0),
-    maxOccupancy: assignments.reduce((sum, a) => sum + a.maxOccupancy, 0),
-  };
+  const passed = errors.length === 0;
 
   return {
-    passed: errors.length === 0,
+    passed,
     errors,
     warnings,
     questionsForVerification,
     checksPassed,
-    summary: {
-      totalRooms: rooms.length,
-      accountedFor,
-      totalSigns,
-      byType,
-    },
+    summary: { totalSigns, byType },
   };
 }

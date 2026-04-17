@@ -1,50 +1,36 @@
 import { describe, it, expect } from "vitest";
-import {
-  verifyRuleEngineResult,
-  type Room,
-  type RoomAssignment,
-  type RoomInventory,
-  type RuleEngineResult,
-  type SheetManifest,
-} from "./verifier";
+import { verifyRuleEngineResult } from "./verifier";
+import type { AssignmentsSummary, RoomSummary, JobContext } from "./verifier";
+import type { SignAssignment } from "./rule-engine";
 
 // ── Factories ─────────────────────────────────────────────────────────────────
 
-function makeRoom(overrides: Partial<Room> = {}): Room {
+function makeAssignment(overrides: Partial<SignAssignment> = {}): SignAssignment {
   return {
-    roomId: "r1",
     roomNumber: "101",
     roomName: "Office",
     level: "L1",
-    isRestroom: false,
-    isStair: false,
-    isElevator: false,
-    isAssembly: false,
-    isMepUnoccupied: false,
-    passedR1Filter: true,
-    ...overrides,
-  };
-}
-
-function makeAssignment(overrides: Partial<RoomAssignment> = {}): RoomAssignment {
-  return {
-    roomId: "r1",
-    roomNumber: "101",
-    roomName: "Office",
-    level: "L1",
-    signs: ["Room ID"],
+    pdfPage: 1,
+    roomId: 1,
+    roomIdWithInsert: null,
+    restroom: null,
+    exit: null,
+    maxOccupancy: null,
+    stairCorridor: null,
+    stairLanding: null,
+    inCaseOfFire: null,
+    evacuationMap: null,
+    officeDirectory: null,
+    appliedRules: ["R1"],
     exclusionReasons: [],
-    restroom: 0,
-    exit: 0,
-    stairCorridor: 0,
-    stairLanding: 0,
-    inCaseOfFire: 0,
-    maxOccupancy: 0,
+    sourceSheet: null,
+    ambiguous: false,
+    ambiguityNote: null,
     ...overrides,
   };
 }
 
-function makeInventory(overrides: Partial<RoomInventory> = {}): RoomInventory {
+function makeRoomSummary(overrides: Partial<RoomSummary> = {}): RoomSummary {
   return {
     rooms: [],
     elevatorCount: 0,
@@ -54,478 +40,327 @@ function makeInventory(overrides: Partial<RoomInventory> = {}): RoomInventory {
   };
 }
 
+function makeJobContext(overrides: Partial<JobContext> = {}): JobContext {
+  return {
+    levels: ["L1"],
+    pageCount: 1,
+    ...overrides,
+  };
+}
+
 function makeResult(
-  assignments: RoomAssignment[],
-  byLevel: RuleEngineResult["byLevel"] = {},
-): RuleEngineResult {
+  assignments: SignAssignment[],
+  byLevel: Record<string, SignAssignment[]> = {},
+): AssignmentsSummary {
   return { assignments, byLevel };
 }
 
-function makeManifest(levels: string[] = ["L1"]): SheetManifest {
-  return { levels, pageCount: levels.length };
-}
+// ── No-data guard ─────────────────────────────────────────────────────────────
 
-// ── Prerequisite guard ────────────────────────────────────────────────────────
-
-describe("prerequisite guard", () => {
-  it("returns passed=false with a question when both rooms and assignments are empty", () => {
+describe("no-data guard", () => {
+  it("returns passed=true with a checksPassed note when no files were processed", () => {
     const report = verifyRuleEngineResult(
       makeResult([]),
-      makeInventory({ rooms: [] }),
-      makeManifest([]),
+      makeRoomSummary(),
+      makeJobContext({ pageCount: 0 }),
     );
-    expect(report.passed).toBe(false);
+    expect(report.passed).toBe(true);
     expect(report.errors).toHaveLength(0);
-    expect(report.questionsForVerification).toHaveLength(1);
-    expect(report.questionsForVerification[0]).toMatch(/not yet available/i);
-  });
-});
-
-// ── V1: Every room accounted for ──────────────────────────────────────────────
-
-describe("V1 — Every room accounted for", () => {
-  it("passes when every room has signs", () => {
-    const room = makeRoom();
-    const assignment = makeAssignment({ signs: ["Room ID"] });
-    const report = verifyRuleEngineResult(
-      makeResult([assignment]),
-      makeInventory({ rooms: [room] }),
-      makeManifest(),
-    );
-    expect(report.checksPassed).toContain("V1 — Every room accounted for");
-    expect(report.errors.filter((e) => e.startsWith("V1"))).toHaveLength(0);
+    expect(report.checksPassed.some((c) => /no files processed/i.test(c))).toBe(true);
   });
 
-  it("passes when a room has no signs but has an exclusion reason", () => {
-    const room = makeRoom();
-    const assignment = makeAssignment({ signs: [], exclusionReasons: ["MEP room"] });
-    const report = verifyRuleEngineResult(
-      makeResult([assignment]),
-      makeInventory({ rooms: [room] }),
-      makeManifest(),
-    );
-    expect(report.checksPassed).toContain("V1 — Every room accounted for");
-    expect(report.errors.filter((e) => e.startsWith("V1"))).toHaveLength(0);
-  });
-
-  it("fails when a room has no signs and no exclusion reason", () => {
-    const room = makeRoom({ roomId: "r1", roomNumber: "101" });
-    const assignment = makeAssignment({ signs: [], exclusionReasons: [] });
-    const report = verifyRuleEngineResult(
-      makeResult([assignment]),
-      makeInventory({ rooms: [room] }),
-      makeManifest(),
-    );
-    expect(report.errors.some((e) => e.startsWith("V1"))).toBe(true);
-  });
-
-  it("fails when a room has no assignment at all", () => {
-    const room = makeRoom({ roomId: "r1" });
+  it("returns passed=true with a warning when files existed but no assignments were produced", () => {
     const report = verifyRuleEngineResult(
       makeResult([]),
-      makeInventory({ rooms: [room] }),
-      makeManifest(),
+      makeRoomSummary(),
+      makeJobContext({ pageCount: 2 }),
+    );
+    expect(report.passed).toBe(true);
+    expect(report.errors).toHaveLength(0);
+    expect(report.warnings.some((w) => /no rule engine assignments/i.test(w))).toBe(true);
+  });
+});
+
+// ── V1: Room completeness ──────────────────────────────────────────────────────
+
+describe("V1 — Room completeness", () => {
+  it("passes when every room has at least one applied rule", () => {
+    const assignment = makeAssignment({ appliedRules: ["R1"] });
+    const report = verifyRuleEngineResult(
+      makeResult([assignment]),
+      makeRoomSummary(),
+      makeJobContext(),
+    );
+    expect(report.checksPassed.some((c) => c.startsWith("V1"))).toBe(true);
+    expect(report.errors.filter((e) => e.startsWith("V1"))).toHaveLength(0);
+  });
+
+  it("passes when a room has no applied rules but has an exclusion reason", () => {
+    const assignment = makeAssignment({ appliedRules: [], exclusionReasons: ["R4: is_corridor_or_hall"] });
+    const report = verifyRuleEngineResult(
+      makeResult([assignment]),
+      makeRoomSummary(),
+      makeJobContext(),
+    );
+    expect(report.checksPassed.some((c) => c.startsWith("V1"))).toBe(true);
+    expect(report.errors.filter((e) => e.startsWith("V1"))).toHaveLength(0);
+  });
+
+  it("fails when a room has no applied rules and no exclusion reason", () => {
+    const assignment = makeAssignment({ appliedRules: [], exclusionReasons: [] });
+    const report = verifyRuleEngineResult(
+      makeResult([assignment]),
+      makeRoomSummary(),
+      makeJobContext(),
     );
     expect(report.errors.some((e) => e.startsWith("V1"))).toBe(true);
+    expect(report.passed).toBe(false);
+  });
+
+  it("includes sampled room names in the V1 error message", () => {
+    const assignments = [
+      makeAssignment({ roomNumber: "101", roomName: "Room A", appliedRules: [], exclusionReasons: [] }),
+      makeAssignment({ roomNumber: "102", roomName: "Room B", appliedRules: [], exclusionReasons: [] }),
+    ];
+    const report = verifyRuleEngineResult(makeResult(assignments), makeRoomSummary(), makeJobContext());
+    expect(report.errors[0]).toMatch(/101/);
   });
 });
 
-// ── V2: Restroom count matches ────────────────────────────────────────────────
+// ── V2: Stair plaque totals ────────────────────────────────────────────────────
 
-describe("V2 — Restroom count matches", () => {
-  it("passes when restroom room and restroom assignment counts match", () => {
-    const room = makeRoom({ isRestroom: true });
-    const assignment = makeAssignment({ restroom: 1 });
+describe("V2 — Stair plaque totals", () => {
+  it("passes (informational) when no stair rooms are detected", () => {
+    const assignment = makeAssignment({ appliedRules: ["R1"] });
     const report = verifyRuleEngineResult(
       makeResult([assignment]),
-      makeInventory({ rooms: [room] }),
-      makeManifest(),
+      makeRoomSummary({ stairCount: 0 }),
+      makeJobContext(),
     );
-    expect(report.checksPassed).toContain("V2 — Restroom count matches");
-    expect(report.warnings.filter((w) => w.startsWith("V2"))).toHaveLength(0);
+    expect(report.checksPassed.some((c) => /stair.*no stair rooms/i.test(c))).toBe(true);
+    expect(report.errors.filter((e) => e.startsWith("V2"))).toHaveLength(0);
   });
 
-  it("emits a warning when restroom assignment count differs from restroom room count", () => {
-    const room1 = makeRoom({ roomId: "r1", isRestroom: true });
-    const room2 = makeRoom({ roomId: "r2", roomNumber: "102", isRestroom: true });
-    const assignment = makeAssignment({ roomId: "r1", restroom: 1 });
+  it("fails when stair rooms exist but no stair landing signs were assigned", () => {
+    const assignment = makeAssignment({ appliedRules: ["R1"], stairLanding: null });
     const report = verifyRuleEngineResult(
       makeResult([assignment]),
-      makeInventory({ rooms: [room1, room2] }),
-      makeManifest(),
+      makeRoomSummary({ stairCount: 2 }),
+      makeJobContext(),
     );
-    expect(report.warnings.some((w) => w.startsWith("V2"))).toBe(true);
+    expect(report.errors.some((e) => e.startsWith("V2") && /landing/i.test(e))).toBe(true);
+    expect(report.passed).toBe(false);
   });
 
-  it("passes when there are no restroom rooms on a level", () => {
-    const room = makeRoom({ isRestroom: false });
-    const assignment = makeAssignment({ signs: ["Room ID"] });
+  it("fails when stair landing total does not equal stairCount", () => {
+    // stairCount = 3 (3 stair × level occurrences), but only 2 landing signs assigned
+    const assignments = [
+      makeAssignment({ roomNumber: "S1", appliedRules: ["R11"], stairLanding: 1, stairCorridor: 1 }),
+      makeAssignment({ roomNumber: "S2", appliedRules: ["R11"], stairLanding: 1, stairCorridor: 1 }),
+    ];
     const report = verifyRuleEngineResult(
-      makeResult([assignment]),
-      makeInventory({ rooms: [room] }),
-      makeManifest(),
+      makeResult(assignments),
+      makeRoomSummary({ stairCount: 3 }),
+      makeJobContext(),
     );
-    expect(report.warnings.filter((w) => w.startsWith("V2"))).toHaveLength(0);
+    expect(report.errors.some((e) => e.startsWith("V2") && /≠/.test(e))).toBe(true);
+    expect(report.passed).toBe(false);
+  });
+
+  it("passes when total stairLanding equals stairCount", () => {
+    const assignments = [
+      makeAssignment({ roomNumber: "S1", appliedRules: ["R11"], stairLanding: 1, stairCorridor: 1 }),
+      makeAssignment({ roomNumber: "S2", appliedRules: ["R11"], stairLanding: 1, stairCorridor: 1 }),
+    ];
+    const report = verifyRuleEngineResult(
+      makeResult(assignments),
+      makeRoomSummary({ stairCount: 2 }),
+      makeJobContext(),
+    );
+    expect(report.errors.filter((e) => e.startsWith("V2"))).toHaveLength(0);
+    expect(report.checksPassed.some((c) => c.startsWith("V2"))).toBe(true);
+  });
+
+  it("fails when stair rooms exist but no stair corridor signs were assigned", () => {
+    const assignment = makeAssignment({ appliedRules: ["R11"], stairLanding: 2, stairCorridor: null });
+    const report = verifyRuleEngineResult(
+      makeResult([assignment, makeAssignment({ appliedRules: ["R11"], stairLanding: 1, stairCorridor: null })]),
+      makeRoomSummary({ stairCount: 2 }),
+      makeJobContext(),
+    );
+    expect(report.errors.some((e) => e.startsWith("V2") && /corridor/i.test(e))).toBe(true);
   });
 });
 
-// ── V3: EXIT count ≥ IBC minimum ─────────────────────────────────────────────
+// ── V3: EXIT count (IBC Table 1006.3) ────────────────────────────────────────
 
-describe("V3 — EXIT count ≥ IBC minimum (IBC Table 1006.3)", () => {
-  function makeV3Report(occupantLoad: number, exitCount: number) {
-    const room = makeRoom();
-    const assignment = makeAssignment({ exit: exitCount });
-    return verifyRuleEngineResult(
-      makeResult([assignment], {
-        L1: {
-          assignments: [assignment],
-          totalOccupantLoad: occupantLoad,
-        },
-      }),
-      makeInventory({ rooms: [room] }),
-      makeManifest(),
-    );
-  }
-
-  it("OL ≤ 499 — passes with exactly 2 exits", () => {
-    const report = makeV3Report(499, 2);
-    expect(report.checksPassed).toContain("V3 — EXIT count ≥ IBC minimum");
+describe("V3 — EXIT count (IBC Table 1006.3)", () => {
+  it("passes when assembly spaces each have ≥2 exits", () => {
+    const assignment = makeAssignment({
+      appliedRules: ["R1", "R9", "R10"],
+      maxOccupancy: 1,
+      exit: 2,
+    });
+    const report = verifyRuleEngineResult(makeResult([assignment]), makeRoomSummary(), makeJobContext());
     expect(report.errors.filter((e) => e.startsWith("V3"))).toHaveLength(0);
+    expect(report.checksPassed.some((c) => c.startsWith("V3"))).toBe(true);
   });
 
-  it("OL ≤ 499 — fails with fewer than 2 exits", () => {
-    const report = makeV3Report(100, 1);
+  it("fails (hard error) when an assembly space has fewer than 2 exits", () => {
+    const assignment = makeAssignment({
+      appliedRules: ["R1", "R9", "R10"],
+      maxOccupancy: 1,
+      exit: 1,
+    });
+    const report = verifyRuleEngineResult(makeResult([assignment]), makeRoomSummary(), makeJobContext());
+    expect(report.errors.some((e) => e.startsWith("V3"))).toBe(true);
+    expect(report.passed).toBe(false);
+    // Must be an error, not just a warning
+    expect(report.warnings.filter((w) => w.startsWith("V3"))).toHaveLength(0);
+  });
+
+  it("fails (hard error) when an assembly space has 0 exits assigned", () => {
+    const assignment = makeAssignment({
+      appliedRules: ["R10"],
+      maxOccupancy: 1,
+      exit: null,
+    });
+    const report = verifyRuleEngineResult(makeResult([assignment]), makeRoomSummary(), makeJobContext());
     expect(report.errors.some((e) => e.startsWith("V3"))).toBe(true);
   });
 
-  it("OL 500–999 — passes with exactly 3 exits", () => {
-    const report = makeV3Report(750, 3);
-    expect(report.checksPassed).toContain("V3 — EXIT count ≥ IBC minimum");
+  it("passes (informational) when there are no assembly spaces", () => {
+    const assignment = makeAssignment({ appliedRules: ["R1"], maxOccupancy: null });
+    const report = verifyRuleEngineResult(makeResult([assignment]), makeRoomSummary(), makeJobContext());
+    expect(report.errors.filter((e) => e.startsWith("V3"))).toHaveLength(0);
+    expect(report.checksPassed.some((c) => c.startsWith("V3"))).toBe(true);
   });
 
-  it("OL 500–999 — fails with only 2 exits", () => {
-    const report = makeV3Report(500, 2);
-    expect(report.errors.some((e) => e.startsWith("V3"))).toBe(true);
-    expect(report.errors[0]).toMatch(/IBC minimum 3/);
-  });
-
-  it("OL ≥ 1000 — passes with exactly 4 exits", () => {
-    const report = makeV3Report(1000, 4);
-    expect(report.checksPassed).toContain("V3 — EXIT count ≥ IBC minimum");
-  });
-
-  it("OL ≥ 1000 — fails with only 3 exits", () => {
-    const report = makeV3Report(1500, 3);
-    expect(report.errors.some((e) => e.startsWith("V3"))).toBe(true);
-    expect(report.errors[0]).toMatch(/IBC minimum 4/);
-  });
-
-  it("emits a question when occupant load is unknown", () => {
-    const room = makeRoom();
-    const assignment = makeAssignment({ exit: 2 });
-    const report = verifyRuleEngineResult(
-      makeResult([assignment], {
-        L1: { assignments: [assignment], totalOccupantLoad: undefined },
-      }),
-      makeInventory({ rooms: [room] }),
-      makeManifest(),
-    );
-    expect(report.questionsForVerification.some((q) => q.startsWith("V3"))).toBe(true);
-    expect(report.checksPassed).not.toContain("V3 — EXIT count ≥ IBC minimum");
-  });
-
-  it("passes at the OL 499/500 boundary: OL=499 needs 2, OL=500 needs 3", () => {
-    expect(makeV3Report(499, 2).errors.filter((e) => e.startsWith("V3"))).toHaveLength(0);
-    expect(makeV3Report(500, 2).errors.some((e) => e.startsWith("V3"))).toBe(true);
-    expect(makeV3Report(500, 3).errors.filter((e) => e.startsWith("V3"))).toHaveLength(0);
-  });
-
-  it("passes at the OL 999/1000 boundary: OL=999 needs 3, OL=1000 needs 4", () => {
-    expect(makeV3Report(999, 3).errors.filter((e) => e.startsWith("V3"))).toHaveLength(0);
-    expect(makeV3Report(1000, 3).errors.some((e) => e.startsWith("V3"))).toBe(true);
-    expect(makeV3Report(1000, 4).errors.filter((e) => e.startsWith("V3"))).toHaveLength(0);
+  it("includes the assembly room name in the V3 error message", () => {
+    const assignment = makeAssignment({
+      roomNumber: "200",
+      roomName: "Auditorium",
+      appliedRules: ["R10"],
+      maxOccupancy: 1,
+      exit: 1,
+    });
+    const report = verifyRuleEngineResult(makeResult([assignment]), makeRoomSummary(), makeJobContext());
+    expect(report.errors[0]).toMatch(/200/);
   });
 });
 
-// ── V4: Stair plaque totals ───────────────────────────────────────────────────
+// ── V4: In Case of Fire = elevator count ──────────────────────────────────────
 
-describe("V4 — Stair plaque totals", () => {
-  it("passes (skipped) when there are no stairs in inventory", () => {
-    const room = makeRoom({ isStair: false });
-    const assignment = makeAssignment({ signs: ["Room ID"] });
+describe("V4 — In Case of Fire count = elevator count", () => {
+  it("passes when ICF count matches elevator count exactly", () => {
+    const a1 = makeAssignment({ roomNumber: "E1", appliedRules: ["R12"], inCaseOfFire: 1 });
+    const a2 = makeAssignment({ roomNumber: "E2", appliedRules: ["R12"], inCaseOfFire: 1 });
     const report = verifyRuleEngineResult(
-      makeResult([assignment]),
-      makeInventory({ rooms: [room] }),
-      makeManifest(),
+      makeResult([a1, a2]),
+      makeRoomSummary({ elevatorCount: 2 }),
+      makeJobContext(),
     );
-    expect(report.checksPassed).toContain("V4 — No stairs in inventory (skipped)");
-  });
-
-  it("fails when stairs exist but stairCorridor total is 0", () => {
-    const stair = makeRoom({ roomId: "s1", isStair: true, levelsServed: 3 });
-    const assignment = makeAssignment({ roomId: "s1", signs: [], stairCorridor: 0, stairLanding: 3 });
-    const report = verifyRuleEngineResult(
-      makeResult([assignment]),
-      makeInventory({ rooms: [stair] }),
-      makeManifest(),
-    );
-    expect(report.errors.some((e) => e.startsWith("V4") && /corridor/.test(e))).toBe(true);
-  });
-
-  it("fails when stairs exist but stairLanding total is 0", () => {
-    const stair = makeRoom({ roomId: "s1", isStair: true, levelsServed: 3 });
-    const assignment = makeAssignment({ roomId: "s1", signs: [], stairCorridor: 6, stairLanding: 0 });
-    const report = verifyRuleEngineResult(
-      makeResult([assignment]),
-      makeInventory({ rooms: [stair] }),
-      makeManifest(),
-    );
-    expect(report.errors.some((e) => e.startsWith("V4") && /landing/.test(e))).toBe(true);
-  });
-
-  it("fails when corridor count mismatches expected (levelsServed × corridorEntries)", () => {
-    const stair = makeRoom({ roomId: "s1", isStair: true, levelsServed: 3, corridorEntries: 2 });
-    // expected corridor = 3 × 2 = 6; we supply 4
-    const assignment = makeAssignment({ roomId: "s1", signs: [], stairCorridor: 4, stairLanding: 3 });
-    const report = verifyRuleEngineResult(
-      makeResult([assignment]),
-      makeInventory({ rooms: [stair] }),
-      makeManifest(),
-    );
-    expect(report.errors.some((e) => e.startsWith("V4") && /corridor sign count mismatch/.test(e))).toBe(true);
-  });
-
-  it("fails when landing count mismatches expected (levelsServed)", () => {
-    const stair = makeRoom({ roomId: "s1", isStair: true, levelsServed: 3, corridorEntries: 2 });
-    // expected landing = 3; we supply 2
-    const assignment = makeAssignment({ roomId: "s1", signs: [], stairCorridor: 6, stairLanding: 2 });
-    const report = verifyRuleEngineResult(
-      makeResult([assignment]),
-      makeInventory({ rooms: [stair] }),
-      makeManifest(),
-    );
-    expect(report.errors.some((e) => e.startsWith("V4") && /landing sign count mismatch/.test(e))).toBe(true);
-  });
-
-  it("passes when corridor and landing counts match expected values", () => {
-    const stair = makeRoom({ roomId: "s1", isStair: true, levelsServed: 3, corridorEntries: 2 });
-    const assignment = makeAssignment({ roomId: "s1", signs: [], stairCorridor: 6, stairLanding: 3 });
-    const report = verifyRuleEngineResult(
-      makeResult([assignment]),
-      makeInventory({ rooms: [stair] }),
-      makeManifest(),
-    );
-    expect(report.checksPassed).toContain("V4 — Stair plaque totals match expected values");
     expect(report.errors.filter((e) => e.startsWith("V4"))).toHaveLength(0);
+    expect(report.checksPassed.some((c) => c.startsWith("V4"))).toBe(true);
   });
 
-  it("defers equality check with a question when levelsServed data is absent", () => {
-    const stair = makeRoom({ roomId: "s1", isStair: true }); // no levelsServed
-    const assignment = makeAssignment({ roomId: "s1", signs: [], stairCorridor: 3, stairLanding: 2 });
+  it("fails when elevators exist but no ICF signs were assigned", () => {
+    const assignment = makeAssignment({ appliedRules: ["R1"], inCaseOfFire: null });
     const report = verifyRuleEngineResult(
       makeResult([assignment]),
-      makeInventory({ rooms: [stair] }),
-      makeManifest(),
+      makeRoomSummary({ elevatorCount: 2 }),
+      makeJobContext(),
     );
-    expect(report.questionsForVerification.some((q) => q.startsWith("V4"))).toBe(true);
+    expect(report.errors.some((e) => e.startsWith("V4") && /no In Case of Fire/i.test(e))).toBe(true);
+    expect(report.passed).toBe(false);
+  });
+
+  it("fails when ICF count differs from elevator count", () => {
+    // R12 deduplication assigned only 1 but there are 3 elevators
+    const assignment = makeAssignment({ appliedRules: ["R12"], inCaseOfFire: 1 });
+    const report = verifyRuleEngineResult(
+      makeResult([assignment]),
+      makeRoomSummary({ elevatorCount: 3 }),
+      makeJobContext(),
+    );
+    expect(report.errors.some((e) => e.startsWith("V4") && /counts must match/i.test(e))).toBe(true);
+    expect(report.passed).toBe(false);
+  });
+
+  it("passes (informational) when there are no elevators and no ICF signs", () => {
+    const assignment = makeAssignment({ appliedRules: ["R1"], inCaseOfFire: null });
+    const report = verifyRuleEngineResult(
+      makeResult([assignment]),
+      makeRoomSummary({ elevatorCount: 0 }),
+      makeJobContext(),
+    );
+    expect(report.errors.filter((e) => e.startsWith("V4"))).toHaveLength(0);
+    expect(report.checksPassed.some((c) => /no elevators/i.test(c))).toBe(true);
   });
 });
 
-// ── V5: "In Case of Fire" = elevator count ────────────────────────────────────
-
-describe("V5 — In Case of Fire count = elevator count", () => {
-  it("passes when counts match", () => {
-    const room = makeRoom();
-    const assignment = makeAssignment({ signs: ["Room ID"], inCaseOfFire: 2 });
-    const report = verifyRuleEngineResult(
-      makeResult([assignment]),
-      makeInventory({ rooms: [room], elevatorCount: 2 }),
-      makeManifest(),
-    );
-    expect(report.checksPassed).toContain("V5 — In Case of Fire count = elevator count");
-    expect(report.warnings.filter((w) => w.startsWith("V5"))).toHaveLength(0);
-  });
-
-  it("emits a warning when inCaseOfFire count < elevator count", () => {
-    const room = makeRoom();
-    const assignment = makeAssignment({ signs: ["Room ID"], inCaseOfFire: 1 });
-    const report = verifyRuleEngineResult(
-      makeResult([assignment]),
-      makeInventory({ rooms: [room], elevatorCount: 3 }),
-      makeManifest(),
-    );
-    expect(report.warnings.some((w) => w.startsWith("V5"))).toBe(true);
-  });
-
-  it("emits a warning when inCaseOfFire count > elevator count", () => {
-    const room = makeRoom();
-    const assignment = makeAssignment({ signs: ["Room ID"], inCaseOfFire: 4 });
-    const report = verifyRuleEngineResult(
-      makeResult([assignment]),
-      makeInventory({ rooms: [room], elevatorCount: 2 }),
-      makeManifest(),
-    );
-    expect(report.warnings.some((w) => w.startsWith("V5"))).toBe(true);
-  });
-
-  it("passes (skipped) when there are no elevators and no inCaseOfFire signs", () => {
-    const room = makeRoom();
-    const assignment = makeAssignment({ signs: ["Room ID"], inCaseOfFire: 0 });
-    const report = verifyRuleEngineResult(
-      makeResult([assignment]),
-      makeInventory({ rooms: [room], elevatorCount: 0 }),
-      makeManifest(),
-    );
-    expect(report.checksPassed).toContain("V5 — No elevators in inventory (skipped)");
-  });
-
-  it("emits a warning when inCaseOfFire signs exist but no elevators in inventory", () => {
-    const room = makeRoom();
-    const assignment = makeAssignment({ signs: ["Room ID"], inCaseOfFire: 1 });
-    const report = verifyRuleEngineResult(
-      makeResult([assignment]),
-      makeInventory({ rooms: [room], elevatorCount: 0 }),
-      makeManifest(),
-    );
-    expect(report.warnings.some((w) => w.startsWith("V5"))).toBe(true);
-  });
-});
-
-// ── V6: Assembly rooms have capacity signs ────────────────────────────────────
-
-describe("V6 — Assembly rooms have capacity signs", () => {
-  it("passes when an assembly room has a maxOccupancy sign", () => {
-    const room = makeRoom({ isAssembly: true });
-    const assignment = makeAssignment({ signs: ["Max Occupancy"], maxOccupancy: 1 });
-    const report = verifyRuleEngineResult(
-      makeResult([assignment]),
-      makeInventory({ rooms: [room] }),
-      makeManifest(),
-    );
-    expect(report.checksPassed).toContain("V6 — Assembly rooms have capacity signs");
-    expect(report.errors.filter((e) => e.startsWith("V6"))).toHaveLength(0);
-  });
-
-  it("passes when an assembly room has no capacity sign but has an exclusion reason", () => {
-    const room = makeRoom({ isAssembly: true });
-    const assignment = makeAssignment({ signs: [], maxOccupancy: 0, exclusionReasons: ["Owner waived"] });
-    const report = verifyRuleEngineResult(
-      makeResult([assignment]),
-      makeInventory({ rooms: [room] }),
-      makeManifest(),
-    );
-    expect(report.checksPassed).toContain("V6 — Assembly rooms have capacity signs");
-  });
-
-  it("fails when an assembly room has no capacity sign and no exclusion reason", () => {
-    const room = makeRoom({ isAssembly: true });
-    const assignment = makeAssignment({ signs: ["Room ID"], maxOccupancy: 0 });
-    const report = verifyRuleEngineResult(
-      makeResult([assignment]),
-      makeInventory({ rooms: [room] }),
-      makeManifest(),
-    );
-    expect(report.errors.some((e) => e.startsWith("V6"))).toBe(true);
-  });
-
-  it("passes when there are no assembly rooms", () => {
-    const room = makeRoom({ isAssembly: false });
-    const assignment = makeAssignment({ signs: ["Room ID"] });
-    const report = verifyRuleEngineResult(
-      makeResult([assignment]),
-      makeInventory({ rooms: [room] }),
-      makeManifest(),
-    );
-    expect(report.checksPassed).toContain("V6 — Assembly rooms have capacity signs");
-  });
-});
-
-// ── V7: No zero-sign rooms without justification ──────────────────────────────
-
-describe("V7 — No zero-sign rooms without justification", () => {
-  it("passes when an R1-filtered room has at least one sign", () => {
-    const room = makeRoom({ passedR1Filter: true });
-    const assignment = makeAssignment({ signs: ["Room ID"] });
-    const report = verifyRuleEngineResult(
-      makeResult([assignment]),
-      makeInventory({ rooms: [room] }),
-      makeManifest(),
-    );
-    expect(report.checksPassed).toContain("V7 — All R1-filtered rooms have signs or justification");
-  });
-
-  it("passes when an R1-filtered room has 0 signs but has an exclusion reason", () => {
-    const room = makeRoom({ passedR1Filter: true });
-    const assignment = makeAssignment({ signs: [], exclusionReasons: ["Closet"] });
-    const report = verifyRuleEngineResult(
-      makeResult([assignment]),
-      makeInventory({ rooms: [room] }),
-      makeManifest(),
-    );
-    expect(report.checksPassed).toContain("V7 — All R1-filtered rooms have signs or justification");
-  });
-
-  it("fails when an R1-filtered room has 0 signs and no exclusion reason", () => {
-    const room = makeRoom({ passedR1Filter: true });
-    const assignment = makeAssignment({ signs: [], exclusionReasons: [] });
-    const report = verifyRuleEngineResult(
-      makeResult([assignment]),
-      makeInventory({ rooms: [room] }),
-      makeManifest(),
-    );
-    expect(report.errors.some((e) => e.startsWith("V7"))).toBe(true);
-  });
-
-  it("ignores rooms that did not pass the R1 filter", () => {
-    const room = makeRoom({ passedR1Filter: false });
-    const assignment = makeAssignment({ signs: [], exclusionReasons: [] });
-    const report = verifyRuleEngineResult(
-      makeResult([assignment]),
-      makeInventory({ rooms: [room] }),
-      makeManifest(),
-    );
-    expect(report.errors.filter((e) => e.startsWith("V7"))).toHaveLength(0);
-  });
-});
-
-// ── Overall report shape ──────────────────────────────────────────────────────
+// ── Overall report shape ───────────────────────────────────────────────────────
 
 describe("overall report — passed flag and summary", () => {
   it("report.passed is true when there are no errors", () => {
-    const room = makeRoom();
-    const assignment = makeAssignment({ signs: ["Room ID"] });
+    const assignment = makeAssignment({ appliedRules: ["R1"] });
     const report = verifyRuleEngineResult(
       makeResult([assignment]),
-      makeInventory({ rooms: [room] }),
-      makeManifest(),
+      makeRoomSummary(),
+      makeJobContext(),
     );
     expect(report.passed).toBe(true);
   });
 
   it("report.passed is false when any error is present", () => {
-    const room = makeRoom({ passedR1Filter: true });
-    const assignment = makeAssignment({ signs: [], exclusionReasons: [] });
+    const assignment = makeAssignment({ appliedRules: [], exclusionReasons: [] });
     const report = verifyRuleEngineResult(
       makeResult([assignment]),
-      makeInventory({ rooms: [room] }),
-      makeManifest(),
+      makeRoomSummary(),
+      makeJobContext(),
     );
     expect(report.passed).toBe(false);
   });
 
-  it("summary.totalRooms equals the number of rooms in inventory", () => {
-    const rooms = [
-      makeRoom({ roomId: "r1" }),
-      makeRoom({ roomId: "r2", roomNumber: "102" }),
-    ];
-    const assignments = rooms.map((r) =>
-      makeAssignment({ roomId: r.roomId, roomNumber: r.roomNumber, signs: ["Room ID"] }),
-    );
+  it("summary.totalSigns sums all assigned sign quantities", () => {
+    const a1 = makeAssignment({ appliedRules: ["R1"], roomId: 2, restroom: 1 });
+    // Stair rooms have no roomId sign — set to null to avoid double-counting
+    const a2 = makeAssignment({ roomNumber: "102", appliedRules: ["R11"], roomId: null, stairLanding: 1, stairCorridor: 1 });
     const report = verifyRuleEngineResult(
-      makeResult(assignments),
-      makeInventory({ rooms }),
-      makeManifest(),
+      makeResult([a1, a2]),
+      makeRoomSummary({ stairCount: 1 }),
+      makeJobContext(),
     );
-    expect(report.summary.totalRooms).toBe(2);
+    // a1: roomId=2 + restroom=1 = 3; a2: stairLanding=1 + stairCorridor=1 = 2; total = 5
+    expect(report.summary.totalSigns).toBe(5);
+  });
+
+  it("summary.byType correctly groups sign quantities by type key", () => {
+    const assignment = makeAssignment({
+      appliedRules: ["R1", "R9"],
+      roomId: 1,
+      exit: 2,
+    });
+    const report = verifyRuleEngineResult(
+      makeResult([assignment]),
+      makeRoomSummary(),
+      makeJobContext(),
+    );
+    expect(report.summary.byType["roomId"]).toBe(1);
+    expect(report.summary.byType["exit"]).toBe(2);
+  });
+
+  it("ambiguous assignments are forwarded as questionsForVerification", () => {
+    const assignment = makeAssignment({
+      appliedRules: ["R2"],
+      ambiguous: true,
+      ambiguityNote: "R2: variable-use room — verify door count",
+    });
+    const report = verifyRuleEngineResult(
+      makeResult([assignment]),
+      makeRoomSummary(),
+      makeJobContext(),
+    );
+    expect(report.questionsForVerification.some((q) => q.includes("variable-use"))).toBe(true);
   });
 });

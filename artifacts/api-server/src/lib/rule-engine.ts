@@ -114,6 +114,19 @@ export interface RuleEngineResult {
   decisionsLog: string[];
   questionsForVerification: string[];
   roomCount: number;
+  /**
+   * Number of stair room appearances across all pages BEFORE job-level
+   * deduplication.  Each (stair, level) pair contributes 1, so this value
+   * naturally approximates "distinct stairs × levels served" and is used by
+   * the Phase 6 verifier to check stair landing sign totals.
+   */
+  rawStairCount: number;
+  /**
+   * Number of elevator room appearances across all pages BEFORE job-level
+   * deduplication.  Used by the Phase 6 verifier to check that the correct
+   * number of "In Case of Fire" signs were assigned.
+   */
+  rawElevatorCount: number;
 }
 
 // ── Bridge: Phase 4 → Phase 5 room record ─────────────────────────────────────
@@ -606,6 +619,13 @@ export function applySignRules(
     "[RuleEngine] Phase 4 inventory bridged to Phase 5 room records",
   );
 
+  // Count stair and elevator appearances before deduplication.
+  // Each (room, page) pair counts once, so named stairs that appear on multiple
+  // floor-plan pages produce one count per appearance — approximating
+  // "distinct stairs × levels served" without Phase 4 data.
+  const rawStairCount = rooms.filter((r) => r.isStair).length;
+  const rawElevatorCount = rooms.filter((r) => r.isElevator).length;
+
   // ── Step 3: Build job-level context for R12/R13/R14 ─────────────────────
   const exitDischargeVestibules = new Set<string>();
   const publicLobbyRooms = new Set<string>();
@@ -744,6 +764,8 @@ export function applySignRules(
     decisionsLog,
     questionsForVerification,
     roomCount: rooms.length,
+    rawStairCount,
+    rawElevatorCount,
   };
 }
 

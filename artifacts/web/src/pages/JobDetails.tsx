@@ -1411,7 +1411,7 @@ export default function JobDetails() {
                       <TooltipTrigger asChild>
                         <Button
                           onClick={handleExportMarkedPdf}
-                          disabled={exportingPdf}
+                          disabled={exportingPdf || (verificationBadge != null && !verificationBadge.passed)}
                           variant="outline"
                           className="font-display font-semibold uppercase tracking-wide hover:bg-primary/10 hover:text-primary hover:border-primary/40"
                         >
@@ -1423,16 +1423,32 @@ export default function JobDetails() {
                           {exportingPdf ? "Building PDF…" : "Export Marked PDF"}
                         </Button>
                       </TooltipTrigger>
-                      <TooltipContent>Download the original PDF with sign markers drawn on each floor plan page</TooltipContent>
+                      <TooltipContent>
+                        {verificationBadge && !verificationBadge.passed
+                          ? `⚠ ${verificationBadge.issues} verification error(s) must be resolved before exporting — check the Verification Report`
+                          : "Download the original PDF with sign markers drawn on each floor plan page"}
+                      </TooltipContent>
                     </Tooltip>
                   </TooltipProvider>
-                  <Button
-                    onClick={handleExport}
-                    className="font-display font-semibold uppercase tracking-wide bg-accent text-accent-foreground hover:bg-accent/90 shadow-[0_0_15px_rgba(0,240,255,0.15)]"
-                  >
-                    <Download className="w-4 h-4" />
-                    Export XLSX
-                  </Button>
+                  <TooltipProvider>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <Button
+                          onClick={handleExport}
+                          disabled={verificationBadge != null && !verificationBadge.passed}
+                          className="font-display font-semibold uppercase tracking-wide bg-accent text-accent-foreground hover:bg-accent/90 shadow-[0_0_15px_rgba(0,240,255,0.15)]"
+                        >
+                          <Download className="w-4 h-4" />
+                          Export XLSX
+                        </Button>
+                      </TooltipTrigger>
+                      <TooltipContent>
+                        {verificationBadge && !verificationBadge.passed
+                          ? `⚠ ${verificationBadge.issues} verification error(s) must be resolved before exporting — check the Verification Report`
+                          : "Download sign schedule as XLSX"}
+                      </TooltipContent>
+                    </Tooltip>
+                  </TooltipProvider>
                 </>
               )}
             </div>
