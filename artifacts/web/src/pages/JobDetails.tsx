@@ -45,6 +45,12 @@ import { format, formatDistanceToNow } from "date-fns";
 import { exportMarkedupPdf, type MarkerSign } from "@/lib/exportMarkedupPdf";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger, TooltipProvider } from "@/components/ui/tooltip";
+import {
+  PIPELINE_PHASES,
+  derivePhaseStatus,
+  phaseColorClasses,
+  resolvePhaseForStep,
+} from "@/lib/pipeline-phases";
 
 // ── Processing Timeline ──────────────────────────────────────────────────────
 
@@ -412,11 +418,128 @@ function ProcessingTimeline({ steps }: { steps: ProcessingStep[] }) {
     );
   }
 
+  // ── Phase overview ─────────────────────────────────────────────────────────
+  const completedStepKeys = steps.map((s) => s.step);
+
   return (
-    <div className="space-y-2">
-      {topLevelSteps.map((step) => renderTopLevelRow(step))}
+    <div className="space-y-8">
+      {/* Phase overview grid */}
+      <div>
+        <div className="text-[10px] font-display font-bold uppercase tracking-widest text-muted-foreground mb-3">
+          Pipeline Phases
+        </div>
+        <div className="grid grid-cols-3 gap-2 sm:grid-cols-6">
+          {PIPELINE_PHASES.map((phase) => {
+            const status = derivePhaseStatus(phase, completedStepKeys);
+            const badgeClass = phaseColorClasses(phase.color, "badge");
+            const borderClass = phaseColorClasses(phase.color, "border");
+            const textClass = phaseColorClasses(phase.color, "text");
+            const isComplete = status === "complete";
+            const isPending = status === "pending";
+            const isSkipped = status === "skipped";
+            return (
+              <div
+                key={phase.id}
+                title={phase.description}
+                className={`relative rounded-lg border p-2.5 transition-all ${
+                  isComplete
+                    ? `${borderClass} bg-card`
+                    : isPending
+                    ? "border-border/40 bg-card/50 opacity-50"
+                    : isSkipped
+                    ? "border-dashed border-border/30 bg-card/20 opacity-35"
+                    : "border-border/40 bg-card/50"
+                }`}
+              >
+                <div className="flex items-start justify-between gap-1 mb-1.5">
+                  <span className="text-base leading-none">{phase.icon}</span>
+                  <span
+                    className={`text-[9px] font-mono font-bold px-1 py-0.5 rounded border ${
+                      isComplete
+                        ? badgeClass
+                        : isPending
+                        ? "bg-secondary/50 text-muted-foreground/50 border-border/30"
+                        : "bg-secondary/30 text-muted-foreground/30 border-border/20"
+                    }`}
+                  >
+                    P{phase.id}
+                  </span>
+                </div>
+                <div
+                  className={`text-[10px] font-display font-semibold leading-tight mb-0.5 ${
+                    isComplete ? textClass : "text-muted-foreground/50"
+                  }`}
+                >
+                  {phase.shortName}
+                </div>
+                <div className="text-[9px] font-mono text-muted-foreground/50 leading-tight">
+                  {isComplete ? "✓ done" : isPending ? "pending" : isSkipped ? "not built" : "—"}
+                </div>
+                {phase.taskRef && !isComplete && (
+                  <div className="text-[8px] font-mono text-muted-foreground/30 mt-0.5">
+                    {phase.taskRef}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Detailed step rows — grouped by phase */}
+      <div>
+        <div className="text-[10px] font-display font-bold uppercase tracking-widest text-muted-foreground mb-3">
+          Step Details
+        </div>
+        <div className="space-y-4">
+          {(() => {
+            // Group top-level steps by phase; unmatched go under "Other"
+            const grouped = new Map<string, ProcessingStep[]>();
+            grouped.set("__other__", []);
+            for (const phase of PIPELINE_PHASES) {
+              grouped.set(String(phase.id), []);
+            }
+            for (const step of topLevelSteps) {
+              const phase = resolvePhaseForStep(step.step);
+              const key = phase ? String(phase.id) : "__other__";
+              grouped.get(key)!.push(step);
+            }
+            return (
+              <>
+                {PIPELINE_PHASES.map((phase) => {
+                  const phaseSteps = grouped.get(String(phase.id)) ?? [];
+                  if (phaseSteps.length === 0) return null;
+                  const borderClass = phaseColorClasses(phase.color, "border");
+                  const textClass = phaseColorClasses(phase.color, "text");
+                  return (
+                    <div key={phase.id} className={`pl-3 border-l-2 ${borderClass}`}>
+                      <div className={`text-[10px] font-display font-semibold uppercase tracking-wider mb-2 ${textClass}`}>
+                        {phase.icon} Phase {phase.id} — {phase.name}
+                      </div>
+                      <div className="space-y-2">
+                        {phaseSteps.map((step) => renderTopLevelRow(step))}
+                      </div>
+                    </div>
+                  );
+                })}
+                {(grouped.get("__other__") ?? []).length > 0 && (
+                  <div className="pl-3 border-l-2 border-border/30">
+                    <div className="text-[10px] font-display font-semibold uppercase tracking-wider mb-2 text-muted-foreground/50">
+                      Other Steps
+                    </div>
+                    <div className="space-y-2">
+                      {(grouped.get("__other__") ?? []).map((step) => renderTopLevelRow(step))}
+                    </div>
+                  </div>
+                )}
+              </>
+            );
+          })()}
+        </div>
+      </div>
+
       {total && (
-        <div className="mt-4 pt-3 border-t border-border/60 flex items-center justify-between">
+        <div className="pt-3 border-t border-border/60 flex items-center justify-between">
           <span className="text-sm text-muted-foreground font-display font-semibold uppercase tracking-wide">Total</span>
           <span className="text-base font-bold font-mono text-foreground">{formatDuration(total.durationMs)}</span>
         </div>
