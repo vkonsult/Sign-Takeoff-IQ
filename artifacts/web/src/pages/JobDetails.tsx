@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef, useEffect, useCallback, Fragment } from "react";
 import { useRoute, useSearch, useLocation } from "wouter";
 import { useQueryClient } from "@tanstack/react-query";
 import { AppShell } from "@/components/layout/Shell";
@@ -3617,6 +3617,7 @@ function RoomInventoryTab({ files, processingLog }: RoomInventoryTabProps) {
   const [filterLevel, setFilterLevel] = useState<string>("all");
   const [filterFlag, setFilterFlag] = useState<string>("all");
   const [filterMissing, setFilterMissing] = useState<boolean>(false);
+  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
 
   type RoomEntry = RoomRecord & {
     sourceFile: string;
@@ -3648,8 +3649,17 @@ function RoomInventoryTab({ files, processingLog }: RoomInventoryTabProps) {
     }
     const fileAsgns = fileAssignments.get(f.id) ?? null;
     const hasAssignmentData = fileAsgns !== null;
-    for (const room of ri.rooms) {
-      const assignment = fileAsgns ? findAssignmentForRoom(fileAsgns, room) : null;
+    // Positional matching: the rule engine produces one assignment per room in
+    // the same order as roomInventory.rooms, so assignments[i] == rooms[i].
+    // This correctly distinguishes duplicate-named rooms that would otherwise
+    // all resolve to the same first-match assignment.
+    const usePositional = fileAsgns !== null && fileAsgns.length === ri.rooms.length;
+    ri.rooms.forEach((room, idx) => {
+      const assignment = fileAsgns
+        ? usePositional
+          ? (fileAsgns[idx] ?? null)
+          : findAssignmentForRoom(fileAsgns, room)
+        : null;
       allRooms.push({
         ...room,
         sourceFile: f.originalName,
@@ -3657,7 +3667,7 @@ function RoomInventoryTab({ files, processingLog }: RoomInventoryTabProps) {
         assignment,
         hasAssignmentData,
       });
-    }
+    });
   }
 
   const hasAnyAssignmentData = allRooms.some((r) => r.hasAssignmentData);
@@ -3698,6 +3708,50 @@ function RoomInventoryTab({ files, processingLog }: RoomInventoryTabProps) {
     }
     return true;
   });
+
+  // Group duplicate-named rooms that have no room number.
+  // Key is normalized (trimmed, lowercased) so casing/whitespace variants collapse together.
+  function dupGroupKey(room: RoomEntry): string | null {
+    if (room.roomNumber != null && String(room.roomNumber).trim() !== "") return null;
+    return `${room.fileId}|${room.level.trim().toLowerCase()}|${room.roomName.trim().toLowerCase()}`;
+  }
+
+  // Precompute groups in one O(n) pass to avoid repeated filter calls later.
+  const groupRoomsMap = new Map<string, RoomEntry[]>();
+  for (const room of filtered) {
+    const key = dupGroupKey(room);
+    if (!key) continue;
+    const bucket = groupRoomsMap.get(key);
+    if (bucket) bucket.push(room);
+    else groupRoomsMap.set(key, [room]);
+  }
+
+  type ViewItem =
+    | { kind: "single"; room: RoomEntry; rowIdx: number }
+    | { kind: "group"; gkey: string; rooms: RoomEntry[]; rowIdx: number };
+
+  const seenGroupKeys = new Set<string>();
+  const viewItems: ViewItem[] = [];
+  let rowIdx = 0;
+  for (const room of filtered) {
+    const key = dupGroupKey(room);
+    const groupRooms = key ? (groupRoomsMap.get(key) ?? []) : [];
+    if (!key || groupRooms.length === 1) {
+      viewItems.push({ kind: "single", room, rowIdx: rowIdx++ });
+    } else if (!seenGroupKeys.has(key)) {
+      seenGroupKeys.add(key);
+      viewItems.push({ kind: "group", gkey: key, rooms: groupRooms, rowIdx: rowIdx++ });
+    }
+  }
+
+  function toggleGroup(gkey: string) {
+    setExpandedGroups((prev) => {
+      const next = new Set(prev);
+      if (next.has(gkey)) next.delete(gkey);
+      else next.add(gkey);
+      return next;
+    });
+  }
 
   if (allRooms.length === 0) {
     return (
@@ -3843,72 +3897,205 @@ function RoomInventoryTab({ files, processingLog }: RoomInventoryTabProps) {
                 </tr>
               </thead>
               <tbody>
-                {filtered.map((room, i) => {
-                  const flags = roomFlags(room);
-                  const badges = room.assignment ? assignmentSignBadges(room.assignment) : [];
-                  const excluded = room.assignment?.exclusionReasons ?? [];
-                  const missing = isMissingSignsRoom(room);
-                  return (
-                    <tr
-                      key={`${room.sourceFile}-${room.roomName}-${room.roomNumber}-${i}`}
-                      className={`border-b border-border/20 last:border-0 hover:bg-secondary/20 transition-colors ${missing ? "bg-amber-500/5" : i % 2 === 0 ? "" : "bg-card/30"}`}
-                    >
-                      <td className="px-3 py-2 text-xs font-mono text-muted-foreground whitespace-nowrap">
-                        <div className="flex items-center gap-1">
-                          {missing && <AlertTriangle className="w-3 h-3 text-amber-400 shrink-0" title="No signs assigned" />}
-                          {room.roomNumber ?? <span className="text-muted-foreground/30">—</span>}
-                        </div>
-                      </td>
-                      <td className="px-3 py-2 text-xs font-mono text-foreground/80 max-w-[200px] truncate" title={room.roomName}>
-                        {room.roomName}
-                      </td>
-                      <td className="px-3 py-2 text-xs font-mono text-muted-foreground whitespace-nowrap">
-                        {room.level}
-                      </td>
-                      <td className="px-3 py-2">
-                        {flags.length > 0 ? (
-                          <div className="flex flex-wrap gap-0.5">
-                            {flags.map((f) => <RoomFlagChip key={f} label={f} />)}
+                {viewItems.map((item) => {
+                  if (item.kind === "single") {
+                    const room = item.room;
+                    const flags = roomFlags(room);
+                    const badges = room.assignment ? assignmentSignBadges(room.assignment) : [];
+                    const excluded = room.assignment?.exclusionReasons ?? [];
+                    const missing = isMissingSignsRoom(room);
+                    return (
+                      <tr
+                        key={`single-${room.fileId}-${room.roomName}-${room.roomNumber}-${item.rowIdx}`}
+                        className={`border-b border-border/20 last:border-0 hover:bg-secondary/20 transition-colors ${missing ? "bg-amber-500/5" : item.rowIdx % 2 === 0 ? "" : "bg-card/30"}`}
+                      >
+                        <td className="px-3 py-2 text-xs font-mono text-muted-foreground whitespace-nowrap">
+                          <div className="flex items-center gap-1">
+                            {missing && <AlertTriangle className="w-3 h-3 text-amber-400 shrink-0" title="No signs assigned" />}
+                            {room.roomNumber ?? <span className="text-muted-foreground/30">—</span>}
                           </div>
-                        ) : (
-                          <span className="text-[10px] text-muted-foreground/30 font-mono">none</span>
-                        )}
-                      </td>
-                      <td className="px-3 py-2">
-                        {!room.hasAssignmentData ? (
-                          <span className="text-[10px] text-muted-foreground/25 font-mono italic">re-run to populate</span>
-                        ) : badges.length > 0 ? (
-                          <div className="flex flex-wrap gap-0.5">
-                            {badges.map(({ label, qty }) => (
-                              <span key={label} className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded border text-[9px] font-mono bg-blue-500/10 text-blue-400 border-blue-500/25 whitespace-nowrap">
-                                {qty > 1 ? `${qty}× ` : ""}{label}
-                              </span>
-                            ))}
-                            {room.assignment?.ambiguous && (
-                              <span className="inline-flex items-center px-1.5 py-0.5 rounded border text-[9px] font-mono bg-amber-500/10 text-amber-400 border-amber-500/20 whitespace-nowrap">
-                                ?ambiguous
-                              </span>
-                            )}
-                          </div>
-                        ) : excluded.length > 0 ? (
-                          <span className="text-[10px] font-mono text-muted-foreground/50 italic" title={excluded.join("; ")}>
-                            excluded
-                          </span>
-                        ) : missing ? (
-                          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded border text-[9px] font-mono bg-amber-500/15 text-amber-400 border-amber-500/30 whitespace-nowrap">
-                            <AlertTriangle className="w-2.5 h-2.5 shrink-0" />
-                            no signs assigned
-                          </span>
-                        ) : (
-                          <span className="text-[10px] text-muted-foreground/30 font-mono">none assigned</span>
-                        )}
-                      </td>
-                      {files.length > 1 && (
-                        <td className="px-3 py-2 text-[10px] font-mono text-muted-foreground/50 max-w-[160px] truncate" title={room.sourceFile}>
-                          {room.sourceFile}
                         </td>
-                      )}
-                    </tr>
+                        <td className="px-3 py-2 text-xs font-mono text-foreground/80 max-w-[200px] truncate" title={room.roomName}>
+                          {room.roomName}
+                        </td>
+                        <td className="px-3 py-2 text-xs font-mono text-muted-foreground whitespace-nowrap">
+                          {room.level}
+                        </td>
+                        <td className="px-3 py-2">
+                          {flags.length > 0 ? (
+                            <div className="flex flex-wrap gap-0.5">
+                              {flags.map((f) => <RoomFlagChip key={f} label={f} />)}
+                            </div>
+                          ) : (
+                            <span className="text-[10px] text-muted-foreground/30 font-mono">none</span>
+                          )}
+                        </td>
+                        <td className="px-3 py-2">
+                          {!room.hasAssignmentData ? (
+                            <span className="text-[10px] text-muted-foreground/25 font-mono italic">re-run to populate</span>
+                          ) : badges.length > 0 ? (
+                            <div className="flex flex-wrap gap-0.5">
+                              {badges.map(({ label, qty }) => (
+                                <span key={label} className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded border text-[9px] font-mono bg-blue-500/10 text-blue-400 border-blue-500/25 whitespace-nowrap">
+                                  {qty > 1 ? `${qty}× ` : ""}{label}
+                                </span>
+                              ))}
+                              {room.assignment?.ambiguous && (
+                                <span className="inline-flex items-center px-1.5 py-0.5 rounded border text-[9px] font-mono bg-amber-500/10 text-amber-400 border-amber-500/20 whitespace-nowrap">
+                                  ?ambiguous
+                                </span>
+                              )}
+                            </div>
+                          ) : excluded.length > 0 ? (
+                            <span className="text-[10px] font-mono text-muted-foreground/50 italic" title={excluded.join("; ")}>
+                              excluded
+                            </span>
+                          ) : missing ? (
+                            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded border text-[9px] font-mono bg-amber-500/15 text-amber-400 border-amber-500/30 whitespace-nowrap">
+                              <AlertTriangle className="w-2.5 h-2.5 shrink-0" />
+                              no signs assigned
+                            </span>
+                          ) : (
+                            <span className="text-[10px] text-muted-foreground/30 font-mono">none assigned</span>
+                          )}
+                        </td>
+                        {files.length > 1 && (
+                          <td className="px-3 py-2 text-[10px] font-mono text-muted-foreground/50 max-w-[160px] truncate" title={room.sourceFile}>
+                            {room.sourceFile}
+                          </td>
+                        )}
+                      </tr>
+                    );
+                  }
+
+                  // Group row
+                  const { gkey, rooms: groupRooms } = item;
+                  const expanded = expandedGroups.has(gkey);
+                  const anyMissing = groupRooms.some(isMissingSignsRoom);
+                  const representRoom = groupRooms[0];
+                  const groupFlags = roomFlags(representRoom);
+                  return (
+                    <Fragment key={`group-${gkey}`}>
+                      {/* Collapsed group header row */}
+                      <tr
+                        className={`border-b border-border/20 hover:bg-secondary/20 transition-colors cursor-pointer ${anyMissing ? "bg-amber-500/5" : item.rowIdx % 2 === 0 ? "" : "bg-card/30"}`}
+                        onClick={() => toggleGroup(gkey)}
+                      >
+                        <td className="px-3 py-2 text-xs font-mono text-muted-foreground whitespace-nowrap">
+                          <div className="flex items-center gap-1">
+                            {anyMissing && <AlertTriangle className="w-3 h-3 text-amber-400 shrink-0" title="Some instances may be missing signs" />}
+                            <span className="text-muted-foreground/30">—</span>
+                          </div>
+                        </td>
+                        <td className="px-3 py-2 text-xs font-mono text-foreground/80 max-w-[200px]">
+                          <div className="flex items-center gap-1.5">
+                            <span className="truncate" title={representRoom.roomName}>{representRoom.roomName}</span>
+                            <span className="inline-flex items-center px-1.5 py-0.5 rounded border text-[9px] font-mono bg-emerald-500/15 text-emerald-400 border-emerald-500/30 whitespace-nowrap shrink-0">
+                              ×{groupRooms.length}
+                            </span>
+                            <span className="text-muted-foreground/40 text-[10px] shrink-0">
+                              {expanded ? "▾" : "▸"}
+                            </span>
+                          </div>
+                        </td>
+                        <td className="px-3 py-2 text-xs font-mono text-muted-foreground whitespace-nowrap">
+                          {representRoom.level}
+                        </td>
+                        <td className="px-3 py-2">
+                          {groupFlags.length > 0 ? (
+                            <div className="flex flex-wrap gap-0.5">
+                              {groupFlags.map((f) => <RoomFlagChip key={f} label={f} />)}
+                            </div>
+                          ) : (
+                            <span className="text-[10px] text-muted-foreground/30 font-mono">none</span>
+                          )}
+                        </td>
+                        <td className="px-3 py-2">
+                          <span className="text-[10px] text-muted-foreground/50 font-mono italic">
+                            {expanded ? "collapse to hide instances" : `expand to see ${groupRooms.length} instances`}
+                          </span>
+                        </td>
+                        {files.length > 1 && (
+                          <td className="px-3 py-2 text-[10px] font-mono text-muted-foreground/50 max-w-[160px] truncate" title={representRoom.sourceFile}>
+                            {representRoom.sourceFile}
+                          </td>
+                        )}
+                      </tr>
+                      {/* Expanded sub-rows */}
+                      {expanded && groupRooms.map((room, subIdx) => {
+                        const flags = roomFlags(room);
+                        const badges = room.assignment ? assignmentSignBadges(room.assignment) : [];
+                        const excluded = room.assignment?.exclusionReasons ?? [];
+                        const missing = isMissingSignsRoom(room);
+                        return (
+                          <tr
+                            key={`sub-${gkey}-${subIdx}`}
+                            className={`border-b border-border/20 last:border-0 hover:bg-secondary/20 transition-colors ${missing ? "bg-amber-500/5" : "bg-card/50"}`}
+                          >
+                            <td className="px-3 py-2 text-xs font-mono text-muted-foreground whitespace-nowrap">
+                              <div className="flex items-center gap-1 pl-3">
+                                {missing && <AlertTriangle className="w-3 h-3 text-amber-400 shrink-0" title="No signs assigned" />}
+                                <span className="text-muted-foreground/30">—</span>
+                              </div>
+                            </td>
+                            <td className="px-3 py-2 text-xs font-mono text-foreground/70 max-w-[200px]">
+                              <div className="flex items-center gap-1.5 pl-3">
+                                <span className="truncate" title={room.roomName}>{room.roomName}</span>
+                                <span className="text-[9px] font-mono text-muted-foreground/50 shrink-0 whitespace-nowrap">
+                                  {subIdx + 1} of {groupRooms.length}
+                                </span>
+                              </div>
+                            </td>
+                            <td className="px-3 py-2 text-xs font-mono text-muted-foreground whitespace-nowrap">
+                              {room.level}
+                            </td>
+                            <td className="px-3 py-2">
+                              {flags.length > 0 ? (
+                                <div className="flex flex-wrap gap-0.5">
+                                  {flags.map((f) => <RoomFlagChip key={f} label={f} />)}
+                                </div>
+                              ) : (
+                                <span className="text-[10px] text-muted-foreground/30 font-mono">none</span>
+                              )}
+                            </td>
+                            <td className="px-3 py-2">
+                              {!room.hasAssignmentData ? (
+                                <span className="text-[10px] text-muted-foreground/25 font-mono italic">re-run to populate</span>
+                              ) : badges.length > 0 ? (
+                                <div className="flex flex-wrap gap-0.5">
+                                  {badges.map(({ label, qty }) => (
+                                    <span key={label} className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded border text-[9px] font-mono bg-blue-500/10 text-blue-400 border-blue-500/25 whitespace-nowrap">
+                                      {qty > 1 ? `${qty}× ` : ""}{label}
+                                    </span>
+                                  ))}
+                                  {room.assignment?.ambiguous && (
+                                    <span className="inline-flex items-center px-1.5 py-0.5 rounded border text-[9px] font-mono bg-amber-500/10 text-amber-400 border-amber-500/20 whitespace-nowrap">
+                                      ?ambiguous
+                                    </span>
+                                  )}
+                                </div>
+                              ) : excluded.length > 0 ? (
+                                <span className="text-[10px] font-mono text-muted-foreground/50 italic" title={excluded.join("; ")}>
+                                  excluded
+                                </span>
+                              ) : missing ? (
+                                <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded border text-[9px] font-mono bg-amber-500/15 text-amber-400 border-amber-500/30 whitespace-nowrap">
+                                  <AlertTriangle className="w-2.5 h-2.5 shrink-0" />
+                                  no signs assigned
+                                </span>
+                              ) : (
+                                <span className="text-[10px] text-muted-foreground/30 font-mono">none assigned</span>
+                              )}
+                            </td>
+                            {files.length > 1 && (
+                              <td className="px-3 py-2 text-[10px] font-mono text-muted-foreground/50 max-w-[160px] truncate" title={room.sourceFile}>
+                                {room.sourceFile}
+                              </td>
+                            )}
+                          </tr>
+                        );
+                      })}
+                    </Fragment>
                   );
                 })}
               </tbody>
