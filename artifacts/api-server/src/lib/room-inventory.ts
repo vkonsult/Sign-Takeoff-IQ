@@ -598,6 +598,17 @@ const CROP_PADDING_FACTOR = 3.0;
 const CROP_MIN_PX = 64;
 
 /**
+ * Maximum number of inline room-image crops sent in a single Gemini request.
+ * Large drawings can have dozens of ambiguous rooms; exceeding Gemini's
+ * per-request input limits causes the entire call to fail. Rooms beyond this
+ * cap are still classified but without a visual crop (text-only context).
+ *
+ * Priority when trimming: rooms with names shorter than 4 characters are kept
+ * first (they benefit most from visual context), then by ascending name length.
+ */
+const MAX_VISUAL_CROPS = 20;
+
+/**
  * Crops the bounding-box region from an already-rendered page PNG.
  * Returns null on any failure so callers can fall back to text-only.
  *
@@ -726,9 +737,36 @@ export async function enrichAmbiguousRoomsWithAI(
         }
         const b64 = await cropRoomRegion(imagePath, room.boundingBox);
         crops.set(pos, b64);
-        if (b64) anyVisual = true;
       }),
     );
+
+    // ── Cap visual crops to MAX_VISUAL_CROPS ────────────────────────────────
+    // Count positions that have a real crop, then evict lower-priority ones
+    // if we would exceed the limit. Priority: shorter names first (< 4 chars
+    // benefit most from visual context), then ascending name length.
+    const positionsWithCrop = candidates
+      .map((c, pos) => ({ pos, nameLen: c.roomName.replace(/\s+/g, "").length }))
+      .filter(({ pos }) => crops.get(pos) != null);
+
+    if (positionsWithCrop.length > MAX_VISUAL_CROPS) {
+      logger.warn(
+        { fileId, jobId, total: positionsWithCrop.length, cap: MAX_VISUAL_CROPS },
+        "[RoomInventory] Visual crop count exceeds cap — dropping lowest-priority crops",
+      );
+
+      // Sort ascending: shortest names (most ambiguous) get highest priority
+      positionsWithCrop.sort((a, b) => a.nameLen - b.nameLen);
+
+      // Zero out crops for positions beyond the cap
+      for (const { pos } of positionsWithCrop.slice(MAX_VISUAL_CROPS)) {
+        crops.set(pos, null);
+      }
+    }
+
+    // Determine whether any crops survived the cap
+    for (const [, b64] of crops) {
+      if (b64) { anyVisual = true; break; }
+    }
   }
 
   // ── Build the Gemini prompt ───────────────────────────────────────────────
