@@ -229,7 +229,8 @@ export async function runPdfProcessor(jobId: string): Promise<void> {
             lifeSafety: lifeSafetyPages.length,
             isExcerpt: manifest.isExcerpt,
             source: manifest.entries[0]?.source ?? "none",
-          }
+          },
+          "phase-2",
         );
 
         // ── Raw text extraction (no AI) ───────────────────────────────────
@@ -252,7 +253,8 @@ export async function runPdfProcessor(jobId: string): Promise<void> {
         recordStep(`text_extraction_${file.id}`,
           filesToProcess.length > 1 ? `Text extraction — ${file.originalName}` : "Text extraction",
           t_text,
-          { pages: numPages }
+          { pages: numPages },
+          "phase-3",
         );
 
         // ── PNG pre-render for floor plan pages ───────────────────────────
@@ -496,7 +498,7 @@ export async function runPdfProcessor(jobId: string): Promise<void> {
     fileCount: filesToProcess.length,
     succeeded: parsedResults.filter((r) => !("error" in r)).length,
     failed: parsedResults.filter((r) => "error" in r).length,
-  });
+  }, "phase-3");
 
   // ── Persist schedule parser results (sign_type_specs + signage_schedule_entries) ──
   // Always clear previous schedule rows first (re-run support, prevents stale data
@@ -590,6 +592,10 @@ export async function runPdfProcessor(jobId: string): Promise<void> {
         { jobId, specs: allScheduleSpecs.length, entries: allScheduleEntries.length, durationMs: Date.now() - t_schedule_persist },
         "[PDF Processor] Schedule data persisted"
       );
+      recordStep("schedule_persist", "Schedule data persistence", t_schedule_persist, {
+        specs: allScheduleSpecs.length,
+        entries: allScheduleEntries.length,
+      }, "phase-3");
 
     } catch (err) {
       logger.warn({ err, jobId }, "[PDF Processor] Schedule data persistence failed — non-fatal");
@@ -626,6 +632,7 @@ export async function runPdfProcessor(jobId: string): Promise<void> {
             : "Sign schedule extraction",
           durationMs: Date.now() - t_extract,
           startedAt: new Date(t_extract).toISOString(),
+          phase: "phase-3",
           details: {
             pages: schedulePageNums.length,
             plaqueTypes: extractResult.plaqueTypes.length,
@@ -653,6 +660,7 @@ export async function runPdfProcessor(jobId: string): Promise<void> {
             : "Sign schedule extraction",
           durationMs: Date.now() - t_extract,
           startedAt: new Date(t_extract).toISOString(),
+          phase: "phase-3",
           details: { error: String(err), pages: schedulePageNums.length },
         });
       }
@@ -765,7 +773,7 @@ export async function runPdfProcessor(jobId: string): Promise<void> {
     recordStep("word_match", "Coordinate matching (preserved signs)", t_wordmatch, {
       totalPreserved: preservedSigns.length,
       matched: updatedSigns.length,
-    });
+    }, "phase-4");
   }
 
   // ── Finalize ──────────────────────────────────────────────────────────────
@@ -774,7 +782,7 @@ export async function runPdfProcessor(jobId: string): Promise<void> {
   const failedCount = parsedResults.filter((r) => "error" in r).length;
   const allFailed = failedCount === files.length;
 
-  recordStep("total", "Total pipeline", jobStart);
+  recordStep("total", "Total pipeline", jobStart, undefined, "phase-4");
 
   if (allFailed) {
     const errorSummary = parsedResults
