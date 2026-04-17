@@ -19,6 +19,7 @@ import {
   Bot,
   ChevronDown,
   ChevronUp,
+  BarChart2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
@@ -148,6 +149,14 @@ const AI_CALL_TYPES = [
   "sign_schedule_enrich",
 ] as const;
 
+interface PageTokenRow {
+  pageNumber: number | null;
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  callCount: number;
+}
+
 function AiCallsTab({ isAdmin, isSuperAdmin }: { isAdmin: boolean; isSuperAdmin: boolean }) {
   const [offset, setOffset] = useState(0);
   const [selectedJobId, setSelectedJobId] = useState("");
@@ -156,6 +165,7 @@ function AiCallsTab({ isAdmin, isSuperAdmin }: { isAdmin: boolean; isSuperAdmin:
   const [filterTo, setFilterTo] = useState("");
   const [promptSearch, setPromptSearch] = useState("");
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
+  const [pageBreakdownOpen, setPageBreakdownOpen] = useState(false);
 
   const { data: jobsData } = useQuery({
     queryKey: ["jobs-for-ai-filter"],
@@ -195,6 +205,18 @@ function AiCallsTab({ isAdmin, isSuperAdmin }: { isAdmin: boolean; isSuperAdmin:
     },
     staleTime: 30_000,
   });
+
+  const { data: pageSummaryData } = useQuery({
+    queryKey: ["ai-calls-page-summary", selectedJobId],
+    queryFn: async () => {
+      const res = await apiFetch(`/api/activity/ai-calls/page-summary?jobId=${selectedJobId}`);
+      if (!res.ok) return { pages: [] as PageTokenRow[] };
+      return res.json() as Promise<{ pages: PageTokenRow[] }>;
+    },
+    staleTime: 60_000,
+    enabled: !!selectedJobId,
+  });
+  const pageSummary = pageSummaryData?.pages ?? [];
 
   const aiCalls = data?.aiCalls ?? [];
   const totals = data?.totals ?? null;
@@ -312,6 +334,81 @@ function AiCallsTab({ isAdmin, isSuperAdmin }: { isAdmin: boolean; isSuperAdmin:
           </Button>
         )}
       </div>
+
+      {selectedJobId && pageSummary.length === 0 && !isLoading && (
+        <p className="text-[11px] text-muted-foreground/60 px-1">
+          No floor_plan_text or bbox_detection calls with page numbers found for this job.
+        </p>
+      )}
+
+      {selectedJobId && pageSummary.length > 0 && (() => {
+        const maxTokens = pageSummary[0]?.totalTokens ?? 1;
+        return (
+          <div className="rounded-xl border border-border bg-card shadow-sm">
+            <button
+              onClick={() => setPageBreakdownOpen((v) => !v)}
+              className="w-full flex items-center gap-2 px-4 py-3 text-left hover:bg-secondary/30 transition-colors rounded-xl"
+            >
+              {pageBreakdownOpen ? (
+                <ChevronUp className="w-3.5 h-3.5 text-muted-foreground flex-shrink-0" />
+              ) : (
+                <ChevronDown className="w-3.5 h-3.5 text-muted-foreground flex-shrink-0" />
+              )}
+              <BarChart2 className="w-3.5 h-3.5 text-violet-400 flex-shrink-0" />
+              <span className="text-xs font-medium text-foreground">Token Cost by Page</span>
+              <span className="ml-1 text-[10px] text-muted-foreground">(floor_plan_text + bbox_detection)</span>
+              <span className="ml-auto text-[10px] text-muted-foreground">
+                {pageSummary.length} page{pageSummary.length !== 1 ? "s" : ""}
+              </span>
+            </button>
+            {pageBreakdownOpen && (
+              <div className="px-4 pb-4 border-t border-border pt-3 space-y-1.5">
+                <div className="grid grid-cols-[auto_1fr_auto_auto_auto] gap-x-4 text-[10px] font-medium text-muted-foreground uppercase tracking-wide mb-2 px-1">
+                  <span>Page</span>
+                  <span>Usage</span>
+                  <span className="text-right">In</span>
+                  <span className="text-right">Out</span>
+                  <span className="text-right">Total</span>
+                </div>
+                {pageSummary.map((row, i) => {
+                  const pct = maxTokens > 0 ? Math.max(2, Math.round((row.totalTokens / maxTokens) * 100)) : 2;
+                  const isTop = i === 0;
+                  return (
+                    <div
+                      key={row.pageNumber ?? "unknown"}
+                      className={`grid grid-cols-[auto_1fr_auto_auto_auto] items-center gap-x-4 px-1 py-1 rounded ${isTop ? "bg-violet-500/8" : ""}`}
+                    >
+                      <span className={`font-mono text-[10px] w-8 text-right flex-shrink-0 ${isTop ? "text-violet-400 font-semibold" : "text-muted-foreground"}`}>
+                        p{row.pageNumber ?? "?"}
+                      </span>
+                      <div className="flex items-center min-w-0">
+                        <div className="w-full h-1.5 rounded-full bg-secondary overflow-hidden">
+                          <div
+                            className={`h-full rounded-full ${isTop ? "bg-violet-500" : "bg-violet-500/40"}`}
+                            style={{ width: `${pct}%` }}
+                          />
+                        </div>
+                      </div>
+                      <span className="text-right text-muted-foreground font-mono text-[10px]">
+                        {row.inputTokens.toLocaleString()}
+                      </span>
+                      <span className="text-right text-muted-foreground font-mono text-[10px]">
+                        {row.outputTokens.toLocaleString()}
+                      </span>
+                      <span className={`text-right font-mono text-[10px] font-medium ${isTop ? "text-violet-400" : "text-foreground"}`}>
+                        {row.totalTokens.toLocaleString()}
+                      </span>
+                    </div>
+                  );
+                })}
+                <p className="mt-2 text-[10px] text-muted-foreground/60 px-1">
+                  Sorted by total tokens (input + output). Only floor_plan_text and bbox_detection calls with a page number are included.
+                </p>
+              </div>
+            )}
+          </div>
+        );
+      })()}
 
       <div className="bg-card rounded-xl border border-border overflow-hidden shadow-lg">
         <div className="grid grid-cols-[160px_1fr_160px_120px_100px_140px_36px] gap-2 px-4 py-3 border-b border-border bg-secondary/50 text-xs font-display font-semibold uppercase tracking-wider text-muted-foreground">

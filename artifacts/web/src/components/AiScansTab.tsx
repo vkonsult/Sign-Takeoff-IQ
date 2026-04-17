@@ -1,6 +1,7 @@
 import { useState, useCallback, useEffect } from "react";
 import { apiFetch } from "@/lib/apiClient";
-import { Brain, Play, Loader2, CheckCircle2, AlertTriangle, Info, Cpu, Eye, EyeOff, ChevronDown, ChevronRight } from "lucide-react";
+import { useUserRole } from "@/hooks/use-user-role";
+import { Brain, Play, Loader2, CheckCircle2, AlertTriangle, Info, Cpu, Eye, EyeOff, ChevronDown, ChevronRight, BarChart2 } from "lucide-react";
 
 export interface AiCallDescriptor {
   type: string;
@@ -42,6 +43,9 @@ export function AiScansTab({
   onToggleAiHighlight: () => void;
   onScansComplete: () => void;
 }) {
+  const { isAdmin, isSuperAdmin } = useUserRole();
+  const canViewPageCost = isAdmin || isSuperAdmin;
+
   const [callRegistry, setCallRegistry] = useState<AiCallDescriptor[]>([]);
   const [registryLoading, setRegistryLoading] = useState(true);
   const [registryError, setRegistryError] = useState<string | null>(null);
@@ -50,6 +54,34 @@ export function AiScansTab({
   const [runAllState, setRunAllState] = useState<"idle" | "running" | "done">("idle");
   const [selectedTypes, setSelectedTypes] = useState<Set<string>>(new Set());
   const [expandedPrompts, setExpandedPrompts] = useState<Set<string>>(new Set());
+
+  interface PageTokenRow {
+    pageNumber: number | null;
+    inputTokens: number;
+    outputTokens: number;
+    totalTokens: number;
+    callCount: number;
+  }
+  const [pageSummary, setPageSummary] = useState<PageTokenRow[]>([]);
+  const [pageSummaryLoading, setPageSummaryLoading] = useState(true);
+  const [pageBreakdownOpen, setPageBreakdownOpen] = useState(false);
+
+  useEffect(() => {
+    if (!canViewPageCost) {
+      setPageSummaryLoading(false);
+      return;
+    }
+    setPageSummaryLoading(true);
+    apiFetch(`/api/activity/ai-calls/page-summary?jobId=${jobId}`)
+      .then((res) => res.json())
+      .then((data: { pages: PageTokenRow[] }) => {
+        setPageSummary(data.pages ?? []);
+      })
+      .catch(() => {
+        setPageSummary([]);
+      })
+      .finally(() => setPageSummaryLoading(false));
+  }, [jobId, canViewPageCost]);
 
   useEffect(() => {
     setRegistryLoading(true);
@@ -327,6 +359,79 @@ export function AiScansTab({
           })}
         </div>
       )}
+
+      {/* Page Token Breakdown */}
+      {!pageSummaryLoading && pageSummary.length > 0 && (() => {
+        const maxTokens = pageSummary[0]?.totalTokens ?? 1;
+        return (
+          <div className="rounded-lg border border-border bg-card">
+            <button
+              onClick={() => setPageBreakdownOpen((v) => !v)}
+              className="w-full flex items-center gap-2 px-4 py-3 text-left hover:bg-secondary/30 transition-colors rounded-lg"
+            >
+              {pageBreakdownOpen ? (
+                <ChevronDown className="w-3.5 h-3.5 text-muted-foreground flex-shrink-0" />
+              ) : (
+                <ChevronRight className="w-3.5 h-3.5 text-muted-foreground flex-shrink-0" />
+              )}
+              <BarChart2 className="w-3.5 h-3.5 text-violet-400 flex-shrink-0" />
+              <span className="text-xs font-medium text-foreground">
+                Token Cost by Page
+              </span>
+              <span className="ml-auto text-[10px] text-muted-foreground">
+                {pageSummary.length} page{pageSummary.length !== 1 ? "s" : ""} · floor_plan_text + bbox_detection
+              </span>
+            </button>
+            {pageBreakdownOpen && (
+              <div className="px-4 pb-4 space-y-1.5 border-t border-border pt-3">
+                <div className="grid grid-cols-[auto_1fr_auto_auto_auto] gap-x-3 text-[10px] font-medium text-muted-foreground uppercase tracking-wide mb-2 px-1">
+                  <span>Page</span>
+                  <span>Usage</span>
+                  <span className="text-right">In</span>
+                  <span className="text-right">Out</span>
+                  <span className="text-right">Total</span>
+                </div>
+                {pageSummary.map((row, i) => {
+                  const pct = maxTokens > 0 ? Math.max(2, Math.round((row.totalTokens / maxTokens) * 100)) : 2;
+                  const isTop = i === 0;
+                  return (
+                    <div
+                      key={row.pageNumber ?? "unknown"}
+                      className={`grid grid-cols-[auto_1fr_auto_auto_auto] items-center gap-x-3 px-1 py-1 rounded text-[11px] ${
+                        isTop ? "bg-violet-500/8" : ""
+                      }`}
+                    >
+                      <span className={`font-mono text-[10px] w-8 text-right flex-shrink-0 ${isTop ? "text-violet-400 font-semibold" : "text-muted-foreground"}`}>
+                        p{row.pageNumber ?? "?"}
+                      </span>
+                      <div className="flex items-center min-w-0">
+                        <div className="w-full h-1.5 rounded-full bg-secondary overflow-hidden">
+                          <div
+                            className={`h-full rounded-full ${isTop ? "bg-violet-500" : "bg-violet-500/40"}`}
+                            style={{ width: `${pct}%` }}
+                          />
+                        </div>
+                      </div>
+                      <span className="text-right text-muted-foreground font-mono text-[10px]">
+                        {row.inputTokens.toLocaleString()}
+                      </span>
+                      <span className="text-right text-muted-foreground font-mono text-[10px]">
+                        {row.outputTokens.toLocaleString()}
+                      </span>
+                      <span className={`text-right font-mono text-[10px] font-medium ${isTop ? "text-violet-400" : "text-foreground"}`}>
+                        {row.totalTokens.toLocaleString()}
+                      </span>
+                    </div>
+                  );
+                })}
+                <p className="mt-2 text-[10px] text-muted-foreground/60 px-1">
+                  Sorted by total tokens (input + output). Only floor_plan_text and bbox_detection calls with a page number are counted.
+                </p>
+              </div>
+            )}
+          </div>
+        );
+      })()}
 
       {/* Legend */}
       <div className="space-y-2">

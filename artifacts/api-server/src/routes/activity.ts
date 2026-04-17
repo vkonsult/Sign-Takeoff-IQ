@@ -1,6 +1,6 @@
 import { Router, type IRouter } from "express";
 import { db, activityLogsTable, organizationsTable, aiCallLogsTable, jobsTable } from "@workspace/db";
-import { desc, eq, and, gte, lte, inArray, like, ilike, sql } from "drizzle-orm";
+import { desc, eq, and, gte, lte, inArray, like, ilike, isNotNull, sql } from "drizzle-orm";
 import { z } from "zod/v4";
 
 const router: IRouter = Router();
@@ -253,6 +253,73 @@ router.get("/activity/ai-calls", async (req, res) => {
   } catch (err) {
     req.log.error({ err }, "Failed to fetch AI call logs");
     res.status(500).json({ error: "Failed to fetch AI call logs" });
+  }
+});
+
+const PAGE_SUMMARY_CALL_TYPES = ["floor_plan_text", "bbox_detection"] as const;
+
+const PageSummaryQuerySchema = z.object({
+  jobId: z.string().uuid(),
+});
+
+// GET /activity/ai-calls/page-summary — per-page token totals for floor_plan_text + bbox_detection
+router.get("/activity/ai-calls/page-summary", async (req, res) => {
+  const user = req.authUser!;
+
+  const parsed = PageSummaryQuerySchema.safeParse(req.query);
+  if (!parsed.success) {
+    res.status(400).json({ error: "Invalid query params", details: parsed.error.issues });
+    return;
+  }
+
+  const { jobId } = parsed.data;
+
+  const isAdmin = ["ADMIN", "SUPER_ADMIN"].includes(user.role);
+  if (!isAdmin && !user.isSuperAdmin) {
+    res.status(403).json({ error: "Admin access required" });
+    return;
+  }
+
+  try {
+    // Verify org ownership if not super admin
+    if (!user.isSuperAdmin && user.organizationId) {
+      const job = await db
+        .select({ id: jobsTable.id })
+        .from(jobsTable)
+        .where(and(eq(jobsTable.id, jobId), eq(jobsTable.organizationId, user.organizationId)))
+        .limit(1);
+      if (job.length === 0) {
+        res.status(403).json({ error: "Job does not belong to your organization" });
+        return;
+      }
+    } else if (!user.isSuperAdmin) {
+      res.status(403).json({ error: "No organization context" });
+      return;
+    }
+
+    const rows = await db
+      .select({
+        pageNumber: aiCallLogsTable.pageNumber,
+        inputTokens: sql<number>`sum(${aiCallLogsTable.inputTokens})`.mapWith(Number),
+        outputTokens: sql<number>`sum(${aiCallLogsTable.outputTokens})`.mapWith(Number),
+        totalTokens: sql<number>`sum(${aiCallLogsTable.inputTokens} + ${aiCallLogsTable.outputTokens})`.mapWith(Number),
+        callCount: sql<number>`count(*)`.mapWith(Number),
+      })
+      .from(aiCallLogsTable)
+      .where(
+        and(
+          eq(aiCallLogsTable.jobId, jobId),
+          inArray(aiCallLogsTable.callType, [...PAGE_SUMMARY_CALL_TYPES]),
+          isNotNull(aiCallLogsTable.pageNumber)
+        )
+      )
+      .groupBy(aiCallLogsTable.pageNumber)
+      .orderBy(desc(sql`sum(${aiCallLogsTable.inputTokens} + ${aiCallLogsTable.outputTokens})`));
+
+    res.json({ pages: rows });
+  } catch (err) {
+    req.log.error({ err }, "Failed to fetch AI call page summary");
+    res.status(500).json({ error: "Failed to fetch AI call page summary" });
   }
 });
 
