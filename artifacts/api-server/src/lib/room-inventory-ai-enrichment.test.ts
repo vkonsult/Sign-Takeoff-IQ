@@ -235,6 +235,45 @@ describe("enrichAmbiguousRoomsWithAI — per-request image cap via batching", ()
   });
 });
 
+describe("enrichAmbiguousRoomsWithAI — unparseable Gemini response telemetry", () => {
+  beforeEach(() => {
+    vi.mocked(ai.models.generateContent).mockReset();
+    vi.mocked(renderFloorPlanPages).mockReset().mockResolvedValue(
+      new Map([[1, testPngPath]]),
+    );
+    vi.mocked(logger.warn).mockReset();
+  });
+
+  it("emits logger.warn with reason: 'no_json_array' when Gemini returns a response with no JSON array", async () => {
+    vi.mocked(ai.models.generateContent).mockResolvedValue({ text: "Sorry, I cannot help with that." });
+
+    const rooms: RoomRecord[] = [makeAmbiguousRoom("OFFICE")];
+
+    await enrichAmbiguousRoomsWithAI(rooms, "file-x", "job-x", "/fake/plan.pdf");
+
+    const warnCalls = vi.mocked(logger.warn).mock.calls as Array<[unknown, string]>;
+    const noJsonWarn = warnCalls.find(
+      ([fields, msg]) =>
+        typeof msg === "string" &&
+        msg.includes("no JSON array") &&
+        (fields as Record<string, unknown>).reason === "no_json_array",
+    );
+
+    expect(noJsonWarn).toBeDefined();
+  });
+
+  it("returns the original rooms unchanged when Gemini returns no JSON array", async () => {
+    vi.mocked(ai.models.generateContent).mockResolvedValue({ text: "No valid response here." });
+
+    const rooms: RoomRecord[] = [makeAmbiguousRoom("LOBBY")];
+
+    const { rooms: result } = await enrichAmbiguousRoomsWithAI(rooms, "file-y", "job-y", "/fake/plan.pdf");
+
+    expect(result[0]!.aiEnriched).toBe(false);
+    expect(result[0]!.roomName).toBe("LOBBY");
+  });
+});
+
 describe("enrichAmbiguousRoomsWithAI — batch progress logging", () => {
   beforeEach(() => {
     vi.mocked(ai.models.generateContent).mockReset().mockResolvedValue(EMPTY_GEMINI_RESPONSE);

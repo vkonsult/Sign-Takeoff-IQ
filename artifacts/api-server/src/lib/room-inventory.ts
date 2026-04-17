@@ -1021,7 +1021,7 @@ export async function enrichAmbiguousRoomsWithAI(
       const jsonMatch = text.match(/\[[\s\S]*\]/);
       if (!jsonMatch) {
         logger.warn(
-          { fileId, jobId, batch: batchIdx + 1, totalBatches: batches.length },
+          { fileId, jobId, batch: batchIdx + 1, totalBatches: batches.length, reason: "no_json_array" },
           "[RoomInventory] Gemini returned no JSON array for AI enrichment batch — skipping batch",
         );
         continue;
