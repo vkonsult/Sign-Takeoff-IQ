@@ -41,6 +41,28 @@ import { applySignRules, assignmentToRows, type PlaqueEntry, type RuleEngineResu
 import { verifyRuleEngineResult } from "./verifier";
 import { buildRoomInventory, enrichAmbiguousRoomsWithAI, type RoomInventory, type RoomRecord } from "./room-inventory";
 
+/**
+ * Clear all sign-type data that is re-derived on every rescan so a fresh run
+ * never inherits type codes or schedule rows from a prior run.
+ *
+ * Called at the very start of `runPdfProcessor` before any file processing
+ * begins.  Exported so unit tests can verify the reset behaviour in isolation.
+ */
+export async function resetScanData(jobId: string): Promise<void> {
+  await db
+    .update(jobsTable)
+    .set({ plaqueTable: null })
+    .where(eq(jobsTable.id, jobId));
+
+  await db
+    .delete(signTypeSpecsTable)
+    .where(eq(signTypeSpecsTable.jobId, jobId));
+
+  await db
+    .delete(signageScheduleEntriesTable)
+    .where(eq(signageScheduleEntriesTable.jobId, jobId));
+}
+
 export async function runPdfProcessor(jobId: string): Promise<void> {
   const pipelineSteps: ProcessingStep[] = [];
   const jobStart = Date.now();
@@ -106,12 +128,14 @@ export async function runPdfProcessor(jobId: string): Promise<void> {
     .set({ pageStats: null, pageCount: null, roomInventory: null })
     .where(eq(jobFilesTable.jobId, jobId));
 
-  // plaqueTable must be reset to null here so each rescan starts from a clean
-  // slate — leaving it unset would cause stale type codes from a previous run
-  // to persist additively when the new scan returns fewer or different types.
+  // plaqueTable, signTypeSpecs, and signageScheduleEntries must all be cleared
+  // before processing begins so a rescan never inherits stale type codes from a
+  // prior run.  The dedicated helper is exported and unit-tested independently.
+  await resetScanData(jobId);
+
   await db
     .update(jobsTable)
-    .set({ status: "processing", plaqueTable: null, updatedAt: new Date() })
+    .set({ status: "processing", updatedAt: new Date() })
     .where(eq(jobsTable.id, jobId));
 
   const files = await db
