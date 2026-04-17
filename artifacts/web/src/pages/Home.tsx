@@ -6,7 +6,6 @@ import { UploadCloud, FileText, X, AlertCircle, Loader2 } from "lucide-react";
 import { AppShell } from "@/components/layout/Shell";
 import { useUploadJobFiles } from "@/hooks/use-takeoff";
 import { formatBytes } from "@/lib/utils";
-import { logger } from "@/lib/logger";
 import { motion, AnimatePresence } from "framer-motion";
 import { Button } from "@/components/ui/button";
 

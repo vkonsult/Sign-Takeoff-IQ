@@ -888,35 +888,6 @@ export default function JobDetails() {
     });
   };
 
-  const handleTabListKeyDown = useCallback((e: React.KeyboardEvent<HTMLDivElement>) => {
-    const tablist = e.currentTarget;
-    const tabs = Array.from(tablist.querySelectorAll<HTMLButtonElement>('[role="tab"]'));
-    if (tabs.length === 0) return;
-    const focused = tabs.findIndex((t) => t === document.activeElement);
-    if (focused === -1) return;
-    let next: number;
-    if (e.key === "ArrowRight") {
-      e.preventDefault();
-      next = (focused + 1) % tabs.length;
-    } else if (e.key === "ArrowLeft") {
-      e.preventDefault();
-      next = (focused - 1 + tabs.length) % tabs.length;
-    } else if (e.key === "Home") {
-      e.preventDefault();
-      next = 0;
-    } else if (e.key === "End") {
-      e.preventDefault();
-      next = tabs.length - 1;
-    } else if (e.key === "Enter" || e.key === " ") {
-      e.preventDefault();
-      tabs[focused].click();
-      return;
-    } else {
-      return;
-    }
-    tabs[next].focus();
-  }, []);
-
   if (isLoading && !data) {
     return (
       <AppShell>

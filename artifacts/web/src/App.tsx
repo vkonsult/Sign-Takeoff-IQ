@@ -22,7 +22,6 @@ import OnboardingPage from "@/pages/OnboardingPage";
 import SettingsCompany from "@/pages/SettingsCompany";
 import SettingsUsers from "@/pages/SettingsUsers";
 import ActivityPage from "@/pages/ActivityPage";
-import { ErrorBoundary } from "@/components/ErrorBoundary";
 
 const clerkPubKey = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY as string;
 const clerkProxyUrl = import.meta.env.VITE_CLERK_PROXY_URL as string | undefined;
