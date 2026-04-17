@@ -22,7 +22,7 @@ import {
 } from "lucide-react";
 pdfjs.GlobalWorkerOptions.workerSrc = `${import.meta.env.BASE_URL}pdf.worker.min.mjs`;
 
-function CropThumbnail({ src, alt }: { src: string; alt: string }) {
+function CropThumbnail({ src, alt, onClick }: { src: string; alt: string; onClick?: () => void }) {
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState(false);
   const [retryCount, setRetryCount] = useState(0);
@@ -54,7 +54,12 @@ function CropThumbnail({ src, alt }: { src: string; alt: string }) {
   }
 
   return (
-    <div className="mb-2 rounded overflow-hidden border border-border/60 bg-white relative h-24">
+    <button
+      type="button"
+      onClick={onClick}
+      title={onClick ? "Click to enlarge" : undefined}
+      className={`mb-2 w-full rounded overflow-hidden border border-border/60 bg-white relative h-24 block ${onClick ? "cursor-zoom-in hover:border-accent/50" : "cursor-default"} transition-colors`}
+    >
       {!loaded && (
         <div className="absolute inset-0 bg-secondary/40 animate-pulse" />
       )}
@@ -66,7 +71,7 @@ function CropThumbnail({ src, alt }: { src: string; alt: string }) {
         onError={() => setError(true)}
         className={`w-full h-full object-contain transition-opacity duration-300 ${loaded ? "opacity-100" : "opacity-0"}`}
       />
-    </div>
+    </button>
   );
 }
 
@@ -132,6 +137,10 @@ export function SignSpecModal({ jobId, fileId, fileName, specPages, plaqueTable,
   const [specs, setSpecs] = useState<SignTypeSpec[]>([]);
   const [specsLoading, setSpecsLoading] = useState(false);
   const [activeSpecId, setActiveSpecId] = useState<string | null>(null);
+  const [lightboxUrl, setLightboxUrl] = useState<string | null>(null);
+
+  const lightboxUrlRef = useRef<string | null>(null);
+  useEffect(() => { lightboxUrlRef.current = lightboxUrl; }, [lightboxUrl]);
 
   const activeSpecRowRefs = useRef<Map<string, HTMLDivElement>>(new Map());
 
@@ -177,7 +186,13 @@ export function SignSpecModal({ jobId, fileId, fileName, specPages, plaqueTable,
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+      if (e.key === "Escape") {
+        if (lightboxUrlRef.current) {
+          setLightboxUrl(null);
+        } else {
+          onClose();
+        }
+      }
       if (e.key === "ArrowLeft") setSpecIdx((i) => Math.max(0, i - 1));
       if (e.key === "ArrowRight") setSpecIdx((i) => Math.min(totalSpec - 1, i + 1));
     };
@@ -260,7 +275,7 @@ export function SignSpecModal({ jobId, fileId, fileName, specPages, plaqueTable,
       style={{ background: "rgba(0,0,0,0.85)" }}
       onClick={(e) => e.target === e.currentTarget && onClose()}
     >
-      <div className="flex flex-col w-full h-full max-w-6xl mx-auto">
+      <div className="relative flex flex-col w-full h-full max-w-6xl mx-auto">
         {/* Header */}
         <div className="flex-none flex items-center justify-between px-4 py-3 bg-background border-b border-border">
           <div className="flex items-center gap-3 min-w-0">
@@ -524,10 +539,13 @@ export function SignSpecModal({ jobId, fileId, fileName, specPages, plaqueTable,
 
                       {/* Crop image thumbnail */}
                       {spec.hasDrawing && spec.cropImageUrl ? (
-                        <CropThumbnail
-                          src={`${import.meta.env.BASE_URL}${spec.cropImageUrl.replace(/^\//, "")}`}
-                          alt={`Drawing for ${spec.typeCode}`}
-                        />
+                        <div onClick={(e) => e.stopPropagation()}>
+                          <CropThumbnail
+                            src={`${import.meta.env.BASE_URL}${spec.cropImageUrl.replace(/^\//, "")}`}
+                            alt={`Drawing for ${spec.typeCode}`}
+                            onClick={() => setLightboxUrl(`${import.meta.env.BASE_URL}${spec.cropImageUrl!.replace(/^\//, "")}`)}
+                          />
+                        </div>
                       ) : (
                         <div className="mb-2 flex items-center justify-center gap-1.5 rounded border border-dashed border-border/50 bg-secondary/20 py-2.5">
                           <ImageOff className="w-3.5 h-3.5 text-muted-foreground/40" />
@@ -591,6 +609,29 @@ export function SignSpecModal({ jobId, fileId, fileName, specPages, plaqueTable,
             Sign schedules and specs are shown here for reference only. All sign quantities are derived from floor plan analysis.
           </p>
         </div>
+
+        {/* Lightbox overlay */}
+        {lightboxUrl && (
+          <div
+            className="absolute inset-0 z-50 flex items-center justify-center bg-black/80"
+            onClick={() => setLightboxUrl(null)}
+          >
+            <button
+              type="button"
+              onClick={() => setLightboxUrl(null)}
+              className="absolute top-3 right-3 p-1.5 rounded-full bg-background/20 text-white hover:bg-background/40 transition-colors"
+              aria-label="Close"
+            >
+              <X className="w-5 h-5" />
+            </button>
+            <img
+              src={lightboxUrl}
+              alt="Full drawing"
+              className="max-w-[90%] max-h-[85%] object-contain rounded shadow-2xl"
+              onClick={(e) => e.stopPropagation()}
+            />
+          </div>
+        )}
       </div>
     </div>
   );
