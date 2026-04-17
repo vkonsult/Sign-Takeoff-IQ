@@ -1,13 +1,59 @@
 /**
  * rule-engine.test.ts — Unit tests for Phase 5: R1–R15 rule engine
  *
- * Tests the two independently testable exports:
+ * Tests the three independently testable exports:
  *   - classifyRoom()   — boolean flags derived from room name + level
+ *   - applySignRules() — full rule engine (R1–R14) on a Phase 4 RoomInventory
  *   - assignmentToRows() — maps SignAssignment → extractedSignsTable rows
  */
 
 import { describe, it, expect } from "vitest";
-import { classifyRoom, assignmentToRows, type SignAssignment } from "./rule-engine";
+import {
+  classifyRoom,
+  assignmentToRows,
+  applySignRules,
+  type SignAssignment,
+  type PlaqueEntry,
+} from "./rule-engine";
+import type { RoomInventory as Phase4RoomInventory, RoomRecord as Phase4RoomRecord } from "./room-inventory";
+
+// ── Phase 4 fixture helpers ───────────────────────────────────────────────────
+
+function makeRoom(overrides: Partial<Phase4RoomRecord> & { roomName: string }): Phase4RoomRecord {
+  return {
+    roomNumber: null,
+    roomName: overrides.roomName,
+    level: "L1",
+    pdfPage: 1,
+    occupantLoad: null,
+    occupancyGroup: null,
+    isRestroom: false,
+    isStair: false,
+    isElevator: false,
+    isVestibule: false,
+    isCorridorOrHall: false,
+    isVehicleBay: false,
+    isMepUnoccupied: false,
+    isVariableUse: false,
+    isPublicFacing: false,
+    isStaffOnly: false,
+    isAssembly: false,
+    boundingBox: null,
+    extractionConfidence: 1,
+    ...overrides,
+  };
+}
+
+function makeInventory(rooms: Phase4RoomRecord[]): Phase4RoomInventory {
+  return {
+    rooms,
+    occupantLoadTableFound: false,
+    occupantLoadSource: "none",
+    occupantLoadRoomsMatched: 0,
+    warnings: [],
+    sourcePages: [],
+  };
+}
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -305,5 +351,348 @@ describe("assignmentToRows — rawJson traceability", () => {
     expect(raw.appliedRules).toEqual(["R1"]);
     expect(raw.level).toBe("L2");
     expect(raw.ambiguous).toBe(false);
+  });
+});
+
+// ── applySignRules — full rule engine integration tests ───────────────────────
+
+describe("applySignRules — R1: regular occupied room gets Room ID sign", () => {
+  it("an ordinary office room gets roomId=1 via R1", () => {
+    const inv = makeInventory([makeRoom({ roomName: "OFFICE", roomNumber: "101" })]);
+    const result = applySignRules(inv, [], "job-1");
+    expect(result.assignments).toHaveLength(1);
+    const a = result.assignments[0]!;
+    expect(a.roomId).toBe(1);
+    expect(a.appliedRules).toContain("R1");
+    expect(a.roomIdWithInsert).toBeNull();
+  });
+
+  it("MEP room is excluded and gets no Room ID sign", () => {
+    const inv = makeInventory([makeRoom({ roomName: "MECHANICAL ROOM", isMepUnoccupied: true })]);
+    const result = applySignRules(inv, [], "job-2");
+    const a = result.assignments[0]!;
+    expect(a.roomId).toBeNull();
+    expect(a.appliedRules).not.toContain("R1");
+  });
+});
+
+describe("applySignRules — R2: variable-use room gets Room ID w/ Insert", () => {
+  it("CONFERENCE ROOM gets roomIdWithInsert=1 and ambiguous flag", () => {
+    const inv = makeInventory([makeRoom({ roomName: "CONFERENCE ROOM", isVariableUse: true })]);
+    const result = applySignRules(inv, [], "job-3");
+    const a = result.assignments[0]!;
+    expect(a.roomIdWithInsert).toBe(1);
+    expect(a.roomId).toBe(0);
+    expect(a.appliedRules).toContain("R2");
+    expect(a.ambiguous).toBe(true);
+  });
+
+  it("TRAINING ROOM (name-derived variable use) also triggers R2", () => {
+    const inv = makeInventory([makeRoom({ roomName: "TRAINING ROOM" })]);
+    const result = applySignRules(inv, [], "job-4");
+    const a = result.assignments[0]!;
+    expect(a.roomIdWithInsert).toBe(1);
+    expect(a.appliedRules).toContain("R2");
+  });
+});
+
+describe("applySignRules — R4: corridor exclusion", () => {
+  it("CORRIDOR gets roomId=0 and exclusion reason, no other signs", () => {
+    const inv = makeInventory([makeRoom({ roomName: "CORRIDOR", isCorridorOrHall: true })]);
+    const result = applySignRules(inv, [], "job-5");
+    const a = result.assignments[0]!;
+    expect(a.roomId).toBe(0);
+    expect(a.exclusionReasons.some((r) => r.includes("R4"))).toBe(true);
+    expect(a.restroom).toBeNull();
+    expect(a.exit).toBeNull();
+    expect(a.stairCorridor).toBeNull();
+  });
+
+  it("HALLWAY (name-derived corridor) is also excluded via R4", () => {
+    const inv = makeInventory([makeRoom({ roomName: "HALLWAY" })]);
+    const result = applySignRules(inv, [], "job-6");
+    const a = result.assignments[0]!;
+    expect(a.exclusionReasons.some((r) => r.includes("R4"))).toBe(true);
+  });
+});
+
+describe("applySignRules — R7/R8: restroom type assignment", () => {
+  it("WOMEN'S RESTROOM without plaque table entry → restroom=1, ambiguous", () => {
+    const inv = makeInventory([makeRoom({ roomName: "WOMEN'S RESTROOM", isRestroom: true })]);
+    const result = applySignRules(inv, [], "job-7");
+    const a = result.assignments[0]!;
+    expect(a.restroom).toBe(1);
+    expect(a.appliedRules).toContain("R7");
+    expect(a.ambiguous).toBe(true);
+    expect(a.roomId).toBeNull();
+  });
+
+  it("MEN'S RESTROOM with plaque table match → uses plaque quantity, not ambiguous for R7", () => {
+    const plaques: PlaqueEntry[] = [
+      { roomNumber: "201", roomName: "Men's Restroom", signTypeCode: "MRR", quantity: 2 },
+    ];
+    const inv = makeInventory([
+      makeRoom({ roomName: "MEN'S RESTROOM", roomNumber: "201", isRestroom: true }),
+    ]);
+    const result = applySignRules(inv, plaques, "job-8");
+    const a = result.assignments[0]!;
+    expect(a.restroom).toBe(2);
+    expect(a.appliedRules).toContain("R7");
+  });
+
+  it("ACCESSIBLE RESTROOM → R7 + R8 in appliedRules", () => {
+    const inv = makeInventory([makeRoom({ roomName: "ACCESSIBLE RESTROOM", isRestroom: true })]);
+    const result = applySignRules(inv, [], "job-9");
+    const a = result.assignments[0]!;
+    expect(a.appliedRules).toContain("R7");
+    expect(a.appliedRules).toContain("R8");
+    expect(a.restroom).toBe(1);
+  });
+
+  it("STAFF RESTROOM → isStaffOnlyRestroom=true, still gets restroom sign", () => {
+    const inv = makeInventory([
+      makeRoom({ roomName: "STAFF RESTROOM", isRestroom: true, isStaffOnly: true }),
+    ]);
+    const result = applySignRules(inv, [], "job-10");
+    const a = result.assignments[0]!;
+    expect(a.restroom).toBe(1);
+    expect(a.appliedRules).toContain("R7");
+  });
+});
+
+describe("applySignRules — R9: exit sign assignment", () => {
+  it("exit-discharge vestibule room → exit=1", () => {
+    const inv = makeInventory([makeRoom({ roomName: "EXIT VESTIBULE" })]);
+    const result = applySignRules(inv, [], "job-11");
+    const a = result.assignments[0]!;
+    expect(a.exit).toBe(1);
+    expect(a.appliedRules).toContain("R9");
+  });
+
+  it("public LOBBY → exit=1 via R9", () => {
+    const inv = makeInventory([makeRoom({ roomName: "MAIN LOBBY", isPublicFacing: true })]);
+    const result = applySignRules(inv, [], "job-12");
+    const a = result.assignments[0]!;
+    expect(a.exit).toBe(1);
+    expect(a.appliedRules).toContain("R9");
+  });
+
+  it("SANCTUARY (assembly) → exit=2, ambiguous", () => {
+    const inv = makeInventory([makeRoom({ roomName: "SANCTUARY", isAssembly: true })]);
+    const result = applySignRules(inv, [], "job-13");
+    const a = result.assignments[0]!;
+    expect(a.exit).toBe(2);
+    expect(a.appliedRules).toContain("R9");
+    expect(a.ambiguous).toBe(true);
+  });
+
+  it("ordinary office room → no exit sign", () => {
+    const inv = makeInventory([makeRoom({ roomName: "OFFICE 101" })]);
+    const result = applySignRules(inv, [], "job-14");
+    const a = result.assignments[0]!;
+    expect(a.exit).toBeNull();
+  });
+});
+
+describe("applySignRules — R10: max occupancy / capacity sign", () => {
+  it("assembly room (GYMNASIUM) → maxOccupancy=1, ambiguous", () => {
+    const inv = makeInventory([makeRoom({ roomName: "GYMNASIUM", isAssembly: true })]);
+    const result = applySignRules(inv, [], "job-15");
+    const a = result.assignments[0]!;
+    expect(a.maxOccupancy).toBe(1);
+    expect(a.appliedRules).toContain("R10");
+    expect(a.ambiguous).toBe(true);
+  });
+
+  it("non-assembly room → no capacity sign", () => {
+    const inv = makeInventory([makeRoom({ roomName: "STORAGE ROOM" })]);
+    const result = applySignRules(inv, [], "job-16");
+    const a = result.assignments[0]!;
+    expect(a.maxOccupancy).toBeNull();
+  });
+});
+
+describe("applySignRules — R11: stair plaques", () => {
+  it("STAIRWELL → stairCorridor=1 + stairLanding=1, no Room ID", () => {
+    const inv = makeInventory([makeRoom({ roomName: "STAIRWELL", isStair: true })]);
+    const result = applySignRules(inv, [], "job-17");
+    const a = result.assignments[0]!;
+    expect(a.stairCorridor).toBe(1);
+    expect(a.stairLanding).toBe(1);
+    expect(a.appliedRules).toContain("R11");
+    expect(a.roomId).toBeNull();
+    expect(a.ambiguous).toBe(true);
+  });
+
+  it("STAIR TOWER (name-derived) → also gets R11 signs", () => {
+    const inv = makeInventory([makeRoom({ roomName: "STAIR TOWER" })]);
+    const result = applySignRules(inv, [], "job-18");
+    const a = result.assignments[0]!;
+    expect(a.stairCorridor).toBe(1);
+    expect(a.stairLanding).toBe(1);
+  });
+});
+
+describe("applySignRules — R12: elevator In Case of Fire (ICF)", () => {
+  it("single elevator → inCaseOfFire=1", () => {
+    const inv = makeInventory([makeRoom({ roomName: "ELEVATOR", isElevator: true })]);
+    const result = applySignRules(inv, [], "job-19");
+    const a = result.assignments[0]!;
+    expect(a.inCaseOfFire).toBe(1);
+    expect(a.appliedRules).toContain("R12");
+    expect(a.roomId).toBeNull();
+  });
+
+  it("two elevators → ICF deduplication: only one gets inCaseOfFire=1", () => {
+    const inv = makeInventory([
+      makeRoom({ roomName: "ELEVATOR A", isElevator: true }),
+      makeRoom({ roomName: "ELEVATOR B", isElevator: true }),
+    ]);
+    const result = applySignRules(inv, [], "job-20");
+    const icfAssignments = result.assignments.filter(
+      (a) => a.inCaseOfFire !== null && a.inCaseOfFire > 0,
+    );
+    expect(icfAssignments).toHaveLength(1);
+    const dedupedElevator = result.assignments.find(
+      (a) => a.exclusionReasons.some((r) => r.includes("R12")),
+    );
+    expect(dedupedElevator).toBeDefined();
+  });
+
+  it("no elevator → no ICF sign assigned", () => {
+    const inv = makeInventory([makeRoom({ roomName: "OFFICE" })]);
+    const result = applySignRules(inv, [], "job-21");
+    expect(result.assignments[0]!.inCaseOfFire).toBeNull();
+  });
+});
+
+describe("applySignRules — R13: evacuation map", () => {
+  it("elevator → also gets evacuationMap=1", () => {
+    const inv = makeInventory([makeRoom({ roomName: "ELEVATOR", isElevator: true })]);
+    const result = applySignRules(inv, [], "job-22");
+    const a = result.assignments[0]!;
+    expect(a.evacuationMap).toBe(1);
+    expect(a.appliedRules).toContain("R13");
+  });
+
+  it("public LOBBY → evacuationMap=1", () => {
+    const inv = makeInventory([makeRoom({ roomName: "MAIN LOBBY", isPublicFacing: true })]);
+    const result = applySignRules(inv, [], "job-23");
+    const a = result.assignments[0]!;
+    expect(a.evacuationMap).toBe(1);
+    expect(a.appliedRules).toContain("R13");
+  });
+
+  it("back-office room → no evacuation map", () => {
+    const inv = makeInventory([makeRoom({ roomName: "STORAGE" })]);
+    const result = applySignRules(inv, [], "job-24");
+    expect(result.assignments[0]!.evacuationMap).toBeNull();
+  });
+});
+
+describe("applySignRules — R14: office directory", () => {
+  it("LOBBY on L1 → first lobby on level gets officeDirectory=1", () => {
+    const inv = makeInventory([makeRoom({ roomName: "MAIN LOBBY", isPublicFacing: true })]);
+    const result = applySignRules(inv, [], "job-25");
+    const a = result.assignments[0]!;
+    expect(a.officeDirectory).toBe(1);
+    expect(a.appliedRules).toContain("R14");
+  });
+
+  it("second LOBBY on same level → no directory (deduped to first)", () => {
+    const inv = makeInventory([
+      makeRoom({ roomName: "MAIN LOBBY", isPublicFacing: true, level: "L1" }),
+      makeRoom({ roomName: "EAST LOBBY", isPublicFacing: true, level: "L1" }),
+    ]);
+    const result = applySignRules(inv, [], "job-26");
+    const dirAssignments = result.assignments.filter(
+      (a) => a.officeDirectory !== null && a.officeDirectory > 0,
+    );
+    expect(dirAssignments).toHaveLength(1);
+    expect(dirAssignments[0]!.roomName).toBe("MAIN LOBBY");
+  });
+
+  it("LOBBY on different levels each get their own directory", () => {
+    const inv = makeInventory([
+      makeRoom({ roomName: "MAIN LOBBY", isPublicFacing: true, level: "L1" }),
+      makeRoom({ roomName: "MAIN LOBBY", isPublicFacing: true, level: "L2" }),
+    ]);
+    const result = applySignRules(inv, [], "job-27");
+    const dirAssignments = result.assignments.filter(
+      (a) => a.officeDirectory !== null && a.officeDirectory > 0,
+    );
+    expect(dirAssignments).toHaveLength(2);
+  });
+});
+
+describe("applySignRules — edge case: mezzanine MEP veto (R15)", () => {
+  it("mezzanine MEP room → all signs excluded", () => {
+    const inv = makeInventory([
+      makeRoom({ roomName: "MECHANICAL ROOM", level: "MEZZ", isMepUnoccupied: true }),
+    ]);
+    const result = applySignRules(inv, [], "job-28");
+    const a = result.assignments[0]!;
+    expect(a.exclusionReasons.some((r) => r.includes("R15"))).toBe(true);
+    expect(a.roomId).toBeNull();
+    expect(a.restroom).toBeNull();
+    expect(a.stairCorridor).toBeNull();
+    expect(a.inCaseOfFire).toBeNull();
+    expect(a.evacuationMap).toBeNull();
+  });
+
+  it("mezzanine non-MEP room → NOT vetoed by R15", () => {
+    const inv = makeInventory([makeRoom({ roomName: "STORAGE", level: "MEZZ" })]);
+    const result = applySignRules(inv, [], "job-29");
+    const a = result.assignments[0]!;
+    expect(a.exclusionReasons.some((r) => r.includes("R15"))).toBe(false);
+    expect(a.roomId).toBe(1);
+  });
+});
+
+describe("applySignRules — edge case: ambiguous flags on assembly rooms", () => {
+  it("SANCTUARY gets ambiguous=true with notes on both R9 and R10", () => {
+    const inv = makeInventory([makeRoom({ roomName: "SANCTUARY", isAssembly: true })]);
+    const result = applySignRules(inv, [], "job-30");
+    const a = result.assignments[0]!;
+    expect(a.ambiguous).toBe(true);
+    expect(a.ambiguityNote).toMatch(/R9/);
+    expect(a.ambiguityNote).toMatch(/R10/);
+  });
+
+  it("CAFETERIA (assembly) also flags ambiguity and gets both exit and capacity signs", () => {
+    const inv = makeInventory([makeRoom({ roomName: "CAFETERIA", isAssembly: true })]);
+    const result = applySignRules(inv, [], "job-31");
+    const a = result.assignments[0]!;
+    expect(a.exit).toBe(2);
+    expect(a.maxOccupancy).toBe(1);
+    expect(a.ambiguous).toBe(true);
+  });
+});
+
+describe("applySignRules — result metadata", () => {
+  it("roomCount matches number of rooms in inventory", () => {
+    const inv = makeInventory([
+      makeRoom({ roomName: "OFFICE A" }),
+      makeRoom({ roomName: "OFFICE B" }),
+      makeRoom({ roomName: "RESTROOM", isRestroom: true }),
+    ]);
+    const result = applySignRules(inv, [], "job-32");
+    expect(result.roomCount).toBe(3);
+    expect(result.assignments).toHaveLength(3);
+  });
+
+  it("decisionsLog has one entry per room", () => {
+    const inv = makeInventory([
+      makeRoom({ roomName: "OFFICE" }),
+      makeRoom({ roomName: "STAIRWELL", isStair: true }),
+    ]);
+    const result = applySignRules(inv, [], "job-33");
+    expect(result.decisionsLog).toHaveLength(2);
+  });
+
+  it("questionsForVerification includes ambiguous room notes", () => {
+    const inv = makeInventory([makeRoom({ roomName: "CONFERENCE ROOM", isVariableUse: true })]);
+    const result = applySignRules(inv, [], "job-34");
+    expect(result.questionsForVerification.length).toBeGreaterThan(0);
   });
 });
