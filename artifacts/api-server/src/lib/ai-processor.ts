@@ -31,11 +31,6 @@ import { logAiCall } from "./ai-call-logger";
 // runWithGeminiCallLogger runs fn inside a job-scoped async context so that
 // concurrent job scans cannot overwrite each other's logger.
 
-function parsePageFromLabel(label: string): number | undefined {
-  const match = label.match(/[pP](?:age)?[-_\s]?(\d+)/);
-  return match ? parseInt(match[1], 10) : undefined;
-}
-
 function parseResponseJson(rawResponse: string, error?: string): unknown {
   if (error) return { error };
   try {
@@ -49,7 +44,7 @@ function makeCallLogHandler(jobId: string | undefined, callType: string) {
   return (entry: GeminiCallEntry) => {
     logAiCall({
       jobId,
-      pageNumber: entry.pageNumber ?? parsePageFromLabel(entry.label),
+      pageNumber: entry.pageNumber,
       callType,
       prompt: entry.prompt,
       responseJson: parseResponseJson(entry.rawResponse, entry.error),
