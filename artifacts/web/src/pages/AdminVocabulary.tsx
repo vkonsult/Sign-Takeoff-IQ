@@ -222,33 +222,34 @@ export default function AdminVocabulary() {
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
-    async function load() {
-      setLoading(true);
-      try {
-        const [baseRes, overridesRes] = await Promise.all([
-          apiFetch("/api/vocabulary/base"),
-          apiFetch("/api/vocabulary"),
-        ]);
-        if (!baseRes.ok) throw new Error("Failed to load base vocabulary");
-        if (!overridesRes.ok) throw new Error("Failed to load vocabulary overrides");
-
-        const baseData = (await baseRes.json()) as Record<BuildingType, Record<string, string>>;
-        const overridesData = (await overridesRes.json()) as VocabularyOverrides;
-
-        setBaseVocab(baseData);
-        const initialRows = {} as Record<BuildingType, TermRow[]>;
-        for (const bt of BUILDING_TYPES) {
-          initialRows[bt] = mergeVocab(baseData[bt] ?? {}, overridesData[bt] ?? {});
-        }
-        setRows(initialRows);
-      } catch {
-        toast({ title: "Error", description: "Could not load vocabulary.", variant: "destructive" });
-      } finally {
-        setLoading(false);
-      }
-    }
     void load();
-  }, [toast]);
+  }, []);
+
+  async function load() {
+    setLoading(true);
+    try {
+      const [baseRes, overridesRes] = await Promise.all([
+        apiFetch("/api/vocabulary/base"),
+        apiFetch("/api/vocabulary"),
+      ]);
+      if (!baseRes.ok) throw new Error("Failed to load base vocabulary");
+      if (!overridesRes.ok) throw new Error("Failed to load vocabulary overrides");
+
+      const baseData = (await baseRes.json()) as Record<BuildingType, Record<string, string>>;
+      const overridesData = (await overridesRes.json()) as VocabularyOverrides;
+
+      setBaseVocab(baseData);
+      const initialRows = {} as Record<BuildingType, TermRow[]>;
+      for (const bt of BUILDING_TYPES) {
+        initialRows[bt] = mergeVocab(baseData[bt] ?? {}, overridesData[bt] ?? {});
+      }
+      setRows(initialRows);
+    } catch {
+      toast({ title: "Error", description: "Could not load vocabulary.", variant: "destructive" });
+    } finally {
+      setLoading(false);
+    }
+  }
 
   async function handleSave() {
     if (!rows) return;

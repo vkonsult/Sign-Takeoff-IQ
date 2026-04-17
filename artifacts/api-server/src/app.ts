@@ -1,14 +1,12 @@
-import express, { type Express, type Request, type Response, type NextFunction } from "express";
+import express, { type Express } from "express";
 import cors from "cors";
 import pinoHttp from "pino-http";
 import { clerkMiddleware } from "@clerk/express";
-import * as Sentry from "@sentry/node";
 import { CLERK_PROXY_PATH, clerkProxyMiddleware } from "./middlewares/clerkProxyMiddleware";
 import router from "./routes";
 import { logger } from "./lib/logger";
 import { ensureDirectories } from "./lib/storage";
 import { seedDefaultOrg } from "./lib/seed";
-import { registerExistingFileWatchers } from "./lib/pdf-file-watcher";
 
 ensureDirectories().catch((err) => {
   logger.error({ err }, "Failed to initialize storage directories");
@@ -16,10 +14,6 @@ ensureDirectories().catch((err) => {
 
 seedDefaultOrg().catch((err) => {
   logger.error({ err }, "Failed to seed default organization");
-});
-
-registerExistingFileWatchers().catch((err) => {
-  logger.error({ err }, "Failed to register file watchers for pre-existing PDF files");
 });
 
 const app: Express = express();
@@ -46,19 +40,12 @@ app.use(
 
 app.use(CLERK_PROXY_PATH, clerkProxyMiddleware());
 
-app.use(cors({ credentials: true, origin: true, exposedHeaders: ["X-Sign-Count"] }));
+app.use(cors({ credentials: true, origin: true }));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 app.use(clerkMiddleware());
 
 app.use("/api", router);
-
-app.use((err: unknown, req: Request, res: Response, next: NextFunction) => {
-  if (process.env["SENTRY_DSN"]) {
-    Sentry.captureException(err);
-  }
-  next(err);
-});
 
 export default app;

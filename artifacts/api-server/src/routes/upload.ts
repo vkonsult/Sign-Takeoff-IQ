@@ -7,8 +7,6 @@ import { jobsTable, jobFilesTable } from "@workspace/db";
 import { ensureJobUploadDir } from "../lib/storage";
 import { processJob } from "../lib/process-job";
 import { processJobHeuristic } from "../lib/process-job-heuristic";
-import { invalidatePdfCaches } from "../lib/pdf-words";
-import { watchPdfFile } from "../lib/pdf-file-watcher";
 
 const router: IRouter = Router();
 
@@ -112,17 +110,7 @@ router.post("/upload", (req, res, next) => {
       })
     );
 
-    const insertedFiles = await db.insert(jobFilesTable).values(fileRecords).returning();
-
-    // Evict any stale cache entries for these paths/IDs so that if a file was
-    // previously cached (e.g. a re-upload overwriting the same stored path)
-    // the next extraction reads fresh data from disk.
-    for (const record of insertedFiles) {
-      invalidatePdfCaches(record.storedPath, record.id);
-      // Register a file-system watcher so that any future out-of-band replacement
-      // of this file on disk (e.g. by a sysadmin script) also invalidates the caches.
-      watchPdfFile(record.storedPath, record.id);
-    }
+    await db.insert(jobFilesTable).values(fileRecords);
 
     req.log.info({ jobId: job.id, fileCount: files.length, scanMethod }, "Upload complete, auto-starting extraction");
 

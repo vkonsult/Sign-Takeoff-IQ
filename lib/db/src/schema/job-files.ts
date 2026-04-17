@@ -19,7 +19,6 @@ export const jobFilesTable = pgTable("job_files", {
     pageImagePaths?: Record<string, string> | null;
     pageLabels?: (string | null)[];
     rejectedPageNumbers?: number[];
-    floorPageLevels?: Record<string, string>;
     outlineSections?: Array<{
       title: string;
       pageStart: number;

@@ -1,22 +1,18 @@
-import { useState, useMemo } from "react";
-import { useSearch, useLocation } from "wouter";
-import { logger } from "@/lib/logger";
+import { useState } from "react";
 import { AppShell } from "@/components/layout/Shell";
 import { useJobsList } from "@/hooks/use-takeoff";
 import { apiFetch, openPdfInNewTab } from "@/lib/apiClient";
 import { useQueryClient } from "@tanstack/react-query";
-import { getListJobsQueryKey, type JobSummary } from "@workspace/api-client-react";
+import { getListJobsQueryKey } from "@workspace/api-client-react";
 import { format, formatDistanceToNow } from "date-fns";
 import { Button } from "@/components/ui/button";
 import {
   FolderOpen, Eye, FileText, CheckCircle2, Cpu,
   AlertTriangle, Trash2, X, Square, CheckSquare, MinusSquare,
-  Archive, EyeOff, Layers, Users, ChevronUp, ChevronDown, ChevronsUpDown,
-  MapPinOff,
+  Archive, EyeOff,
 } from "lucide-react";
 import { Link } from "wouter";
 
-const VALID_JOB_TABS = new Set(["table", "sheets", "summary", "floorplans", "signpages", "specs", "timeline", "coords", "ai_scans", "compliance", "plaque_schedule", "occupant_loads"]);
 
 interface RecentUser {
   userName: string;
@@ -32,72 +28,6 @@ const ACTION_LABELS: Record<string, string> = {
   xlsx_exported: "exported XLSX for",
   pdf_exported: "exported PDF for",
 };
-
-type SortBy = "name" | "status" | "createdAt" | "updatedAt" | "plaqueCount" | "occupantLoadCount" | "unplacedCount";
-type SortDir = "asc" | "desc";
-
-const VALID_SORT_COLS: SortBy[] = ["name", "status", "createdAt", "updatedAt", "plaqueCount", "occupantLoadCount", "unplacedCount"];
-const DEFAULT_SORT_BY: SortBy = "createdAt";
-const DEFAULT_SORT_DIR: SortDir = "desc";
-
-const STATUS_ORDER: Record<string, number> = {
-  processing: 0,
-  completed: 1,
-  failed: 2,
-  archived: 3,
-};
-
-
-const SORT_STORAGE_KEY = "jobsList:sortPreference";
-
-function loadSortPreference(): { sortBy: SortBy; sortDir: SortDir } | null {
-  try {
-    const raw = localStorage.getItem(SORT_STORAGE_KEY);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw);
-    const sortBy = (VALID_SORT_COLS as string[]).includes(parsed.sortBy)
-      ? (parsed.sortBy as SortBy)
-      : null;
-    const sortDir: SortDir | null =
-      parsed.sortDir === "asc" || parsed.sortDir === "desc" ? parsed.sortDir : null;
-    if (!sortBy || !sortDir) return null;
-    return { sortBy, sortDir };
-  } catch {
-    return null;
-  }
-}
-
-function saveSortPreference(sortBy: SortBy, sortDir: SortDir): void {
-  try {
-    localStorage.setItem(SORT_STORAGE_KEY, JSON.stringify({ sortBy, sortDir }));
-  } catch {
-    // localStorage may be unavailable (e.g. private browsing); ignore silently
-  }
-}
-
-function parseSortParams(search: string): { sortBy: SortBy; sortDir: SortDir } {
-  const params = new URLSearchParams(search);
-  const rawBy = params.get("sortBy") ?? "";
-  const rawDir = params.get("sortDir") ?? "";
-  const hasUrlSort = rawBy !== "" || rawDir !== "";
-  if (hasUrlSort) {
-    const sortBy = (VALID_SORT_COLS as string[]).includes(rawBy)
-      ? (rawBy as SortBy)
-      : DEFAULT_SORT_BY;
-    const sortDir: SortDir = rawDir === "asc" || rawDir === "desc" ? rawDir : DEFAULT_SORT_DIR;
-    return { sortBy, sortDir };
-  }
-  const stored = loadSortPreference();
-  if (stored) return stored;
-  return { sortBy: DEFAULT_SORT_BY, sortDir: DEFAULT_SORT_DIR };
-}
-
-function SortIcon({ col, active, dir }: { col: string; active: string; dir: SortDir }) {
-  if (col !== active) return <ChevronsUpDown className="w-3 h-3 opacity-40" />;
-  return dir === "asc"
-    ? <ChevronUp className="w-3 h-3" />
-    : <ChevronDown className="w-3 h-3" />;
-}
 
 function StackedUserBadges({ users }: { users: RecentUser[] }) {
   if (users.length === 0) return <span className="text-muted-foreground/30 text-xs">—</span>;
@@ -122,25 +52,7 @@ function StackedUserBadges({ users }: { users: RecentUser[] }) {
 }
 
 export default function JobsList() {
-  const search = useSearch();
-  const [, setLocation] = useLocation();
-
-  const { sortBy, sortDir } = parseSortParams(search);
-
-  const setSort = (col: SortBy) => {
-    const newDir: SortDir =
-      col === sortBy
-        ? (sortDir === "desc" ? "asc" : "desc")
-        : col === "name" ? "asc" : DEFAULT_SORT_DIR;
-    saveSortPreference(col, newDir);
-    const params = new URLSearchParams(search);
-    params.set("sortBy", col);
-    params.set("sortDir", newDir);
-    setLocation(`/jobs?${params.toString()}`, { replace: true });
-  };
-
   const [showArchived, setShowArchived] = useState(false);
-  const [showNeedsPlacement, setShowNeedsPlacement] = useState(false);
   const { data, isLoading } = useJobsList(showArchived);
   const queryClient = useQueryClient();
 
@@ -149,57 +61,16 @@ export default function JobsList() {
   const [deletingSingle, setDeletingSingle] = useState<string | null>(null);
   const [bulkConfirming, setBulkConfirming] = useState(false);
   const [bulkDeleting, setBulkDeleting] = useState(false);
-
-  type JobSummaryListItem = JobSummary & {
+  const jobs = (data?.jobs ?? []) as Array<{
+    id: string;
     name?: string | null;
+    status: string;
+    fileCount: number;
+    createdAt: string;
     updatedAt?: string | null;
     recentUsers?: RecentUser[];
     files?: { id: string; originalName: string }[];
-    plaqueCount?: number | null;
-    occupantLoadCount?: number | null;
-    unplacedCount?: number;
-  };
-
-  const jobs = useMemo(() => {
-    const rawJobs = (data?.jobs ?? []) as JobSummaryListItem[];
-    let result = rawJobs;
-    if (showNeedsPlacement) {
-      result = result.filter((j) => Number(j.unplacedCount ?? 0) > 0);
-    }
-    return [...result].sort((a, b) => {
-      if (sortBy === "name") {
-        const aName = (a.name ?? "").toLowerCase();
-        const bName = (b.name ?? "").toLowerCase();
-        const cmp = aName.localeCompare(bName);
-        return sortDir === "asc" ? cmp : -cmp;
-      }
-      let aVal: number;
-      let bVal: number;
-      if (sortBy === "plaqueCount") {
-        aVal = Number(a.plaqueCount ?? 0);
-        bVal = Number(b.plaqueCount ?? 0);
-      } else if (sortBy === "occupantLoadCount") {
-        aVal = Number(a.occupantLoadCount ?? 0);
-        bVal = Number(b.occupantLoadCount ?? 0);
-      } else if (sortBy === "unplacedCount") {
-        aVal = Number(a.unplacedCount ?? 0);
-        bVal = Number(b.unplacedCount ?? 0);
-      } else if (sortBy === "updatedAt") {
-        aVal = a.updatedAt ? new Date(a.updatedAt).getTime() : 0;
-        bVal = b.updatedAt ? new Date(b.updatedAt).getTime() : 0;
-      } else {
-        aVal = new Date(a.createdAt).getTime();
-        bVal = new Date(b.createdAt).getTime();
-      }
-      if (sortBy === "status") {
-        const aOrd = STATUS_ORDER[a.status] ?? 99;
-        const bOrd = STATUS_ORDER[b.status] ?? 99;
-        return sortDir === "asc" ? aOrd - bOrd : bOrd - aOrd;
-      }
-      return sortDir === "asc" ? aVal - bVal : bVal - aVal;
-    });
-  }, [data?.jobs, sortBy, sortDir, showNeedsPlacement]);
-
+  }>;
   const allIds = jobs.map((j) => j.id);
   const allSelected = allIds.length > 0 && allIds.every((id) => selected.has(id));
   const someSelected = selected.size > 0 && !allSelected;
@@ -241,11 +112,10 @@ export default function JobsList() {
     try {
       const res = await apiFetch(`/api/jobs/${jobId}`, { method: "DELETE" });
       if (!res.ok) throw new Error("Delete failed");
-      localStorage.removeItem(`lastTab:${jobId}`);
       await queryClient.invalidateQueries({ queryKey: getListJobsQueryKey() });
       setSelected((prev) => { const n = new Set(prev); n.delete(jobId); return n; });
     } catch (err) {
-      logger.error("Delete failed:", err);
+      console.error("Delete failed:", err);
     } finally {
       setDeletingSingle(null);
       setConfirmDelete(null);
@@ -271,38 +141,15 @@ export default function JobsList() {
         body: JSON.stringify({ jobIds: Array.from(selected) }),
       });
       if (!res.ok) throw new Error("Batch delete failed");
-      for (const jobId of selected) localStorage.removeItem(`lastTab:${jobId}`);
       await queryClient.invalidateQueries({ queryKey: getListJobsQueryKey() });
       setSelected(new Set());
       setBulkConfirming(false);
     } catch (err) {
-      logger.error("Bulk delete failed:", err);
+      console.error("Bulk delete failed:", err);
     } finally {
       setBulkDeleting(false);
     }
   };
-
-  function SortHeader({
-    col,
-    label,
-    className,
-  }: {
-    col: SortBy;
-    label: string;
-    className?: string;
-  }) {
-    return (
-      <button
-        onClick={() => setSort(col)}
-        className={`flex items-center gap-1 font-display font-semibold uppercase tracking-wider text-xs transition-colors
-          ${sortBy === col ? "text-primary" : "text-muted-foreground hover:text-foreground"}
-          ${className ?? ""}`}
-      >
-        {label}
-        <SortIcon col={col} active={sortBy} dir={sortDir} />
-      </button>
-    );
-  }
 
   return (
     <AppShell>
@@ -318,17 +165,6 @@ export default function JobsList() {
             </p>
           </div>
           <div className="flex items-center gap-3">
-            <button
-              onClick={() => setShowNeedsPlacement((prev) => !prev)}
-              className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium border transition-colors
-                ${showNeedsPlacement
-                  ? "bg-orange-500/10 text-orange-400 border-orange-500/30 hover:bg-orange-500/20"
-                  : "bg-secondary text-muted-foreground border-border hover:text-foreground"
-                }`}
-            >
-              <MapPinOff className="w-4 h-4" />
-              {showNeedsPlacement ? "Clear Filter" : "Needs Placement"}
-            </button>
             <button
               onClick={() => {
                 setShowArchived((prev) => !prev);
@@ -364,7 +200,7 @@ export default function JobsList() {
         ) : (
           <div className="bg-card rounded-xl border border-border overflow-hidden shadow-lg">
             {/* Header row */}
-            <div className="grid grid-cols-[36px_1fr_120px_40px_160px_160px_48px] gap-3 px-4 py-3 border-b border-border bg-secondary/50 items-center">
+            <div className="grid grid-cols-[36px_1fr_120px_40px_160px_160px_48px] gap-3 px-4 py-3 border-b border-border bg-secondary/50 text-xs font-display font-semibold uppercase tracking-wider text-muted-foreground items-center">
               {/* Select-all checkbox */}
               <button
                 onClick={toggleAll}
@@ -377,79 +213,29 @@ export default function JobsList() {
                     ? <MinusSquare className="w-4 h-4 text-primary" />
                     : <Square className="w-4 h-4" />}
               </button>
-              <SortHeader col="name" label="Job Name" />
-              <div className="flex justify-center">
-                <SortHeader col="status" label="Status" />
-              </div>
-              <div className="text-center text-xs font-display font-semibold uppercase tracking-wider text-muted-foreground" title="Last active user">User</div>
-              <div className="flex justify-end">
-                <SortHeader col="createdAt" label="Created" />
-              </div>
-              <div className="flex justify-end pr-8">
-                <SortHeader col="updatedAt" label="Updated" />
-              </div>
+              <div>Job Name</div>
+              <div className="text-center">Status</div>
+              <div className="text-center" title="Last active user">User</div>
+              <div className="text-right">Created</div>
+              <div className="text-right pr-8">Updated</div>
               <div />
-            </div>
-
-            {/* Badge sort bar */}
-            <div className="flex items-center gap-2 px-4 py-2 border-b border-border bg-secondary/20">
-              <span className="text-[10px] font-display font-semibold uppercase tracking-wider text-muted-foreground/60 mr-1">Sort by:</span>
-              <button
-                onClick={() => setSort("plaqueCount")}
-                className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-semibold border transition-colors
-                  ${sortBy === "plaqueCount"
-                    ? "bg-violet-500/20 text-violet-400 border-violet-500/40"
-                    : "bg-violet-500/5 text-violet-400/60 border-violet-500/10 hover:bg-violet-500/15 hover:text-violet-400"}`}
-              >
-                <Layers className="w-2.5 h-2.5" />
-                Plaque count
-                <SortIcon col="plaqueCount" active={sortBy} dir={sortDir} />
-              </button>
-              <button
-                onClick={() => setSort("occupantLoadCount")}
-                className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-semibold border transition-colors
-                  ${sortBy === "occupantLoadCount"
-                    ? "bg-sky-500/20 text-sky-400 border-sky-500/40"
-                    : "bg-sky-500/5 text-sky-400/60 border-sky-500/10 hover:bg-sky-500/15 hover:text-sky-400"}`}
-              >
-                <Users className="w-2.5 h-2.5" />
-                Occ. load count
-                <SortIcon col="occupantLoadCount" active={sortBy} dir={sortDir} />
-              </button>
-              <button
-                onClick={() => setSort("unplacedCount")}
-                className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-semibold border transition-colors
-                  ${sortBy === "unplacedCount"
-                    ? "bg-orange-500/20 text-orange-400 border-orange-500/40"
-                    : "bg-orange-500/5 text-orange-400/60 border-orange-500/10 hover:bg-orange-500/15 hover:text-orange-400"}`}
-              >
-                <MapPinOff className="w-2.5 h-2.5" />
-                Unplaced
-                <SortIcon col="unplacedCount" active={sortBy} dir={sortDir} />
-              </button>
             </div>
 
             <div className="divide-y divide-border">
               {jobs.length === 0 && (
-                <div className="p-8 text-center text-muted-foreground">
-                  {showNeedsPlacement
-                    ? "No jobs with unplaced signs."
-                    : "No jobs found."}
-                </div>
+                <div className="p-8 text-center text-muted-foreground">No jobs found.</div>
               )}
 
               {jobs.map((job) => {
                 const isChecked = selected.has(job.id);
-                const recentUsers: RecentUser[] = job.recentUsers ?? [];
-                const jobFiles: { id: string; originalName: string }[] = job.files ?? [];
-                const plaqueCount = Number(job.plaqueCount ?? 0);
-                const occupantLoadCount = Number(job.occupantLoadCount ?? 0);
-                const unplacedCount = Number(job.unplacedCount ?? 0);
-                const _storedTab = localStorage.getItem(`lastTab:${job.id}`);
-                const _validStoredTab = _storedTab && VALID_JOB_TABS.has(_storedTab) ? _storedTab : null;
-                const jobHref = _validStoredTab
-                  ? `/jobs/${job.id}?tab=${_validStoredTab}`
-                  : `/jobs/${job.id}`;
+                const jobAny = job as typeof job & {
+                  recentUsers?: RecentUser[];
+                  lastActivityAt?: string | null;
+                  lastActivityType?: string | null;
+                  files?: { id: string; originalName: string }[];
+                };
+                const recentUsers: RecentUser[] = jobAny.recentUsers ?? [];
+                const jobFiles: { id: string; originalName: string }[] = jobAny.files ?? [];
 
                 return (
                   <div key={job.id} className="flex flex-col">
@@ -461,8 +247,6 @@ export default function JobsList() {
                     {/* Checkbox */}
                     <button
                       onClick={(e) => toggleSelect(job.id, e)}
-                      aria-label={isChecked ? `Deselect ${job.name ?? "this job"}` : `Select ${job.name ?? "this job"}`}
-                      aria-pressed={isChecked}
                       className={`flex items-center justify-center pl-3 py-4 transition-all
                         ${isChecked ? "opacity-100" : "opacity-0 group-hover:opacity-100"}`}
                     >
@@ -472,7 +256,7 @@ export default function JobsList() {
                     </button>
 
                     {/* Clickable link area */}
-                    <Link href={jobHref} className="contents outline-none">
+                    <Link href={`/jobs/${job.id}`} className="contents outline-none">
                       {/* Job name cell — with inline PDF icon(s) */}
                       <div className="min-w-0 py-4 flex items-center gap-2">
                         <div className="min-w-0 flex-1">
@@ -493,48 +277,8 @@ export default function JobsList() {
                               </button>
                             ))}
                           </div>
-                          <div className="flex items-center gap-2 mt-0.5 flex-wrap">
-                            <span className="text-xs font-mono text-muted-foreground/60">
-                              {job.id.split("-")[0]}
-                            </span>
-                            {plaqueCount > 0 && (
-                              <span
-                                className={`inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] font-semibold border
-                                  ${sortBy === "plaqueCount"
-                                    ? "bg-violet-500/20 text-violet-400 border-violet-500/40"
-                                    : "bg-violet-500/10 text-violet-400 border-violet-500/20"}`}
-                                title={`${plaqueCount} plaque type${plaqueCount !== 1 ? "s" : ""} extracted`}
-                              >
-                                <Layers className="w-2.5 h-2.5" />
-                                {plaqueCount} plaque{plaqueCount !== 1 ? "s" : ""}
-                              </span>
-                            )}
-                            {occupantLoadCount > 0 && (
-                              <span
-                                className={`inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] font-semibold border
-                                  ${sortBy === "occupantLoadCount"
-                                    ? "bg-sky-500/20 text-sky-400 border-sky-500/40"
-                                    : "bg-sky-500/10 text-sky-400 border-sky-500/20"}`}
-                                title={`${occupantLoadCount} occupant load room${occupantLoadCount !== 1 ? "s" : ""} extracted`}
-                              >
-                                <Users className="w-2.5 h-2.5" />
-                                {occupantLoadCount} occ. load{occupantLoadCount !== 1 ? "s" : ""}
-                              </span>
-                            )}
-                            {unplacedCount > 0 && (
-                              <button
-                                onClick={(e) => {
-                                  e.preventDefault();
-                                  e.stopPropagation();
-                                  setLocation(`/jobs/${job.id}?unplaced=1`);
-                                }}
-                                className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-orange-500/10 text-orange-400 border border-orange-500/20 hover:bg-orange-500/20 hover:border-orange-500/40 transition-colors cursor-pointer"
-                                title={`${unplacedCount} sign${unplacedCount !== 1 ? "s" : ""} not yet placed on a floor plan — click to view`}
-                              >
-                                <MapPinOff className="w-2.5 h-2.5" />
-                                {unplacedCount} unplaced
-                              </button>
-                            )}
+                          <div className="text-xs font-mono text-muted-foreground/60 truncate mt-0.5">
+                            {job.id.split("-")[0]}
                           </div>
                         </div>
                       </div>
@@ -547,11 +291,11 @@ export default function JobsList() {
                         <StackedUserBadges users={recentUsers} />
                       </div>
 
-                      <div className={`text-right text-sm py-4 ${sortBy === "createdAt" ? "text-foreground font-medium" : "text-muted-foreground"}`}>
+                      <div className="text-right text-sm text-muted-foreground py-4">
                         {format(new Date(job.createdAt), "MMM d, yyyy HH:mm")}
                       </div>
 
-                      <div className={`text-right text-sm py-4 pr-8 ${sortBy === "updatedAt" ? "text-foreground font-medium" : "text-muted-foreground"}`}>
+                      <div className="text-right text-sm text-muted-foreground py-4 pr-8">
                         {job.updatedAt
                           ? format(new Date(job.updatedAt), "MMM d, yyyy HH:mm")
                           : <span className="text-muted-foreground/30">—</span>}

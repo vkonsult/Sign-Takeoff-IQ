@@ -5,9 +5,8 @@ import {
   useGetJob, 
   useListJobs,
   getGetJobQueryKey,
-  getListJobsQueryKey,
+  getListJobsQueryKey
 } from "@workspace/api-client-react";
-import type { ListJobs200 } from "@workspace/api-client-react";
 import { apiFetch } from "@/lib/apiClient";
 
 export function useJobsList(includeArchived = false) {
@@ -27,7 +26,7 @@ export function useJobsList(includeArchived = false) {
     queryFn: async () => {
       const res = await apiFetch("/api/jobs?includeArchived=true");
       if (!res.ok) throw new Error("Failed to fetch jobs");
-      return res.json() as Promise<ListJobs200>;
+      return res.json() as Promise<{ jobs: unknown[] }>;
     },
     refetchInterval: 10000,
     enabled: includeArchived,
@@ -86,11 +85,9 @@ export function useUpdateJobName(jobId: string) {
   };
 }
 
-export async function downloadExport(jobId: string): Promise<{ signCount: number }> {
+export async function downloadExport(jobId: string): Promise<void> {
   const res = await apiFetch(`/api/jobs/${jobId}/export`);
   if (!res.ok) throw new Error("Export failed");
-  const signCountHeader = res.headers.get("x-sign-count");
-  const signCount = signCountHeader !== null ? parseInt(signCountHeader, 10) : -1;
   const blob = await res.blob();
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
@@ -102,5 +99,4 @@ export async function downloadExport(jobId: string): Promise<{ signCount: number
   a.click();
   a.remove();
   URL.revokeObjectURL(url);
-  return { signCount };
 }

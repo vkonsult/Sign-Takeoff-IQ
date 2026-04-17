@@ -166,168 +166,6 @@ paths:
                 required:
                   - jobs
 
-  /jobs/{jobId}/extract-plaque-schedule:
-    post:
-      operationId: extractPlaqueSchedule
-      tags: [jobs]
-      summary: Extract plaque schedule from job PDFs
-      description: Scans the job's PDF files to find signage/plaque schedules, renders them, and uses AI to extract plaque type specifications.
-      parameters:
-        - name: jobId
-          in: path
-          required: true
-          schema:
-            type: string
-            format: uuid
-      responses:
-        "200":
-          description: Plaque schedule extracted
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ExtractPlaqueScheduleResponse"
-        "404":
-          description: Job not found
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-        "500":
-          description: Extraction failed
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-
-  /jobs/{jobId}/plaque-schedule/{id}:
-    delete:
-      operationId: deletePlaqueScheduleRow
-      tags: [jobs]
-      summary: Delete a single plaque schedule row
-      description: Permanently removes a single plaque type row from the job's plaque schedule by its ID.
-      parameters:
-        - name: jobId
-          in: path
-          required: true
-          schema:
-            type: string
-            format: uuid
-        - name: id
-          in: path
-          required: true
-          schema:
-            type: string
-            format: uuid
-      responses:
-        "200":
-          description: Row deleted successfully
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  success:
-                    type: boolean
-        "404":
-          description: Job or plaque row not found
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-        "500":
-          description: Deletion failed
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-
-  /jobs/{jobId}/plaque-schedule:
-    get:
-      operationId: getPlaqueSchedule
-      tags: [jobs]
-      summary: Get plaque schedule for a job
-      description: Returns the stored plaque schedule data extracted from the job's PDF files.
-      parameters:
-        - name: jobId
-          in: path
-          required: true
-          schema:
-            type: string
-            format: uuid
-      responses:
-        "200":
-          description: Plaque schedule data
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/PlaqueScheduleResponse"
-        "404":
-          description: Job not found
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-
-  /jobs/{jobId}/extract-occupant-loads:
-    post:
-      operationId: extractOccupantLoads
-      tags: [jobs]
-      summary: Extract occupant loads from job PDFs
-      description: Scans egress/life-safety drawings for occupant load tables, extracts room-level occupancy data, and identifies assembly rooms (occupant load >= 50).
-      parameters:
-        - name: jobId
-          in: path
-          required: true
-          schema:
-            type: string
-            format: uuid
-      responses:
-        "200":
-          description: Occupant loads extracted
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ExtractOccupantLoadsResponse"
-        "404":
-          description: Job not found
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-        "500":
-          description: Extraction failed
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-
-  /jobs/{jobId}/occupant-loads:
-    get:
-      operationId: getOccupantLoads
-      tags: [jobs]
-      summary: Get occupant loads for a job
-      description: Returns stored occupant load data and a list of identified assembly rooms.
-      parameters:
-        - name: jobId
-          in: path
-          required: true
-          schema:
-            type: string
-            format: uuid
-      responses:
-        "200":
-          description: Occupant loads data
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/OccupantLoadsResponse"
-        "404":
-          description: Job not found
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-
   /knowledge/ingest:
     post:
       operationId: ingestKnowledge
@@ -439,10 +277,6 @@ components:
         id:
           type: string
           format: uuid
-        name:
-          type: string
-          nullable: true
-          description: Human-readable job name (editable by the user)
         status:
           type: string
           enum: [pending, processing, completed, failed]
@@ -469,21 +303,6 @@ components:
           type: string
           nullable: true
           description: 2-letter state code extracted from the plan (e.g. CA, TX, NY)
-        plaqueCount:
-          type: integer
-          description: Number of plaque schedule entries extracted for this job
-        occupantLoadCount:
-          type: integer
-          description: Number of occupant load entries extracted for this job
-        unplacedCount:
-          type: integer
-          description: Number of signs with no floor-plan placement (pageNumber is null)
-        processingLog:
-          type: array
-          nullable: true
-          description: Ordered list of processing steps recorded during job execution
-          items:
-            $ref: "#/components/schemas/ProcessingStep"
         createdAt:
           type: string
           format: date-time
@@ -498,34 +317,6 @@ components:
         - outputTokens
         - createdAt
         - updatedAt
-
-    ProcessingStep:
-      type: object
-      description: A single recorded step in the job processing pipeline
-      properties:
-        step:
-          type: string
-          description: Machine-readable step identifier
-        label:
-          type: string
-          description: Human-readable step label
-        durationMs:
-          type: number
-          description: Duration of this step in milliseconds
-        startedAt:
-          type: string
-          format: date-time
-          description: ISO timestamp when this step started
-        details:
-          type: object
-          nullable: true
-          description: Optional step-specific metadata
-          additionalProperties: {}
-      required:
-        - step
-        - label
-        - durationMs
-        - startedAt
 
     PdfOutlineSection:
       type: object
@@ -575,20 +366,17 @@ components:
           description: PDF page numbers classified as both floor plan and sign schedule
         pageLabels:
           type: array
+          nullable: true
           items:
             type: string
             nullable: true
           description: PDF logical page labels (e.g. "A1.1") indexed by page number (0-based)
         outlineSections:
           type: array
+          nullable: true
           items:
             $ref: '#/components/schemas/PdfOutlineSection'
           description: Top-level PDF outline (bookmark) sections with classified page ranges
-        rejectedPageNumbers:
-          type: array
-          items:
-            type: integer
-          description: PDF page numbers explicitly rejected by the user from their classification
         pageImagePaths:
           type: object
           nullable: true
@@ -629,10 +417,6 @@ components:
         id:
           type: string
           format: uuid
-        jobId:
-          type: string
-          format: uuid
-          description: ID of the job this sign belongs to
         jobFileId:
           type: string
           format: uuid
@@ -676,142 +460,26 @@ components:
         notes:
           type: string
           nullable: true
-        pageNumber:
-          type: integer
-          nullable: true
-          description: PDF page number (1-indexed) where this sign is placed on the floor plan
-        xPos:
-          type: number
-          minimum: 0
-          maximum: 1
-          nullable: true
-          description: Normalized X position (0–1) of the sign marker on the page
-        yPos:
-          type: number
-          minimum: 0
-          maximum: 1
-          nullable: true
-          description: Normalized Y position (0–1) of the sign marker on the page
-        placementSource:
-          type: string
-          nullable: true
-          enum: [word_match, text_match, gemini_vision, user_confirmed, manual, user_drag]
-          description: How the floor-plan placement coordinates were determined
-        extractionMethod:
-          type: string
-          nullable: true
-          enum: [text, raw_text, image, manual]
-          description: How this sign row was extracted (text-pass, image-pass, raw-text, or manually added)
-        pairedSignId:
-          type: string
-          format: uuid
-          nullable: true
-          description: ID of the complementary sign row in the paired text/image match
-        adaRequired:
-          type: boolean
-          description: True if this sign is flagged as ADA-required
-        manuallyAdded:
-          type: boolean
-          description: True if this sign was manually placed by the user (not AI-extracted)
-        manuallyEdited:
-          type: boolean
-          nullable: true
-          description: True if the user has manually edited this sign; protected from AI re-run overwrites
-        userVerified:
-          type: boolean
-          description: True if the user has saved/confirmed this sign entry; preserved across re-extractions
-        hidden:
-          type: boolean
-          description: True if this sign has been soft-deleted (hidden from the main sign list)
-        exceptionReason:
-          type: string
-          nullable: true
-          description: Reason a sign is flagged as an exception (e.g. locked out of normal processing)
-        aiBboxX:
-          type: number
-          nullable: true
-          description: AI-detected bounding box X coordinate (normalized 0–1)
-        aiBboxY:
-          type: number
-          nullable: true
-          description: AI-detected bounding box Y coordinate (normalized 0–1)
-        aiBboxW:
-          type: number
-          nullable: true
-          description: AI-detected bounding box width (normalized 0–1)
-        aiBboxH:
-          type: number
-          nullable: true
-          description: AI-detected bounding box height (normalized 0–1)
-        aiBbox:
-          type: boolean
-          description: True if AI bounding box data is available for this sign
-        dataSource:
-          type: string
-          nullable: true
-          enum: [pdf, ai, manual]
-          description: Origin of the sign data (pdf text extraction, AI vision pass, or manual entry)
-        rawJson:
-          type: object
-          nullable: true
-          additionalProperties: true
-          description: Raw JSON payload returned by the AI extraction model
         confidenceScore:
           type: number
           minimum: 0
           maximum: 1
         reviewFlag:
           type: boolean
+        manuallyAdded:
+          type: boolean
+          description: True if this sign was manually placed by the user (not AI-extracted)
+        userVerified:
+          type: boolean
+          description: True if the user has saved/confirmed this sign entry; preserved across re-extractions
         createdAt:
           type: string
           format: date-time
       required:
         - id
-        - jobId
         - confidenceScore
         - reviewFlag
-        - manuallyAdded
-        - manuallyEdited
-        - userVerified
-        - hidden
-        - adaRequired
-        - aiBbox
         - createdAt
-
-    ActivityLogActor:
-      type: object
-      description: User identity snapshot recorded on a job activity log entry
-      properties:
-        at:
-          type: string
-          format: date-time
-          description: Timestamp of the activity
-        userName:
-          type: string
-          description: Display name of the user who performed the action
-        userInitials:
-          type: string
-          description: Initials of the user who performed the action
-      required:
-        - at
-
-    ProcessingCost:
-      type: object
-      description: Combined Gemini API token usage and estimated cost for a job
-      properties:
-        inputTokens:
-          type: integer
-          description: Total input tokens consumed (text-pass + image-pass)
-        outputTokens:
-          type: integer
-          description: Total output tokens consumed (text-pass + image-pass)
-        totalCost:
-          type: number
-          description: Estimated USD cost based on Gemini pricing
-      required:
-        - inputTokens
-        - outputTokens
-        - totalCost
 
     JobDetails:
       type: object
@@ -826,49 +494,19 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/ExtractedSign"
-          description: Visible (non-hidden) signs for display in the sign list
-        hiddenSigns:
-          type: array
-          items:
-            $ref: "#/components/schemas/ExtractedSign"
-          description: Soft-deleted signs hidden from the main sign list
-        markerSigns:
-          type: array
-          items:
-            $ref: "#/components/schemas/ExtractedSign"
-          description: All signs with floor-plan coordinates (used for map marker overlays)
         totalSigns:
           type: integer
         flaggedCount:
           type: integer
         highConfidenceCount:
           type: integer
-        plaqueCount:
-          type: integer
-        occupantLoadCount:
-          type: integer
-        lastScan:
-          $ref: "#/components/schemas/ActivityLogActor"
-          nullable: true
-          description: User and timestamp of the most recent extraction scan
-        lastEdit:
-          $ref: "#/components/schemas/ActivityLogActor"
-          nullable: true
-          description: User and timestamp of the most recent sign edit
-        processingCost:
-          $ref: "#/components/schemas/ProcessingCost"
-          description: Token usage and cost summary for the job
       required:
         - job
         - files
         - extractedSigns
-        - hiddenSigns
-        - markerSigns
         - totalSigns
         - flaggedCount
         - highConfidenceCount
-        - plaqueCount
-        - occupantLoadCount
 
     KnowledgeIngestRequest:
       type: object
@@ -1006,305 +644,6 @@ components:
         - results
         - citations
         - totalResults
-
-    PlaqueScheduleEntry:
-      type: object
-      description: A single plaque type extracted from the sign schedule
-      properties:
-        id:
-          type: string
-          format: uuid
-        jobId:
-          type: string
-          format: uuid
-        typeId:
-          type: string
-          description: Plaque type identifier (e.g. "P1", "P2")
-        name:
-          type: string
-          nullable: true
-          description: Descriptive name of the plaque type
-        braille:
-          type: boolean
-          nullable: true
-          description: Whether the plaque requires Braille
-        insert:
-          type: boolean
-          nullable: true
-          description: Whether the plaque has an insert
-        insertSize:
-          type: string
-          nullable: true
-          description: Insert size specification
-        letterHeight:
-          type: string
-          nullable: true
-          description: Letter height specification
-        trigger:
-          type: string
-          nullable: true
-          description: Trigger condition for this plaque type
-        mapsToColumn:
-          type: string
-          nullable: true
-          description: Column in the sign schedule this type maps to
-        generalNotes:
-          type: object
-          nullable: true
-          additionalProperties: true
-          description: General notes associated with this plaque type
-        rawJson:
-          type: object
-          nullable: true
-          additionalProperties: true
-          description: Raw extracted JSON from AI
-        sourcePage:
-          type: integer
-          nullable: true
-          description: PDF page number where this plaque type was found
-        createdAt:
-          type: string
-          format: date-time
-      required:
-        - id
-        - jobId
-        - typeId
-        - createdAt
-
-    PlaqueScheduleFileDetail:
-      type: object
-      description: Per-file result from a plaque schedule extraction run
-      properties:
-        plaqueCount:
-          type: integer
-          description: Number of plaque types extracted from this file
-        sourcePage:
-          type: integer
-          nullable: true
-          description: PDF page number where the plaque schedule was found
-        skipped:
-          type: boolean
-          description: Whether this file was skipped (e.g. no sign schedule pages)
-        skipReason:
-          type: string
-          nullable: true
-          description: Reason the file was skipped, if applicable
-        inputTokens:
-          type: integer
-          description: Gemini input tokens consumed for this file
-        outputTokens:
-          type: integer
-          description: Gemini output tokens consumed for this file
-      required:
-        - plaqueCount
-        - skipped
-        - inputTokens
-        - outputTokens
-
-    ExtractPlaqueScheduleResponse:
-      type: object
-      description: Result of a plaque schedule extraction run
-      properties:
-        success:
-          type: boolean
-        jobId:
-          type: string
-          format: uuid
-        totalPlaques:
-          type: integer
-          description: Total number of plaque types extracted across all files
-        totalInputTokens:
-          type: integer
-          description: Total Gemini input tokens consumed
-        totalOutputTokens:
-          type: integer
-          description: Total Gemini output tokens consumed
-        details:
-          type: object
-          additionalProperties:
-            $ref: "#/components/schemas/PlaqueScheduleFileDetail"
-          description: Per-file extraction details keyed by file UUID
-      required:
-        - success
-        - jobId
-        - totalPlaques
-        - totalInputTokens
-        - totalOutputTokens
-        - details
-
-    PlaqueScheduleResponse:
-      type: object
-      description: Stored plaque schedule data for a job
-      properties:
-        jobId:
-          type: string
-          format: uuid
-        plaques:
-          type: array
-          items:
-            $ref: "#/components/schemas/PlaqueScheduleEntry"
-      required:
-        - jobId
-        - plaques
-
-    OccupantLoadEntry:
-      type: object
-      description: A single room's occupant load data extracted from egress drawings
-      properties:
-        id:
-          type: string
-          format: uuid
-        jobId:
-          type: string
-          format: uuid
-        roomNum:
-          type: string
-          description: Room number or identifier
-        roomName:
-          type: string
-          nullable: true
-          description: Room name or description
-        occupantLoad:
-          type: number
-          nullable: true
-          description: Calculated occupant load for the room
-        occupancyGroup:
-          type: string
-          nullable: true
-          description: IBC occupancy group classification (e.g. A-2, B, E)
-        sourcePage:
-          type: integer
-          nullable: true
-          description: PDF page number where this occupant load was found
-        createdAt:
-          type: string
-          format: date-time
-      required:
-        - id
-        - jobId
-        - roomNum
-        - createdAt
-
-    AssemblyRoom:
-      type: object
-      description: A room identified as an assembly occupancy (occupant load >= 50)
-      properties:
-        roomNumber:
-          type: string
-          description: Room number or identifier
-        roomName:
-          type: string
-          nullable: true
-          description: Room name or description
-        occupantLoad:
-          type: number
-          description: Occupant load for the room
-        occupancyGroup:
-          type: string
-          nullable: true
-          description: IBC occupancy group classification
-        isAssembly:
-          type: boolean
-          description: Always true for assembly rooms
-      required:
-        - roomNumber
-        - occupantLoad
-        - isAssembly
-
-    OccupantLoadFileDetail:
-      type: object
-      description: Per-file result from an occupant loads extraction run
-      properties:
-        roomCount:
-          type: integer
-          description: Number of rooms extracted from this file
-        sourcePages:
-          type: array
-          items:
-            type: integer
-          description: PDF page numbers where occupant load tables were found
-        skipped:
-          type: boolean
-          description: Whether this file was skipped (e.g. no other/egress pages)
-        skipReason:
-          type: string
-          nullable: true
-          description: Reason the file was skipped, if applicable
-        inputTokens:
-          type: integer
-          description: Gemini input tokens consumed for this file
-        outputTokens:
-          type: integer
-          description: Gemini output tokens consumed for this file
-      required:
-        - roomCount
-        - sourcePages
-        - skipped
-        - inputTokens
-        - outputTokens
-
-    ExtractOccupantLoadsResponse:
-      type: object
-      description: Result of an occupant loads extraction run
-      properties:
-        success:
-          type: boolean
-        jobId:
-          type: string
-          format: uuid
-        totalRooms:
-          type: integer
-          description: Total number of rooms extracted across all files
-        totalInputTokens:
-          type: integer
-          description: Total Gemini input tokens consumed
-        totalOutputTokens:
-          type: integer
-          description: Total Gemini output tokens consumed
-        assemblyRoomCount:
-          type: integer
-          description: Number of rooms identified as assembly occupancy
-        assemblyRooms:
-          type: array
-          items:
-            $ref: "#/components/schemas/AssemblyRoom"
-          description: Rooms identified as assembly occupancy (occupant load >= 50)
-        details:
-          type: object
-          additionalProperties:
-            $ref: "#/components/schemas/OccupantLoadFileDetail"
-          description: Per-file extraction details keyed by file UUID
-      required:
-        - success
-        - jobId
-        - totalRooms
-        - totalInputTokens
-        - totalOutputTokens
-        - assemblyRoomCount
-        - assemblyRooms
-        - details
-
-    OccupantLoadsResponse:
-      type: object
-      description: Stored occupant loads data for a job
-      properties:
-        jobId:
-          type: string
-          format: uuid
-        loads:
-          type: array
-          items:
-            $ref: "#/components/schemas/OccupantLoadEntry"
-          description: All occupant load records for the job
-        assemblyRooms:
-          type: array
-          items:
-            $ref: "#/components/schemas/AssemblyRoom"
-          description: Rooms identified as assembly occupancy
-      required:
-        - jobId
-        - loads
-        - assemblyRooms
 
     ErrorResponse:
       type: object

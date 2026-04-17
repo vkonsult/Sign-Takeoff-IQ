@@ -110,50 +110,6 @@
   }
 }
 
-@keyframes protected-flash-amber {
-  0%   { background-color: rgb(245 158 11 / 0.15); box-shadow: inset 0 0 0 1px rgb(251 191 36 / 0.5); }
-  20%  { background-color: rgb(245 158 11 / 0.40); box-shadow: inset 0 0 0 1px rgb(251 191 36 / 0.95); }
-  45%  { background-color: rgb(245 158 11 / 0.15); box-shadow: inset 0 0 0 1px rgb(251 191 36 / 0.5); }
-  65%  { background-color: rgb(245 158 11 / 0.30); box-shadow: inset 0 0 0 1px rgb(251 191 36 / 0.8); }
-  100% { background-color: transparent; box-shadow: inset 0 0 0 1px transparent; }
-}
-
-@keyframes protected-flash-sky {
-  0%   { background-color: rgb(56 189 248 / 0.15); box-shadow: inset 0 0 0 1px rgb(56 189 248 / 0.5); }
-  20%  { background-color: rgb(56 189 248 / 0.40); box-shadow: inset 0 0 0 1px rgb(56 189 248 / 0.95); }
-  45%  { background-color: rgb(56 189 248 / 0.15); box-shadow: inset 0 0 0 1px rgb(56 189 248 / 0.5); }
-  65%  { background-color: rgb(56 189 248 / 0.30); box-shadow: inset 0 0 0 1px rgb(56 189 248 / 0.8); }
-  100% { background-color: transparent; box-shadow: inset 0 0 0 1px transparent; }
-}
-
-.protected-flash-amber {
-  animation: protected-flash-amber 1800ms ease-out forwards;
-}
-
-.protected-flash-sky {
-  animation: protected-flash-sky 1800ms ease-out forwards;
-}
-
-@keyframes protected-fade-amber {
-  0%   { background-color: rgb(251 191 36 / 0.30); box-shadow: inset 0 0 0 1px rgb(251 191 36 / 0.8); }
-  100% { background-color: transparent; box-shadow: inset 0 0 0 1px transparent; }
-}
-
-@keyframes protected-fade-sky {
-  0%   { background-color: rgb(56 189 248 / 0.30); box-shadow: inset 0 0 0 1px rgb(56 189 248 / 0.8); }
-  100% { background-color: transparent; box-shadow: inset 0 0 0 1px transparent; }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .protected-flash-amber {
-    animation: protected-fade-amber 1800ms ease-out forwards;
-  }
-
-  .protected-flash-sky {
-    animation: protected-fade-sky 1800ms ease-out forwards;
-  }
-}
-
 @layer utilities {
   /* Custom scrollbar for data tables to look industrial */
   .scrollbar-industrial::-webkit-scrollbar {

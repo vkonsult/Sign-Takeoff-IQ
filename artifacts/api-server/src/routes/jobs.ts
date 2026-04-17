@@ -9,31 +9,19 @@ import {
   activityLogsTable,
   signTypeSpecsTable,
   signageScheduleEntriesTable,
-  complianceEntriesTable,
-  plaqueSchedulesTable,
-  occupantLoadsTable,
 } from "@workspace/db";
-import {
-  applyRules,
-  applyStairRules,
-  applyElevatorRules,
-  applyEvacMapRules,
-  buildRoomInventory,
-} from "../lib/rules-engine";
 import { buildExcelExport } from "../lib/export";
-import { buildRoomInventoryFromExtractedSigns, mergeOccupantLoads } from "../lib/room-inventory";
 import { getJobExportPath, PAGES_DIR } from "../lib/storage";
 import { processJob, deduplicateSignRows } from "../lib/process-job";
 import { extractSignsFromPdfImage, extractSignsFromPdf, visualLocateDoors } from "../lib/extraction";
 import { ai } from "@workspace/integrations-gemini-ai";
-import { AI_CALL_REGISTRY, type AiCallType, runProjectInfoExtraction, runFloorPlanTextExtraction, runBboxDetection, runVisionFallback, runTitleBlockVision, runSignScheduleEnrich, runPlaqueScheduleExtraction, persistPlaqueSchedule, runOccupantLoadsExtraction, persistOccupantLoads, fetchOccupantLoadsForJob } from "../lib/ai-processor";
+import { AI_CALL_REGISTRY, type AiCallType, runProjectInfoExtraction, runFloorPlanTextExtraction, runBboxDetection, runVisionFallback, runTitleBlockVision, runSignScheduleEnrich } from "../lib/ai-processor";
 import { extractPagePhrases, matchLocationToCoords, type SpatialPageType } from "../lib/pdf-words";
 import fs from "fs/promises";
 import fsSync from "fs";
 import { z } from "zod/v4";
-
+import { requireRole } from "../middlewares/authMiddleware";
 import { recordActivity } from "../lib/record-activity";
-import { unwatchPdfFile } from "../lib/pdf-file-watcher";
 
 const router: IRouter = Router();
 
@@ -83,8 +71,6 @@ router.get("/jobs", async (req, res) => {
         lastActivityUser: sql<string | null>`(SELECT user_name FROM activity_logs WHERE job_id = ${jobsTable.id} ORDER BY created_at DESC LIMIT 1)`.as("last_activity_user"),
         lastActivityInitials: sql<string | null>`(SELECT user_initials FROM activity_logs WHERE job_id = ${jobsTable.id} ORDER BY created_at DESC LIMIT 1)`.as("last_activity_initials"),
         lastActivityType: sql<string | null>`(SELECT event_type FROM activity_logs WHERE job_id = ${jobsTable.id} ORDER BY created_at DESC LIMIT 1)`.as("last_activity_type"),
-        plaqueCount: sql<number>`(SELECT COUNT(*) FROM plaque_schedules WHERE job_id = ${jobsTable.id})`.as("plaque_count"),
-        occupantLoadCount: sql<number>`(SELECT COUNT(*) FROM occupant_loads WHERE job_id = ${jobsTable.id})`.as("occupant_load_count"),
       })
       .from(jobsTable)
       .where(whereClause)
@@ -136,55 +122,12 @@ router.get("/jobs", async (req, res) => {
       }
     }
 
-    // Batch-count plaque schedule entries, occupant load entries, and unplaced signs per job.
-    const plaqueCounts = new Map<string, number>();
-    const occupantLoadCounts = new Map<string, number>();
-    const unplacedCounts = new Map<string, number>();
-    if (jobIds.length > 0) {
-      const [plaqueRows, occupantRows, unplacedRows] = await Promise.all([
-        db
-          .select({ jobId: plaqueSchedulesTable.jobId, count: sql<number>`COUNT(*)::int` })
-          .from(plaqueSchedulesTable)
-          .where(inArray(plaqueSchedulesTable.jobId, jobIds))
-          .groupBy(plaqueSchedulesTable.jobId),
-        db
-          .select({ jobId: occupantLoadsTable.jobId, count: sql<number>`COUNT(*)::int` })
-          .from(occupantLoadsTable)
-          .where(inArray(occupantLoadsTable.jobId, jobIds))
-          .groupBy(occupantLoadsTable.jobId),
-        db
-          .select({ jobId: extractedSignsTable.jobId, count: sql<number>`COUNT(*)::int` })
-          .from(extractedSignsTable)
-          .where(
-            and(
-              inArray(extractedSignsTable.jobId, jobIds),
-              isNull(extractedSignsTable.xPos),
-              isNull(extractedSignsTable.yPos),
-              sql`${extractedSignsTable.hidden} = false`,
-            )
-          )
-          .groupBy(extractedSignsTable.jobId),
-      ]);
-      for (const r of plaqueRows) {
-        if (r.jobId) plaqueCounts.set(r.jobId, r.count);
-      }
-      for (const r of occupantRows) {
-        if (r.jobId) occupantLoadCounts.set(r.jobId, r.count);
-      }
-      for (const r of unplacedRows) {
-        if (r.jobId) unplacedCounts.set(r.jobId, r.count);
-      }
-    }
-
     const enriched = jobs.map((j) => {
       const users = recentUsersByJob.get(j.id) ?? [];
       return {
         ...j,
         files: filesByJob.get(j.id) ?? [],
         recentUsers: users.map((u) => ({ userName: u.userName, userInitials: u.userInitials, at: u.at, eventType: u.eventType })),
-        plaqueCount: plaqueCounts.get(j.id) ?? 0,
-        occupantLoadCount: occupantLoadCounts.get(j.id) ?? 0,
-        unplacedCount: unplacedCounts.get(j.id) ?? 0,
       };
     });
 
@@ -222,7 +165,6 @@ router.delete("/jobs/:jobId", async (req, res) => {
     }
 
     for (const f of files) {
-      unwatchPdfFile(f.storedPath);
       try {
         await fs.unlink(f.storedPath);
       } catch {
@@ -257,7 +199,7 @@ router.delete("/jobs", async (req, res) => {
 
   try {
     const orgCondition = user && !user.isSuperAdmin
-      ? eq(jobsTable.organizationId, user.organizationId!)
+      ? eq(jobsTable.organizationId, user.organizationId)
       : undefined;
 
     // Collect file paths BEFORE deleting so ON DELETE CASCADE doesn't wipe them first.
@@ -278,7 +220,6 @@ router.delete("/jobs", async (req, res) => {
     // Only unlink disk files for jobs that were actually deleted.
     for (const f of filesToDelete) {
       if (!deletedIds.has(f.jobId)) continue;
-      unwatchPdfFile(f.storedPath);
       try {
         await fs.unlink(f.storedPath);
       } catch {
@@ -357,13 +298,6 @@ router.get("/jobs/:jobId", async (req, res) => {
     const flaggedCount = extractedSigns.filter((s) => s.reviewFlag).length;
     const highConfidenceCount = extractedSigns.filter((s) => s.confidenceScore >= 0.8).length;
 
-    const [plaqueRows, occupantLoadRows] = await Promise.all([
-      db.select({ id: plaqueSchedulesTable.id }).from(plaqueSchedulesTable).where(eq(plaqueSchedulesTable.jobId, jobId)),
-      db.select({ id: occupantLoadsTable.id }).from(occupantLoadsTable).where(eq(occupantLoadsTable.jobId, jobId)),
-    ]);
-    const plaqueCount = plaqueRows.length;
-    const occupantLoadCount = occupantLoadRows.length;
-
     // Unified processing cost: combines text-pass tokens + visual-scan tokens
     const COST_INPUT = 0.15 / 1_000_000;
     const COST_OUTPUT = 0.60 / 1_000_000;
@@ -411,8 +345,6 @@ router.get("/jobs/:jobId", async (req, res) => {
       totalSigns,
       flaggedCount,
       highConfidenceCount,
-      plaqueCount,
-      occupantLoadCount,
       processingCost: {
         inputTokens: combinedInputTokens,
         outputTokens: combinedOutputTokens,
@@ -660,11 +592,7 @@ router.post("/jobs/:jobId/compare", async (req, res) => {
     const rawTextRows = textResults.flatMap((r) => r.rows.map((row) => buildTextRow(row, r.file)));
     const rawImageRows = imageResults.flatMap((r) => r.rows.map((row) => buildImageRow(row, r.file)));
     // Code-proximity rows: deterministic label+code pairs from the PDF text layer.
-    const rawCodeProximityRows = textResults.flatMap((r) => {
-      type RawRow = Parameters<typeof buildRawTextRow>[0];
-      const rows = (r as { rawTextRows?: RawRow[] }).rawTextRows ?? [];
-      return rows.map((row) => buildRawTextRow(row, r.file));
-    });
+    const rawCodeProximityRows = textResults.flatMap((r) => (r.rawTextRows ?? []).map((row) => buildRawTextRow(row, r.file)));
 
     const textRows = deduplicateSignRows(rawTextRows);
     const textSeenKeys = new Set(
@@ -1155,12 +1083,10 @@ const UpdateSignSchema = z.object({
   notes: z.string().nullable().optional(),
   reviewFlag: z.boolean().optional(),
   hidden: z.boolean().optional(),
-  manuallyEdited: z.boolean().optional(),
   xPos: z.number().min(0).max(1).nullable().optional(),
   yPos: z.number().min(0).max(1).nullable().optional(),
   placementSource: z.enum(["word_match", "text_match", "gemini_vision", "user_confirmed", "manual", "user_drag"]).nullable().optional(),
   pageNumber: z.number().int().positive().nullable().optional(),
-  jobFileId: z.string().uuid().nullable().optional(),
 });
 
 router.patch("/extracted-signs/:signId", async (req, res) => {
@@ -1201,9 +1127,8 @@ router.patch("/extracted-signs/:signId", async (req, res) => {
     ];
     const isPlacementUpdate = parsed.data.placementSource !== undefined;
     const hasContentEdit = !isPlacementUpdate && contentFields.some((f) => parsed.data[f] !== undefined);
-    const explicitManuallyEdited = parsed.data.manuallyEdited !== undefined;
     const updatePayload = hasContentEdit
-      ? { ...parsed.data, userVerified: true, ...(explicitManuallyEdited ? {} : { manuallyEdited: true }) }
+      ? { ...parsed.data, userVerified: true }
       : { ...parsed.data };
 
     const [updated] = await db
@@ -1342,33 +1267,23 @@ router.get("/jobs/:jobId/export", async (req, res) => {
       return;
     }
 
-    const [signs, plaques, occupantLoads] = await Promise.all([
-      db
-        .select()
-        .from(extractedSignsTable)
-        .where(
-          and(
-            eq(extractedSignsTable.jobId, jobId),
-            not(extractedSignsTable.hidden)
-          )
-        ),
-      db
-        .select()
-        .from(plaqueSchedulesTable)
-        .where(eq(plaqueSchedulesTable.jobId, jobId)),
-      db
-        .select()
-        .from(occupantLoadsTable)
-        .where(eq(occupantLoadsTable.jobId, jobId)),
-    ]);
+    const signs = await db
+      .select()
+      .from(extractedSignsTable)
+      .where(
+        and(
+          eq(extractedSignsTable.jobId, jobId),
+          not(extractedSignsTable.hidden)
+        )
+      );
 
-    if (signs.length === 0 && plaques.length === 0 && occupantLoads.length === 0) {
-      res.status(404).json({ error: "No data found for this job" });
+    if (signs.length === 0) {
+      res.status(404).json({ error: "No extracted signs found for this job" });
       return;
     }
 
     const exportPath = getJobExportPath(jobId);
-    await buildExcelExport(signs, jobId, exportPath, plaques, occupantLoads);
+    await buildExcelExport(signs, jobId, exportPath);
 
     const fileName = `sign-takeoff-${jobId.slice(0, 8)}.xlsx`;
     res.setHeader(
@@ -1376,7 +1291,6 @@ router.get("/jobs/:jobId/export", async (req, res) => {
       "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     );
     res.setHeader("Content-Disposition", `attachment; filename="${fileName}"`);
-    res.setHeader("X-Sign-Count", String(signs.length));
 
     const fileBuffer = await fs.readFile(exportPath);
     res.send(fileBuffer);
@@ -1396,7 +1310,7 @@ router.get("/jobs/:jobId/ai-calls", async (req, res) => {
   try {
     const job = await getJobWithOrgCheck(req, res, jobId);
     if (!job) return;
-    res.json({ callTypes: AI_CALL_REGISTRY, completedCallTypes: job.completedCallTypes ?? [] });
+    res.json({ callTypes: AI_CALL_REGISTRY });
   } catch (err) {
     req.log.error({ err, jobId }, "ai-calls registry error");
     res.status(500).json({ error: "Internal server error" });
@@ -1405,7 +1319,7 @@ router.get("/jobs/:jobId/ai-calls", async (req, res) => {
 
 // ── AI Scan Endpoint ─────────────────────────────────────────────────────────
 const aiScanSchema = z.object({
-  callTypes: z.array(z.enum(["sign_schedule_enrich", "project_info", "floor_plan_text", "vision_fallback", "bbox_detection", "title_block_vision", "plaque_schedule", "occupant_loads"])),
+  callTypes: z.array(z.enum(["sign_schedule_enrich", "project_info", "floor_plan_text", "vision_fallback", "bbox_detection", "title_block_vision"])),
 });
 
 router.post("/jobs/:jobId/ai-scan", async (req, res) => {
@@ -1443,13 +1357,9 @@ router.post("/jobs/:jobId/ai-scan", async (req, res) => {
 
     // Build project context from job record
     const projectContext = (job.projectAddress || job.projectCity || job.projectState) ? {
-      project_name: null,
-      address: job.projectAddress ?? null,
-      city: job.projectCity ?? null,
-      state: job.projectState ?? null,
-      zip: null,
-      occupancy_type: null,
-      ahj: null,
+      address: job.projectAddress ?? undefined,
+      city: job.projectCity ?? undefined,
+      state: job.projectState ?? undefined,
     } : undefined;
 
     // Process each file
@@ -1495,7 +1405,7 @@ router.post("/jobs/:jobId/ai-scan", async (req, res) => {
 
           } else if (callType === "floor_plan_text") {
             const spatialMap = buildSpatialMap("floor_plan");
-            const { rows, inputTokens, outputTokens } = await runFloorPlanTextExtraction(file, projectContext as import("../lib/extraction").ProjectInfo | undefined, spatialMap.size > 0 ? spatialMap : undefined);
+            const { rows, inputTokens, outputTokens } = await runFloorPlanTextExtraction(file, projectContext, spatialMap.size > 0 ? spatialMap : undefined);
             const { newCount, updateCount } = await mergeAiSignRows(rows, jobId, file.id, existingSignKeys, existingSigns, files);
             totalNewSigns += newCount;
             totalUpdatedSigns += updateCount;
@@ -1511,7 +1421,7 @@ router.post("/jobs/:jobId/ai-scan", async (req, res) => {
             if (updatedPaths && Object.keys(updatedPaths).length > 0) {
               pageImagePaths = { ...pageImagePaths, ...updatedPaths }; // in-memory update for same-run calls
               const updatedStats = { ...(pageStats ?? {}), pageImagePaths };
-              await db.update(jobFilesTable).set({ pageStats: updatedStats as NonNullable<typeof jobFilesTable.$inferInsert['pageStats']> }).where(eq(jobFilesTable.id, file.id));
+              await db.update(jobFilesTable).set({ pageStats: updatedStats }).where(eq(jobFilesTable.id, file.id));
             }
             results[`${callType}_${file.id}`] = { callouts: scanResult.callouts?.length ?? 0, skipped: scanResult.skipped, skipReason: scanResult.skipReason, inputTokens: scanResult.inputTokens, outputTokens: scanResult.outputTokens };
 
@@ -1531,7 +1441,7 @@ router.post("/jobs/:jobId/ai-scan", async (req, res) => {
                 floorPageLevels[String(pageNum)] = level;
               }
               const updatedStats = { ...(pageStats ?? {}), floorPageLevels };
-              await db.update(jobFilesTable).set({ pageStats: updatedStats as unknown as NonNullable<typeof jobFilesTable.$inferInsert['pageStats']> }).where(eq(jobFilesTable.id, file.id));
+              await db.update(jobFilesTable).set({ pageStats: updatedStats }).where(eq(jobFilesTable.id, file.id));
             }
             results[`${callType}_${file.id}`] = { levelsFound: levelMap.size, levels: Object.fromEntries(levelMap) };
           } else if (callType === "sign_schedule_enrich") {
@@ -1544,55 +1454,6 @@ router.post("/jobs/:jobId/ai-scan", async (req, res) => {
                 specs: enrichResult.specResults,
               };
             }
-          } else if (callType === "plaque_schedule") {
-            // Job-level operation: only run on the first file that has sign schedule pages.
-            // Persistence (delete+insert) is deferred to after the file loop via a flag.
-            if (!(results as Record<string, unknown>)["plaque_schedule_done"]) {
-              const filePageStats = file.pageStats as {
-                signSchedulePages?: number[];
-                bothPages?: number[];
-                otherPages?: number[];
-              } | null;
-              const plaqueResult = await runPlaqueScheduleExtraction(jobId, {
-                id: file.id,
-                storedPath: file.storedPath,
-                pageStats: filePageStats,
-              });
-              results[`${callType}_${file.id}`] = {
-                plaqueCount: plaqueResult.plaques.length,
-                sourcePage: plaqueResult.sourcePage,
-                skipped: plaqueResult.skipped ?? false,
-                skipReason: plaqueResult.skipReason ?? null,
-                inputTokens: plaqueResult.inputTokens,
-                outputTokens: plaqueResult.outputTokens,
-              };
-              if (plaqueResult.plaques.length > 0) {
-                await persistPlaqueSchedule(jobId, plaqueResult.plaques, plaqueResult.generalNotes, plaqueResult.sourcePage);
-                (results as Record<string, unknown>)["plaque_schedule_done"] = true;
-              }
-            }
-          } else if (callType === "occupant_loads") {
-            // Accumulated across all files; persistence happens after the file loop.
-            const filePageStats = file.pageStats as { otherPages?: number[] } | null;
-            const occupantResult = await runOccupantLoadsExtraction(jobId, {
-              id: file.id,
-              storedPath: file.storedPath,
-              pageStats: filePageStats,
-            });
-            const priorRooms = ((results as Record<string, unknown>)["_occupant_rooms_all"] as typeof occupantResult.rooms | undefined) ?? [];
-            (results as Record<string, unknown>)["_occupant_rooms_all"] = [...priorRooms, ...occupantResult.rooms];
-            const priorPage = ((results as Record<string, unknown>)["_occupant_first_page"] as number | null | undefined) ?? null;
-            if (priorPage === null && occupantResult.sourcePages.length > 0) {
-              (results as Record<string, unknown>)["_occupant_first_page"] = occupantResult.sourcePages[0];
-            }
-            results[`${callType}_${file.id}`] = {
-              roomCount: occupantResult.rooms.length,
-              sourcePages: occupantResult.sourcePages,
-              skipped: occupantResult.skipped ?? false,
-              skipReason: occupantResult.skipReason ?? null,
-              inputTokens: occupantResult.inputTokens,
-              outputTokens: occupantResult.outputTokens,
-            };
           }
         } catch (callErr) {
           req.log.error({ callErr, callType, fileId: file.id }, "AI scan call failed");
@@ -1601,47 +1462,19 @@ router.post("/jobs/:jobId/ai-scan", async (req, res) => {
       }
     }
 
-    // If occupant_loads was one of the call types, persist all collected rooms now
-    // (rooms were accumulated across all files in results["_occupant_rooms_all"]).
-    if (callTypes.includes("occupant_loads")) {
-      const allRooms = ((results as Record<string, unknown>)["_occupant_rooms_all"] as import("../lib/ai-processor").OccupantLoadRoom[] | undefined) ?? [];
-      const firstPage = ((results as Record<string, unknown>)["_occupant_first_page"] as number | null | undefined) ?? null;
-      await persistOccupantLoads(jobId, allRooms, firstPage);
-      delete (results as Record<string, unknown>)["_occupant_rooms_all"];
-      delete (results as Record<string, unknown>)["_occupant_first_page"];
-    }
-    if (callTypes.includes("plaque_schedule")) {
-      delete (results as Record<string, unknown>)["plaque_schedule_done"];
-    }
-
     // After AI sign insertion, run coordinate matching for any signs missing coordinates
     await assignMissingCoordinates(jobId, files);
-
-    // Persist which call types have now been completed so the frontend can warn
-    // before overwriting on subsequent re-runs. Only mark a call type completed
-    // if it produced at least one successful result key (i.e. a results entry
-    // without an "_error" suffix), so failed-only calls don't trigger prompts.
-    const resultKeys = Object.keys(results);
-    const successfullyCompleted = callTypes.filter((ct) =>
-      resultKeys.some((k) => k.startsWith(`${ct}_`) && !k.endsWith("_error"))
-    );
-    if (successfullyCompleted.length > 0) {
-      const existingCompleted = job.completedCallTypes ?? [];
-      const merged = Array.from(new Set([...existingCompleted, ...successfullyCompleted]));
-      await db.update(jobsTable).set({ completedCallTypes: merged, updatedAt: new Date() }).where(eq(jobsTable.id, jobId));
-    }
 
     res.json({
       success: true,
       jobId,
       callTypes,
-      successfulCallTypes: successfullyCompleted,
       newSignsCreated: totalNewSigns,
       signsUpdated: totalUpdatedSigns,
       details: results,
     });
 
-    recordActivity(req, "scan_run", jobId);
+    recordActivity(req, "ai_scan_run", jobId);
   } catch (err) {
     req.log.error({ err, jobId }, "ai-scan failed");
     res.status(500).json({ error: "AI scan failed", details: String(err) });
@@ -1827,7 +1660,7 @@ async function assignMissingCoordinates(jobId: string, files: DbFile[]): Promise
 // ── GET /jobs/:jobId/schedule-entries ─────────────────────────────────────────
 // Returns schedule entries with joined sign type spec data for the given job.
 router.get("/jobs/:jobId/schedule-entries", async (req: Request, res: Response) => {
-  const { jobId } = req.params as Record<string, string>;
+  const { jobId } = req.params;
 
   try {
     const job = await getJobWithOrgCheck(req, res, jobId);
@@ -1873,7 +1706,7 @@ router.get("/jobs/:jobId/schedule-entries", async (req: Request, res: Response) 
       .orderBy(signTypeSpecsTable.typeCode);
 
     res.json({ entries, specs });
-  } catch {
+  } catch (err) {
     res.status(500).json({ error: "Failed to fetch schedule entries" });
   }
 });
@@ -1881,7 +1714,7 @@ router.get("/jobs/:jobId/schedule-entries", async (req: Request, res: Response) 
 // ── GET /jobs/:jobId/schedule-crops/:fileId/:fileName ─────────────────────────
 // Serves pre-rendered crop PNG images for sign type diagrams.
 router.get("/jobs/:jobId/schedule-crops/:fileId/:fileName", async (req: Request, res: Response) => {
-  const { jobId, fileId, fileName } = req.params as Record<string, string>;
+  const { jobId, fileId, fileName } = req.params;
   const job = await getJobWithOrgCheck(req, res, jobId);
   if (!job) return;
 
@@ -1915,7 +1748,7 @@ const ToggleRejectedPageSchema = z.object({
 });
 
 router.patch("/jobs/:jobId/files/:fileId/rejected-pages", async (req: Request, res: Response) => {
-  const { jobId, fileId } = req.params as Record<string, string>;
+  const { jobId, fileId } = req.params;
   if (!jobId || !fileId) {
     res.status(400).json({ error: "Job ID and file ID required" });
     return;
@@ -1982,820 +1815,6 @@ router.patch("/jobs/:jobId/files/:fileId/rejected-pages", async (req: Request, r
   } catch (err) {
     req.log.error({ err, jobId, fileId }, "Failed to toggle rejected page");
     res.status(500).json({ error: "Failed to toggle rejected page" });
-  }
-});
-
-// ── Compliance scan (R1–R15 rules engine) ─────────────────────────────────────
-
-// GET last persisted scan results for a job
-router.get("/jobs/:jobId/compliance-scan", async (req, res) => {
-  const { jobId } = req.params;
-  if (!jobId) {
-    res.status(400).json({ error: "Job ID required" });
-    return;
-  }
-  try {
-    const job = await getJobWithOrgCheck(req, res, jobId);
-    if (!job) return;
-
-    const rows = await db
-      .select()
-      .from(complianceEntriesTable)
-      .where(eq(complianceEntriesTable.jobId, jobId))
-      .orderBy(complianceEntriesTable.ruleRef);
-
-    if (rows.length === 0) {
-      res.json({ entries: null, summary: null, generatedAt: null });
-      return;
-    }
-
-    const entries = rows.map((r) => ({
-      signType: r.signType,
-      qty: r.qty,
-      ruleRef: r.ruleRef,
-      color: r.color,
-      plaqueTypeId: r.plaqueTypeId ?? undefined,
-      roomNumber: r.roomNumber,
-      roomName: r.roomName,
-      level: r.level,
-      pageNumber: r.pageNumber,
-      coords: r.coordsJson ?? undefined,
-    }));
-
-    const byRule: Record<string, number> = {};
-    const byLevel: Record<string, number> = {};
-    for (const e of entries) {
-      byRule[e.ruleRef] = (byRule[e.ruleRef] ?? 0) + e.qty;
-      byLevel[e.level] = (byLevel[e.level] ?? 0) + e.qty;
-    }
-    const totalSigns = entries.reduce((sum, e) => sum + e.qty, 0);
-    const generatedAt = rows[0].createdAt.toISOString();
-
-    res.json({
-      entries,
-      summary: { totalSigns, byRule, byLevel },
-      generatedAt,
-    });
-  } catch (err) {
-    req.log.error({ err, jobId }, "Failed to load compliance scan results");
-    res.status(500).json({ error: "Failed to load compliance scan results" });
-  }
-});
-
-router.post("/jobs/:jobId/compliance-scan", async (req, res) => {
-  const { jobId } = req.params;
-  if (!jobId) {
-    res.status(400).json({ error: "Job ID required" });
-    return;
-  }
-
-  try {
-    const job = await getJobWithOrgCheck(req, res, jobId);
-    if (!job) return;
-
-    // 1. Load extracted signs for this job (all rows — not filtered by hidden)
-    const rows = await db
-      .select({
-        location: extractedSignsTable.location,
-        signType: extractedSignsTable.signType,
-        signIdentifier: extractedSignsTable.signIdentifier,
-        pageNumber: extractedSignsTable.pageNumber,
-        xPos: extractedSignsTable.xPos,
-        yPos: extractedSignsTable.yPos,
-        sheetNumber: extractedSignsTable.sheetNumber,
-        messageContent: extractedSignsTable.messageContent,
-        notes: extractedSignsTable.notes,
-        quantity: extractedSignsTable.quantity,
-      })
-      .from(extractedSignsTable)
-      .where(eq(extractedSignsTable.jobId, jobId));
-
-    if (rows.length === 0) {
-      res.status(422).json({
-        error: "No extracted signs found for this job. Run a scan first.",
-      });
-      return;
-    }
-
-    // 2. Convert rows → RoomInventory[]
-    const inventory = buildRoomInventory(rows);
-
-    // 3. Separate special room types
-    const stairs = inventory.filter((r) => r.isStairwell);
-    const elevators = inventory.filter((r) => r.isElevator);
-    const regularRooms = inventory.filter(
-      (r) => !r.isStairwell && !r.isElevator
-    );
-    const uniqueLevels = [...new Set(inventory.map((r) => r.level))].sort();
-
-    // buildRoomInventory groups by (location, level), so `stairs` contains one
-    // entry per stairwell per floor. applyStairRules expects unique stairwell
-    // identities × levels (cross-product). Deduplicate to unique room numbers
-    // before calling it; applyEvacMapRules receives the full per-level list so
-    // its own level-dedup logic works correctly.
-    const uniqueStairsByNumber = new Map<string, (typeof stairs)[number]>();
-    for (const stair of stairs) {
-      if (!uniqueStairsByNumber.has(stair.roomNumber)) {
-        uniqueStairsByNumber.set(stair.roomNumber, stair);
-      }
-    }
-    const uniqueStairs = [...uniqueStairsByNumber.values()];
-
-    // 4. Apply rules
-    const allEntries = [
-      ...regularRooms.flatMap((room) => applyRules(room)),
-      ...applyStairRules(uniqueStairs, uniqueLevels),
-      ...applyElevatorRules(elevators),
-      ...applyEvacMapRules(stairs),
-    ];
-
-    // 5. Build coverage index from extracted signs
-    // roomNumber in compliance entries == extracted_signs.location.toUpperCase()
-    // signType matching is case-insensitive
-    const coverageKeys = new Set<string>();
-    for (const row of rows) {
-      if (row.location && row.signType) {
-        coverageKeys.add(
-          `${row.location.toUpperCase().trim()}||${row.signType.toLowerCase().trim()}`
-        );
-      }
-    }
-
-    function isCovered(roomNumber: string, signType: string): boolean {
-      return coverageKeys.has(
-        `${roomNumber.toUpperCase().trim()}||${signType.toLowerCase().trim()}`
-      );
-    }
-
-    // 6. Build summary
-    const byRule: Record<string, number> = {};
-    const byLevel: Record<string, number> = {};
-    for (const e of allEntries) {
-      byRule[e.ruleRef] = (byRule[e.ruleRef] ?? 0) + e.qty;
-      byLevel[e.level] = (byLevel[e.level] ?? 0) + e.qty;
-    }
-    const totalSigns = allEntries.reduce((sum, e) => sum + e.qty, 0);
-    const coveredCount = allEntries.reduce((sum, e) => isCovered(e.roomNumber, e.signType) ? sum + e.qty : sum, 0);
-    const missingCount = totalSigns - coveredCount;
-
-    // 7. Persist to compliance_entries (replace previous scan for this job)
-    await db
-      .delete(complianceEntriesTable)
-      .where(eq(complianceEntriesTable.jobId, jobId));
-
-    if (allEntries.length > 0) {
-      await db.insert(complianceEntriesTable).values(
-        allEntries.map((e) => ({
-          jobId,
-          ruleRef: e.ruleRef,
-          signType: e.signType,
-          qty: e.qty,
-          roomNumber: e.roomNumber,
-          roomName: e.roomName,
-          level: e.level,
-          pageNumber: e.pageNumber,
-          coordsJson: e.coords ?? null,
-          color: e.color,
-          plaqueTypeId: e.plaqueTypeId ?? null,
-        }))
-      );
-    }
-
-    recordActivity(req, "scan_run", jobId);
-
-    req.log.info(
-      { jobId, totalSigns, ruleCount: Object.keys(byRule).length },
-      "Compliance scan complete"
-    );
-
-    res.json({
-      entries: allEntries.map((e) => ({
-        ...e,
-        covered: isCovered(e.roomNumber, e.signType),
-      })),
-      summary: { totalSigns, byRule, byLevel, coveredCount, missingCount },
-      generatedAt: new Date().toISOString(),
-    });
-  } catch (err) {
-    req.log.error({ err, jobId }, "Compliance scan failed");
-    res.status(500).json({ error: "Compliance scan failed", details: String(err) });
-  }
-});
-
-// ── Extract Plaque Schedule ───────────────────────────────────────────────────
-
-router.post("/jobs/:jobId/extract-plaque-schedule", async (req, res) => {
-  const jobId = req.params.jobId;
-  if (!jobId) { res.status(400).json({ error: "Job ID required" }); return; }
-
-  const overwrite = req.body?.overwrite === true;
-
-  try {
-    const job = await getJobWithOrgCheck(req, res, jobId);
-    if (!job) return;
-
-    const files = await db.select().from(jobFilesTable).where(eq(jobFilesTable.jobId, jobId));
-    if (files.length === 0) {
-      res.status(404).json({ error: "No files found for this job" });
-      return;
-    }
-
-    const results: Record<string, unknown> = {};
-    let totalInputTokens = 0;
-    let totalOutputTokens = 0;
-    let finalPlaques: import("../lib/ai-processor").PlaqueType[] = [];
-    let finalGeneralNotes: Record<string, unknown> | null = null;
-    let finalSourcePage: number | null = null;
-
-    // Process files until we find plaque schedule data; stop at first success
-    for (const file of files) {
-      const pageStats = file.pageStats as {
-        signSchedulePages?: number[];
-        bothPages?: number[];
-        otherPages?: number[];
-      } | null;
-
-      const result = await runPlaqueScheduleExtraction(jobId, {
-        id: file.id,
-        storedPath: file.storedPath,
-        pageStats,
-      });
-
-      totalInputTokens += result.inputTokens;
-      totalOutputTokens += result.outputTokens;
-      results[file.id] = {
-        plaqueCount: result.plaques.length,
-        sourcePage: result.sourcePage,
-        skipped: result.skipped ?? false,
-        skipReason: result.skipReason ?? null,
-        inputTokens: result.inputTokens,
-        outputTokens: result.outputTokens,
-      };
-
-      // Stop at first file that yields plaques; persist once for the whole job
-      if (result.plaques.length > 0) {
-        finalPlaques = result.plaques;
-        finalGeneralNotes = result.generalNotes;
-        finalSourcePage = result.sourcePage;
-        break;
-      }
-    }
-
-    await persistPlaqueSchedule(jobId, finalPlaques, finalGeneralNotes, finalSourcePage, overwrite);
-
-    recordActivity(req, "scan_run", jobId);
-
-    res.json({
-      success: true,
-      jobId,
-      totalPlaques: finalPlaques.length,
-      totalInputTokens,
-      totalOutputTokens,
-      details: results,
-    });
-  } catch (err) {
-    req.log.error({ err, jobId }, "extract-plaque-schedule failed");
-    res.status(500).json({ error: "Plaque schedule extraction failed", details: String(err) });
-  }
-});
-
-// ── Extract Occupant Loads ────────────────────────────────────────────────────
-
-router.post("/jobs/:jobId/extract-occupant-loads", async (req, res) => {
-  const jobId = req.params.jobId;
-  if (!jobId) { res.status(400).json({ error: "Job ID required" }); return; }
-
-  const overwrite = req.body?.overwrite === true;
-
-  try {
-    const job = await getJobWithOrgCheck(req, res, jobId);
-    if (!job) return;
-
-    const files = await db.select().from(jobFilesTable).where(eq(jobFilesTable.jobId, jobId));
-    if (files.length === 0) {
-      res.status(404).json({ error: "No files found for this job" });
-      return;
-    }
-
-    const results: Record<string, unknown> = {};
-    let totalInputTokens = 0;
-    let totalOutputTokens = 0;
-    // Collect rooms from ALL files before persisting (fixes multi-file overwrite)
-    const allCollectedRooms: import("../lib/ai-processor").OccupantLoadRoom[] = [];
-    let firstSourcePage: number | null = null;
-
-    for (const file of files) {
-      const pageStats = file.pageStats as { otherPages?: number[] } | null;
-
-      const result = await runOccupantLoadsExtraction(jobId, {
-        id: file.id,
-        storedPath: file.storedPath,
-        pageStats,
-      });
-
-      totalInputTokens += result.inputTokens;
-      totalOutputTokens += result.outputTokens;
-      allCollectedRooms.push(...result.rooms);
-      if (firstSourcePage === null && result.sourcePages.length > 0) {
-        firstSourcePage = result.sourcePages[0];
-      }
-      results[file.id] = {
-        roomCount: result.rooms.length,
-        sourcePages: result.sourcePages,
-        skipped: result.skipped ?? false,
-        skipReason: result.skipReason ?? null,
-        inputTokens: result.inputTokens,
-        outputTokens: result.outputTokens,
-      };
-    }
-
-    await persistOccupantLoads(jobId, allCollectedRooms, firstSourcePage, overwrite);
-
-    // ── Wire occupant loads into RoomInventory (compliance-scan integration) ───
-    // Fetch stored occupant loads and merge into a room inventory built from the
-    // job's extracted signs.  This is the same pipeline the compliance-scan
-    // endpoint (Task 2) uses to evaluate R9/R10 assembly rules.
-    const storedLoads = await fetchOccupantLoadsForJob(jobId);
-    const extractedSigns = await db
-      .select({
-        signIdentifier: extractedSignsTable.signIdentifier,
-        location: extractedSignsTable.location,
-        pageNumber: extractedSignsTable.pageNumber,
-        xPos: extractedSignsTable.xPos,
-        yPos: extractedSignsTable.yPos,
-      })
-      .from(extractedSignsTable)
-      .where(eq(extractedSignsTable.jobId, jobId));
-
-    const roomInventory = buildRoomInventoryFromExtractedSigns(extractedSigns);
-    const enrichedInventory = mergeOccupantLoads(roomInventory, storedLoads);
-    const assemblyRooms = enrichedInventory
-      .filter((r) => r.flags.isAssembly)
-      .map((r) => ({
-        roomNumber: r.roomNumber,
-        roomName: r.roomName,
-        occupantLoad: r.occupantLoad,
-        occupancyGroup: r.occupancyGroup,
-        isAssembly: true,
-      }));
-
-    recordActivity(req, "scan_run", jobId);
-
-    res.json({
-      success: true,
-      jobId,
-      totalRooms: allCollectedRooms.length,
-      totalInputTokens,
-      totalOutputTokens,
-      assemblyRoomCount: assemblyRooms.length,
-      assemblyRooms,
-      details: results,
-    });
-  } catch (err) {
-    req.log.error({ err, jobId }, "extract-occupant-loads failed");
-    res.status(500).json({ error: "Occupant loads extraction failed", details: String(err) });
-  }
-});
-
-// ── Occupant Loads Query ──────────────────────────────────────────────────────
-
-router.get("/jobs/:jobId/occupant-loads", async (req, res) => {
-  const jobId = req.params.jobId;
-  if (!jobId) { res.status(400).json({ error: "Job ID required" }); return; }
-
-  try {
-    const job = await getJobWithOrgCheck(req, res, jobId);
-    if (!job) return;
-
-    const loads = await db
-      .select()
-      .from(occupantLoadsTable)
-      .where(eq(occupantLoadsTable.jobId, jobId));
-
-    const assemblyRooms = loads
-      .filter((r) => typeof r.occupantLoad === "number" && r.occupantLoad >= 50)
-      .map((r) => ({
-        roomNumber: r.roomNum,
-        roomName: r.roomName,
-        occupantLoad: r.occupantLoad,
-        occupancyGroup: r.occupancyGroup,
-        isAssembly: true,
-      }));
-
-    res.json({ jobId, loads, assemblyRooms });
-  } catch (err) {
-    req.log.error({ err, jobId }, "occupant-loads fetch failed");
-    res.status(500).json({ error: "Failed to fetch occupant loads" });
-  }
-});
-
-// ── Occupant Load Create ──────────────────────────────────────────────────────
-
-const OccupantLoadCreateSchema = z.object({
-  roomNum: z.string().min(1),
-  roomName: z.string().nullable().optional(),
-  occupantLoad: z.number().nonnegative().nullable().optional(),
-  occupancyGroup: z.string().nullable().optional(),
-});
-
-router.post("/jobs/:jobId/occupant-loads", async (req, res) => {
-  const jobId = req.params.jobId;
-  if (!jobId) { res.status(400).json({ error: "Job ID required" }); return; }
-
-  const parsed = OccupantLoadCreateSchema.safeParse(req.body);
-  if (!parsed.success) {
-    res.status(400).json({ error: "Invalid request body", details: parsed.error.issues });
-    return;
-  }
-
-  try {
-    const job = await getJobWithOrgCheck(req, res, jobId);
-    if (!job) return;
-
-    const [created] = await db
-      .insert(occupantLoadsTable)
-      .values({
-        jobId,
-        roomNum: parsed.data.roomNum,
-        roomName: parsed.data.roomName ?? null,
-        occupantLoad: parsed.data.occupantLoad ?? null,
-        occupancyGroup: parsed.data.occupancyGroup ?? null,
-        manuallyEdited: true,
-      })
-      .returning();
-
-    res.status(201).json({ load: created });
-  } catch (err) {
-    req.log.error({ err, jobId }, "occupant-load create failed");
-    res.status(500).json({ error: "Failed to create occupant load" });
-  }
-});
-
-// ── Occupant Load Update ──────────────────────────────────────────────────────
-
-const OccupantLoadUpdateSchema = z.object({
-  roomNum: z.string().min(1).optional(),
-  roomName: z.string().nullable().optional(),
-  occupantLoad: z.number().nonnegative().nullable().optional(),
-  occupancyGroup: z.string().nullable().optional(),
-  manuallyEdited: z.boolean().optional(),
-});
-
-router.put("/jobs/:jobId/occupant-loads/:id", async (req, res) => {
-  const { jobId, id } = req.params;
-  if (!jobId || !id) { res.status(400).json({ error: "Job ID and load ID required" }); return; }
-
-  const parsed = OccupantLoadUpdateSchema.safeParse(req.body);
-  if (!parsed.success) {
-    res.status(400).json({ error: "Invalid request body", details: parsed.error.issues });
-    return;
-  }
-
-  try {
-    const job = await getJobWithOrgCheck(req, res, jobId);
-    if (!job) return;
-
-    const updateData: Record<string, unknown> = {
-      manuallyEdited: parsed.data.manuallyEdited !== undefined ? parsed.data.manuallyEdited : true,
-    };
-    if (parsed.data.roomNum !== undefined) updateData.roomNum = parsed.data.roomNum;
-    if (parsed.data.roomName !== undefined) updateData.roomName = parsed.data.roomName;
-    if (parsed.data.occupantLoad !== undefined) updateData.occupantLoad = parsed.data.occupantLoad;
-    if (parsed.data.occupancyGroup !== undefined) updateData.occupancyGroup = parsed.data.occupancyGroup;
-
-    const hasDataFields = parsed.data.roomNum !== undefined || parsed.data.roomName !== undefined ||
-      parsed.data.occupantLoad !== undefined || parsed.data.occupancyGroup !== undefined ||
-      parsed.data.manuallyEdited !== undefined;
-    if (!hasDataFields) {
-      res.status(400).json({ error: "No fields provided to update" });
-      return;
-    }
-
-    const [updated] = await db
-      .update(occupantLoadsTable)
-      .set(updateData)
-      .where(and(eq(occupantLoadsTable.id, id), eq(occupantLoadsTable.jobId, jobId)))
-      .returning();
-
-    if (!updated) {
-      res.status(404).json({ error: "Occupant load not found" });
-      return;
-    }
-
-    res.json({ load: updated });
-  } catch (err) {
-    req.log.error({ err, jobId, id }, "occupant-load update failed");
-    res.status(500).json({ error: "Failed to update occupant load" });
-  }
-});
-
-// ── Occupant Load Delete ──────────────────────────────────────────────────────
-
-router.delete("/jobs/:jobId/occupant-loads/:id", async (req, res) => {
-  const { jobId, id } = req.params;
-  if (!jobId || !id) { res.status(400).json({ error: "Job ID and load ID required" }); return; }
-
-  try {
-    const job = await getJobWithOrgCheck(req, res, jobId);
-    if (!job) return;
-
-    const [deleted] = await db
-      .delete(occupantLoadsTable)
-      .where(and(eq(occupantLoadsTable.id, id), eq(occupantLoadsTable.jobId, jobId)))
-      .returning();
-
-    if (!deleted) {
-      res.status(404).json({ error: "Occupant load not found" });
-      return;
-    }
-
-    res.json({ success: true });
-  } catch (err) {
-    req.log.error({ err, jobId, id }, "occupant-load delete failed");
-    res.status(500).json({ error: "Failed to delete occupant load" });
-  }
-});
-
-// ── Plaque Schedule Delete ────────────────────────────────────────────────────
-
-router.delete("/jobs/:jobId/plaque-schedule/:id", async (req, res) => {
-  const { jobId, id } = req.params;
-  if (!jobId || !id) { res.status(400).json({ error: "Job ID and plaque ID required" }); return; }
-
-  try {
-    const job = await getJobWithOrgCheck(req, res, jobId);
-    if (!job) return;
-
-    const [deleted] = await db
-      .delete(plaqueSchedulesTable)
-      .where(and(eq(plaqueSchedulesTable.id, id), eq(plaqueSchedulesTable.jobId, jobId)))
-      .returning();
-
-    if (!deleted) {
-      res.status(404).json({ error: "Plaque schedule row not found" });
-      return;
-    }
-
-    res.json({ success: true });
-  } catch (err) {
-    req.log.error({ err, jobId, id }, "plaque-schedule delete failed");
-    res.status(500).json({ error: "Failed to delete plaque schedule row" });
-  }
-});
-
-// ── Plaque Schedule Query ─────────────────────────────────────────────────────
-
-router.get("/jobs/:jobId/plaque-schedule", async (req, res) => {
-  const jobId = req.params.jobId;
-  if (!jobId) { res.status(400).json({ error: "Job ID required" }); return; }
-
-  try {
-    const job = await getJobWithOrgCheck(req, res, jobId);
-    if (!job) return;
-
-    const plaques = await db
-      .select()
-      .from(plaqueSchedulesTable)
-      .where(eq(plaqueSchedulesTable.jobId, jobId));
-
-    res.json({ jobId, plaques });
-  } catch (err) {
-    req.log.error({ err, jobId }, "plaque-schedule fetch failed");
-    res.status(500).json({ error: "Failed to fetch plaque schedule" });
-  }
-});
-
-// ── Plaque Schedule Create ────────────────────────────────────────────────────
-
-const PlaqueScheduleCreateSchema = z.object({
-  typeId: z.string().min(1),
-  name: z.string().nullable().optional(),
-  braille: z.boolean().nullable().optional(),
-  letterHeight: z.string().nullable().optional(),
-  trigger: z.string().nullable().optional(),
-});
-
-router.post("/jobs/:jobId/plaque-schedule", async (req, res) => {
-  const jobId = req.params.jobId;
-  if (!jobId) { res.status(400).json({ error: "Job ID required" }); return; }
-
-  const parsed = PlaqueScheduleCreateSchema.safeParse(req.body);
-  if (!parsed.success) {
-    res.status(400).json({ error: "Invalid request body", details: parsed.error.issues });
-    return;
-  }
-
-  try {
-    const job = await getJobWithOrgCheck(req, res, jobId);
-    if (!job) return;
-
-    const [created] = await db
-      .insert(plaqueSchedulesTable)
-      .values({
-        jobId,
-        typeId: parsed.data.typeId,
-        name: parsed.data.name ?? null,
-        braille: parsed.data.braille ?? null,
-        letterHeight: parsed.data.letterHeight ?? null,
-        trigger: parsed.data.trigger ?? null,
-        manuallyEdited: true,
-      })
-      .returning();
-
-    res.status(201).json({ plaque: created });
-  } catch (err) {
-    req.log.error({ err, jobId }, "plaque-schedule create failed");
-    res.status(500).json({ error: "Failed to create plaque schedule row" });
-  }
-});
-
-// ── Plaque Schedule Update ────────────────────────────────────────────────────
-
-const PlaqueScheduleUpdateSchema = z.object({
-  typeId: z.string().min(1).optional(),
-  name: z.string().nullable().optional(),
-  braille: z.boolean().nullable().optional(),
-  letterHeight: z.string().nullable().optional(),
-  trigger: z.string().nullable().optional(),
-  manuallyEdited: z.boolean().optional(),
-});
-
-router.put("/jobs/:jobId/plaque-schedule/:id", async (req, res) => {
-  const { jobId, id } = req.params;
-  if (!jobId || !id) { res.status(400).json({ error: "Job ID and row ID required" }); return; }
-
-  const parsed = PlaqueScheduleUpdateSchema.safeParse(req.body);
-  if (!parsed.success) {
-    res.status(400).json({ error: "Invalid request body", details: parsed.error.issues });
-    return;
-  }
-
-  try {
-    const job = await getJobWithOrgCheck(req, res, jobId);
-    if (!job) return;
-
-    const updateData: Record<string, unknown> = {
-      manuallyEdited: parsed.data.manuallyEdited !== undefined ? parsed.data.manuallyEdited : true,
-    };
-    if (parsed.data.typeId !== undefined) updateData.typeId = parsed.data.typeId;
-    if (parsed.data.name !== undefined) updateData.name = parsed.data.name;
-    if (parsed.data.braille !== undefined) updateData.braille = parsed.data.braille;
-    if (parsed.data.letterHeight !== undefined) updateData.letterHeight = parsed.data.letterHeight;
-    if (parsed.data.trigger !== undefined) updateData.trigger = parsed.data.trigger;
-
-    const hasDataFields = parsed.data.typeId !== undefined || parsed.data.name !== undefined ||
-      parsed.data.braille !== undefined || parsed.data.letterHeight !== undefined ||
-      parsed.data.trigger !== undefined || parsed.data.manuallyEdited !== undefined;
-    if (!hasDataFields) {
-      res.status(400).json({ error: "No fields provided to update" });
-      return;
-    }
-
-    const [updated] = await db
-      .update(plaqueSchedulesTable)
-      .set(updateData)
-      .where(and(eq(plaqueSchedulesTable.id, id), eq(plaqueSchedulesTable.jobId, jobId)))
-      .returning();
-
-    if (!updated) {
-      res.status(404).json({ error: "Plaque schedule row not found" });
-      return;
-    }
-
-    res.json({ plaque: updated });
-  } catch (err) {
-    req.log.error({ err, jobId, id }, "plaque-schedule update failed");
-    res.status(500).json({ error: "Failed to update plaque schedule row" });
-  }
-});
-
-// ── Plaque Schedule Delete ────────────────────────────────────────────────────
-
-router.delete("/jobs/:jobId/plaque-schedule/:id", async (req, res) => {
-  const { jobId, id } = req.params;
-  if (!jobId || !id) { res.status(400).json({ error: "Job ID and row ID required" }); return; }
-
-  try {
-    const job = await getJobWithOrgCheck(req, res, jobId);
-    if (!job) return;
-
-    const [deleted] = await db
-      .delete(plaqueSchedulesTable)
-      .where(and(eq(plaqueSchedulesTable.id, id), eq(plaqueSchedulesTable.jobId, jobId)))
-      .returning();
-
-    if (!deleted) {
-      res.status(404).json({ error: "Plaque schedule row not found" });
-      return;
-    }
-
-    res.json({ success: true });
-  } catch (err) {
-    req.log.error({ err, jobId, id }, "plaque-schedule delete failed");
-    res.status(500).json({ error: "Failed to delete plaque schedule row" });
-  }
-});
-
-// ── Plaque Schedule Batch Unlock ──────────────────────────────────────────────
-
-const BatchUnlockSchema = z.object({
-  ids: z.array(z.string()).optional(),
-});
-
-// ── Signs Batch Unlock ────────────────────────────────────────────────────────
-
-router.post("/jobs/:jobId/signs/unlock-all", async (req, res) => {
-  const { jobId } = req.params;
-  if (!jobId) { res.status(400).json({ error: "Job ID required" }); return; }
-
-  const parsed = BatchUnlockSchema.safeParse(req.body);
-  if (!parsed.success) {
-    res.status(400).json({ error: "Invalid request body", details: parsed.error.issues });
-    return;
-  }
-
-  try {
-    const job = await getJobWithOrgCheck(req, res, jobId);
-    if (!job) return;
-
-    const whereClause = parsed.data.ids && parsed.data.ids.length > 0
-      ? and(eq(extractedSignsTable.jobId, jobId), inArray(extractedSignsTable.id, parsed.data.ids))
-      : eq(extractedSignsTable.jobId, jobId);
-
-    const updated = await db
-      .update(extractedSignsTable)
-      .set({ manuallyEdited: false })
-      .where(whereClause)
-      .returning();
-
-    res.json({ unlockedCount: updated.length, signs: updated });
-  } catch (err) {
-    req.log.error({ err, jobId }, "signs unlock-all failed");
-    res.status(500).json({ error: "Failed to unlock sign rows" });
-  }
-});
-
-router.post("/jobs/:jobId/plaque-schedule/unlock-all", async (req, res) => {
-  const { jobId } = req.params;
-  if (!jobId) { res.status(400).json({ error: "Job ID required" }); return; }
-
-  const parsed = BatchUnlockSchema.safeParse(req.body);
-  if (!parsed.success) {
-    res.status(400).json({ error: "Invalid request body", details: parsed.error.issues });
-    return;
-  }
-
-  try {
-    const job = await getJobWithOrgCheck(req, res, jobId);
-    if (!job) return;
-
-    const whereClause = parsed.data.ids && parsed.data.ids.length > 0
-      ? and(eq(plaqueSchedulesTable.jobId, jobId), inArray(plaqueSchedulesTable.id, parsed.data.ids))
-      : eq(plaqueSchedulesTable.jobId, jobId);
-
-    const updated = await db
-      .update(plaqueSchedulesTable)
-      .set({ manuallyEdited: false })
-      .where(whereClause)
-      .returning();
-
-    res.json({ unlockedCount: updated.length, rows: updated });
-  } catch (err) {
-    req.log.error({ err, jobId }, "plaque-schedule unlock-all failed");
-    res.status(500).json({ error: "Failed to unlock plaque schedule rows" });
-  }
-});
-
-// ── Occupant Loads Batch Unlock ───────────────────────────────────────────────
-
-router.post("/jobs/:jobId/occupant-loads/unlock-all", async (req, res) => {
-  const { jobId } = req.params;
-  if (!jobId) { res.status(400).json({ error: "Job ID required" }); return; }
-
-  const parsed = BatchUnlockSchema.safeParse(req.body);
-  if (!parsed.success) {
-    res.status(400).json({ error: "Invalid request body", details: parsed.error.issues });
-    return;
-  }
-
-  try {
-    const job = await getJobWithOrgCheck(req, res, jobId);
-    if (!job) return;
-
-    const whereClause = parsed.data.ids && parsed.data.ids.length > 0
-      ? and(eq(occupantLoadsTable.jobId, jobId), inArray(occupantLoadsTable.id, parsed.data.ids))
-      : eq(occupantLoadsTable.jobId, jobId);
-
-    const updated = await db
-      .update(occupantLoadsTable)
-      .set({ manuallyEdited: false })
-      .where(whereClause)
-      .returning();
-
-    res.json({ unlockedCount: updated.length, loads: updated });
-  } catch (err) {
-    req.log.error({ err, jobId }, "occupant-loads unlock-all failed");
-    res.status(500).json({ error: "Failed to unlock occupant load rows" });
   }
 });
 

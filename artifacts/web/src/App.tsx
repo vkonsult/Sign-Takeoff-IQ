@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from "react";
 import { Switch, Route, Redirect, useLocation, Router as WouterRouter } from "wouter";
-import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { QueryClient, QueryClientProvider, useQueryClient, useQuery } from "@tanstack/react-query";
 import { ClerkProvider, SignIn, SignUp, Show, useClerk, useUser } from "@clerk/react";
 import { Toaster } from "@/components/ui/toaster";
@@ -119,6 +118,21 @@ function SignUpPage() {
   );
 }
 
+function ProtectedRoute({ component: Component }: { component: React.ComponentType }) {
+  if (isGuestMode()) {
+    return <Component />;
+  }
+  return (
+    <>
+      <Show when="signed-in">
+        <Component />
+      </Show>
+      <Show when="signed-out">
+        <Redirect to="/sign-in" />
+      </Show>
+    </>
+  );
+}
 
 /** Tenant-ADMIN only: requires signed-in ADMIN (not SUPER_ADMIN) with completed onboarding. */
 function AdminRoute({ component: Component }: { component: React.ComponentType }) {
@@ -280,88 +294,40 @@ function Router() {
       <Route path="/sign-in/*?" component={SignInPage} />
       <Route path="/sign-up/*?" component={SignUpPage} />
       <Route path="/onboarding">
-        {() => (
-          <ErrorBoundary routeName="Onboarding">
-            <OnboardingRoute component={OnboardingPage} />
-          </ErrorBoundary>
-        )}
+        {() => <OnboardingRoute component={OnboardingPage} />}
       </Route>
       <Route path="/new-upload">
-        {() => (
-          <ErrorBoundary routeName="New Upload">
-            <OnboardingGuard component={Home} />
-          </ErrorBoundary>
-        )}
+        {() => <OnboardingGuard component={Home} />}
       </Route>
       <Route path="/jobs">
-        {() => (
-          <ErrorBoundary routeName="Jobs">
-            <OnboardingGuard component={JobsList} />
-          </ErrorBoundary>
-        )}
+        {() => <OnboardingGuard component={JobsList} />}
       </Route>
       <Route path="/jobs/:jobId">
-        {() => (
-          <ErrorBoundary routeName="Job Details">
-            <OnboardingGuard component={JobDetails} />
-          </ErrorBoundary>
-        )}
+        {() => <OnboardingGuard component={JobDetails} />}
       </Route>
       <Route path="/training">
-        {() => (
-          <ErrorBoundary routeName="Training">
-            <OnboardingGuard component={Training} />
-          </ErrorBoundary>
-        )}
+        {() => <OnboardingGuard component={Training} />}
       </Route>
       <Route path="/activity">
-        {() => (
-          <ErrorBoundary routeName="Activity">
-            <OnboardingGuard component={ActivityPage} />
-          </ErrorBoundary>
-        )}
+        {() => <OnboardingGuard component={ActivityPage} />}
       </Route>
       <Route path="/settings">
-        {() => (
-          <ErrorBoundary routeName="Settings">
-            <AdminRoute component={SettingsCompany} />
-          </ErrorBoundary>
-        )}
+        {() => <AdminRoute component={SettingsCompany} />}
       </Route>
       <Route path="/settings/users">
-        {() => (
-          <ErrorBoundary routeName="Settings / Users">
-            <AdminRoute component={SettingsUsers} />
-          </ErrorBoundary>
-        )}
+        {() => <AdminRoute component={SettingsUsers} />}
       </Route>
       <Route path="/admin">
-        {() => (
-          <ErrorBoundary routeName="Admin Dashboard">
-            <SuperAdminRoute component={AdminDashboard} />
-          </ErrorBoundary>
-        )}
+        {() => <SuperAdminRoute component={AdminDashboard} />}
       </Route>
       <Route path="/admin/organizations">
-        {() => (
-          <ErrorBoundary routeName="Admin / Organizations">
-            <SuperAdminRoute component={AdminOrgs} />
-          </ErrorBoundary>
-        )}
+        {() => <SuperAdminRoute component={AdminOrgs} />}
       </Route>
       <Route path="/admin/users">
-        {() => (
-          <ErrorBoundary routeName="Admin / Users">
-            <SuperAdminRoute component={AdminUsers} />
-          </ErrorBoundary>
-        )}
+        {() => <SuperAdminRoute component={AdminUsers} />}
       </Route>
       <Route path="/admin/vocabulary">
-        {() => (
-          <ErrorBoundary routeName="Admin / Vocabulary">
-            <SuperAdminRoute component={AdminVocabulary} />
-          </ErrorBoundary>
-        )}
+        {() => <SuperAdminRoute component={AdminVocabulary} />}
       </Route>
       <Route component={NotFound} />
     </Switch>
@@ -391,11 +357,9 @@ function ClerkProviderWithRoutes() {
 
 function App() {
   return (
-    <ErrorBoundary>
-      <WouterRouter base={basePath}>
-        <ClerkProviderWithRoutes />
-      </WouterRouter>
-    </ErrorBoundary>
+    <WouterRouter base={basePath}>
+      <ClerkProviderWithRoutes />
+    </WouterRouter>
   );
 }
 

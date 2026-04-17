@@ -118,41 +118,6 @@ const phraseCache = new Map<string, PageWords>();
 const PDFJS_DOC_CACHE_MAX = 20;
 const pdfjsDocCache = new Map<string, Promise<PdfjsDocument>>();
 
-/**
- * Evict all cached state for a specific PDF file.
- *
- * Call this whenever a PDF is written (or overwritten) at `pdfPath` so that
- * the next request re-reads the file from disk rather than serving stale data.
- *
- * - `pdfjsDocCache`: removes the entry keyed by `pdfPath` and calls
- *   `destroy()` on the document so pdfjs-dist releases its resources.
- * - `phraseCache`: removes every entry whose key starts with `${fileId}:`.
- */
-export function invalidatePdfCaches(pdfPath: string, fileId: string): void {
-  const existingDocPromise = pdfjsDocCache.get(pdfPath);
-  if (existingDocPromise) {
-    pdfjsDocCache.delete(pdfPath);
-    existingDocPromise
-      .then((doc) => { try { doc.destroy(); } catch { /* ignore */ } })
-      .catch(() => { /* ignore */ });
-  }
-
-  const prefix = `${fileId}:`;
-  for (const key of phraseCache.keys()) {
-    if (key.startsWith(prefix)) {
-      phraseCache.delete(key);
-    }
-  }
-}
-
-// ── Test-only exports (not part of the public API) ────────────────────────
-// Exposed so unit tests can seed / inspect the module-level caches without
-// touching the filesystem or loading pdfjs-dist.
-export const __pdfjsDocCache = pdfjsDocCache;
-export const __phraseCache = phraseCache;
-export const __PDFJS_DOC_CACHE_MAX = PDFJS_DOC_CACHE_MAX;
-export function __resetPdfjsLibForTesting() { pdfjsLib = null; }
-
 export async function getOrOpenPdfjsDoc(pdfPath: string): Promise<PdfjsDocument> {
   const existing = pdfjsDocCache.get(pdfPath);
   if (existing) return existing;
@@ -220,32 +185,6 @@ async function getPdfjs(): Promise<PdfjsLib> {
   return lib;
 }
 
-// ── Coordinate sanitiser ──────────────────────────────────────────────────
-/**
- * Normalise a raw bounding box so that the returned PdfPhrase coordinates are
- * always in canonical form:
- *
- *  - x0 ≤ x1  (swap if inverted)
- *  - y0 ≤ y1  (swap if inverted)
- *  - all four values clamped to [0, 1]
- *
- * Call this at every site that constructs a PdfPhrase so that any downstream
- * consumer — including future ones that never pass through the parser — receives
- * well-formed data regardless of what pdfjs-dist provides.
- */
-export function sanitizePhraseCoords(
-  rawX0: number,
-  rawX1: number,
-  rawY0: number,
-  rawY1: number,
-): { x0: number; x1: number; y0: number; y1: number } {
-  const x0 = Math.min(1, Math.max(0, Math.min(rawX0, rawX1)));
-  const x1 = Math.min(1, Math.max(0, Math.max(rawX0, rawX1)));
-  const y0 = Math.min(1, Math.max(0, Math.min(rawY0, rawY1)));
-  const y1 = Math.min(1, Math.max(0, Math.max(rawY0, rawY1)));
-  return { x0, x1, y0, y1 };
-}
-
 // ── Type guard: distinguishes real TextItem from TextMarkedContent ────────
 function isTextItem(item: PdfjsTextItem | Record<string, unknown>): item is PdfjsTextItem {
   return (
@@ -270,11 +209,6 @@ export async function extractRawPageItems(
   pageNum: number,
 ): Promise<{ items: Array<{ text: string; x: number; y: number; w: number; h: number }>; pageWidth: number; pageHeight: number }> {
   const doc = await getOrOpenPdfjsDoc(pdfPath);
-  if (pageNum < 1 || pageNum > doc.numPages) {
-    throw new Error(
-      `Page ${pageNum} is out of range for "${pdfPath}" (document has ${doc.numPages} page${doc.numPages === 1 ? "" : "s"})`,
-    );
-  }
   const page = await doc.getPage(pageNum);
   const viewport = page.getViewport({ scale: 1.0 });
   const pageW = viewport.width;
@@ -334,11 +268,6 @@ export async function extractPagePhrases(
   if (cached) return cached;
 
   const doc = await getOrOpenPdfjsDoc(pdfPath);
-  if (pageNum < 1 || pageNum > doc.numPages) {
-    throw new Error(
-      `Page ${pageNum} is out of range for "${pdfPath}" (document has ${doc.numPages} page${doc.numPages === 1 ? "" : "s"})`,
-    );
-  }
 
   const page = await doc.getPage(pageNum);
   // getViewport({ scale: 1.0 }) without an explicit rotation argument uses the
@@ -461,12 +390,13 @@ export async function extractPagePhrases(
     }
     text = text.trim().replace(/  +/g, " ");
 
-    // Normalise to [0, 1] and enforce canonical order via sanitizePhraseCoords.
-    // Viewport space is already top-down so no y-flip is needed; the helper
-    // additionally guards against any inversion pdfjs might introduce.
+    // Normalise to [0, 1] — viewport space is already top-down so no y-flip needed
     phrases.push({
       text,
-      ...sanitizePhraseCoords(vxMin / pageW, vxMax / pageW, vyMin / pageH, vyMax / pageH),
+      x0: Math.min(1, Math.max(0, vxMin / pageW)),
+      x1: Math.min(1, Math.max(0, vxMax / pageW)),
+      y0: Math.min(1, Math.max(0, vyMin / pageH)),
+      y1: Math.min(1, Math.max(0, vyMax / pageH)),
     });
     group = null;
   }
@@ -747,12 +677,23 @@ export function classifyPageFromPhrases(phrases: PdfPhrase[]): ClassifyPageResul
     combined.includes(phrase.toLowerCase())
   );
 
-  // Priority 1: Exclusion veto — scanned against ALL title-block phrases.
-  // A drawing title like "S2.1 STAGE FRAMING PLAN" may live in a separate text
-  // element from the inclusion keyword, so we check the full title-block zone
-  // rather than only the candidate (inclusion-matching) phrases.
-  // The veto only fires when hasFpPhrase is true — pure sign_schedule pages
-  // are not blocked by floor-plan exclusion terms.
+  // Priority 1: Exclusion veto.
+  // Primary check: scan candidate phrases (those containing an fp/ss keyword) so that
+  // incidental notes elsewhere in the corner zone cannot veto the page.
+  // Secondary check: scan ALL title-block phrases for unambiguous multi-word discipline
+  // identifiers — these are safe to detect anywhere in the zone because they would not
+  // appear incidentally in a legitimate architectural floor plan title strip.
+  // Single-word veto terms (fire, water, site…) are intentionally excluded from the
+  // secondary list because they appear routinely in floor-plan body notes and disclaimers.
+  const HARD_DISCIPLINE_IDENTIFIERS = [
+    "framing plan",
+    "reflected ceiling plan",
+    "demolition plan",
+    "attic plan",
+    "roof framing",
+    "structural plan",
+  ] as const;
+
   const candidatePhrases = titleBlockPhrases.filter((p) => {
     const lower = p.text.toLowerCase();
     return (
@@ -763,11 +704,10 @@ export function classifyPageFromPhrases(phrases: PdfPhrase[]): ClassifyPageResul
   });
   const candidateCombined = candidatePhrases.map((p) => p.text).join(" ").toLowerCase();
   const allTitleBlockCombined = titleBlockPhrases.map((p) => p.text).join(" ").toLowerCase();
-  const hasExclusion = FLOOR_PLAN_EXCLUSION_PHRASES.some((phrase) =>
-    candidateCombined.includes(phrase.toLowerCase()) ||
-    allTitleBlockCombined.includes(phrase.toLowerCase())
-  );
-  if (hasExclusion && hasFpPhrase) return { type: "unknown", titlePhrases: [] };
+  const hasExclusion =
+    FLOOR_PLAN_EXCLUSION_PHRASES.some((phrase) => candidateCombined.includes(phrase.toLowerCase())) ||
+    HARD_DISCIPLINE_IDENTIFIERS.some((id) => allTitleBlockCombined.includes(id));
+  if (hasExclusion) return { type: "unknown", titlePhrases: [] };
 
   let type: SpatialPageType;
   if (hasFpPhrase && hasSsPhrase) type = "both";
@@ -928,7 +868,7 @@ function hasNonArchAncestor(ancestors: string[]): boolean {
  * "Signage") and compound titles ("Main Floor Plan and Signs",
  * "Level 2 Signage Plan").
  */
-function _isSignageLeaf(title: string): boolean {
+function isSignageLeaf(title: string): boolean {
   const lower = title.toLowerCase();
   return lower.includes("signs") || lower.includes("signage");
 }
@@ -1002,7 +942,7 @@ export async function extractPdfMetadata(
 
   const numPages = doc.numPages;
   let pageLabels: (string | null)[] = [];
-  const outlineSections: PdfOutlineSection[] = [];
+  let outlineSections: PdfOutlineSection[] = [];
 
   try {
     const labels = await doc.getPageLabels();
@@ -1206,7 +1146,7 @@ export function extractFloorPlanTextCandidates(
     // Drop pure numeric / punctuation
     if (/^[0-9\s\-_/().,'"]+$/.test(t)) return false;
     // Drop dimension strings
-    if (/['"/]/.test(t) && /[0-9]/.test(t)) return false;
+    if (/['"\/]/.test(t) && /[0-9]/.test(t)) return false;
     // Drop drawing reference codes: single uppercase letter + 2-3 digits (e.g. A123, E4)
     if (/^[A-Z][0-9]{1,3}$/.test(t)) return false;
 
@@ -1375,7 +1315,7 @@ export function extractCodeProximityPairs(
     // Valid text label: strictly >4 chars (5+), OR known 3-char abbreviation
     const len = text.length;
     const isNumericOrPunct = /^[0-9\s\-_/().,'"]+$/.test(text);
-    const isDimension = /['"/]/.test(text) && /[0-9]/.test(text);
+    const isDimension = /['"\/]/.test(text) && /[0-9]/.test(text);
     const isRefCode = /^[A-Z][0-9]{1,3}$/.test(upper);
     if (isNumericOrPunct || isDimension || isRefCode) continue;
 

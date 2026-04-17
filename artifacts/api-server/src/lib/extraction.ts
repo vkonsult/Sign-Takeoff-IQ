@@ -13,15 +13,15 @@ import {
 } from "./pdf-words";
 import type { PdfOutlineSection } from "./pdf-words";
 import { CANONICAL_LEVEL_NAMES } from "./sign-vocabulary";
-import { classifyPage, type PageType, type ScoredPage } from "./extraction-classification";
+import { classifyPage, type PageType, type TitleBlockType, type ScoredPage } from "./extraction-classification";
 
 // ── Shared vocabulary–derived prompt fragments ────────────────────────────────
 // Built once at module load from the canonical level names list so prompts
 // automatically reflect any future vocabulary changes.
-const _LEVEL_NAMES_PIPE = CANONICAL_LEVEL_NAMES
+const LEVEL_NAMES_PIPE = CANONICAL_LEVEL_NAMES
   .map((n) => n.replace(/\b\w/g, (c) => c.toUpperCase()))
   .join(" | ");
-const _LEVEL_NAMES_CONJUNCTION = CANONICAL_LEVEL_NAMES
+const LEVEL_NAMES_CONJUNCTION = CANONICAL_LEVEL_NAMES
   .map((n) => n.replace(/\b\w/g, (c) => c.toUpperCase()))
   .join(", ");
 
@@ -1122,7 +1122,7 @@ If the page is a wide drawing sheet with parallel floor-level columns (e.g. ${CA
 - Room section headings (larger/bolder text with a room number and name, e.g. "101 PORCH", "201 STAIR / ELEVATOR LOBBY") define the location for all sign rows beneath them in that column until the next room heading.
 - Sign rows follow the pattern: [Type Code] [Qty] [Signage Text] [Glass Backer Yes/No] [Comment codes].
 - Use the room number and name exactly as they appear in the heading (e.g. "101 PORCH", "201 STAIR / ELEVATOR LOBBY"). Do not add floor level or other descriptive text to the location field.
-- A "TYPICAL SIGN TYPES" diagram on the right shows dimension callouts (e.g. "6 1/2"", "8 1/4"", "11"") per type code — read these and populate the dimensions field for matching type codes.
+- A "TYPICAL SIGN TYPES" diagram on the right shows dimension callouts (e.g. "6 1/2\"", "8 1/4\"", "11\"") per type code — read these and populate the dimensions field for matching type codes.
 - "Glass Backer: Yes" → add "glass backer" to materials. Comment codes (A, B, G) → add to notes.
 - Set x_position and y_position to null for schedule rows.
 
@@ -1372,7 +1372,7 @@ const DiscoveryItemSchema = z.object({
   confidence: z.number().min(0).max(1).optional().default(0.8),
 });
 
-const _VerificationResponseSchema = z.object({
+const VerificationResponseSchema = z.object({
   verifications: z.array(VerificationItemSchema).default([]),
   discoveries: z.array(DiscoveryItemSchema).default([]),
 });
@@ -1654,7 +1654,7 @@ export async function extractSignsFromPdfImage(
 
   // Large PDF: split into page batches using pdf-lib, process each batch separately.
   logger.info({ fileName, sizeBytes: fileBuffer.length }, "Image extraction: PDF too large for single pass — splitting into page batches");
-  const { PDFDocument } = await import("pdf-lib");
+  let { PDFDocument } = await import("pdf-lib");
   let srcDoc: import("pdf-lib").PDFDocument;
   try {
     srcDoc = await PDFDocument.load(fileBuffer, { ignoreEncryption: true });
@@ -2135,7 +2135,7 @@ Pages:
         } else {
           // Large PDF: split into page batches
           logger.info({ fileName, sizeBytes: fileBuffer.length }, "Pass 4 visual fallback: PDF too large — splitting into page batches");
-          const { PDFDocument } = await import("pdf-lib");
+          let { PDFDocument } = await import("pdf-lib");
           let srcDoc: import("pdf-lib").PDFDocument;
           try {
             srcDoc = await PDFDocument.load(fileBuffer, { ignoreEncryption: true });
@@ -2397,7 +2397,7 @@ export async function visualLocateDoors(
   })));
   const prompt = VISUAL_LOCATE_PROMPT.replace("SIGNS_PLACEHOLDER", signsJson);
 
-  let raw: string;
+  let raw = "";
   try {
     const { text } = await callGeminiMultimodal(prompt, pdfBase64, ai, `visual-locate-p${pageNum}`);
     raw = text;

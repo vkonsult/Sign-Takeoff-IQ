@@ -6,12 +6,9 @@
  * OpenAPI spec version: 0.1.0
  */
 import type { JobSummaryStatus } from "./jobSummaryStatus";
-import type { ProcessingStep } from "./processingStep";
 
 export interface JobSummary {
   id: string;
-  /** Human-readable job name (editable by the user) */
-  name?: string | null;
   status: JobSummaryStatus;
   fileCount: number;
   error?: string | null;
@@ -25,14 +22,6 @@ export interface JobSummary {
   projectCity?: string | null;
   /** 2-letter state code extracted from the plan (e.g. CA, TX, NY) */
   projectState?: string | null;
-  /** Number of plaque schedule entries extracted for this job */
-  plaqueCount?: number;
-  /** Number of occupant load entries extracted for this job */
-  occupantLoadCount?: number;
-  /** Number of signs with no floor-plan placement (pageNumber is null) */
-  unplacedCount?: number;
-  /** Ordered list of processing steps recorded during job execution */
-  processingLog?: ProcessingStep[] | null;
   createdAt: Date;
   updatedAt: Date;
 }

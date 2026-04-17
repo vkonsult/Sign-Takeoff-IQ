@@ -36,7 +36,6 @@ minimumReleaseAgeExclude:
   - stripe-replit-sync
 
 onlyBuiltDependencies:
-  - '@sentry/cli'
   - '@swc/core'
   - esbuild
   - msw

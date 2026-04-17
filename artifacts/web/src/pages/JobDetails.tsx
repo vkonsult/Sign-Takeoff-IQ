@@ -1,28 +1,15 @@
 import { useState, useRef, useEffect, useCallback } from "react";
-import { useRoute, useSearch, useLocation } from "wouter";
-import { logger } from "@/lib/logger";
+import { useRoute } from "wouter";
 import { useQueryClient } from "@tanstack/react-query";
 import { AppShell } from "@/components/layout/Shell";
 import { apiFetch, openPdfInNewTab } from "@/lib/apiClient";
-import { useUserRole } from "@/hooks/use-user-role";
 import { useJobDetails, useStartExtraction, downloadExport, useUpdateJobName } from "@/hooks/use-takeoff";
-import { useExportButtonState } from "@/hooks/useExportButtonState";
-import { useToast } from "@/hooks/use-toast";
-import { ToastAction } from "@/components/ui/toast";
 import { UnifiedPlanViewer } from "@/components/UnifiedPlanViewer";
 import type { ExtractedSign as SignMarker } from "@/components/UnifiedPlanViewer";
 import { SignSpecModal } from "@/components/SignSpecModal";
 import { AiScansTab } from "@/components/AiScansTab";
 import { SignSpecsTab } from "@/components/SignSpecsTab";
-import { ComplianceTab } from "@/components/ComplianceTab";
-import {
-  getGetJobQueryKey,
-  useGetPlaqueSchedule,
-  useGetOccupantLoads,
-  useExtractPlaqueSchedule,
-  useExtractOccupantLoads,
-} from "@workspace/api-client-react";
-import type { PlaqueScheduleEntry, OccupantLoadEntry, AssemblyRoom, ExtractedSign, ProcessingStep } from "@workspace/api-client-react";
+import { getGetJobQueryKey } from "@workspace/api-client-react";
 import { 
   FileText, 
   Cpu, 
@@ -52,10 +39,6 @@ import {
   ExternalLink,
   Clock,
   Brain,
-  Users,
-  BookOpen,
-  Lock,
-  Upload,
 } from "lucide-react";
 import { format, formatDistanceToNow } from "date-fns";
 import { exportMarkedupPdf, type MarkerSign } from "@/lib/exportMarkedupPdf";
@@ -63,6 +46,14 @@ import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger, TooltipProvider } from "@/components/ui/tooltip";
 
 // ── Processing Timeline ──────────────────────────────────────────────────────
+
+interface ProcessingStep {
+  step: string;
+  label: string;
+  durationMs: number;
+  startedAt: string;
+  details?: Record<string, unknown>;
+}
 
 function formatDuration(ms: number): string {
   if (ms < 1000) return `${ms}ms`;
@@ -124,7 +115,7 @@ function ProcessingTimeline({ steps }: { steps: ProcessingStep[] }) {
   for (const step of perFileSteps) {
     const match = PER_FILE_STEP_RE.exec(step.step);
     if (!match) continue;
-    const [, baseType, fileId] = match as unknown as [string, string, string];
+    const [, baseType, fileId] = match as [string, string, string];
     if (!fileStepGroups.has(fileId)) {
       fileStepGroups.set(fileId, { fileId, others: [] });
     }
@@ -280,7 +271,7 @@ function ProcessingTimeline({ steps }: { steps: ProcessingStep[] }) {
 
   function renderTopLevelRow(step: ProcessingStep) {
     const widthPct = Math.max(2, (step.durationMs / maxMs) * 100);
-    const detailStr = formatDetails(step.details ?? undefined);
+    const detailStr = formatDetails(step.details);
     // Generic: render sub-rows for any parent step that has per-file children
     const childFileIds = parentToFileIds.get(step.step) ?? [];
     const hasSubRows = childFileIds.length > 0;
@@ -433,29 +424,15 @@ function ProcessingTimeline({ steps }: { steps: ProcessingStep[] }) {
   );
 }
 
-type TabId = "table" | "sheets" | "summary" | "floorplans" | "signpages" | "specs" | "timeline" | "coords" | "ai_scans" | "compliance" | "plaque_schedule" | "occupant_loads";
-const VALID_TABS = new Set<TabId>(["table", "sheets", "summary", "floorplans", "signpages", "specs", "timeline", "coords", "ai_scans", "compliance", "plaque_schedule", "occupant_loads"]);
-
 export default function JobDetails() {
   const [, params] = useRoute("/jobs/:jobId");
   const jobId = params?.jobId || "";
-  const search = useSearch();
-  const [, setLocation] = useLocation();
-
-  const _urlParams = new URLSearchParams(search);
-  const _initShowHidden = _urlParams.get("hidden") === "1";
-  const _initShowExceptions = _urlParams.get("exceptions") === "1";
-  const _initShowUnplacedOnly = _urlParams.get("unplaced") === "1";
-  const _initShowLockedOnly = _urlParams.get("locked") === "1";
-  const _initSortField = _urlParams.get("sort") || null;
-  const _initSortDir = (_urlParams.get("dir") === "desc" ? "desc" : "asc") as "asc" | "desc";
-  const _initSummaryFilter = _urlParams.get("filter") === "flagged" ? ("flagged" as const) : null;
-
+  
   const { data, isLoading, isError, error } = useJobDetails(jobId);
   const extractMutation = useStartExtraction();
   const queryClient = useQueryClient();
 
-  type SignRow = SignMarker;
+  type SignRow = NonNullable<typeof data>["extractedSigns"][number];
   const [reviewSign, setReviewSign] = useState<SignRow | null>(null);
 
   type SpecViewer = { fileId: string; fileName: string; specPages: number[] } | null;
@@ -465,55 +442,6 @@ export default function JobDetails() {
   const [nameValue, setNameValue] = useState("");
   const nameInputRef = useRef<HTMLInputElement>(null);
   const updateJobName = useUpdateJobName(jobId);
-
-  const { toast } = useToast();
-  const { isAdmin } = useUserRole();
-
-  const [replacingFileId, setReplacingFileId] = useState<string | null>(null);
-  const replaceFileInputRef = useRef<HTMLInputElement>(null);
-  const pendingReplaceFileId = useRef<string | null>(null);
-
-  const openReplacePicker = useCallback((fileId: string) => {
-    pendingReplaceFileId.current = fileId;
-    replaceFileInputRef.current?.click();
-  }, []);
-
-  const handleReplaceFileChosen = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const fileId = pendingReplaceFileId.current;
-    const file = e.target.files?.[0];
-    e.target.value = "";
-    if (!fileId || !file) return;
-
-    setReplacingFileId(fileId);
-    try {
-      const body = new FormData();
-      body.append("file", file);
-      const res = await apiFetch(`/api/files/${fileId}/replace`, {
-        method: "PATCH",
-        body,
-      });
-      if (!res.ok) {
-        const json = await res.json().catch(() => ({})) as { error?: string };
-        throw new Error(json.error ?? `Server error ${res.status}`);
-      }
-      queryClient.invalidateQueries({ queryKey: getGetJobQueryKey(jobId) });
-      toast({ title: "PDF replaced", description: "The file has been replaced successfully." });
-    } catch (err) {
-      toast({
-        variant: "destructive",
-        title: "Replace failed",
-        description: err instanceof Error ? err.message : "An unexpected error occurred.",
-      });
-    } finally {
-      setReplacingFileId(null);
-      pendingReplaceFileId.current = null;
-    }
-  }, [jobId, queryClient, toast]);
-
-  const plaqueScheduleQuery = useGetPlaqueSchedule(jobId);
-  const occupantLoadsQuery = useGetOccupantLoads(jobId);
-  const extractPlaqueMutation = useExtractPlaqueSchedule();
-  const extractOccupantMutation = useExtractOccupantLoads();
 
   const startNameEdit = (currentName: string) => {
     setNameValue(currentName);
@@ -544,17 +472,7 @@ export default function JobDetails() {
 
   const handleExport = () => {
     if (jobId) {
-      downloadExport(jobId)
-        .then(({ signCount }) => {
-          if (signCount === 0) {
-            toast({
-              title: "Partial export downloaded",
-              description:
-                "This export contains plaque/occupant load data only — no sign takeoff rows were found.",
-            });
-          }
-        })
-        .catch((err) => logger.error("Export failed:", err));
+      downloadExport(jobId).catch((err) => console.error("Export failed:", err));
     }
   };
 
@@ -564,7 +482,7 @@ export default function JobDetails() {
     if (!data || exportingPdf) return;
     setExportingPdf(true);
     try {
-      const allSigns = (data.extractedSigns as SignMarker[]) as MarkerSign[];
+      const allSigns = data.extractedSigns as unknown as MarkerSign[];
       const markedSigns = allSigns.filter(
         (s) => s.pageNumber != null
       );
@@ -576,76 +494,20 @@ export default function JobDetails() {
       );
       apiFetch(`/api/jobs/${jobId}/log-pdf-export`, { method: "POST" }).catch(() => {});
     } catch (err) {
-      logger.error("PDF export failed:", err);
+      console.error("PDF export failed:", err);
       alert("Failed to export marked-up PDF. Please try again.");
     } finally {
       setExportingPdf(false);
     }
   };
 
-  const [showHidden, setShowHidden] = useState(_initShowHidden);
-  const [showExceptions, setShowExceptions] = useState(_initShowExceptions);
-  const [showUnplacedOnly, setShowUnplacedOnly] = useState(_initShowUnplacedOnly);
-  const [showLockedOnly, setShowLockedOnly] = useState(_initShowLockedOnly);
-  const [signsUnlockingAll, setSignsUnlockingAll] = useState(false);
-  const [showSignsConfirm, setShowSignsConfirm] = useState(false);
-  const [sortField, setSortField] = useState<string | null>(_initSortField);
-  const [sortDir, setSortDir] = useState<"asc" | "desc">(_initSortDir);
-  const [summaryFilter, setSummaryFilter] = useState<null | "flagged">(_initSummaryFilter);
-  const tabFromUrl = new URLSearchParams(search).get("tab") as TabId | null;
-  const _storedTab = jobId
-    ? (localStorage.getItem(`lastTab:${jobId}`) as TabId | null)
-    : null;
-  const activeTab: TabId =
-    tabFromUrl && VALID_TABS.has(tabFromUrl)
-      ? tabFromUrl
-      : _storedTab && VALID_TABS.has(_storedTab)
-        ? _storedTab
-        : "table";
-  const setActiveTab = useCallback((tab: TabId) => {
-    setLocation(`/jobs/${jobId}?tab=${tab}`);
-  }, [setLocation, jobId]);
-
-  useEffect(() => {
-    if (jobId && activeTab) {
-      localStorage.setItem(`lastTab:${jobId}`, activeTab);
-    }
-  }, [jobId, activeTab]);
-  const [placeSignId, setPlaceSignId] = useState<string | null>(null);
-  useEffect(() => {
-    if (activeTab !== "floorplans" && placeSignId !== null) {
-      const cancelledSignId = placeSignId;
-      setPlaceSignId(null);
-      toast({
-        title: "Sign placement cancelled",
-        action: (
-          <ToastAction
-            altText="Go back to floorplans"
-            onClick={() => {
-              setActiveTab("floorplans");
-              setPlaceSignId(cancelledSignId);
-            }}
-          >
-            Go back
-          </ToastAction>
-        ),
-      });
-    }
-  }, [activeTab, placeSignId, setActiveTab, toast]);
+  const [showHidden, setShowHidden] = useState(false);
+  const [showExceptions, setShowExceptions] = useState(false);
+  const [sortField, setSortField] = useState<string | null>(null);
+  const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
+  const [summaryFilter, setSummaryFilter] = useState<null | "flagged">(null);
+  const [activeTab, setActiveTab] = useState<"table" | "sheets" | "summary" | "floorplans" | "signpages" | "specs" | "timeline" | "coords" | "ai_scans">("table");
   const [showAiHighlight, setShowAiHighlight] = useState(false);
-  const [unlockingSignId, setUnlockingSignId] = useState<string | null>(null);
-
-  // Reset sign-table filter toggles whenever the active tab changes.
-  // IMPORTANT for future "Remember filter settings" work: if filter state is
-  // ever persisted (e.g. in localStorage or URL params), it must be stored
-  // under a per-tab key (e.g. `filters:${jobId}:${activeTab}`) so that
-  // restoring filters for one tab does not bleed into another tab.
-  useEffect(() => {
-    setShowHidden(false);
-    setShowExceptions(false);
-    setShowUnplacedOnly(false);
-    setShowLockedOnly(false);
-  }, [activeTab]);
 
   const PROCESSING_TIMEOUT_SECONDS = 5 * 60;
   const [processingSeconds, setProcessingSeconds] = useState(0);
@@ -656,26 +518,6 @@ export default function JobDetails() {
     return () => clearInterval(id);
   }, [isProcessingNow]);
 
-  const isJobCompleted = data?.job?.status === "completed";
-  const supplementalDataLoading =
-    isJobCompleted &&
-    (plaqueScheduleQuery.isLoading || occupantLoadsQuery.isLoading);
-  const hasNoMapData =
-    isProcessingNow ||
-    (isJobCompleted &&
-    ((data?.extractedSigns as SignMarker[] | undefined) ?? []).filter((s) => s.pageNumber != null).length === 0);
-
-  const exportButtonState = useExportButtonState({
-    extractedSigns: (data?.extractedSigns as SignMarker[] | undefined) ?? [],
-    plaqueCount: plaqueScheduleQuery.data?.plaques?.length ?? 0,
-    loadsCount: occupantLoadsQuery.data?.loads?.length ?? 0,
-    assemblyRoomsCount: occupantLoadsQuery.data?.assemblyRooms?.length ?? 0,
-    isProcessingNow,
-    supplementalDataLoading,
-    exportingPdf,
-    hasNoMapData,
-  });
-
   const handleSort = (field: string) => {
     if (sortField === field) {
       setSortDir((d) => (d === "asc" ? "desc" : "asc"));
@@ -684,23 +526,6 @@ export default function JobDetails() {
       setSortDir("asc");
     }
   };
-
-  useEffect(() => {
-    const p = new URLSearchParams(window.location.search);
-    if (showHidden) p.set("hidden", "1"); else p.delete("hidden");
-    if (showExceptions) p.set("exceptions", "1"); else p.delete("exceptions");
-    if (showUnplacedOnly) p.set("unplaced", "1"); else p.delete("unplaced");
-    if (showLockedOnly) p.set("locked", "1"); else p.delete("locked");
-    if (sortField) p.set("sort", sortField); else p.delete("sort");
-    if (sortDir === "desc") p.set("dir", "desc"); else p.delete("dir");
-    if (summaryFilter === "flagged") p.set("filter", "flagged"); else p.delete("filter");
-    if (activeTab !== "table") p.set("tab", activeTab); else p.delete("tab");
-    const qs = p.toString();
-    const newPath = window.location.pathname + (qs ? `?${qs}` : "");
-    if (window.location.search !== (qs ? `?${qs}` : "")) {
-      setLocation(newPath, { replace: true });
-    }
-  }, [showHidden, showExceptions, showUnplacedOnly, showLockedOnly, sortField, sortDir, summaryFilter, activeTab, setLocation]);
 
   const toggleHidden = async (signId: string, currentlyHidden: boolean) => {
     const next = !currentlyHidden;
@@ -742,66 +567,6 @@ export default function JobDetails() {
       }
     } catch {
       queryClient.invalidateQueries({ queryKey: getGetJobQueryKey(jobId) });
-    }
-  };
-
-  const handleUnlockSign = async (signId: string): Promise<boolean> => {
-    setUnlockingSignId(signId);
-    try {
-      const res = await apiFetch(`/api/extracted-signs/${signId}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ manuallyEdited: false }),
-      });
-      if (res.ok) {
-        queryClient.setQueryData(getGetJobQueryKey(jobId), (old: typeof data) => {
-          if (!old) return old;
-          const extractedSigns = (old.extractedSigns ?? []).map((s) =>
-            s.id === signId ? { ...s, manuallyEdited: false } : s
-          );
-          return { ...old, extractedSigns };
-        });
-        return true;
-      } else {
-        queryClient.invalidateQueries({ queryKey: getGetJobQueryKey(jobId) });
-        return false;
-      }
-    } catch {
-      queryClient.invalidateQueries({ queryKey: getGetJobQueryKey(jobId) });
-      return false;
-    } finally {
-      setUnlockingSignId(null);
-    }
-  };
-
-  const handleUnlockAllSigns = async () => {
-    setSignsUnlockingAll(true);
-    try {
-      const res = await apiFetch(`/api/jobs/${jobId}/signs/unlock-all`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({}),
-      });
-      const responseData = await res.json();
-      if (!res.ok) {
-        toast({ title: "Unlock failed", description: responseData.error ?? "Failed to unlock all sign rows.", variant: "destructive" });
-        return;
-      }
-      const unlockedSigns = responseData.signs as Array<{ id: string; manuallyEdited: boolean }>;
-      queryClient.setQueryData(getGetJobQueryKey(jobId), (old: typeof data) => {
-        if (!old) return old;
-        return {
-          ...old,
-          extractedSigns: old.extractedSigns.map((s) => {
-            const updated = unlockedSigns.find((u) => u.id === s.id);
-            return updated ? { ...s, manuallyEdited: updated.manuallyEdited } : s;
-          }),
-        };
-      });
-    } catch {
-      toast({ title: "Unlock failed", description: "Failed to unlock all sign rows.", variant: "destructive" });
-    } finally {
-      setSignsUnlockingAll(false);
     }
   };
 
@@ -908,69 +673,61 @@ export default function JobDetails() {
     );
   }
 
-  const { job, files, totalSigns, flaggedCount, highConfidenceCount, plaqueCount, occupantLoadCount } = data;
-  const lastScan = data.lastScan ?? null;
-  const lastEdit = data.lastEdit ?? null;
+  const { job, files, totalSigns, flaggedCount, highConfidenceCount } = data;
+  const dataAny = data as typeof data & {
+    lastScan?: { at: string; userName: string; userInitials: string } | null;
+    lastEdit?: { at: string; userName: string; userInitials: string } | null;
+  };
+  const lastScan = dataAny.lastScan ?? null;
+  const lastEdit = dataAny.lastEdit ?? null;
 
   // Show all signs: text, manual, and image-only (visual-only finds).
   // Paired image signs are excluded by the API (their data is in the paired text row).
   const extractedSigns = data.extractedSigns;
-  const hiddenSigns = data.hiddenSigns ?? [];
+  const hiddenSigns = (data as typeof data & { hiddenSigns?: typeof data.extractedSigns }).hiddenSigns ?? [];
   const exceptionSigns = extractedSigns.filter((s) => s.reviewFlag && s.exceptionReason);
-  const manuallyEditedSignsCount = extractedSigns.filter((s) => s.manuallyEdited).length;
-  const lockedSigns = extractedSigns.filter((s) => s.manuallyEdited);
-
-  // Unplaced-sign counts used by both the PDF button badge and the canvas banner.
-  const _placedCount = extractedSigns.filter((s) => s.pageNumber != null).length;
-  const unplacedCount = extractedSigns.length - _placedCount;
-  const noneArePlaced = extractedSigns.length > 0 && _placedCount === 0;
-  const someAreUnplaced = extractedSigns.length > 0 && unplacedCount > 0 && _placedCount > 0;
-  const showUnplacedWarning = !isProcessingNow && (noneArePlaced || someAreUnplaced);
 
   // Derive a source sort key matching the SourceBadge priority order
-  function sourceKey(s: SignMarker): string {
-    const r = s as SignMarker & Record<string, unknown>;
-    if (s.manuallyAdded) return "0_manual";
+  function sourceKey(s: typeof extractedSigns[number]): string {
+    const r = s as Record<string, unknown>;
+    if (r.manuallyAdded) return "0_manual";
     if (r.extractionMethod === "text" && r.pairedSignId) return "1_both";
     if (r.extractionMethod === "image" && !r.pairedSignId) return "2_visual";
     return "3_text";
   }
 
-  const filteredSigns = (() => {
-    let signs = summaryFilter === "flagged"
-      ? extractedSigns.filter((s) => s.reviewFlag === true)
-      : extractedSigns;
-    if (showUnplacedOnly) {
-      signs = signs.filter((s) => s.pageNumber == null);
-    }
-    if (showLockedOnly) {
-      signs = signs.filter((s) => s.manuallyEdited);
-    }
-    return signs;
-  })();
+  const filteredSigns = summaryFilter === "flagged"
+    ? extractedSigns.filter((s) => (s as Record<string, unknown>).reviewFlag === true)
+    : extractedSigns;
 
   const sortedSigns = sortField
     ? [...filteredSigns].sort((a, b) => {
         let av: string | number = "";
         let bv: string | number = "";
+        const ar = a as Record<string, unknown>;
+        const br = b as Record<string, unknown>;
         switch (sortField) {
           case "code":
-            av = a.signIdentifier ?? "";
-            bv = b.signIdentifier ?? "";
+            av = (ar.signIdentifier as string) ?? "";
+            bv = (br.signIdentifier as string) ?? "";
             break;
           case "codeText": {
-            av = [a.signIdentifier, a.location].filter(Boolean).join(" ");
-            bv = [b.signIdentifier, b.location].filter(Boolean).join(" ");
+            const aId = (ar.signIdentifier as string) ?? "";
+            const aLoc = (ar.location as string) ?? "";
+            av = [aId, aLoc].filter(Boolean).join(" ");
+            const bId = (br.signIdentifier as string) ?? "";
+            const bLoc = (br.location as string) ?? "";
+            bv = [bId, bLoc].filter(Boolean).join(" ");
             break;
           }
-          case "signType":   av = a.signType ?? ""; bv = b.signType ?? ""; break;
-          case "quantity":   av = a.quantity ?? 0;  bv = b.quantity ?? 0;  break;
-          case "location":   av = a.location ?? ""; bv = b.location ?? ""; break;
-          case "dimensions": av = a.dimensions ?? ""; bv = b.dimensions ?? ""; break;
-          case "mounting":   av = a.mountingType ?? ""; bv = b.mountingType ?? ""; break;
-          case "finish":     av = a.finishColor ?? ""; bv = b.finishColor ?? ""; break;
-          case "message":    av = a.messageContent ?? ""; bv = b.messageContent ?? ""; break;
-          case "confidence": av = a.confidenceScore;  bv = b.confidenceScore;  break;
+          case "signType":   av = (ar.signType as string) ?? ""; bv = (br.signType as string) ?? ""; break;
+          case "quantity":   av = (ar.quantity as number) ?? 0;  bv = (br.quantity as number) ?? 0;  break;
+          case "location":   av = (ar.location as string) ?? ""; bv = (br.location as string) ?? ""; break;
+          case "dimensions": av = (ar.dimensions as string) ?? ""; bv = (br.dimensions as string) ?? ""; break;
+          case "mounting":   av = (ar.mountingType as string) ?? ""; bv = (br.mountingType as string) ?? ""; break;
+          case "finish":     av = (ar.finishColor as string) ?? ""; bv = (br.finishColor as string) ?? ""; break;
+          case "message":    av = (ar.messageContent as string) ?? ""; bv = (br.messageContent as string) ?? ""; break;
+          case "confidence": av = (ar.confidenceScore as number) ?? 0;  bv = (br.confidenceScore as number) ?? 0;  break;
           case "source":     av = sourceKey(a); bv = sourceKey(b); break;
         }
         const cmp = typeof av === "number" && typeof bv === "number"
@@ -1025,12 +782,6 @@ export default function JobDetails() {
                   </button>
                 )}
                 <StatusBadge status={job.status} />
-                {unplacedCount > 0 && (
-                  <span className="inline-flex items-center gap-1 text-xs font-semibold px-2 py-0.5 rounded-full bg-orange-500/15 text-orange-400 border border-orange-500/25 flex-shrink-0">
-                    <MapPin className="w-3 h-3 flex-shrink-0" />
-                    {unplacedCount} unplaced
-                  </span>
-                )}
               </div>
               <div className="flex items-center flex-wrap gap-x-3 gap-y-1">
                 <p className="text-sm text-muted-foreground font-mono">
@@ -1125,52 +876,30 @@ export default function JobDetails() {
                   <TooltipProvider>
                     <Tooltip>
                       <TooltipTrigger asChild>
-                        <span className="relative inline-flex">
-                          <Button
-                            onClick={handleExportMarkedPdf}
-                            disabled={exportButtonState.pdf.disabled}
-                            variant="outline"
-                            className="font-display font-semibold uppercase tracking-wide hover:bg-primary/10 hover:text-primary hover:border-primary/40 disabled:opacity-50 disabled:cursor-not-allowed disabled:pointer-events-none"
-                          >
-                            {exportingPdf ? (
-                              <Loader2 className="w-4 h-4 animate-spin" />
-                            ) : (
-                              <Stamp className="w-4 h-4" />
-                            )}
-                            {exportingPdf ? "Building PDF…" : "Export Marked PDF"}
-                          </Button>
-                          {exportButtonState.pdf.showBadge && (
-                            <span className="absolute -top-1.5 -right-1.5 flex h-4 w-4 items-center justify-center rounded-full bg-yellow-400 text-[9px] font-bold text-yellow-900 shadow">
-                              !
-                            </span>
+                        <Button
+                          onClick={handleExportMarkedPdf}
+                          disabled={exportingPdf}
+                          variant="outline"
+                          className="font-display font-semibold uppercase tracking-wide hover:bg-primary/10 hover:text-primary hover:border-primary/40"
+                        >
+                          {exportingPdf ? (
+                            <Loader2 className="w-4 h-4 animate-spin" />
+                          ) : (
+                            <Stamp className="w-4 h-4" />
                           )}
-                        </span>
+                          {exportingPdf ? "Building PDF…" : "Export Marked PDF"}
+                        </Button>
                       </TooltipTrigger>
-                      <TooltipContent>{exportButtonState.pdf.tooltip}</TooltipContent>
+                      <TooltipContent>Download the original PDF with sign markers drawn on each floor plan page</TooltipContent>
                     </Tooltip>
                   </TooltipProvider>
-                  <TooltipProvider>
-                    <Tooltip>
-                      <TooltipTrigger asChild>
-                        <span className="relative inline-flex">
-                          <Button
-                            onClick={handleExport}
-                            disabled={exportButtonState.xlsx.disabled}
-                            className="font-display font-semibold uppercase tracking-wide bg-accent text-accent-foreground hover:bg-accent/90 shadow-[0_0_15px_rgba(0,240,255,0.15)] disabled:opacity-50 disabled:cursor-not-allowed disabled:pointer-events-none"
-                          >
-                            <Download className="w-4 h-4" />
-                            Export XLSX
-                          </Button>
-                          {exportButtonState.xlsx.showBadge && (
-                            <span className="absolute -top-1.5 -right-1.5 flex h-4 w-4 items-center justify-center rounded-full bg-yellow-400 text-[9px] font-bold text-yellow-900 shadow">
-                              !
-                            </span>
-                          )}
-                        </span>
-                      </TooltipTrigger>
-                      <TooltipContent>{exportButtonState.xlsx.tooltip}</TooltipContent>
-                    </Tooltip>
-                  </TooltipProvider>
+                  <Button
+                    onClick={handleExport}
+                    className="font-display font-semibold uppercase tracking-wide bg-accent text-accent-foreground hover:bg-accent/90 shadow-[0_0_15px_rgba(0,240,255,0.15)]"
+                  >
+                    <Download className="w-4 h-4" />
+                    Export XLSX
+                  </Button>
                 </>
               )}
             </div>
@@ -1217,7 +946,7 @@ export default function JobDetails() {
             </div>
           ) : (isCompleted || isFailed) ? (
             <div className="flex flex-col h-full">
-              <div className="flex-none px-4 pt-3 pb-2 max-w-7xl mx-auto w-full grid grid-cols-2 md:grid-cols-3 gap-3">
+              <div className="flex-none px-4 pt-3 pb-2 max-w-7xl mx-auto w-full grid grid-cols-2 md:grid-cols-4 gap-3">
                 <SummaryCard 
                   title="Total Signs Extracted" 
                   value={totalSigns} 
@@ -1239,38 +968,16 @@ export default function JobDetails() {
                   onClick={() => setSummaryFilter("flagged")}
                   isActive={summaryFilter === "flagged"}
                 />
-                <SummaryCard
-                  title="Plaque Items"
-                  value={plaqueCount ?? 0}
-                  icon={<Stamp className="w-4 h-4 text-muted-foreground" />}
-                  onClick={() => setActiveTab("plaque_schedule")}
-                />
-                <SummaryCard
-                  title="Occupant Load Entries"
-                  value={occupantLoadCount ?? 0}
-                  icon={<Users className="w-4 h-4 text-muted-foreground" />}
-                  onClick={() => setActiveTab("occupant_loads")}
-                />
                 <CostCard 
-                  inputTokens={data.processingCost?.inputTokens ?? (job.inputTokens ?? 0)}
-                  outputTokens={data.processingCost?.outputTokens ?? (job.outputTokens ?? 0)}
+                  inputTokens={(data as Record<string, unknown> & { processingCost?: { inputTokens?: number } }).processingCost?.inputTokens ?? (job.inputTokens ?? 0)}
+                  outputTokens={(data as Record<string, unknown> & { processingCost?: { outputTokens?: number } }).processingCost?.outputTokens ?? (job.outputTokens ?? 0)}
                 />
               </div>
               
               {/* View tabs */}
               <div className="flex-none flex items-center border-b border-border bg-secondary/20">
-                <div
-                  role="tablist"
-                  aria-label="Job views"
-                  className="flex items-center px-4 gap-0"
-                  onKeyDown={handleTabListKeyDown}
-                >
+                <div className="flex items-center px-4 gap-0">
                   <button
-                    id="tab-table"
-                    role="tab"
-                    aria-selected={activeTab === "table"}
-                    aria-controls="tabpanel-table"
-                    tabIndex={activeTab === "table" ? 0 : -1}
                     onClick={() => setActiveTab("table")}
                     className={`flex items-center gap-1.5 px-3 py-2 text-[10px] font-display font-semibold uppercase tracking-wider border-b-2 transition-all ${
                       activeTab === "table"
@@ -1282,11 +989,6 @@ export default function JobDetails() {
                     Sign Table
                   </button>
                   <button
-                    id="tab-sheets"
-                    role="tab"
-                    aria-selected={activeTab === "sheets"}
-                    aria-controls="tabpanel-sheets"
-                    tabIndex={activeTab === "sheets" ? 0 : -1}
                     onClick={() => setActiveTab("sheets")}
                     className={`flex items-center gap-1.5 px-3 py-2 text-[10px] font-display font-semibold uppercase tracking-wider border-b-2 transition-all ${
                       activeTab === "sheets"
@@ -1298,11 +1000,6 @@ export default function JobDetails() {
                     Sheets Analysis
                   </button>
                   <button
-                    id="tab-summary"
-                    role="tab"
-                    aria-selected={activeTab === "summary"}
-                    aria-controls="tabpanel-summary"
-                    tabIndex={activeTab === "summary" ? 0 : -1}
                     onClick={() => setActiveTab("summary")}
                     className={`flex items-center gap-1.5 px-3 py-2 text-[10px] font-display font-semibold uppercase tracking-wider border-b-2 transition-all ${
                       activeTab === "summary"
@@ -1314,11 +1011,6 @@ export default function JobDetails() {
                     Sign Type Summary
                   </button>
                   <button
-                    id="tab-floorplans"
-                    role="tab"
-                    aria-selected={activeTab === "floorplans"}
-                    aria-controls="tabpanel-floorplans"
-                    tabIndex={activeTab === "floorplans" ? 0 : -1}
                     onClick={() => setActiveTab("floorplans")}
                     className={`flex items-center gap-1.5 px-3 py-2 text-[10px] font-display font-semibold uppercase tracking-wider border-b-2 transition-all ${
                       activeTab === "floorplans"
@@ -1330,11 +1022,6 @@ export default function JobDetails() {
                     Floor Plans
                   </button>
                   <button
-                    id="tab-signpages"
-                    role="tab"
-                    aria-selected={activeTab === "signpages"}
-                    aria-controls="tabpanel-signpages"
-                    tabIndex={activeTab === "signpages" ? 0 : -1}
                     onClick={() => setActiveTab("signpages")}
                     className={`flex items-center gap-1.5 px-3 py-2 text-[10px] font-display font-semibold uppercase tracking-wider border-b-2 transition-all ${
                       activeTab === "signpages"
@@ -1346,11 +1033,6 @@ export default function JobDetails() {
                     Sign Pages
                   </button>
                   <button
-                    id="tab-specs"
-                    role="tab"
-                    aria-selected={activeTab === "specs"}
-                    aria-controls="tabpanel-specs"
-                    tabIndex={activeTab === "specs" ? 0 : -1}
                     onClick={() => setActiveTab("specs")}
                     className={`flex items-center gap-1.5 px-3 py-2 text-[10px] font-display font-semibold uppercase tracking-wider border-b-2 transition-all ${
                       activeTab === "specs"
@@ -1362,11 +1044,6 @@ export default function JobDetails() {
                     Sign Specs
                   </button>
                   <button
-                    id="tab-timeline"
-                    role="tab"
-                    aria-selected={activeTab === "timeline"}
-                    aria-controls="tabpanel-timeline"
-                    tabIndex={activeTab === "timeline" ? 0 : -1}
                     onClick={() => setActiveTab("timeline")}
                     className={`flex items-center gap-1.5 px-3 py-2 text-[10px] font-display font-semibold uppercase tracking-wider border-b-2 transition-all ${
                       activeTab === "timeline"
@@ -1379,11 +1056,6 @@ export default function JobDetails() {
                   </button>
                   {(isCompleted || isFailed) && (
                     <button
-                      id="tab-coords"
-                      role="tab"
-                      aria-selected={activeTab === "coords"}
-                      aria-controls="tabpanel-coords"
-                      tabIndex={activeTab === "coords" ? 0 : -1}
                       onClick={() => setActiveTab("coords")}
                       className={`flex items-center gap-1.5 px-3 py-2 text-[10px] font-display font-semibold uppercase tracking-wider border-b-2 transition-all ${
                         activeTab === "coords"
@@ -1397,11 +1069,6 @@ export default function JobDetails() {
                   )}
                   {(isCompleted || isFailed) && (
                     <button
-                      id="tab-ai_scans"
-                      role="tab"
-                      aria-selected={activeTab === "ai_scans"}
-                      aria-controls="tabpanel-ai_scans"
-                      tabIndex={activeTab === "ai_scans" ? 0 : -1}
                       onClick={() => setActiveTab("ai_scans")}
                       className={`flex items-center gap-1.5 px-3 py-2 text-[10px] font-display font-semibold uppercase tracking-wider border-b-2 transition-all ${
                         activeTab === "ai_scans"
@@ -1413,130 +1080,24 @@ export default function JobDetails() {
                       AI Scans
                     </button>
                   )}
-                  {(isCompleted || isFailed) && (
-                    <button
-                      id="tab-compliance"
-                      role="tab"
-                      aria-selected={activeTab === "compliance"}
-                      aria-controls="tabpanel-compliance"
-                      tabIndex={activeTab === "compliance" ? 0 : -1}
-                      onClick={() => setActiveTab("compliance")}
-                      className={`flex items-center gap-1.5 px-3 py-2 text-[10px] font-display font-semibold uppercase tracking-wider border-b-2 transition-all ${
-                        activeTab === "compliance"
-                          ? "border-emerald-500 text-emerald-400"
-                          : "border-transparent text-muted-foreground hover:text-foreground"
-                      }`}
-                    >
-                      <ShieldCheck className="w-3.5 h-3.5" />
-                      Compliance
-                    </button>
-                  )}
-                  {(isCompleted || isFailed) && (
-                    <button
-                      id="tab-plaque_schedule"
-                      role="tab"
-                      aria-selected={activeTab === "plaque_schedule"}
-                      aria-controls="tabpanel-plaque_schedule"
-                      tabIndex={activeTab === "plaque_schedule" ? 0 : -1}
-                      onClick={() => setActiveTab("plaque_schedule")}
-                      className={`flex items-center gap-1.5 px-3 py-2 text-[10px] font-display font-semibold uppercase tracking-wider border-b-2 transition-all ${
-                        activeTab === "plaque_schedule"
-                          ? "border-indigo-500 text-indigo-400"
-                          : "border-transparent text-muted-foreground hover:text-foreground"
-                      }`}
-                    >
-                      <Stamp className="w-3.5 h-3.5" />
-                      Plaque Schedule
-                      {plaqueScheduleQuery.data && plaqueScheduleQuery.data.plaques.length > 0 && (
-                        <span className="ml-1 bg-indigo-500/20 text-indigo-400 rounded px-1 text-[9px] font-mono">
-                          {plaqueScheduleQuery.data.plaques.length}
-                        </span>
-                      )}
-                    </button>
-                  )}
-                  {(isCompleted || isFailed) && (
-                    <button
-                      id="tab-occupant_loads"
-                      role="tab"
-                      aria-selected={activeTab === "occupant_loads"}
-                      aria-controls="tabpanel-occupant_loads"
-                      tabIndex={activeTab === "occupant_loads" ? 0 : -1}
-                      onClick={() => setActiveTab("occupant_loads")}
-                      className={`flex items-center gap-1.5 px-3 py-2 text-[10px] font-display font-semibold uppercase tracking-wider border-b-2 transition-all ${
-                        activeTab === "occupant_loads"
-                          ? "border-orange-500 text-orange-400"
-                          : "border-transparent text-muted-foreground hover:text-foreground"
-                      }`}
-                    >
-                      <Users className="w-3.5 h-3.5" />
-                      Occupant Loads
-                      {occupantLoadsQuery.data && occupantLoadsQuery.data.assemblyRooms.length > 0 && (
-                        <span className="ml-1 bg-orange-500/20 text-orange-400 rounded px-1 text-[9px] font-mono">
-                          {occupantLoadsQuery.data.assemblyRooms.length} asm
-                        </span>
-                      )}
-                    </button>
-                  )}
                 </div>
               </div>
 
-              <div className="flex-1 flex flex-col min-h-0">
               {activeTab === "floorplans" ? (
-                <div role="tabpanel" id="tabpanel-floorplans" aria-labelledby="tab-floorplans" className="flex-1 min-h-0 flex flex-col">
-                  {showUnplacedWarning && (
-                    <div className="flex items-center gap-2 px-3 py-2 bg-yellow-500/10 border-b border-yellow-500/30 text-yellow-300 text-xs shrink-0">
-                      <AlertTriangle className="w-3.5 h-3.5 text-yellow-400 shrink-0" />
-                      <span className="flex-1">
-                        {noneArePlaced
-                          ? `${extractedSigns.length} sign${extractedSigns.length !== 1 ? "s" : ""} have no floor plan location — the exported PDF will have no markers.`
-                          : `${unplacedCount} of ${extractedSigns.length} sign${extractedSigns.length !== 1 ? "s" : ""} ${unplacedCount !== 1 ? "are" : "is"} not placed on the floor plan and will be missing from the PDF.`}
-                      </span>
-                      <button
-                        onClick={() => {
-                          const firstUnplaced = document.querySelector<HTMLElement>("[data-unplaced='true']");
-                          if (firstUnplaced) {
-                            firstUnplaced.scrollIntoView({ behavior: "smooth", block: "center" });
-                            firstUnplaced.classList.add("ring-2", "ring-yellow-400", "ring-inset");
-                            setTimeout(() => firstUnplaced.classList.remove("ring-2", "ring-yellow-400", "ring-inset"), 2000);
-                          }
-                        }}
-                        className="whitespace-nowrap underline underline-offset-2 hover:text-yellow-200 transition-colors"
-                      >
-                        Show unplaced signs
-                      </button>
-                    </div>
-                  )}
-                  <div className="flex-1 min-h-0">
-                    <UnifiedPlanViewer
-                      mode="tab"
-                      jobId={jobId}
-                      files={files}
-                      signs={extractedSigns}
-                      showAiHighlight={showAiHighlight}
-                      placeSignId={placeSignId}
-                      onSignAdded={handleSignAdded}
-                      onSignUpdated={handleSignUpdated}
-                      onEditSign={(s) => setReviewSign(s as SignRow)}
-                      onPlaceCancel={() => setPlaceSignId(null)}
-                      onPlaceComplete={(signId, xPos, yPos, pageNum, fileId) => {
-                        setPlaceSignId(null);
-                        queryClient.setQueryData(getGetJobQueryKey(jobId), (old: typeof data) => {
-                          if (!old) return old;
-                          return {
-                            ...old,
-                            extractedSigns: old.extractedSigns.map((s) =>
-                              s.id === signId
-                                ? { ...s, xPos, yPos, pageNumber: pageNum, jobFileId: fileId, placementSource: "manual" }
-                                : s
-                            ),
-                          };
-                        });
-                      }}
-                    />
-                  </div>
+                <div className="flex-1 min-h-0">
+                  <UnifiedPlanViewer
+                    mode="tab"
+                    jobId={jobId}
+                    files={files}
+                    signs={extractedSigns}
+                    showAiHighlight={showAiHighlight}
+                    onSignAdded={handleSignAdded}
+                    onSignUpdated={handleSignUpdated}
+                    onEditSign={(s) => setReviewSign(s as SignRow)}
+                  />
                 </div>
               ) : activeTab === "signpages" ? (
-                <div role="tabpanel" id="tabpanel-signpages" aria-labelledby="tab-signpages" className="flex-1 min-h-0">
+                <div className="flex-1 min-h-0">
                   <UnifiedPlanViewer
                     mode="tab"
                     jobId={jobId}
@@ -1547,7 +1108,7 @@ export default function JobDetails() {
                   />
                 </div>
               ) : activeTab === "specs" ? (
-                <div role="tabpanel" id="tabpanel-specs" aria-labelledby="tab-specs" className="flex-1 flex flex-col min-h-0 overflow-hidden">
+                <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
                   <SignSpecsTab
                     signs={extractedSigns}
                     files={files}
@@ -1555,28 +1116,23 @@ export default function JobDetails() {
                   />
                 </div>
               ) : activeTab === "sheets" ? (
-                <div role="tabpanel" id="tabpanel-sheets" aria-labelledby="tab-sheets" className="flex-1 flex flex-col min-h-0">
-                  <SheetsPanel
-                    files={files}
-                    onOpenSpec={setSpecViewer}
-                    allSigns={extractedSigns}
-                    hiddenSigns={hiddenSigns}
-                    toggleHidden={toggleHidden}
-                    jobId={jobId}
-                    toggleRejectedPage={toggleRejectedPage}
-                    isAdmin={isAdmin}
-                    onReplaceFile={openReplacePicker}
-                    replacingFileId={replacingFileId}
-                  />
-                </div>
+                <SheetsPanel
+                  files={files}
+                  onOpenSpec={setSpecViewer}
+                  allSigns={extractedSigns}
+                  hiddenSigns={hiddenSigns}
+                  toggleHidden={toggleHidden}
+                  jobId={jobId}
+                  toggleRejectedPage={toggleRejectedPage}
+                />
               ) : activeTab === "timeline" ? (
-                <div role="tabpanel" id="tabpanel-timeline" aria-labelledby="tab-timeline" className="flex-1 overflow-auto p-8">
+                <div className="flex-1 overflow-auto p-8">
                   <div className="max-w-4xl mx-auto">
                     <div className="text-xs font-display font-semibold uppercase tracking-wider text-muted-foreground mb-6">
                       Processing Timeline
                     </div>
                     {(() => {
-                      const jobLog = job.processingLog;
+                      const jobLog = (job as Record<string, unknown>).processingLog as ProcessingStep[] | null | undefined;
                       return jobLog && jobLog.length > 0 ? (
                         <ProcessingTimeline steps={jobLog} />
                       ) : (
@@ -1586,15 +1142,13 @@ export default function JobDetails() {
                   </div>
                 </div>
               ) : activeTab === "summary" ? (
-                <div role="tabpanel" id="tabpanel-summary" aria-labelledby="tab-summary" className="flex-1 flex flex-col min-h-0">
-                  <SignSummaryPanel signs={extractedSigns} />
-                </div>
+                <SignSummaryPanel signs={extractedSigns} />
               ) : activeTab === "coords" ? (
-                <div role="tabpanel" id="tabpanel-coords" aria-labelledby="tab-coords" className="flex-1 overflow-auto bg-card border-t border-border">
+                <div className="flex-1 overflow-auto bg-card border-t border-border">
                   <CoordinatesTable signs={extractedSigns} showAiHighlight={showAiHighlight} onView={(sign) => setReviewSign(sign as SignRow)} />
                 </div>
               ) : activeTab === "ai_scans" ? (
-                <div role="tabpanel" id="tabpanel-ai_scans" aria-labelledby="tab-ai_scans" className="flex-1 overflow-auto bg-card border-t border-border">
+                <div className="flex-1 overflow-auto bg-card border-t border-border">
                   <AiScansTab
                     jobId={jobId}
                     showAiHighlight={showAiHighlight}
@@ -1604,74 +1158,13 @@ export default function JobDetails() {
                     }}
                   />
                 </div>
-              ) : activeTab === "compliance" ? (
-                <div role="tabpanel" id="tabpanel-compliance" aria-labelledby="tab-compliance" className="flex-1 flex flex-col min-h-0 bg-card border-t border-border overflow-hidden">
-                  <ComplianceTab jobId={jobId} />
-                </div>
-              ) : activeTab === "plaque_schedule" ? (
-                <div role="tabpanel" id="tabpanel-plaque_schedule" aria-labelledby="tab-plaque_schedule" className="flex-1 overflow-auto bg-card border-t border-border">
-                  <PlaqueScheduleTab
-                    jobId={jobId}
-                    plaques={plaqueScheduleQuery.data?.plaques ?? []}
-                    isLoading={plaqueScheduleQuery.isLoading}
-                    isExtracting={extractPlaqueMutation.isPending}
-                    onExtract={() => extractPlaqueMutation.mutate({ jobId }, {
-                      onSuccess: () => {
-                        plaqueScheduleQuery.refetch();
-                        queryClient.invalidateQueries({ queryKey: getGetJobQueryKey(jobId) });
-                      },
-                    })}
-                  />
-                </div>
-              ) : activeTab === "occupant_loads" ? (
-                <div role="tabpanel" id="tabpanel-occupant_loads" aria-labelledby="tab-occupant_loads" className="flex-1 overflow-auto bg-card border-t border-border">
-                  <OccupantLoadsTab
-                    jobId={jobId}
-                    loads={occupantLoadsQuery.data?.loads ?? []}
-                    assemblyRooms={occupantLoadsQuery.data?.assemblyRooms ?? []}
-                    isLoading={occupantLoadsQuery.isLoading}
-                    isExtracting={extractOccupantMutation.isPending}
-                    onExtract={() => extractOccupantMutation.mutate({ jobId }, {
-                      onSuccess: () => {
-                        occupantLoadsQuery.refetch();
-                        queryClient.invalidateQueries({ queryKey: getGetJobQueryKey(jobId) });
-                      },
-                    })}
-                  />
-                </div>
               ) : (
-                <div role="tabpanel" id="tabpanel-table" aria-labelledby="tab-table" className="flex-1 flex flex-col min-h-0">
+                <>
                   {/* Data Table Container */}
                   <div className="flex-1 overflow-auto bg-card border-t border-border">
-                {/* Filter bar — exceptions toggle + hidden toggle + unlock all + unplaced filter */}
-                {(hiddenSigns.length > 0 || exceptionSigns.length > 0 || manuallyEditedSignsCount > 0 || unplacedCount > 0 || showUnplacedOnly || showLockedOnly) && (
+                {/* Filter bar — exceptions toggle + hidden toggle */}
+                {(hiddenSigns.length > 0 || exceptionSigns.length > 0) && (
                   <div className="flex items-center gap-3 px-4 py-2 bg-secondary/60 border-b border-border/60">
-                    {(unplacedCount > 0 || showUnplacedOnly) && (
-                      <button
-                        onClick={() => setShowUnplacedOnly((v) => !v)}
-                        className={`flex items-center gap-2 px-3 py-1 rounded-md text-[11px] font-display font-semibold uppercase tracking-wide border transition-all ${
-                          showUnplacedOnly
-                            ? "bg-blue-500/15 text-blue-500 border-blue-500/40"
-                            : "bg-secondary text-muted-foreground border-border hover:text-blue-500 hover:border-blue-500/40"
-                        }`}
-                      >
-                        <MapPin className="w-3 h-3" />
-                        {showUnplacedOnly ? `Show all signs (${unplacedCount} unplaced)` : `Unplaced only (${unplacedCount})`}
-                      </button>
-                    )}
-                    {(lockedSigns.length > 0 || showLockedOnly) && (
-                      <button
-                        onClick={() => setShowLockedOnly((v) => !v)}
-                        className={`flex items-center gap-2 px-3 py-1 rounded-md text-[11px] font-display font-semibold uppercase tracking-wide border transition-all ${
-                          showLockedOnly
-                            ? "bg-amber-500/15 text-amber-600 border-amber-500/40"
-                            : "bg-secondary text-muted-foreground border-border hover:text-amber-600 hover:border-amber-500/40"
-                        }`}
-                      >
-                        <Lock className="w-3 h-3" />
-                        {showLockedOnly ? `Show all signs (${lockedSigns.length} locked)` : `Locked (${lockedSigns.length})`}
-                      </button>
-                    )}
                     {exceptionSigns.length > 0 && (
                       <button
                         onClick={() => setShowExceptions((v) => !v)}
@@ -1707,38 +1200,6 @@ export default function JobDetails() {
                         {hiddenSigns.length} sign{hiddenSigns.length !== 1 ? "s" : ""} hidden from table and export
                       </span>
                     )}
-                    {manuallyEditedSignsCount > 0 && (
-                      showSignsConfirm ? (
-                        <div className="flex items-center gap-1.5">
-                          <span className="text-[11px] text-amber-400 whitespace-nowrap">Unlock all ({manuallyEditedSignsCount}) rows?</span>
-                          <button
-                            onClick={() => { setShowSignsConfirm(false); handleUnlockAllSigns(); }}
-                            className="flex items-center justify-center px-2 py-1 rounded text-[11px] font-medium text-white bg-amber-500 hover:bg-amber-400 transition-colors border border-amber-400/30"
-                          >
-                            Confirm
-                          </button>
-                          <button
-                            onClick={() => setShowSignsConfirm(false)}
-                            className="flex items-center justify-center px-2 py-1 rounded text-[11px] font-medium text-muted-foreground bg-secondary hover:text-foreground transition-colors border border-border"
-                          >
-                            Cancel
-                          </button>
-                        </div>
-                      ) : (
-                        <button
-                          onClick={() => setShowSignsConfirm(true)}
-                          disabled={signsUnlockingAll}
-                          className="flex items-center gap-2 px-3 py-1 rounded-md text-[11px] font-display font-semibold uppercase tracking-wide border transition-all bg-secondary text-muted-foreground border-border hover:text-amber-600 hover:border-amber-500/40 disabled:opacity-50 disabled:cursor-not-allowed"
-                        >
-                          {signsUnlockingAll ? (
-                            <Loader2 className="w-3 h-3 animate-spin" />
-                          ) : (
-                            <RefreshCw className="w-3 h-3" />
-                          )}
-                          Unlock all ({manuallyEditedSignsCount})
-                        </button>
-                      )
-                    )}
                   </div>
                 )}
 
@@ -1762,12 +1223,10 @@ export default function JobDetails() {
                     </thead>
                     <tbody className="bg-background">
                       {displaySigns.map((sign, idx) => {
-                        const isAiRow = showAiHighlight && (sign.dataSource === "ai" || sign.aiBbox === true);
+                        const isAiRow = showAiHighlight && ((sign as Record<string, unknown>).dataSource === "ai" || (sign as Record<string, unknown>).aiBbox === true);
                         return (
                         <tr 
-                          key={sign.id}
-                          data-sign-id={sign.id}
-                          data-unplaced={sign.pageNumber == null ? "true" : undefined}
+                          key={sign.id} 
                           className={`
                             hover:bg-secondary/40 transition-colors
                             ${sign.reviewFlag ? 'bg-primary/5' : ''}
@@ -1777,19 +1236,8 @@ export default function JobDetails() {
                           style={isAiRow ? { boxShadow: 'inset 3px 0 0 rgba(139, 92, 246, 0.6)', background: 'rgba(139, 92, 246, 0.04)' } : undefined}
                         >
                           <td className="data-cell sticky left-0 z-10 bg-inherit shadow-[2px_0_5px_-2px_rgba(0,0,0,0.3)]">
-                            <span className="flex items-center gap-1.5">
-                              <span className="text-xs font-semibold text-foreground">
-                                {sign.signIdentifier || '—'}
-                              </span>
-                              {sign.manuallyEdited && (
-                                <span
-                                  title="Manually locked — this row will not be overwritten by AI re-runs"
-                                  className="inline-flex items-center gap-0.5 px-1 py-0.5 rounded text-[9px] font-medium bg-amber-500/10 text-amber-400 border border-amber-500/20 cursor-default"
-                                >
-                                  <Lock className="w-2.5 h-2.5" />
-                                  locked
-                                </span>
-                              )}
+                            <span className="text-xs font-semibold text-foreground">
+                              {sign.signIdentifier || '—'}
                             </span>
                           </td>
                           <td className="data-cell truncate max-w-[200px]" title={sign.location || ''}>{sign.location || '—'}</td>
@@ -1803,19 +1251,10 @@ export default function JobDetails() {
                             <ConfidenceBadge score={sign.confidenceScore} />
                           </td>
                           <td className="data-cell text-center">
-                            <SourceBadge sign={sign} />
+                            <SourceBadge sign={sign as Record<string, unknown>} />
                           </td>
                           <td className="data-cell text-center">
                             <div className="flex flex-col gap-1 items-center">
-                              {sign.pageNumber == null && (
-                                <span
-                                  title="This sign has not been placed on a floor plan yet"
-                                  className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider bg-yellow-500/10 text-yellow-500 border border-yellow-500/25 cursor-default"
-                                >
-                                  <MapPin className="w-3 h-3 mr-1" />
-                                  Unplaced
-                                </span>
-                              )}
                               {sign.userVerified && (
                                 <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider" style={{ background: "#22c55e15", color: "#22c55e", border: "1px solid #22c55e44" }}>
                                   <CheckCircle2 className="w-3 h-3 mr-1" />
@@ -1841,16 +1280,6 @@ export default function JobDetails() {
                           </td>
                           <td className="data-cell text-center">
                             <div className="flex items-center justify-center gap-1.5">
-                              {sign.pageNumber == null && (
-                                <button
-                                  onClick={() => { setPlaceSignId(sign.id); setActiveTab("floorplans"); }}
-                                  title="Switch to Floor Plans and click to place this sign"
-                                  className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-display font-semibold uppercase tracking-wide bg-yellow-500/10 hover:bg-yellow-500/20 text-yellow-500 border border-yellow-500/30 hover:border-yellow-500/50 transition-all"
-                                >
-                                  <MapPin className="w-3 h-3" />
-                                  Place
-                                </button>
-                              )}
                               <button
                                 onClick={() => setReviewSign(sign)}
                                 className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-display font-semibold uppercase tracking-wide bg-secondary hover:bg-primary/20 hover:text-primary border border-border hover:border-primary/40 text-muted-foreground transition-all"
@@ -1858,17 +1287,6 @@ export default function JobDetails() {
                                 <Pencil className="w-3 h-3" />
                                 Edit
                               </button>
-                              {sign.manuallyEdited && (
-                                <button
-                                  onClick={() => handleUnlockSign(sign.id)}
-                                  disabled={unlockingSignId !== null}
-                                  title="Unlock row — allow AI to update again"
-                                  aria-label="Unlock row"
-                                  className="inline-flex items-center justify-center w-7 h-7 rounded-md bg-secondary hover:bg-emerald-500/10 hover:text-emerald-400 border border-border text-amber-400 transition-all disabled:opacity-40"
-                                >
-                                  {unlockingSignId === sign.id ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Lock className="w-3.5 h-3.5" />}
-                                </button>
-                              )}
                               <button
                                 onClick={() => toggleHidden(sign.id, false)}
                                 title="Hide this row"
@@ -1889,20 +1307,9 @@ export default function JobDetails() {
                           className="opacity-40 bg-muted/30 hover:opacity-60 transition-opacity"
                         >
                           <td className="data-cell sticky left-0 z-10 bg-inherit shadow-[2px_0_5px_-2px_rgba(0,0,0,0.3)]">
-                            <div className="flex items-center gap-1.5">
-                              <span className="text-xs font-semibold text-muted-foreground line-through">
-                                {sign.signIdentifier || '—'}
-                              </span>
-                              {sign.manuallyEdited && (
-                                <span
-                                  title="Manually locked — this row will not be overwritten by AI re-runs"
-                                  className="inline-flex items-center gap-0.5 px-1 py-0.5 rounded text-[9px] font-medium bg-amber-500/10 text-amber-400 border border-amber-500/20 cursor-default"
-                                >
-                                  <Lock className="w-2.5 h-2.5" />
-                                  locked
-                                </span>
-                              )}
-                            </div>
+                            <span className="text-xs font-semibold text-muted-foreground line-through">
+                              {sign.signIdentifier || '—'}
+                            </span>
                           </td>
                           <td className="data-cell truncate max-w-[200px] text-muted-foreground line-through">{sign.location || '—'}</td>
                           <td className="data-cell text-muted-foreground line-through">{sign.signType || '—'}</td>
@@ -1915,7 +1322,7 @@ export default function JobDetails() {
                             <ConfidenceBadge score={sign.confidenceScore} />
                           </td>
                           <td className="data-cell text-center">
-                            <SourceBadge sign={sign} />
+                            <SourceBadge sign={sign as Record<string, unknown>} />
                           </td>
                           <td className="data-cell text-center">
                             <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider bg-muted/50 text-muted-foreground border border-border/50">
@@ -1936,19 +1343,6 @@ export default function JobDetails() {
                         </tr>
                       ))}
 
-                      {showUnplacedOnly && displaySigns.length === 0 && (
-                        <tr>
-                          <td colSpan={12} className="p-8 text-center text-muted-foreground">
-                            All signs have been placed.{" "}
-                            <button
-                              onClick={() => setShowUnplacedOnly(false)}
-                              className="underline hover:text-foreground transition-colors"
-                            >
-                              Show all signs
-                            </button>
-                          </td>
-                        </tr>
-                      )}
                       {extractedSigns.length === 0 && hiddenSigns.length === 0 && (
                         <tr>
                           <td colSpan={12} className="p-8 text-center text-muted-foreground">
@@ -1967,9 +1361,8 @@ export default function JobDetails() {
                   </table>
                 </div>
               </div>
-                </div>
+                </>
               )}
-              </div>
             </div>
           ) : (
             <div className="flex-1 p-8 max-w-3xl mx-auto w-full">
@@ -1981,31 +1374,14 @@ export default function JobDetails() {
                     <div className="flex-1 min-w-0">
                       <p className="text-sm font-medium text-foreground truncate">{f.originalName}</p>
                     </div>
-                    <div className="flex items-center gap-2 flex-shrink-0 ml-3">
-                      <button
-                        onClick={() => openPdfInNewTab(jobId, f.id, f.originalName).catch(() => {})}
-                        title="Open original PDF in new tab"
-                        className="flex items-center gap-1.5 px-2.5 py-1 rounded text-[11px] font-medium text-muted-foreground border border-border hover:text-primary hover:border-primary/50 transition-colors"
-                      >
-                        <ExternalLink className="w-3.5 h-3.5" />
-                        View PDF
-                      </button>
-                      {isAdmin && (
-                        <button
-                          onClick={() => openReplacePicker(f.id)}
-                          disabled={replacingFileId !== null}
-                          title="Replace this PDF with a new file"
-                          className="flex items-center gap-1.5 px-2.5 py-1 rounded text-[11px] font-medium text-muted-foreground border border-border hover:text-amber-600 hover:border-amber-400 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                        >
-                          {replacingFileId === f.id ? (
-                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                          ) : (
-                            <Upload className="w-3.5 h-3.5" />
-                          )}
-                          {replacingFileId === f.id ? "Replacing…" : "Replace PDF"}
-                        </button>
-                      )}
-                    </div>
+                    <button
+                      onClick={() => openPdfInNewTab(jobId, f.id, f.originalName).catch(() => {})}
+                      title="Open original PDF in new tab"
+                      className="ml-3 flex items-center gap-1.5 px-2.5 py-1 rounded text-[11px] font-medium text-muted-foreground border border-border hover:text-primary hover:border-primary/50 transition-colors flex-shrink-0"
+                    >
+                      <ExternalLink className="w-3.5 h-3.5" />
+                      View PDF
+                    </button>
                   </div>
                 ))}
               </div>
@@ -2035,7 +1411,6 @@ export default function JobDetails() {
           onSaved={handleSignSaved}
           onSignAdded={handleSignAdded}
           onSignDeleted={handleSignDeleted}
-          onUnlock={handleUnlockSign}
         />
       )}
 
@@ -2048,18 +1423,6 @@ export default function JobDetails() {
           onClose={() => setSpecViewer(null)}
         />
       )}
-
-      {/* Hidden file input for Replace PDF */}
-      <input
-        ref={replaceFileInputRef}
-        type="file"
-        accept=".pdf,application/pdf"
-        aria-label="Select replacement PDF file"
-        aria-hidden="true"
-        tabIndex={-1}
-        className="hidden"
-        onChange={handleReplaceFileChosen}
-      />
     </AppShell>
   );
 }
@@ -2086,28 +1449,30 @@ function CoordinatesTable({
     }
   };
 
-  const coordExceptionCount = signs.filter((s) => s.reviewFlag && s.exceptionReason).length;
-  const sorted = [...(showCoordExceptions ? signs.filter((s) => s.reviewFlag && s.exceptionReason) : signs)].sort((a, b) => {
-    // eslint-disable-next-line no-useless-assignment
+  const coordExceptionCount = signs.filter((s) => s["reviewFlag"] && s["exceptionReason"]).length;
+  const sorted = [...(showCoordExceptions ? signs.filter((s) => s["reviewFlag"] && s["exceptionReason"]) : signs)].sort((a, b) => {
     let av: string | number = "";
-    // eslint-disable-next-line no-useless-assignment
     let bv: string | number = "";
     switch (coordSortField) {
       case "code":
-        av = a.signIdentifier ?? "";
-        bv = b.signIdentifier ?? "";
+        av = (a.signIdentifier as string | null) ?? "";
+        bv = (b.signIdentifier as string | null) ?? "";
         break;
       case "codeText": {
-        av = [a.signIdentifier, a.location].filter(Boolean).join(" ");
-        bv = [b.signIdentifier, b.location].filter(Boolean).join(" ");
+        const aId = (a.signIdentifier as string | null) ?? "";
+        const aLoc = (a.location as string | null) ?? "";
+        av = [aId, aLoc].filter(Boolean).join(" ");
+        const bId = (b.signIdentifier as string | null) ?? "";
+        const bLoc = (b.location as string | null) ?? "";
+        bv = [bId, bLoc].filter(Boolean).join(" ");
         break;
       }
       default: {
-        const pageA = a.pageNumber ?? 0;
-        const pageB = b.pageNumber ?? 0;
+        const pageA = (a.pageNumber as number | null) ?? 0;
+        const pageB = (b.pageNumber as number | null) ?? 0;
         if (pageA !== pageB) return pageA - pageB;
-        const idA = a.signIdentifier ?? "";
-        const idB = b.signIdentifier ?? "";
+        const idA = (a.signIdentifier as string | null) ?? "";
+        const idB = (b.signIdentifier as string | null) ?? "";
         return idA.localeCompare(idB);
       }
     }
@@ -2154,14 +1519,14 @@ function CoordinatesTable({
           </thead>
           <tbody className="bg-background">
             {sorted.map((sign, idx) => {
-              const xPos = sign.xPos;
-              const yPos = sign.yPos;
-              const bboxX = sign.aiBboxX;
-              const bboxY = sign.aiBboxY;
-              const bboxW = sign.aiBboxW;
-              const bboxH = sign.aiBboxH;
-              const isAiRow = showAiHighlight && (sign.dataSource === "ai" || sign.aiBbox === true);
-              const isBboxAi = showAiHighlight && sign.aiBbox === true;
+              const xPos = sign.xPos as number | null | undefined;
+              const yPos = sign.yPos as number | null | undefined;
+              const bboxX = sign.aiBboxX as number | null | undefined;
+              const bboxY = sign.aiBboxY as number | null | undefined;
+              const bboxW = sign.aiBboxW as number | null | undefined;
+              const bboxH = sign.aiBboxH as number | null | undefined;
+              const isAiRow = showAiHighlight && ((sign.dataSource as string | null | undefined) === "ai" || (sign as Record<string, unknown>).aiBbox === true);
+              const isBboxAi = showAiHighlight && (sign as Record<string, unknown>).aiBbox === true;
 
               const hasCoords = xPos != null && yPos != null;
               const hasBbox = bboxX != null && bboxY != null && bboxW != null && bboxH != null;
@@ -2183,13 +1548,13 @@ function CoordinatesTable({
               }
 
               const isNone = !hasCoords && !hasBbox;
-              const codeVal = sign.signIdentifier || "—";
-              const exceptionReason = sign.exceptionReason;
+              const codeVal = (sign.signIdentifier as string | null) || "—";
+              const exceptionReason = sign.exceptionReason as string | null | undefined;
               const isException = !!(sign.reviewFlag && exceptionReason);
 
               return (
                 <tr
-                  key={sign.id}
+                  key={sign.id as string}
                   className={`
                     hover:bg-secondary/40 transition-colors
                     ${isException ? "bg-amber-500/5" : idx % 2 === 0 ? "" : "bg-card/30"}
@@ -2363,17 +1728,17 @@ type SignSummaryRow = {
   sheets: string[];
 };
 
-type AnySign = ExtractedSign;
+type AnySign = Record<string, unknown>;
 
 function buildSignSummary(signs: AnySign[]): SignSummaryRow[] {
   const map = new Map<string, SignSummaryRow>();
   for (const sign of signs) {
-    const st = (sign.signType || "Unknown").trim();
-    const dim = (sign.dimensions || "—").trim();
+    const st = ((sign.signType as string) || "Unknown").trim();
+    const dim = ((sign.dimensions as string) || "—").trim();
     const key = `${st}||${dim}`;
     const ex = map.get(key);
-    const qty = sign.quantity ?? 1;
-    const sheet = sign.sheetNumber || null;
+    const qty = (sign.quantity as number) ?? 1;
+    const sheet = (sign.sheetNumber as string) || null;
     if (ex) {
       ex.qty += qty;
       if (sheet && !ex.sheets.includes(sheet)) ex.sheets.push(sheet);
@@ -2474,7 +1839,7 @@ function buildDetectionRows(
     return null;
   };
 
-  const bothPages: number[] = stats.bothPages ?? [];
+  const bothPages: number[] = (stats as Record<string, unknown>).bothPages as number[] ?? [];
 
   const floorPlanRows: DetectionRow[] = floorPlanPages.map((pgNo) => ({
     pageNo: pgNo,
@@ -2629,14 +1994,11 @@ function OutlineSectionsTree({ sections }: { sections: OutlineSection[] }) {
 function SheetsPanel({
   files,
   onOpenSpec,
-  allSigns: _allSigns,
-  hiddenSigns: _hiddenSigns,
-  toggleHidden: _toggleHidden,
+  allSigns,
+  hiddenSigns,
+  toggleHidden,
   jobId,
   toggleRejectedPage,
-  isAdmin,
-  onReplaceFile,
-  replacingFileId,
 }: {
   files: FileWithStats[];
   onOpenSpec: (v: SpecViewerState) => void;
@@ -2645,9 +2007,6 @@ function SheetsPanel({
   toggleHidden: (signId: string, currentlyHidden: boolean) => void;
   jobId: string;
   toggleRejectedPage: (fileId: string, pageNo: number) => void;
-  isAdmin?: boolean;
-  onReplaceFile?: (fileId: string) => void;
-  replacingFileId?: string | null;
 }) {
   const [open, setOpen] = useState(true);
 
@@ -2657,7 +2016,8 @@ function SheetsPanel({
   const totalPages = files.reduce((sum, f) => sum + (f.pageCount ?? 0), 0);
   const totalSignSchedule = files.reduce((sum, f) => {
     const ss = f.pageStats?.signSchedulePages?.length ?? 0;
-    const both = f.pageStats?.bothPages?.length ?? 0;
+    const both = (f.pageStats as Record<string, unknown>)?.bothPages instanceof Array
+      ? ((f.pageStats as Record<string, unknown>).bothPages as number[]).length : 0;
     return sum + ss + both;
   }, 0);
   const totalFloorPlan = files.reduce((sum, f) => sum + (f.pageStats?.floorPlanPages?.length ?? 0), 0);
@@ -2665,13 +2025,13 @@ function SheetsPanel({
   // Find the first file that has sign spec pages (sign schedule OR both)
   const firstSpecFile = files.find(
     (f) => (f.pageStats?.signSchedulePages?.length ?? 0) > 0 ||
-      (f.pageStats?.bothPages?.length ?? 0) > 0
+      (((f.pageStats as Record<string, unknown>)?.bothPages as number[] | undefined)?.length ?? 0) > 0
   );
 
   // Build the combined spec page list for a given file's pageStats
   const getSpecPages = (stats: NonNullable<typeof firstSpecFile>["pageStats"]): number[] => {
     const ss = stats?.signSchedulePages ?? [];
-    const both = stats?.bothPages ?? [];
+    const both = (stats as Record<string, unknown>)?.bothPages as number[] | undefined ?? [];
     return [...new Set([...ss, ...both])].sort((a, b) => a - b);
   };
 
@@ -2744,21 +2104,6 @@ function SheetsPanel({
                         <ExternalLink className="w-3 h-3" />
                         PDF
                       </button>
-                      {isAdmin && onReplaceFile && (
-                        <button
-                          onClick={() => onReplaceFile(f.id)}
-                          disabled={replacingFileId != null}
-                          title="Replace this PDF with a new file"
-                          className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium text-muted-foreground border border-border hover:text-amber-600 hover:border-amber-400 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                        >
-                          {replacingFileId === f.id ? (
-                            <Loader2 className="w-3 h-3 animate-spin" />
-                          ) : (
-                            <Upload className="w-3 h-3" />
-                          )}
-                          {replacingFileId === f.id ? "Replacing…" : "Replace"}
-                        </button>
-                      )}
                       {(ssCount > 0 || bothCount > 0) && (
                         <button
                           onClick={() =>
@@ -2861,7 +2206,7 @@ function SheetsPanel({
                       {/* Detection tables */}
                       {(() => {
                         const { floorPlanRows, signSpecRows } = buildDetectionRows(stats);
-                        const rejectedPageNumbers = stats.rejectedPageNumbers ?? [];
+                        const rejectedPageNumbers = (stats as RawPageStats).rejectedPageNumbers ?? [];
                         return (
                           <>
                             <DetectionTable
@@ -2899,11 +2244,11 @@ function SheetsPanel({
 
 // ─── SOURCE BADGE ─────────────────────────────────────────────────────────────
 
-function SourceBadge({ sign }: { sign: ExtractedSign }) {
-  const method = sign.extractionMethod;
-  const paired = sign.pairedSignId;
-  const manual = sign.manuallyAdded;
-  const dataSource = sign.dataSource;
+function SourceBadge({ sign }: { sign: Record<string, unknown> }) {
+  const method = sign.extractionMethod as string | null | undefined;
+  const paired = sign.pairedSignId as string | null | undefined;
+  const manual = sign.manuallyAdded as boolean | undefined;
+  const dataSource = sign.dataSource as string | null | undefined;
 
   if (manual) {
     return (
@@ -3002,249 +2347,6 @@ function CostCard({ inputTokens, outputTokens }: { inputTokens: number; outputTo
           <Zap className="w-4 h-4 text-muted-foreground" />
         </div>
       </div>
-    </div>
-  );
-}
-
-function PlaqueScheduleTab({
-  jobId: _jobId,
-  plaques,
-  isLoading,
-  isExtracting,
-  onExtract,
-}: {
-  jobId: string;
-  plaques: PlaqueScheduleEntry[];
-  isLoading: boolean;
-  isExtracting: boolean;
-  onExtract: () => void;
-}) {
-  return (
-    <div className="p-6 max-w-5xl mx-auto w-full space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h2 className="text-base font-display font-semibold text-foreground">Plaque Schedule</h2>
-          <p className="text-xs text-muted-foreground mt-0.5">
-            Plaque type specifications extracted from sign schedule pages.
-          </p>
-        </div>
-        <button
-          onClick={onExtract}
-          disabled={isExtracting}
-          className="flex items-center gap-2 px-3 py-1.5 rounded-md bg-indigo-500/10 border border-indigo-500/30 text-indigo-400 text-xs font-medium hover:bg-indigo-500/20 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-        >
-          {isExtracting ? (
-            <Loader2 className="w-3.5 h-3.5 animate-spin" />
-          ) : (
-            <BookOpen className="w-3.5 h-3.5" />
-          )}
-          {isExtracting ? "Extracting…" : plaques.length > 0 ? "Re-extract" : "Extract Plaque Schedule"}
-        </button>
-      </div>
-
-      {isLoading ? (
-        <div className="flex items-center justify-center py-12">
-          <Loader2 className="w-6 h-6 animate-spin text-muted-foreground" />
-        </div>
-      ) : plaques.length === 0 ? (
-        <div className="border border-dashed border-border rounded-lg p-10 flex flex-col items-center gap-3 text-center">
-          <Stamp className="w-8 h-8 text-muted-foreground/40" />
-          <p className="text-sm text-muted-foreground">No plaque schedule data yet.</p>
-          <p className="text-xs text-muted-foreground/60">
-            Click "Extract Plaque Schedule" to scan sign schedule pages for plaque type specifications.
-          </p>
-        </div>
-      ) : (
-        <div className="overflow-x-auto rounded-lg border border-border">
-          <table className="w-full text-left border-collapse">
-            <thead>
-              <tr className="bg-secondary/60">
-                <th className="px-3 py-2 text-[10px] font-display font-semibold uppercase tracking-wider text-muted-foreground w-16">Type</th>
-                <th className="px-3 py-2 text-[10px] font-display font-semibold uppercase tracking-wider text-muted-foreground">Name</th>
-                <th className="px-3 py-2 text-[10px] font-display font-semibold uppercase tracking-wider text-muted-foreground w-20">Braille</th>
-                <th className="px-3 py-2 text-[10px] font-display font-semibold uppercase tracking-wider text-muted-foreground w-20">Insert</th>
-                <th className="px-3 py-2 text-[10px] font-display font-semibold uppercase tracking-wider text-muted-foreground">Insert Size</th>
-                <th className="px-3 py-2 text-[10px] font-display font-semibold uppercase tracking-wider text-muted-foreground">Letter Ht.</th>
-                <th className="px-3 py-2 text-[10px] font-display font-semibold uppercase tracking-wider text-muted-foreground">Trigger</th>
-                <th className="px-3 py-2 text-[10px] font-display font-semibold uppercase tracking-wider text-muted-foreground">Maps To</th>
-                <th className="px-3 py-2 text-[10px] font-display font-semibold uppercase tracking-wider text-muted-foreground w-16 text-center">Page</th>
-              </tr>
-            </thead>
-            <tbody>
-              {plaques.map((p, i) => (
-                <tr
-                  key={p.id}
-                  className={`border-t border-border/50 hover:bg-secondary/30 transition-colors ${i % 2 === 0 ? "" : "bg-secondary/10"}`}
-                >
-                  <td className="px-3 py-2 font-mono text-xs font-semibold text-indigo-400">{p.typeId}</td>
-                  <td className="px-3 py-2 text-sm text-foreground">{p.name ?? <span className="text-muted-foreground/40">—</span>}</td>
-                  <td className="px-3 py-2 text-xs text-center">
-                    {p.braille === true ? (
-                      <span className="text-emerald-400 font-semibold">Yes</span>
-                    ) : p.braille === false ? (
-                      <span className="text-muted-foreground/50">No</span>
-                    ) : (
-                      <span className="text-muted-foreground/30">—</span>
-                    )}
-                  </td>
-                  <td className="px-3 py-2 text-xs text-center">
-                    {p.insert === true ? (
-                      <span className="text-emerald-400 font-semibold">Yes</span>
-                    ) : p.insert === false ? (
-                      <span className="text-muted-foreground/50">No</span>
-                    ) : (
-                      <span className="text-muted-foreground/30">—</span>
-                    )}
-                  </td>
-                  <td className="px-3 py-2 text-xs text-muted-foreground">{p.insertSize ?? <span className="text-muted-foreground/30">—</span>}</td>
-                  <td className="px-3 py-2 text-xs text-muted-foreground">{p.letterHeight ?? <span className="text-muted-foreground/30">—</span>}</td>
-                  <td className="px-3 py-2 text-xs text-muted-foreground max-w-[200px] truncate" title={p.trigger ?? undefined}>{p.trigger ?? <span className="text-muted-foreground/30">—</span>}</td>
-                  <td className="px-3 py-2 text-xs text-muted-foreground">{p.mapsToColumn ?? <span className="text-muted-foreground/30">—</span>}</td>
-                  <td className="px-3 py-2 text-xs text-muted-foreground text-center font-mono">{p.sourcePage ?? "—"}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-    </div>
-  );
-}
-
-function OccupantLoadsTab({
-  jobId: _jobId,
-  loads,
-  assemblyRooms,
-  isLoading,
-  isExtracting,
-  onExtract,
-}: {
-  jobId: string;
-  loads: OccupantLoadEntry[];
-  assemblyRooms: AssemblyRoom[];
-  isLoading: boolean;
-  isExtracting: boolean;
-  onExtract: () => void;
-}) {
-  const assemblySet = new Set(assemblyRooms.map((r) => r.roomNumber));
-
-  return (
-    <div className="p-6 max-w-5xl mx-auto w-full space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h2 className="text-base font-display font-semibold text-foreground">Occupant Loads</h2>
-          <p className="text-xs text-muted-foreground mt-0.5">
-            Room-level occupancy data extracted from egress/life-safety drawings.
-          </p>
-        </div>
-        <button
-          onClick={onExtract}
-          disabled={isExtracting}
-          className="flex items-center gap-2 px-3 py-1.5 rounded-md bg-orange-500/10 border border-orange-500/30 text-orange-400 text-xs font-medium hover:bg-orange-500/20 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-        >
-          {isExtracting ? (
-            <Loader2 className="w-3.5 h-3.5 animate-spin" />
-          ) : (
-            <Users className="w-3.5 h-3.5" />
-          )}
-          {isExtracting ? "Extracting…" : loads.length > 0 ? "Re-extract" : "Extract Occupant Loads"}
-        </button>
-      </div>
-
-      {isLoading ? (
-        <div className="flex items-center justify-center py-12">
-          <Loader2 className="w-6 h-6 animate-spin text-muted-foreground" />
-        </div>
-      ) : loads.length === 0 ? (
-        <div className="border border-dashed border-border rounded-lg p-10 flex flex-col items-center gap-3 text-center">
-          <Users className="w-8 h-8 text-muted-foreground/40" />
-          <p className="text-sm text-muted-foreground">No occupant load data yet.</p>
-          <p className="text-xs text-muted-foreground/60">
-            Click "Extract Occupant Loads" to scan egress drawings for room-level occupancy data.
-          </p>
-        </div>
-      ) : (
-        <div className="space-y-6">
-          {assemblyRooms.length > 0 && (
-            <div className="rounded-lg border border-orange-500/30 bg-orange-500/5 p-4">
-              <div className="flex items-center gap-2 mb-3">
-                <AlertTriangle className="w-4 h-4 text-orange-400 flex-shrink-0" />
-                <span className="text-sm font-display font-semibold text-orange-400">
-                  Assembly Rooms ({assemblyRooms.length})
-                </span>
-                <span className="text-xs text-muted-foreground">— occupant load ≥ 50</span>
-              </div>
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
-                {assemblyRooms.map((r) => (
-                  <div
-                    key={r.roomNumber}
-                    className="flex items-center justify-between gap-2 bg-orange-500/10 border border-orange-500/20 rounded-md px-3 py-2"
-                  >
-                    <div className="min-w-0">
-                      <div className="text-xs font-mono font-semibold text-orange-400">{r.roomNumber}</div>
-                      {r.roomName && (
-                        <div className="text-xs text-muted-foreground truncate">{r.roomName}</div>
-                      )}
-                    </div>
-                    <div className="text-right flex-shrink-0">
-                      <div className="text-sm font-bold font-mono text-orange-300">{r.occupantLoad}</div>
-                      {r.occupancyGroup && (
-                        <div className="text-[10px] text-muted-foreground font-mono">{r.occupancyGroup}</div>
-                      )}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          <div className="overflow-x-auto rounded-lg border border-border">
-            <table className="w-full text-left border-collapse">
-              <thead>
-                <tr className="bg-secondary/60">
-                  <th className="px-3 py-2 text-[10px] font-display font-semibold uppercase tracking-wider text-muted-foreground w-24">Room #</th>
-                  <th className="px-3 py-2 text-[10px] font-display font-semibold uppercase tracking-wider text-muted-foreground">Room Name</th>
-                  <th className="px-3 py-2 text-[10px] font-display font-semibold uppercase tracking-wider text-muted-foreground w-28 text-right">Occupant Load</th>
-                  <th className="px-3 py-2 text-[10px] font-display font-semibold uppercase tracking-wider text-muted-foreground w-28">Occupancy Group</th>
-                  <th className="px-3 py-2 text-[10px] font-display font-semibold uppercase tracking-wider text-muted-foreground w-16 text-center">Page</th>
-                </tr>
-              </thead>
-              <tbody>
-                {loads.map((r, i) => {
-                  const isAssembly = assemblySet.has(r.roomNum);
-                  return (
-                    <tr
-                      key={r.id}
-                      className={`border-t border-border/50 transition-colors ${
-                        isAssembly
-                          ? "bg-orange-500/8 hover:bg-orange-500/12"
-                          : i % 2 === 0
-                            ? "hover:bg-secondary/30"
-                            : "bg-secondary/10 hover:bg-secondary/30"
-                      }`}
-                    >
-                      <td className="px-3 py-2 font-mono text-xs font-semibold text-foreground">
-                        <div className="flex items-center gap-1.5">
-                          {isAssembly && <AlertTriangle className="w-3 h-3 text-orange-400 flex-shrink-0" />}
-                          {r.roomNum}
-                        </div>
-                      </td>
-                      <td className="px-3 py-2 text-sm text-foreground">{r.roomName ?? <span className="text-muted-foreground/40">—</span>}</td>
-                      <td className="px-3 py-2 text-right">
-                        <span className={`text-sm font-mono font-semibold ${isAssembly ? "text-orange-400" : "text-foreground"}`}>
-                          {r.occupantLoad ?? <span className="text-muted-foreground/40 font-normal">—</span>}
-                        </span>
-                      </td>
-                      <td className="px-3 py-2 text-xs text-muted-foreground font-mono">{r.occupancyGroup ?? <span className="text-muted-foreground/30">—</span>}</td>
-                      <td className="px-3 py-2 text-xs text-muted-foreground text-center font-mono">{r.sourcePage ?? "—"}</td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

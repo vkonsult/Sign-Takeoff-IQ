@@ -30,7 +30,6 @@ export const jobsTable = pgTable("jobs", {
   buildingType: text("building_type"),
   scanMethod: text("scan_method").default("gemini"),
   processingLog: json("processing_log").$type<ProcessingStep[]>(),
-  completedCallTypes: json("completed_call_types").$type<string[]>(),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });

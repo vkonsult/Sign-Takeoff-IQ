@@ -1,6 +1,5 @@
 import { PDFDocument, rgb, StandardFonts, PDFPage } from "pdf-lib";
 import { apiFetch } from "./apiClient";
-import { normalizedToMediaBox } from "./pdfCoords";
 
 export interface MarkerSign {
   id: string;
@@ -20,7 +19,7 @@ export interface FileEntry {
 }
 
 // ── Sign type color palette (matches FloorPlanViewer) ────────────────────────
-export const SIGN_TYPE_COLORS: Record<string, [number, number, number]> = {
+const SIGN_TYPE_COLORS: Record<string, [number, number, number]> = {
   wayfinding:          [0.231, 0.510, 0.965],
   directional:         [0.063, 0.725, 0.506],
   informational:       [0.024, 0.714, 0.831],
@@ -41,7 +40,7 @@ export const SIGN_TYPE_COLORS: Record<string, [number, number, number]> = {
   "building sign":     [0.388, 0.400, 0.945],
 };
 
-export function getSignColor(signType: string | null | undefined): [number, number, number] {
+function getSignColor(signType: string | null | undefined): [number, number, number] {
   if (!signType) return [0.420, 0.447, 0.502];
   const key = signType.toLowerCase();
   for (const [k, v] of Object.entries(SIGN_TYPE_COLORS)) {
@@ -50,6 +49,26 @@ export function getSignColor(signType: string | null | undefined): [number, numb
   return [0.420, 0.447, 0.502];
 }
 
+/**
+ * Convert normalised marker coordinates (nx ∈ [0,1] left→right,
+ * ny ∈ [0,1] top→bottom in viewport / screen space) to pdf-lib drawing
+ * coordinates (x, y in MediaBox space: origin bottom-left, y upward).
+ */
+function normalizedToMediaBox(
+  nx: number,
+  ny: number,
+  W: number,
+  H: number,
+  rotationDeg: number,
+): { x: number; y: number } {
+  const r = ((rotationDeg % 360) + 360) % 360;
+  switch (r) {
+    case 90:  return { x: ny * W,       y: nx * H };
+    case 180: return { x: (1 - nx) * W, y: ny * H };
+    case 270: return { x: (1 - ny) * W, y: (1 - nx) * H };
+    default:  return { x: nx * W,       y: (1 - ny) * H };
+  }
+}
 
 export async function exportMarkedupPdf(
   jobId: string,
@@ -166,7 +185,7 @@ function drawMarkersOnPage(
 }
 
 function triggerDownload(bytes: Uint8Array, fileName: string) {
-  const blob = new Blob([bytes.buffer as ArrayBuffer], { type: "application/pdf" });
+  const blob = new Blob([bytes], { type: "application/pdf" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
@@ -177,6 +196,6 @@ function triggerDownload(bytes: Uint8Array, fileName: string) {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
-export function sanitizeFileName(name: string): string {
+function sanitizeFileName(name: string): string {
   return name.replace(/[^a-z0-9_\-. ]/gi, "_").replace(/\s+/g, "_").slice(0, 80);
 }

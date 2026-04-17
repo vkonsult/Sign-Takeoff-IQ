@@ -1,12 +1,10 @@
 import { useState, useCallback, useEffect, useMemo, useRef } from "react";
 import { apiFetch } from "@/lib/apiClient";
-import { logger } from "@/lib/logger";
 import { AddMarkerForm } from "./AddMarkerForm";
 import {
   X,
   ChevronLeft,
   ChevronRight,
-  ChevronDown,
   ZoomIn,
   ZoomOut,
   Save,
@@ -25,8 +23,6 @@ import {
   RotateCcw,
   Undo2,
   Redo2,
-  LockOpen,
-  Lock,
 } from "lucide-react";
 
 import type { ExtractedSign } from "@/types/sign";
@@ -52,14 +48,14 @@ export interface FileInfo {
     signSchedulePages: number[];
     bothPages?: number[];
     otherPages: number[];
-    pageLabels?: (string | null)[] | null;
+    pageLabels?: (string | null)[];
     pageImagePaths?: Record<string, string> | null;
     outlineSections?: Array<{
       title: string;
       pageStart: number;
       pageEnd: number;
       type: "floor_plan" | "sign_schedule" | "other" | null;
-    }> | null;
+    }>;
   } | null;
 }
 
@@ -70,7 +66,6 @@ export interface UnifiedPlanViewerProps {
   signs?: ExtractedSign[];
   allSigns?: ExtractedSign[];
   initialSignId?: string;
-  placeSignId?: string | null;
   showAiHighlight?: boolean;
   showMarkers?: boolean;
   pageType?: "floor_plan" | "sign_schedule";
@@ -80,9 +75,6 @@ export interface UnifiedPlanViewerProps {
   onSignUpdated?: (signId: string, xPos: number, yPos: number) => void;
   onSignDeleted?: (signId: string) => void;
   onEditSign?: (sign: ExtractedSign) => void;
-  onUnlock?: (signId: string) => Promise<boolean>;
-  onPlaceComplete?: (signId: string, xPos: number, yPos: number, pageNumber: number, jobFileId: string) => void;
-  onPlaceCancel?: () => void;
 }
 
 // ── Internal Types ────────────────────────────────────────────────────────────
@@ -148,7 +140,7 @@ const SIGN_TYPE_COLORS: Record<string, string> = {
   "building sign": "#6366F1",
 };
 
-function _getSignColor(signType: string | null | undefined): string {
+function getSignColor(signType: string | null | undefined): string {
   if (!signType) return "#6B7280";
   const key = signType.toLowerCase();
   for (const [k, v] of Object.entries(SIGN_TYPE_COLORS)) {
@@ -244,7 +236,6 @@ interface EditPanelProps {
   onSaved?: (updated: ExtractedSign) => void;
   onSignDeleted?: (signId: string) => void;
   onDeleteCommit?: (signId: string) => void;
-  onUnlock?: (signId: string) => Promise<boolean>;
   setLocalSigns: React.Dispatch<React.SetStateAction<ExtractedSign[]>>;
   setActiveSign: (s: ExtractedSign | null) => void;
   localSigns: ExtractedSign[];
@@ -258,7 +249,6 @@ function EditPanel({
   onSaved,
   onSignDeleted,
   onDeleteCommit,
-  onUnlock: _onUnlock,
   setLocalSigns,
   setActiveSign,
   localSigns,
@@ -268,15 +258,12 @@ function EditPanel({
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [dirty, setDirty] = useState(false);
-  const [unlocking, setUnlocking] = useState(false);
-  const [unlockError, setUnlockError] = useState<string | null>(null);
 
   useEffect(() => {
     setForm(signToForm(activeSign));
     setDirty(false);
     setSaveError(null);
-    setUnlockError(null);
-  }, [activeSign]);
+  }, [activeSign.id]);
 
   const handleField = useCallback((field: keyof FormState, value: string | boolean) => {
     setForm((prev) => ({ ...prev, [field]: value }));
@@ -325,30 +312,6 @@ function EditPanel({
     }
   };
 
-  const handleUnlock = async () => {
-    setUnlocking(true);
-    setUnlockError(null);
-    try {
-      const res = await apiFetch(`/api/extracted-signs/${activeSign.id}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ manuallyEdited: false }),
-      });
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({ error: "Unknown error" }));
-        throw new Error((err as { error?: string }).error ?? "Unlock failed");
-      }
-      const data = await res.json() as { sign: ExtractedSign };
-      setLocalSigns((prev) => prev.map((s) => s.id === activeSign.id ? data.sign : s));
-      setActiveSign(data.sign);
-      onSaved?.(data.sign);
-    } catch (err) {
-      setUnlockError(String(err instanceof Error ? err.message : err));
-    } finally {
-      setUnlocking(false);
-    }
-  };
-
   const handleDeleteSign = async (signId: string) => {
     if (onDeleteCommit) {
       onDeleteCommit(signId);
@@ -363,24 +326,17 @@ function EditPanel({
       onSignDeleted?.(signId);
       if (!next) onClose?.();
     } catch (err) {
-      logger.error("Delete sign failed:", err);
+      console.error("Delete sign failed:", err);
     }
   };
 
   return (
     <div className="w-[380px] flex-shrink-0 flex flex-col bg-background overflow-hidden border-l border-border">
       <div className="flex-none px-5 py-3 border-b border-border bg-card flex items-center justify-between">
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2 flex-wrap">
-            <h2 className="text-sm font-display font-bold uppercase tracking-wider text-foreground">
-              Edit Sign Data
-            </h2>
-            {activeSign.manuallyEdited && (
-              <span className="flex items-center gap-1 text-[10px] font-display font-bold uppercase tracking-wider border px-2 py-0.5 rounded" style={{ color: "#f59e0b", borderColor: "#f59e0b55", background: "#f59e0b10" }}>
-                <Lock className="w-3 h-3" />Manually Locked
-              </span>
-            )}
-          </div>
+        <div>
+          <h2 className="text-sm font-display font-bold uppercase tracking-wider text-foreground">
+            Edit Sign Data
+          </h2>
           <p className="text-xs text-muted-foreground mt-0.5">Correct any fields extracted by AI</p>
         </div>
         {showCloseButton && onClose && (
@@ -453,27 +409,6 @@ function EditPanel({
             Save Changes
           </button>
         </div>
-        {activeSign.manuallyEdited && (
-          <>
-            {unlockError && (
-              <div className="text-xs text-destructive bg-destructive/10 border border-destructive/20 rounded px-3 py-2 flex items-center gap-2">
-                <AlertTriangle className="w-3 h-3 flex-shrink-0" />
-                {unlockError}
-                <button onClick={() => setUnlockError(null)} className="ml-auto text-destructive/60 hover:text-destructive"><X className="w-3 h-3" /></button>
-              </div>
-            )}
-            <button
-              onClick={handleUnlock}
-              disabled={unlocking || saving}
-              title="Remove manual-edit lock — allow AI to update this row again"
-              className="w-full flex items-center justify-center gap-2 px-4 py-2 text-xs font-display font-semibold uppercase tracking-wide rounded-lg border transition-colors disabled:opacity-40"
-              style={{ color: "#f59e0b", borderColor: "#f59e0b55", background: "#f59e0b0a" }}
-            >
-              {unlocking ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <LockOpen className="w-3.5 h-3.5" />}
-              Remove Protection for This Sign
-            </button>
-          </>
-        )}
         <button
           onClick={() => handleDeleteSign(activeSign.id)}
           className="w-full flex items-center justify-center gap-2 px-4 py-2 text-xs font-display font-semibold uppercase tracking-wide rounded-lg text-destructive border border-destructive/20 hover:bg-destructive/10 transition-colors"
@@ -509,9 +444,6 @@ interface PageViewerProps {
   showAiHighlight?: boolean;
   showMarkers?: boolean;
   pagePrefix?: string;
-  placeSignId?: string | null;
-  onPlaceDone?: (nx: number, ny: number) => void;
-  onPlaceCancel?: () => void;
   // Undo / Redo / Save — modal toolbar only
   canUndo?: boolean;
   canRedo?: boolean;
@@ -544,9 +476,6 @@ function PageViewer({
   showAiHighlight,
   showMarkers = true,
   pagePrefix = "Floor plan",
-  placeSignId,
-  onPlaceDone,
-  onPlaceCancel,
   canUndo,
   canRedo,
   onUndo,
@@ -645,16 +574,6 @@ function PageViewer({
   }, []);
   useEffect(() => { setMeasuredPageSize(null); }, [pageNumber, file.id]);
 
-  // Escape key cancels placement mode
-  useEffect(() => {
-    if (!placeSignId) return;
-    const handler = (e: KeyboardEvent) => {
-      if (e.key === "Escape") { e.preventDefault(); onPlaceCancel?.(); }
-    };
-    window.addEventListener("keydown", handler);
-    return () => window.removeEventListener("keydown", handler);
-  }, [placeSignId, onPlaceCancel]);
-
   const renderedW = nativeSize ? nativeSize.w * scale : (measuredPageSize?.w ?? null);
   const renderedH = nativeSize ? nativeSize.h * scale : (measuredPageSize?.h ?? null);
 
@@ -677,6 +596,7 @@ function PageViewer({
       .then((data: ServerPhraseData) => { if (!cancelled) setServerPhrases(data); })
       .catch(() => { if (!cancelled) setPhrasesFetchFailed(true); });
     return () => { cancelled = true; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [file.id, pageNumber, jobId]);
 
   // ── Page classification ────────────────────────────────────────────────────
@@ -938,11 +858,11 @@ function PageViewer({
               setLocalSigns((prev) => prev.map((s) => s.id === signId ? d.sign : s));
               if (signId === activeSignId) onActiveSignChange(d.sign);
             })
-            .catch((err) => logger.error(`[visual-locate] auto-apply failed for ${signId}:`, err));
+            .catch((err) => console.error(`[visual-locate] auto-apply failed for ${signId}:`, err));
         }
       })
       .catch((err) => {
-        logger.error("[visual-locate] request failed:", err);
+        console.error("[visual-locate] request failed:", err);
         visualLocateQueriedRef.current.delete(pageKey);
         targetSigns.forEach((s) => visualLocateSubmittedRef.current.delete(s.id));
       })
@@ -963,7 +883,7 @@ function PageViewer({
       setLocalSigns((prev) => prev.map((s) => s.id === signId ? data.sign : s));
       setVisualCandidates((prev) => { const n = new Map(prev); n.delete(signId); return n; });
       if (signId === activeSignId) onActiveSignChange(data.sign);
-    } catch (err) { logger.error("[visual-locate] confirm failed:", err); }
+    } catch (err) { console.error("[visual-locate] confirm failed:", err); }
   };
 
   // ── Reset AI placement ─────────────────────────────────────────────────────
@@ -982,7 +902,7 @@ function PageViewer({
       visualLocateSubmittedRef.current.delete(signId);
       setVisualLocateFailed((prev) => { const n = new Set(prev); n.delete(signId); return n; });
       setVisualCandidates((prev) => { const n = new Map(prev); n.delete(signId); return n; });
-    } catch (err) { logger.error("[visual-locate] reset failed:", err); }
+    } catch (err) { console.error("[visual-locate] reset failed:", err); }
   };
 
   // Register resetAiPlacement with the outer component so the modal top-bar can call
@@ -1004,7 +924,7 @@ function PageViewer({
         onActiveSignChange(next ?? null);
       }
       onSignDeleted?.(signId);
-    } catch (err) { logger.error("Delete sign failed:", err); }
+    } catch (err) { console.error("Delete sign failed:", err); }
   };
 
   // ── Page navigation ────────────────────────────────────────────────────────
@@ -1046,31 +966,6 @@ function PageViewer({
     onActiveSignChange(s);
   };
 
-  // ── Page picker: locked count per navigable page ───────────────────────────
-  const lockedCountByPage = useMemo(() => {
-    const map = new Map<number, number>();
-    for (const s of localSigns) {
-      if (s.manuallyEdited && s.pageNumber != null && s.jobFileId === file.id) {
-        map.set(s.pageNumber, (map.get(s.pageNumber) ?? 0) + 1);
-      }
-    }
-    return map;
-  }, [localSigns, file.id]);
-
-  const [pageDropdownOpen, setPageDropdownOpen] = useState(false);
-  const pageDropdownRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!pageDropdownOpen) return;
-    const handler = (e: MouseEvent) => {
-      if (pageDropdownRef.current && !pageDropdownRef.current.contains(e.target as Node)) {
-        setPageDropdownOpen(false);
-      }
-    };
-    document.addEventListener("mousedown", handler);
-    return () => document.removeEventListener("mousedown", handler);
-  }, [pageDropdownOpen]);
-
   return (
     <div className="flex flex-col flex-1 min-h-0 bg-secondary/30">
       {/* Toolbar */}
@@ -1079,87 +974,21 @@ function PageViewer({
         <button aria-label="Previous page" disabled={!canPrevPage} onClick={goPrevPage} className="p-1.5 rounded hover:bg-secondary disabled:opacity-30 transition-colors">
           <ChevronLeft className="w-4 h-4" />
         </button>
-
-        {/* Page picker — clickable dropdown in tab mode when >1 page */}
-        {mode === "tab" && navigablePages.length > 1 ? (
-          <div ref={pageDropdownRef} className="relative">
-            <button
-              onClick={() => setPageDropdownOpen((v) => !v)}
-              className="flex items-center gap-1 text-xs font-mono text-muted-foreground min-w-[90px] text-center px-2 py-0.5 rounded hover:bg-secondary transition-colors"
-              title="Jump to page"
-            >
-              <span>
-                {pageLabel ? (
-                  <><span className="text-foreground/80 font-medium">{pageLabel}</span> <span className="text-muted-foreground/50">({pageIdx + 1}/{navigablePages.length})</span></>
-                ) : (
-                  <>{pagePrefix} {pageIdx >= 0 ? pageIdx + 1 : "–"} / {navigablePages.length} <span className="text-muted-foreground/50">(pg {pageNumber})</span></>
-                )}
-              </span>
-              {(() => {
-                const lc = lockedCountByPage.get(pageNumber) ?? 0;
-                return lc > 0 ? (
-                  <span className="flex-shrink-0 text-[10px] font-semibold px-1 py-px rounded" style={{ backgroundColor: "#f59e0b22", color: "#f59e0b", border: "1px solid #f59e0b55" }}>
-                    {lc} locked
-                  </span>
-                ) : null;
-              })()}
-              <ChevronDown className="w-3 h-3 opacity-40 flex-shrink-0" />
-            </button>
-
-            {pageDropdownOpen && (
-              <div className="absolute top-full left-1/2 -translate-x-1/2 mt-1 bg-card border border-border rounded-lg shadow-xl z-50 min-w-[180px] py-1 max-h-64 overflow-y-auto">
-                {navigablePages.map((pg, i) => {
-                  const pgLabel = file.pageStats?.pageLabels?.[pg - 1];
-                  const lc = lockedCountByPage.get(pg) ?? 0;
-                  const isCurrent = pg === pageNumber;
-                  return (
-                    <button
-                      key={pg}
-                      onClick={() => { setPageNumber(pg); setPageDropdownOpen(false); }}
-                      className={`w-full flex items-center justify-between gap-2 px-3 py-1.5 text-xs font-mono transition-colors ${isCurrent ? "bg-primary/10 text-primary font-semibold" : "text-muted-foreground hover:bg-secondary hover:text-foreground"}`}
-                    >
-                      <span className="min-w-0 truncate">
-                        {pgLabel ?? `${pagePrefix} ${i + 1}`}
-                        {!pgLabel && <span className="opacity-40 ml-1">(pg {pg})</span>}
-                        {pgLabel && <span className="opacity-40 ml-1">(pg {pg})</span>}
-                      </span>
-                      {lc > 0 && (
-                        <span className="flex-shrink-0 text-[10px] font-semibold px-1.5 py-0.5 rounded" style={{ backgroundColor: "#f59e0b22", color: "#f59e0b", border: "1px solid #f59e0b55" }}>
-                          {lc} locked
-                        </span>
-                      )}
-                    </button>
-                  );
-                })}
-              </div>
-            )}
-          </div>
-        ) : (
-          <span className="text-xs font-mono text-muted-foreground min-w-[90px] text-center">
-            {mode === "tab" && pageLabel ? (
-              <>
-                <span className="text-foreground/80 font-medium">{pageLabel}</span>{" "}
-                {pageIdx >= 0 && <span className="text-muted-foreground/50">({pageIdx + 1}/{navigablePages.length})</span>}
-              </>
-            ) : mode === "tab" ? (
-              <>{pagePrefix} {pageIdx >= 0 ? pageIdx + 1 : "–"} / {navigablePages.length} <span className="text-muted-foreground/50">(pg {pageNumber})</span></>
-            ) : (
-              totalPages ? `${pageNumber} / ${totalPages}` : `Page ${pageNumber}`
-            )}
-          </span>
-        )}
-
+        <span className="text-xs font-mono text-muted-foreground min-w-[90px] text-center">
+          {mode === "tab" && pageLabel ? (
+            <>
+              <span className="text-foreground/80 font-medium">{pageLabel}</span>{" "}
+              {pageIdx >= 0 && <span className="text-muted-foreground/50">({pageIdx + 1}/{navigablePages.length})</span>}
+            </>
+          ) : mode === "tab" ? (
+            <>{pagePrefix} {pageIdx >= 0 ? pageIdx + 1 : "–"} / {navigablePages.length} <span className="text-muted-foreground/50">(pg {pageNumber})</span></>
+          ) : (
+            totalPages ? `${pageNumber} / ${totalPages}` : `Page ${pageNumber}`
+          )}
+        </span>
         <button aria-label="Next page" disabled={!canNextPage} onClick={goNextPage} className="p-1.5 rounded hover:bg-secondary disabled:opacity-30 transition-colors">
           <ChevronRight className="w-4 h-4" />
         </button>
-        {mode === "modal" && (() => {
-          const lockedCount = signsOnCurrentPage.filter((s) => s.manuallyEdited).length;
-          return lockedCount > 0 ? (
-            <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded" style={{ backgroundColor: "#f59e0b22", color: "#f59e0b", border: "1px solid #f59e0b55" }}>
-              {lockedCount} locked
-            </span>
-          ) : null;
-        })()}
         <div className="w-px h-4 bg-border mx-0.5" />
 
         {/* Zoom */}
@@ -1311,28 +1140,6 @@ function PageViewer({
               Edit Markers
             </button>
           )}
-
-          {/* Place-existing-sign mode banner */}
-          {placeSignId && pageReady && (() => {
-            const signToPlace = localSigns.find((s) => s.id === placeSignId);
-            const label = signToPlace?.signIdentifier || signToPlace?.signType || "sign";
-            return (
-              <div className="flex items-center gap-2 px-3 py-1 rounded border animate-pulse" style={{ background: "#eab30820", color: "#eab308", borderColor: "#eab30860" }}>
-                <MapPin className="w-3.5 h-3.5 shrink-0" />
-                <span className="text-[10px] font-display font-semibold uppercase tracking-wide whitespace-nowrap">
-                  Click to place <span className="font-mono">{label}</span>
-                </span>
-                <button
-                  onClick={onPlaceCancel}
-                  className="ml-1 text-[10px] font-display font-semibold uppercase tracking-wide px-2 py-0.5 rounded border transition-colors hover:bg-yellow-500/20"
-                  style={{ color: "#eab308", borderColor: "#eab30880", animationPlayState: "paused" }}
-                  title="Cancel placement (Esc)"
-                >
-                  Cancel
-                </button>
-              </div>
-            );
-          })()}
         </div>
 
       </div>
@@ -1346,7 +1153,7 @@ function PageViewer({
             return (
               <button
                 key={s.id}
-                title={`${s.signType ?? "Sign"} — ${s.location ?? ""}${s.manuallyEdited ? "\nManually locked — protected from AI re-runs" : ""}\nClick to edit`}
+                title={`${s.signType ?? "Sign"} — ${s.location ?? ""}\nClick to edit`}
                 onClick={() => handleSelectSign(s)}
                 className="flex-shrink-0 flex items-center gap-1 text-[10px] font-mono px-1.5 py-0.5 rounded whitespace-nowrap transition-all"
                 style={{
@@ -1357,9 +1164,6 @@ function PageViewer({
               >
                 {isActive && <span className="inline-block w-1.5 h-1.5 rounded-full bg-white flex-shrink-0" />}
                 {s.signIdentifier ?? s.signType?.slice(0, 8) ?? "SIGN"}
-                {s.manuallyEdited && (
-                  <Lock style={{ width: 8, height: 8, flexShrink: 0, color: isActive ? "#fff" : "#f59e0b", opacity: 0.9 }} />
-                )}
                 {!isLocated && (
                   <span style={{ fontSize: 8, fontWeight: 700, letterSpacing: "0.05em", background: "#ef444420", color: "#ef4444", border: "1px solid #ef444455", borderRadius: 3, padding: "0 3px" }}>
                     UNLOCATED
@@ -1645,14 +1449,13 @@ function PageViewer({
                     position: "absolute", top: 0, left: 0, width: renderedW, height: renderedH, zIndex: 6,
                     cursor: dragState?.isDragging ? "grabbing"
                       : isPanning ? "grabbing"
-                      : placeSignId ? "crosshair"
                       : addMode ? (pendingNewMarker ? "default" : "crosshair")
                       : drawMode ? (hoveredMarkerId ? "pointer" : "crosshair")
                       : hoveredMarkerId ? "pointer"
                       : "grab",
                   }}
                   onPointerDown={(e) => {
-                    if (addMode || drawMode || placeSignId) return;
+                    if (addMode || drawMode) return;
                     const rect = e.currentTarget.getBoundingClientRect();
                     const nx = (e.clientX - rect.left) / renderedW;
                     const ny = (e.clientY - rect.top) / renderedH;
@@ -1746,7 +1549,7 @@ function PageViewer({
                             if (ds.signId === activeSignId) onActiveSignChange(d.sign);
                             onSignUpdated?.(ds.signId, nx, ny);
                           })
-                          .catch((err) => logger.error("[drag] PATCH failed:", err));
+                          .catch((err) => console.error("[drag] PATCH failed:", err));
                       }
                     } else {
                       const found = localSigns.find((s) => s.id === ds.signId);
@@ -1764,7 +1567,6 @@ function PageViewer({
                     const nx = (e.clientX - rect.left) / renderedW!;
                     const ny = (e.clientY - rect.top) / renderedH!;
 
-                    if (placeSignId) { onPlaceDone?.(nx, ny); return; }
                     if (addMode) { if (!pendingNewMarker) setPendingNewMarker({ nx, ny }); return; }
                     if (drawMode) {
                       if (hoveredMarkerId) {
@@ -1833,7 +1635,6 @@ export function UnifiedPlanViewer({
   signs,
   allSigns: allSignsProp,
   initialSignId,
-  placeSignId,
   showAiHighlight,
   showMarkers = true,
   pageType = "floor_plan",
@@ -1843,9 +1644,6 @@ export function UnifiedPlanViewer({
   onSignUpdated,
   onSignDeleted,
   onEditSign,
-  onUnlock,
-  onPlaceComplete,
-  onPlaceCancel,
 }: UnifiedPlanViewerProps) {
   const sourceSigns = (allSignsProp ?? signs ?? []) as ExtractedSign[];
   const [localSigns, setLocalSigns] = useState<ExtractedSign[]>(sourceSigns);
@@ -1975,14 +1773,12 @@ export function UnifiedPlanViewer({
       setSavedSigns(currentSigns);
       setHistoryStack([]);
       setRedoStack([]);
-      if (onSignUpdated) {
-        currentSigns.forEach((s) => {
-          const orig = savedMap.get(s.id);
-          if (orig && (orig.xPos !== s.xPos || orig.yPos !== s.yPos)) {
-            onSignUpdated(s.id, s.xPos ?? 0, s.yPos ?? 0);
-          }
-        });
-      }
+      onSignUpdated && currentSigns.forEach((s) => {
+        const orig = savedMap.get(s.id);
+        if (orig && (orig.xPos !== s.xPos || orig.yPos !== s.yPos)) {
+          onSignUpdated(s.id, s.xPos ?? 0, s.yPos ?? 0);
+        }
+      });
       savedSigns.forEach((s) => {
         if (!currentMap.has(s.id)) onSignDeleted?.(s.id);
       });
@@ -2072,17 +1868,6 @@ export function UnifiedPlanViewer({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialSignId]);
 
-  const placeSignNavRef = useRef<string | null>(null);
-  useEffect(() => {
-    if (!placeSignId) { placeSignNavRef.current = null; return; }
-    if (placeSignNavRef.current === placeSignId) return;
-    const s = localSigns.find((sign) => sign.id === placeSignId);
-    if (!s) return;
-    placeSignNavRef.current = placeSignId;
-    if (s.jobFileId) setSelectedFileId(s.jobFileId);
-    if (s.pageNumber) setPageNumber(s.pageNumber);
-  }, [placeSignId, localSigns]);
-
   const setActiveSign = useCallback((s: ExtractedSign | null) => {
     setActiveSignState(s);
     if (s?.jobFileId) setSelectedFileId(s.jobFileId);
@@ -2163,48 +1948,9 @@ export function UnifiedPlanViewer({
   const hasPrev = currentIdx > 0;
   const hasNext = currentIdx >= 0 && currentIdx < localSigns.length - 1;
 
-  // ── Place existing sign ─────────────────────────────────────────────────────
-  const handlePlaceDone = useCallback(async (nx: number, ny: number) => {
-    if (!placeSignId) return;
-    const fileId = selectedFileId;
-    const page = pageNumber;
-    setLocalSigns((prev) => prev.map((s) =>
-      s.id === placeSignId ? { ...s, xPos: nx, yPos: ny, pageNumber: page, jobFileId: fileId, placementSource: "user_drag" } : s
-    ));
-    try {
-      await apiFetch(`/api/extracted-signs/${placeSignId}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ xPos: nx, yPos: ny, pageNumber: page, jobFileId: fileId, placementSource: "user_drag" }),
-      });
-      onPlaceComplete?.(placeSignId, nx, ny, page, fileId);
-    } catch {
-      setLocalSigns((prev) => prev.map((s) =>
-        s.id === placeSignId ? { ...s, xPos: null, yPos: null, pageNumber: null, jobFileId: null, placementSource: null } : s
-      ));
-    }
-  }, [placeSignId, selectedFileId, pageNumber, onPlaceComplete]);
-
   // ── Confidence ─────────────────────────────────────────────────────────────
   const confidence = activeSign ? Math.round(activeSign.confidenceScore * 100) : 0;
   const confColor = confidence >= 80 ? "text-accent" : confidence >= 60 ? "text-primary" : "text-destructive";
-
-  // ── Unplaced count per file (for tab badges) ───────────────────────────────
-  const unplacedCountByFile = useMemo(() => {
-    const map = new Map<string, number>();
-    for (const s of localSigns) {
-      if (s.jobFileId && (s.xPos == null || s.yPos == null)) {
-        map.set(s.jobFileId, (map.get(s.jobFileId) ?? 0) + 1);
-      }
-    }
-    return map;
-  }, [localSigns]);
-
-  // Focus the modal container when it mounts so Ctrl+Z works without a click
-  useEffect(() => {
-    if (mode !== "modal") return;
-    modalContainerRef.current?.focus();
-  }, [mode]);
 
   // ── No files guard ─────────────────────────────────────────────────────────
   if (mode === "tab" && floorPlanFiles.length === 0) {
@@ -2266,9 +2012,6 @@ export function UnifiedPlanViewer({
       showAiHighlight={showAiHighlight}
       showMarkers={showMarkers}
       pagePrefix={pageType === "sign_schedule" ? "Sign page" : "Floor plan"}
-      placeSignId={placeSignId}
-      onPlaceDone={handlePlaceDone}
-      onPlaceCancel={onPlaceCancel}
       canUndo={historyStack.length > 0}
       canRedo={redoStack.length > 0}
       onUndo={handleUndo}
@@ -2288,22 +2031,10 @@ export function UnifiedPlanViewer({
           <div className="flex-none flex items-end gap-0 px-4 pt-2 border-b border-border bg-secondary/20 overflow-x-auto">
             {floorPlanFiles.map((f) => {
               const active = f.id === selectedFileId;
-              const lockedCount = localSigns.filter((s) => s.jobFileId === f.id && s.manuallyEdited).length;
-              const unplacedCount = unplacedCountByFile.get(f.id) ?? 0;
               return (
                 <button key={f.id} onClick={() => setSelectedFileId(f.id)}
-                  className={`px-3 py-1.5 text-xs font-mono rounded-t-md border-b-2 whitespace-nowrap transition-all -mb-px flex items-center gap-1.5 ${active ? "border-primary text-primary bg-background border-x border-t border-border" : "border-transparent text-muted-foreground hover:text-foreground hover:bg-secondary/40"}`}>
+                  className={`px-3 py-1.5 text-xs font-mono rounded-t-md border-b-2 whitespace-nowrap transition-all -mb-px ${active ? "border-primary text-primary bg-background border-x border-t border-border" : "border-transparent text-muted-foreground hover:text-foreground hover:bg-secondary/40"}`}>
                   {f.originalName.replace(/\.pdf$/i, "").slice(0, 30)}
-                  {lockedCount > 0 && (
-                    <span className="inline-flex items-center justify-center min-w-[1.25rem] h-4 px-1 rounded-full bg-amber-500/20 text-amber-600 dark:text-amber-400 text-[10px] font-semibold leading-none">
-                      {lockedCount}
-                    </span>
-                  )}
-                  {unplacedCount > 0 && (
-                    <span className="inline-flex items-center justify-center rounded-full bg-muted text-muted-foreground border border-border text-[10px] font-semibold leading-none px-1.5 py-0.5 min-w-[18px]">
-                      {unplacedCount}
-                    </span>
-                  )}
                 </button>
               );
             })}
@@ -2316,6 +2047,12 @@ export function UnifiedPlanViewer({
       </div>
     );
   }
+
+  // Focus the modal container when it mounts so Ctrl+Z works without a click
+  useEffect(() => {
+    if (mode !== "modal") return;
+    modalContainerRef.current?.focus();
+  }, [mode]);
 
   // ── Modal mode ─────────────────────────────────────────────────────────────
   const handleCloseWithGuard = () => {
@@ -2365,11 +2102,6 @@ export function UnifiedPlanViewer({
             {activeSign?.manuallyAdded && (
               <span className="flex items-center gap-1 text-[10px] font-display font-bold uppercase tracking-wider border px-2 py-0.5 rounded" style={{ color: "#a855f7", borderColor: "#a855f755", background: "#a855f710" }}>
                 <Plus className="w-3 h-3" />Manually Added
-              </span>
-            )}
-            {activeSign?.manuallyEdited && (
-              <span className="flex items-center gap-1 text-[10px] font-display font-bold uppercase tracking-wider border px-2 py-0.5 rounded" style={{ color: "#f59e0b", borderColor: "#f59e0b55", background: "#f59e0b10" }}>
-                <Lock className="w-3 h-3" />Locked
               </span>
             )}
             {activeSign?.userVerified && (
@@ -2463,7 +2195,6 @@ export function UnifiedPlanViewer({
             onSaved={onSaved}
             onSignDeleted={onSignDeleted}
             onDeleteCommit={handleDeleteCommit}
-            onUnlock={onUnlock}
             setLocalSigns={setLocalSigns}
             setActiveSign={setActiveSign}
             localSigns={localSigns}

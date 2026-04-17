@@ -1,13 +1,5 @@
-import * as Sentry from "@sentry/node";
-
-const sentryDsn = process.env["SENTRY_DSN"];
-if (sentryDsn) {
-  Sentry.init({ dsn: sentryDsn });
-}
-
 import app from "./app";
 import { logger } from "./lib/logger";
-import { unwatchAllPdfFiles, registerExistingFileWatchers } from "./lib/pdf-file-watcher";
 
 const rawPort = process.env["PORT"];
 
@@ -30,17 +22,4 @@ app.listen(port, (err) => {
   }
 
   logger.info({ port }, "Server listening");
-
-  registerExistingFileWatchers().catch((watchErr) => {
-    logger.warn({ err: watchErr }, "Failed to register existing PDF file watchers on startup");
-  });
 });
-
-function shutdown(signal: string): void {
-  logger.info({ signal }, "Received shutdown signal — closing file watchers");
-  unwatchAllPdfFiles();
-  process.exit(0);
-}
-
-process.on("SIGTERM", () => shutdown("SIGTERM"));
-process.on("SIGINT", () => shutdown("SIGINT"));

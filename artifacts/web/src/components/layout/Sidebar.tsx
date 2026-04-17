@@ -104,7 +104,6 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
         <NavTooltip label={label}>
           <Link
             href={href}
-            aria-label={label}
             className={cn(
               "flex items-center justify-center w-9 h-9 rounded-md transition-all duration-200 outline-none",
               isActive
@@ -112,7 +111,7 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
                 : "text-muted-foreground hover:bg-secondary/50 hover:text-foreground"
             )}
           >
-            <Icon className={cn("w-4 h-4", isActive ? "text-primary" : "opacity-70")} aria-hidden="true" />
+            <Icon className={cn("w-4 h-4", isActive ? "text-primary" : "opacity-70")} />
           </Link>
         </NavTooltip>
       );
@@ -160,7 +159,7 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
               </svg>
             </div>
             <div className="min-w-0">
-              <div className="font-display font-bold text-sm leading-tight text-foreground truncate">SIGN TAKEOFF IQ</div>
+              <h1 className="font-display font-bold text-sm leading-tight text-foreground truncate">SIGN TAKEOFF IQ</h1>
               <p className="text-[10px] text-primary tracking-widest font-mono uppercase">Precision Portal</p>
             </div>
           </div>
@@ -168,7 +167,7 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
       </div>
 
       {/* Main nav */}
-      <nav aria-label="Main navigation" className={cn("space-y-1", collapsed ? "p-1.5 pt-2" : "p-4")}>
+      <nav className={cn("space-y-1", collapsed ? "p-1.5 pt-2" : "p-4")}>
         {mainNavItems.map((item) => (
           <NavItem key={item.href} {...item} />
         ))}
@@ -290,19 +289,17 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
             <NavTooltip label={guestMode ? "Exit guest mode" : "Sign out"}>
               <button
                 onClick={handleSignOut}
-                aria-label={guestMode ? "Exit guest mode" : "Sign out"}
                 className="flex items-center justify-center w-9 h-9 rounded-md text-muted-foreground hover:bg-destructive/10 hover:text-destructive transition-all"
               >
-                <LogOut className="w-4 h-4 opacity-70" aria-hidden="true" />
+                <LogOut className="w-4 h-4 opacity-70" />
               </button>
             </NavTooltip>
             <NavTooltip label="Expand sidebar">
               <button
                 onClick={onToggle}
-                aria-label="Expand sidebar"
                 className="flex items-center justify-center w-9 h-9 rounded-md text-muted-foreground hover:bg-secondary/50 hover:text-foreground transition-all"
               >
-                <ChevronRight className="w-4 h-4" aria-hidden="true" />
+                <ChevronRight className="w-4 h-4" />
               </button>
             </NavTooltip>
           </>

@@ -5,15 +5,9 @@
  * Sign Takeoff Portal API
  * OpenAPI spec version: 0.1.0
  */
-import type { ExtractedSignDataSource } from "./extractedSignDataSource";
-import type { ExtractedSignExtractionMethod } from "./extractedSignExtractionMethod";
-import type { ExtractedSignPlacementSource } from "./extractedSignPlacementSource";
-import type { ExtractedSignRawJson } from "./extractedSignRawJson";
 
 export interface ExtractedSign {
   id: string;
-  /** ID of the job this sign belongs to */
-  jobId: string;
   jobFileId?: string | null;
   sheetNumber?: string | null;
   detailReference?: string | null;
@@ -28,57 +22,15 @@ export interface ExtractedSign {
   materials?: string | null;
   messageContent?: string | null;
   notes?: string | null;
-  /** PDF page number (1-indexed) where this sign is placed on the floor plan */
-  pageNumber?: number | null;
-  /**
-   * Normalized X position (0–1) of the sign marker on the page
-   * @minimum 0
-   * @maximum 1
-   */
-  xPos?: number | null;
-  /**
-   * Normalized Y position (0–1) of the sign marker on the page
-   * @minimum 0
-   * @maximum 1
-   */
-  yPos?: number | null;
-  /** How the floor-plan placement coordinates were determined */
-  placementSource?: ExtractedSignPlacementSource;
-  /** How this sign row was extracted (text-pass, image-pass, raw-text, or manually added) */
-  extractionMethod?: ExtractedSignExtractionMethod;
-  /** ID of the complementary sign row in the paired text/image match */
-  pairedSignId?: string | null;
-  /** True if this sign is flagged as ADA-required */
-  adaRequired: boolean;
-  /** True if this sign was manually placed by the user (not AI-extracted) */
-  manuallyAdded: boolean;
-  /** True if the user has manually edited this sign; protected from AI re-run overwrites */
-  manuallyEdited: boolean | null;
-  /** True if the user has saved/confirmed this sign entry; preserved across re-extractions */
-  userVerified: boolean;
-  /** True if this sign has been soft-deleted (hidden from the main sign list) */
-  hidden: boolean;
-  /** Reason a sign is flagged as an exception (e.g. locked out of normal processing) */
-  exceptionReason?: string | null;
-  /** AI-detected bounding box X coordinate (normalized 0–1) */
-  aiBboxX?: number | null;
-  /** AI-detected bounding box Y coordinate (normalized 0–1) */
-  aiBboxY?: number | null;
-  /** AI-detected bounding box width (normalized 0–1) */
-  aiBboxW?: number | null;
-  /** AI-detected bounding box height (normalized 0–1) */
-  aiBboxH?: number | null;
-  /** True if AI bounding box data is available for this sign */
-  aiBbox: boolean;
-  /** Origin of the sign data (pdf text extraction, AI vision pass, or manual entry) */
-  dataSource?: ExtractedSignDataSource;
-  /** Raw JSON payload returned by the AI extraction model */
-  rawJson?: ExtractedSignRawJson;
   /**
    * @minimum 0
    * @maximum 1
    */
   confidenceScore: number;
   reviewFlag: boolean;
+  /** True if this sign was manually placed by the user (not AI-extracted) */
+  manuallyAdded?: boolean;
+  /** True if the user has saved/confirmed this sign entry; preserved across re-extractions */
+  userVerified?: boolean;
   createdAt: Date;
 }

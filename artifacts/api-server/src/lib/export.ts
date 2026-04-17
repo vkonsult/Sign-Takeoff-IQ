@@ -1,5 +1,5 @@
 import ExcelJS from "exceljs";
-import type { ExtractedSign, PlaqueSchedule, OccupantLoad } from "@workspace/db";
+import type { ExtractedSign } from "@workspace/db";
 
 const COLUMN_HEADERS = [
   { key: "sheet_number", header: "Sheet #", width: 12 },
@@ -46,9 +46,7 @@ const HIGH_CONFIDENCE_FILL: ExcelJS.Fill = {
 export async function buildExcelExport(
   signs: ExtractedSign[],
   jobId: string,
-  outputPath: string,
-  plaques: PlaqueSchedule[] = [],
-  occupantLoads: OccupantLoad[] = []
+  outputPath: string
 ): Promise<void> {
   const workbook = new ExcelJS.Workbook();
   workbook.creator = "Sign Takeoff Portal";
@@ -133,47 +131,7 @@ export async function buildExcelExport(
   const totalSigns = signs.reduce((acc, s) => acc + (s.quantity ?? 1), 0);
   const reviewCount = signs.filter((s) => s.reviewFlag).length;
   const highConfCount = signs.filter((s) => s.confidenceScore >= 0.8).length;
-  const assemblyRoomCount = occupantLoads.filter((r) => {
-    const group = (r.occupancyGroup ?? "").trim().toUpperCase();
-    return group.startsWith("A") || (r.occupantLoad != null && r.occupantLoad >= 50);
-  }).length;
 
-  const SECTION_LABEL_FILL: ExcelJS.Fill = {
-    type: "pattern",
-    pattern: "solid",
-    fgColor: { argb: "FFD9E1F2" },
-  };
-  const SECTION_LABEL_FONT: Partial<ExcelJS.Font> = { bold: true, size: 11, color: { argb: "FF1E3A5F" } };
-  const DIVIDER_FILL: ExcelJS.Fill = {
-    type: "pattern",
-    pattern: "solid",
-    fgColor: { argb: "FFB8C9E8" },
-  };
-
-  const addSectionLabel = (label: string) => {
-    const labelRow = summarySheet.addRow({ metric: label, value: "" });
-    labelRow.eachCell({ includeEmpty: true }, (cell) => {
-      cell.fill = SECTION_LABEL_FILL;
-      cell.font = SECTION_LABEL_FONT;
-      cell.alignment = { vertical: "middle" };
-      cell.border = { bottom: { style: "thin", color: { argb: "FF9BB0D4" } } };
-    });
-    labelRow.height = 20;
-  };
-
-  const addDivider = () => {
-    const divRow = summarySheet.addRow({ metric: "", value: "" });
-    divRow.eachCell({ includeEmpty: true }, (cell) => {
-      cell.fill = DIVIDER_FILL;
-      cell.border = {
-        top: { style: "medium", color: { argb: "FF1E3A5F" } },
-        bottom: { style: "medium", color: { argb: "FF1E3A5F" } },
-      };
-    });
-    divRow.height = 6;
-  };
-
-  addSectionLabel("Sign Metrics");
   [
     { metric: "Job ID", value: jobId },
     { metric: "Export Date", value: new Date().toLocaleDateString() },
@@ -181,17 +139,6 @@ export async function buildExcelExport(
     { metric: "Total Sign Quantity", value: totalSigns },
     { metric: "High Confidence Items", value: highConfCount },
     { metric: "Items Flagged for Review", value: reviewCount },
-  ].forEach((row) => {
-    summarySheet.addRow(row);
-  });
-
-  addDivider();
-
-  addSectionLabel("Plaque & Occupant Loads");
-  [
-    { metric: "Plaque Types", value: plaques.length },
-    { metric: "Occupant Load Rooms", value: occupantLoads.length },
-    { metric: "Assembly Rooms", value: assemblyRoomCount },
   ].forEach((row) => {
     summarySheet.addRow(row);
   });
@@ -265,89 +212,6 @@ export async function buildExcelExport(
     cell.alignment = { vertical: "middle", horizontal: "center" };
   });
   totalRow.height = 20;
-
-  // ── Plaque Schedule sheet ─────────────────────────────────────────────────
-  const plaqueSheet = workbook.addWorksheet("Plaque Schedule");
-  plaqueSheet.columns = [
-    { header: "Type ID",       key: "type_id",       width: 16 },
-    { header: "Name",          key: "name",           width: 28 },
-    { header: "Braille",       key: "braille",        width: 12 },
-    { header: "Letter Height", key: "letter_height",  width: 16 },
-    { header: "Trigger",       key: "trigger",        width: 32 },
-  ];
-
-  const plaqueHeaderRow = plaqueSheet.getRow(1);
-  plaqueHeaderRow.eachCell((cell) => {
-    cell.fill = HEADER_FILL;
-    cell.font = HEADER_FONT;
-    cell.alignment = { vertical: "middle", horizontal: "center", wrapText: false };
-    cell.border = { bottom: { style: "medium", color: { argb: "FF0D2137" } } };
-  });
-  plaqueHeaderRow.height = 22;
-
-  plaques.forEach((plaque, i) => {
-    const row = plaqueSheet.addRow({
-      type_id:       plaque.typeId,
-      name:          plaque.name ?? "",
-      braille:       plaque.braille === true ? "Yes" : plaque.braille === false ? "No" : "",
-      letter_height: plaque.letterHeight ?? "",
-      trigger:       plaque.trigger ?? "",
-    });
-    row.eachCell({ includeEmpty: true }, (cell) => {
-      cell.alignment = { vertical: "middle", wrapText: true };
-      cell.border = { bottom: { style: "thin", color: { argb: "FFD0D0D0" } } };
-      if (i % 2 === 1) {
-        cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFF5F5F5" } };
-      }
-    });
-    row.height = 18;
-  });
-
-  // ── Occupant Loads sheet ──────────────────────────────────────────────────
-  const ASSEMBLY_FILL: ExcelJS.Fill = {
-    type: "pattern",
-    pattern: "solid",
-    fgColor: { argb: "FFFCE4D6" },
-  };
-
-  const occupantSheet = workbook.addWorksheet("Occupant Loads");
-  occupantSheet.columns = [
-    { header: "Room #",         key: "room_num",        width: 14 },
-    { header: "Room Name",      key: "room_name",       width: 30 },
-    { header: "Occupant Load",  key: "occupant_load",   width: 16 },
-    { header: "Occupancy Group", key: "occupancy_group", width: 18 },
-    { header: "Assembly (Y/N)", key: "assembly",        width: 14 },
-  ];
-
-  const occupantHeaderRow = occupantSheet.getRow(1);
-  occupantHeaderRow.eachCell((cell) => {
-    cell.fill = HEADER_FILL;
-    cell.font = HEADER_FONT;
-    cell.alignment = { vertical: "middle", horizontal: "center", wrapText: false };
-    cell.border = { bottom: { style: "medium", color: { argb: "FF0D2137" } } };
-  });
-  occupantHeaderRow.height = 22;
-
-  occupantLoads.forEach((ol) => {
-    const group = (ol.occupancyGroup ?? "").trim();
-    const isAssembly = group.toUpperCase().startsWith("A") || (ol.occupantLoad != null && ol.occupantLoad >= 50);
-    const row = occupantSheet.addRow({
-      room_num:        ol.roomNum,
-      room_name:       ol.roomName ?? "",
-      occupant_load:   ol.occupantLoad ?? "",
-      occupancy_group: ol.occupancyGroup ?? "",
-      assembly:        isAssembly ? "Y" : "N",
-    });
-    row.eachCell({ includeEmpty: true }, (cell) => {
-      cell.alignment = { vertical: "middle", wrapText: false };
-      cell.border = { bottom: { style: "thin", color: { argb: "FFD0D0D0" } } };
-      if (isAssembly) {
-        cell.fill = ASSEMBLY_FILL;
-        cell.font = { bold: true };
-      }
-    });
-    row.height = 18;
-  });
 
   await workbook.xlsx.writeFile(outputPath);
 }

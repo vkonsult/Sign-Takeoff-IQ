@@ -27,7 +27,7 @@ export function isCodeOnlyLocation(location: string): boolean {
   if (!location || !location.trim()) return true;
 
   // Split on whitespace and common separator characters (including em-dash U+2014)
-  const tokens = location.trim().split(/[\s\u2014\-/,]+/).filter((t) => t.length > 0);
+  const tokens = location.trim().split(/[\s\u2014\-\/,]+/).filter((t) => t.length > 0);
   if (tokens.length === 0) return true;
 
   for (const token of tokens) {
@@ -35,7 +35,7 @@ export function isCodeOnlyLocation(location: string): boolean {
     if (/^\d+$/.test(token)) continue;
 
     // Skip letter+digit combos: "A103", "G12", "B205", "AE-4", "AS1-4"
-    if (/^[A-Za-z]{1,3}\d[\d-]*$/.test(token)) continue;
+    if (/^[A-Za-z]{1,3}\d[\d\-]*$/.test(token)) continue;
 
     // Skip short all-caps with no vowels (≤4 chars): "GHK", "SVC"
     if (token.length <= 4 && /^[A-Z]+$/.test(token) && !/[AEIOU]/.test(token)) continue;
@@ -721,48 +721,6 @@ export const BUILDING_TYPE_VOCABULARY: Record<CanonicalBuildingType, Record<stri
     "broadcast":      "ROOM ID SIGN",
   },
 };
-
-/**
- * Abbreviation expansion rules for room location strings.
- *
- * Applied (in order) as a pre-processing step in `buildRoomInventory` before
- * the primary regex classifiers run.  Each entry is a [pattern, replacement]
- * pair where the replacement is the canonical expanded form that the existing
- * regexes already recognise.
- *
- * Ordering notes:
- *   - Slash-separated abbreviations (W/C, E/R, M/R, T/R) must be listed before
- *     any expansions that could partially overlap with them.
- *   - All patterns are case-insensitive; the replacement text is uppercase so it
- *     matches the upper-cased locationUpper string used downstream.
- */
-export const LOCATION_ABBREVIATION_MAP: Array<[RegExp, string]> = [
-  // Water closet / toilet abbreviations → RESTROOM (caught by restroom regex)
-  [/\bW\/C\b/gi, "RESTROOM"],
-  [/\bT\/R\b/gi, "RESTROOM"],
-  // Slash-style room-type codes
-  [/\bE\/R\b/gi, "ELECTRICAL"],
-  [/\bM\/R\b/gi, "MECHANICAL"],
-  [/\bP\/R\b/gi, "PLUMBING"],
-  // "RM" suffix expansions — expand before generic token checks
-  [/\bMECH\s+RM\b/gi, "MECHANICAL"],
-  [/\bELEC\s+RM\b/gi, "ELECTRICAL"],
-  [/\bCONF\s+RM\b/gi, "CONFERENCE"],
-  [/\bSTOR\s+RM\b/gi, "STORAGE"],
-  [/\bUTIL\s+RM\b/gi, "UTILITY"],
-  [/\bEQUIP\s+RM\b/gi, "EQUIPMENT"],
-  [/\bJAN\s+RM\b/gi, "JANITOR"],
-  [/\bIT\s+RM\b/gi, "IT ROOM"],
-  [/\bTELECOM\s+RM\b/gi, "TELECOM"],
-  [/\bELEC\.\s*RM\b/gi, "ELECTRICAL"],
-  [/\bMECH\.\s*RM\b/gi, "MECHANICAL"],
-  // Trailing dot abbreviations (e.g. "CORR.", "VEST.", "STOR.")
-  [/\bCORR\./gi, "CORRIDOR"],
-  [/\bVEST\./gi, "VESTIBULE"],
-  [/\bSTOR\./gi, "STORAGE"],
-  // "RR" shorthand when used as a standalone token (not inside a word)
-  // Keep "\bRR\b" — already in inferRestroomVariant; listed here for normalisation parity.
-];
 
 /**
  * Keyword lists used to detect building type from a project name or title block text.

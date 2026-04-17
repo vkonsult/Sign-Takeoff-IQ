@@ -42,31 +42,8 @@ export const JobSummaryStatus = {
   failed: "failed",
 } as const;
 
-/**
- * Optional step-specific metadata
- */
-export type ProcessingStepDetails = { [key: string]: unknown } | null;
-
-/**
- * A single recorded step in the job processing pipeline
- */
-export interface ProcessingStep {
-  /** Machine-readable step identifier */
-  step: string;
-  /** Human-readable step label */
-  label: string;
-  /** Duration of this step in milliseconds */
-  durationMs: number;
-  /** ISO timestamp when this step started */
-  startedAt: string;
-  /** Optional step-specific metadata */
-  details?: ProcessingStepDetails;
-}
-
 export interface JobSummary {
   id: string;
-  /** Human-readable job name (editable by the user) */
-  name?: string | null;
   status: JobSummaryStatus;
   fileCount: number;
   error?: string | null;
@@ -80,46 +57,16 @@ export interface JobSummary {
   projectCity?: string | null;
   /** 2-letter state code extracted from the plan (e.g. CA, TX, NY) */
   projectState?: string | null;
-  /** Number of plaque schedule entries extracted for this job */
-  plaqueCount?: number;
-  /** Number of occupant load entries extracted for this job */
-  occupantLoadCount?: number;
-  /** Number of signs with no floor-plan placement (pageNumber is null) */
-  unplacedCount?: number;
-  /** Ordered list of processing steps recorded during job execution */
-  processingLog?: ProcessingStep[] | null;
   createdAt: string;
   updatedAt: string;
 }
 
-/**
- * Classified type of this outline section
- */
-export type PdfOutlineSectionType =
-  | (typeof PdfOutlineSectionType)[keyof typeof PdfOutlineSectionType]
-  | null;
-
-export const PdfOutlineSectionType = {
-  floor_plan: "floor_plan",
-  sign_schedule: "sign_schedule",
-  other: "other",
-} as const;
-
 export interface PdfOutlineSection {
-  /** Bookmark / outline item title */
   title: string;
-  /** First page of this section (1-indexed) */
   pageStart: number;
-  /** Last page of this section (1-indexed, inclusive) */
   pageEnd: number;
-  /** Classified type of this outline section */
-  type: PdfOutlineSectionType;
+  type: "floor_plan" | "sign_schedule" | "other" | null;
 }
-
-/**
- * Map of page number (as string key) to server-relative path of pre-rendered PNG image (resolved server-side; not exposed to clients)
- */
-export type PageStatsPageImagePaths = { [key: string]: string } | null;
 
 export interface PageStats {
   /** PDF page numbers classified as floor plans */
@@ -131,13 +78,11 @@ export interface PageStats {
   /** PDF page numbers classified as both floor plan and sign schedule */
   bothPages?: number[];
   /** PDF logical page labels (e.g. "A1.1") indexed by page number (0-based) */
-  pageLabels?: (string | null)[];
+  pageLabels?: (string | null)[] | null;
   /** Top-level PDF outline (bookmark) sections with classified page ranges */
-  outlineSections?: PdfOutlineSection[];
-  /** PDF page numbers explicitly rejected by the user from their classification */
-  rejectedPageNumbers?: number[];
-  /** Map of page number (as string key) to server-relative path of pre-rendered PNG image (resolved server-side; not exposed to clients) */
-  pageImagePaths?: PageStatsPageImagePaths;
+  outlineSections?: PdfOutlineSection[] | null;
+  /** Map of page number (as string key) to absolute file path of pre-rendered PNG image */
+  pageImagePaths?: Record<string, string> | null;
 }
 
 export interface JobFile {
@@ -149,58 +94,8 @@ export interface JobFile {
   createdAt: string;
 }
 
-/**
- * How the floor-plan placement coordinates were determined
- */
-export type ExtractedSignPlacementSource =
-  | (typeof ExtractedSignPlacementSource)[keyof typeof ExtractedSignPlacementSource]
-  | null;
-
-export const ExtractedSignPlacementSource = {
-  word_match: "word_match",
-  text_match: "text_match",
-  gemini_vision: "gemini_vision",
-  user_confirmed: "user_confirmed",
-  manual: "manual",
-  user_drag: "user_drag",
-} as const;
-
-/**
- * How this sign row was extracted (text-pass, image-pass, raw-text, or manually added)
- */
-export type ExtractedSignExtractionMethod =
-  | (typeof ExtractedSignExtractionMethod)[keyof typeof ExtractedSignExtractionMethod]
-  | null;
-
-export const ExtractedSignExtractionMethod = {
-  text: "text",
-  raw_text: "raw_text",
-  image: "image",
-  manual: "manual",
-} as const;
-
-/**
- * Origin of the sign data (pdf text extraction, AI vision pass, or manual entry)
- */
-export type ExtractedSignDataSource =
-  | (typeof ExtractedSignDataSource)[keyof typeof ExtractedSignDataSource]
-  | null;
-
-export const ExtractedSignDataSource = {
-  pdf: "pdf",
-  ai: "ai",
-  manual: "manual",
-} as const;
-
-/**
- * Raw JSON payload returned by the AI extraction model
- */
-export type ExtractedSignRawJson = { [key: string]: unknown } | null;
-
 export interface ExtractedSign {
   id: string;
-  /** ID of the job this sign belongs to */
-  jobId: string;
   jobFileId?: string | null;
   sheetNumber?: string | null;
   detailReference?: string | null;
@@ -215,105 +110,23 @@ export interface ExtractedSign {
   materials?: string | null;
   messageContent?: string | null;
   notes?: string | null;
-  /** PDF page number (1-indexed) where this sign is placed on the floor plan */
-  pageNumber?: number | null;
-  /**
-   * Normalized X position (0–1) of the sign marker on the page
-   * @minimum 0
-   * @maximum 1
-   */
-  xPos?: number | null;
-  /**
-   * Normalized Y position (0–1) of the sign marker on the page
-   * @minimum 0
-   * @maximum 1
-   */
-  yPos?: number | null;
-  /** How the floor-plan placement coordinates were determined */
-  placementSource?: ExtractedSignPlacementSource;
-  /** How this sign row was extracted (text-pass, image-pass, raw-text, or manually added) */
-  extractionMethod?: ExtractedSignExtractionMethod;
-  /** ID of the complementary sign row in the paired text/image match */
-  pairedSignId?: string | null;
-  /** True if this sign is flagged as ADA-required */
-  adaRequired: boolean;
-  /** True if this sign was manually placed by the user (not AI-extracted) */
-  manuallyAdded: boolean;
-  /** True if the user has manually edited this sign; protected from AI re-run overwrites */
-  manuallyEdited: boolean | null;
-  /** True if the user has saved/confirmed this sign entry; preserved across re-extractions */
-  userVerified: boolean;
-  /** True if this sign has been soft-deleted (hidden from the main sign list) */
-  hidden: boolean;
-  /** Reason a sign is flagged as an exception (e.g. locked out of normal processing) */
-  exceptionReason?: string | null;
-  /** AI-detected bounding box X coordinate (normalized 0–1) */
-  aiBboxX?: number | null;
-  /** AI-detected bounding box Y coordinate (normalized 0–1) */
-  aiBboxY?: number | null;
-  /** AI-detected bounding box width (normalized 0–1) */
-  aiBboxW?: number | null;
-  /** AI-detected bounding box height (normalized 0–1) */
-  aiBboxH?: number | null;
-  /** True if AI bounding box data is available for this sign */
-  aiBbox: boolean;
-  /** Origin of the sign data (pdf text extraction, AI vision pass, or manual entry) */
-  dataSource?: ExtractedSignDataSource;
-  /** Raw JSON payload returned by the AI extraction model */
-  rawJson?: ExtractedSignRawJson;
   /**
    * @minimum 0
    * @maximum 1
    */
   confidenceScore: number;
   reviewFlag: boolean;
+  exceptionReason?: string | null;
   createdAt: string;
-}
-
-/**
- * User identity snapshot recorded on a job activity log entry
- */
-export interface ActivityLogActor {
-  /** Timestamp of the activity */
-  at: string;
-  /** Display name of the user who performed the action */
-  userName?: string;
-  /** Initials of the user who performed the action */
-  userInitials?: string;
-}
-
-/**
- * Combined Gemini API token usage and estimated cost for a job
- */
-export interface ProcessingCost {
-  /** Total input tokens consumed (text-pass + image-pass) */
-  inputTokens: number;
-  /** Total output tokens consumed (text-pass + image-pass) */
-  outputTokens: number;
-  /** Estimated USD cost based on Gemini pricing */
-  totalCost: number;
 }
 
 export interface JobDetails {
   job: JobSummary;
   files: JobFile[];
-  /** Visible (non-hidden) signs for display in the sign list */
   extractedSigns: ExtractedSign[];
-  /** Soft-deleted signs hidden from the main sign list */
-  hiddenSigns: ExtractedSign[];
-  /** All signs with floor-plan coordinates (used for map marker overlays) */
-  markerSigns: ExtractedSign[];
   totalSigns: number;
   flaggedCount: number;
   highConfidenceCount: number;
-  plaqueCount: number;
-  occupantLoadCount: number;
-  /** User and timestamp of the most recent extraction scan */
-  lastScan?: ActivityLogActor | null;
-  /** User and timestamp of the most recent sign edit */
-  lastEdit?: ActivityLogActor | null;
-  /** Token usage and cost summary for the job */
-  processingCost?: ProcessingCost;
 }
 
 export type KnowledgeIngestRequestCollection =
@@ -401,187 +214,6 @@ export interface KnowledgeQueryResponse {
   totalResults: number;
 }
 
-/**
- * General notes associated with this plaque type
- */
-export type PlaqueScheduleEntryGeneralNotes = { [key: string]: unknown } | null;
-
-/**
- * Raw extracted JSON from AI
- */
-export type PlaqueScheduleEntryRawJson = { [key: string]: unknown } | null;
-
-/**
- * A single plaque type extracted from the sign schedule
- */
-export interface PlaqueScheduleEntry {
-  id: string;
-  jobId: string;
-  /** Plaque type identifier (e.g. "P1", "P2") */
-  typeId: string;
-  /** Descriptive name of the plaque type */
-  name?: string | null;
-  /** Whether the plaque requires Braille */
-  braille?: boolean | null;
-  /** Whether the plaque has an insert */
-  insert?: boolean | null;
-  /** Insert size specification */
-  insertSize?: string | null;
-  /** Letter height specification */
-  letterHeight?: string | null;
-  /** Trigger condition for this plaque type */
-  trigger?: string | null;
-  /** Column in the sign schedule this type maps to */
-  mapsToColumn?: string | null;
-  /** General notes associated with this plaque type */
-  generalNotes?: PlaqueScheduleEntryGeneralNotes;
-  /** Raw extracted JSON from AI */
-  rawJson?: PlaqueScheduleEntryRawJson;
-  /** PDF page number where this plaque type was found */
-  sourcePage?: number | null;
-  createdAt: string;
-}
-
-/**
- * Per-file result from a plaque schedule extraction run
- */
-export interface PlaqueScheduleFileDetail {
-  /** Number of plaque types extracted from this file */
-  plaqueCount: number;
-  /** PDF page number where the plaque schedule was found */
-  sourcePage?: number | null;
-  /** Whether this file was skipped (e.g. no sign schedule pages) */
-  skipped: boolean;
-  /** Reason the file was skipped, if applicable */
-  skipReason?: string | null;
-  /** Gemini input tokens consumed for this file */
-  inputTokens: number;
-  /** Gemini output tokens consumed for this file */
-  outputTokens: number;
-}
-
-/**
- * Per-file extraction details keyed by file UUID
- */
-export type ExtractPlaqueScheduleResponseDetails = {
-  [key: string]: PlaqueScheduleFileDetail;
-};
-
-/**
- * Result of a plaque schedule extraction run
- */
-export interface ExtractPlaqueScheduleResponse {
-  success: boolean;
-  jobId: string;
-  /** Total number of plaque types extracted across all files */
-  totalPlaques: number;
-  /** Total Gemini input tokens consumed */
-  totalInputTokens: number;
-  /** Total Gemini output tokens consumed */
-  totalOutputTokens: number;
-  /** Per-file extraction details keyed by file UUID */
-  details: ExtractPlaqueScheduleResponseDetails;
-}
-
-/**
- * Stored plaque schedule data for a job
- */
-export interface PlaqueScheduleResponse {
-  jobId: string;
-  plaques: PlaqueScheduleEntry[];
-}
-
-/**
- * A single room's occupant load data extracted from egress drawings
- */
-export interface OccupantLoadEntry {
-  id: string;
-  jobId: string;
-  /** Room number or identifier */
-  roomNum: string;
-  /** Room name or description */
-  roomName?: string | null;
-  /** Calculated occupant load for the room */
-  occupantLoad?: number | null;
-  /** IBC occupancy group classification (e.g. A-2, B, E) */
-  occupancyGroup?: string | null;
-  /** PDF page number where this occupant load was found */
-  sourcePage?: number | null;
-  createdAt: string;
-}
-
-/**
- * A room identified as an assembly occupancy (occupant load >= 50)
- */
-export interface AssemblyRoom {
-  /** Room number or identifier */
-  roomNumber: string;
-  /** Room name or description */
-  roomName?: string | null;
-  /** Occupant load for the room */
-  occupantLoad: number;
-  /** IBC occupancy group classification */
-  occupancyGroup?: string | null;
-  /** Always true for assembly rooms */
-  isAssembly: boolean;
-}
-
-/**
- * Per-file result from an occupant loads extraction run
- */
-export interface OccupantLoadFileDetail {
-  /** Number of rooms extracted from this file */
-  roomCount: number;
-  /** PDF page numbers where occupant load tables were found */
-  sourcePages: number[];
-  /** Whether this file was skipped (e.g. no other/egress pages) */
-  skipped: boolean;
-  /** Reason the file was skipped, if applicable */
-  skipReason?: string | null;
-  /** Gemini input tokens consumed for this file */
-  inputTokens: number;
-  /** Gemini output tokens consumed for this file */
-  outputTokens: number;
-}
-
-/**
- * Per-file extraction details keyed by file UUID
- */
-export type ExtractOccupantLoadsResponseDetails = {
-  [key: string]: OccupantLoadFileDetail;
-};
-
-/**
- * Result of an occupant loads extraction run
- */
-export interface ExtractOccupantLoadsResponse {
-  success: boolean;
-  jobId: string;
-  /** Total number of rooms extracted across all files */
-  totalRooms: number;
-  /** Total Gemini input tokens consumed */
-  totalInputTokens: number;
-  /** Total Gemini output tokens consumed */
-  totalOutputTokens: number;
-  /** Number of rooms identified as assembly occupancy */
-  assemblyRoomCount: number;
-  /** Rooms identified as assembly occupancy (occupant load >= 50) */
-  assemblyRooms: AssemblyRoom[];
-  /** Per-file extraction details keyed by file UUID */
-  details: ExtractOccupantLoadsResponseDetails;
-}
-
-/**
- * Stored occupant loads data for a job
- */
-export interface OccupantLoadsResponse {
-  jobId: string;
-  /** All occupant load records for the job */
-  loads: OccupantLoadEntry[];
-  /** Rooms identified as assembly occupancy */
-  assemblyRooms: AssemblyRoom[];
-}
-
 export interface ErrorResponse {
   error: string;
   details?: string | null;
@@ -593,8 +225,4 @@ export type UploadFilesBody = {
 
 export type ListJobs200 = {
   jobs: JobSummary[];
-};
-
-export type DeletePlaqueScheduleRow200 = {
-  success?: boolean;
 };
