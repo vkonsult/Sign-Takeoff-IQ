@@ -2,6 +2,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { 
   useUploadFiles, 
   useProcessJob, 
+  useRetryFileExtraction,
   useGetJob, 
   useListJobs,
   getGetJobQueryKey,
@@ -67,6 +68,18 @@ export function useUploadJobFiles() {
 export function useStartExtraction() {
   const queryClient = useQueryClient();
   return useProcessJob({
+    mutation: {
+      onSuccess: (_result, variables) => {
+        queryClient.invalidateQueries({ queryKey: getGetJobQueryKey(variables.jobId) });
+        queryClient.invalidateQueries({ queryKey: getListJobsQueryKey() });
+      }
+    }
+  });
+}
+
+export function useRetryFile() {
+  const queryClient = useQueryClient();
+  return useRetryFileExtraction({
     mutation: {
       onSuccess: (_result, variables) => {
         queryClient.invalidateQueries({ queryKey: getGetJobQueryKey(variables.jobId) });

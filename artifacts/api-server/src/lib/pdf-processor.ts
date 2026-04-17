@@ -6,7 +6,7 @@
  */
 
 import path from "path";
-import { eq, and } from "drizzle-orm";
+import { eq, and, inArray } from "drizzle-orm";
 import { db } from "@workspace/db";
 import {
   jobsTable,
@@ -63,7 +63,14 @@ export async function resetScanData(jobId: string): Promise<void> {
     .where(eq(signageScheduleEntriesTable.jobId, jobId));
 }
 
-export async function runPdfProcessor(jobId: string): Promise<void> {
+export interface PdfProcessorOptions {
+  /** When set, only this file is re-processed (all other files are left as-is). */
+  targetFileId?: string;
+}
+
+export async function runPdfProcessor(jobId: string, opts: PdfProcessorOptions = {}): Promise<void> {
+  const { targetFileId } = opts;
+  const isFileRetry = !!targetFileId;
   const pipelineSteps: ProcessingStep[] = [];
   const jobStart = Date.now();
 
@@ -98,40 +105,72 @@ export async function runPdfProcessor(jobId: string): Promise<void> {
   // ── Preserve verified + manually-added signs ─────────────────────────────
   // All auto-extracted signs (heuristic and AI) are wiped on rescan and re-derived
   // from the PDF. Only user-verified and manually-added signs survive.
-  const existingSigns = await db
-    .select()
-    .from(extractedSignsTable)
-    .where(eq(extractedSignsTable.jobId, jobId));
+  // For a per-file retry, only signs from that specific file are deleted.
+  const existingSignsQuery = isFileRetry
+    ? db.select().from(extractedSignsTable).where(
+        and(
+          eq(extractedSignsTable.jobId, jobId),
+          eq(extractedSignsTable.jobFileId, targetFileId!),
+        )
+      )
+    : db.select().from(extractedSignsTable).where(eq(extractedSignsTable.jobId, jobId));
+
+  const existingSigns = await existingSignsQuery;
 
   const preservedSigns = existingSigns.filter(
     (s) => s.userVerified || s.manuallyAdded
   );
 
-  logger.info({ jobId, preservedCount: preservedSigns.length }, "[PDF Processor] Preserved verified/manually-added signs");
+  logger.info({ jobId, targetFileId, preservedCount: preservedSigns.length, isFileRetry }, "[PDF Processor] Preserved verified/manually-added signs");
 
-  // Delete all auto-extracted signs (heuristic and AI); keep only user-verified and manually-added
-  await db
-    .delete(extractedSignsTable)
-    .where(
-      and(
-        eq(extractedSignsTable.jobId, jobId),
-        eq(extractedSignsTable.userVerified, false),
-        eq(extractedSignsTable.manuallyAdded, false)
-      )
-    );
+  // Delete auto-extracted signs; keep only user-verified and manually-added.
+  // For a per-file retry, scope the delete to only the target file.
+  if (isFileRetry) {
+    await db
+      .delete(extractedSignsTable)
+      .where(
+        and(
+          eq(extractedSignsTable.jobId, jobId),
+          eq(extractedSignsTable.jobFileId, targetFileId!),
+          eq(extractedSignsTable.userVerified, false),
+          eq(extractedSignsTable.manuallyAdded, false)
+        )
+      );
+  } else {
+    await db
+      .delete(extractedSignsTable)
+      .where(
+        and(
+          eq(extractedSignsTable.jobId, jobId),
+          eq(extractedSignsTable.userVerified, false),
+          eq(extractedSignsTable.manuallyAdded, false)
+        )
+      );
+  }
 
   // Reset page classification and room inventory so re-runs start clean.
   // roomInventory is not re-emitted when a file has no floor-plan pages, so clearing
   // here prevents stale data from a prior run persisting after a re-scan.
-  await db
-    .update(jobFilesTable)
-    .set({ pageStats: null, pageCount: null, roomInventory: null })
-    .where(eq(jobFilesTable.jobId, jobId));
+  // For a per-file retry, scope the reset to only the target file.
+  if (isFileRetry) {
+    await db
+      .update(jobFilesTable)
+      .set({ pageStats: null, pageCount: null, roomInventory: null })
+      .where(eq(jobFilesTable.id, targetFileId!));
+  } else {
+    await db
+      .update(jobFilesTable)
+      .set({ pageStats: null, pageCount: null, roomInventory: null })
+      .where(eq(jobFilesTable.jobId, jobId));
+  }
 
   // plaqueTable, signTypeSpecs, and signageScheduleEntries must all be cleared
   // before processing begins so a rescan never inherits stale type codes from a
-  // prior run.  The dedicated helper is exported and unit-tested independently.
-  await resetScanData(jobId);
+  // prior run.  For a per-file retry, only file-scoped schedule data is cleared
+  // (handled below at the sign-insertion stage via sourceFileId).
+  if (!isFileRetry) {
+    await resetScanData(jobId);
+  }
 
   await db
     .update(jobsTable)
@@ -156,9 +195,22 @@ export async function runPdfProcessor(jobId: string): Promise<void> {
   // the Phase 1 prepass so we know which files to run the full Phase 1 intake
   // on (data files only).  This is not a duplicate classification — it is the
   // lightweight routing gate that determines the Phase 1 scope.
-  const specFiles = files.filter((f) => classifyFileType(f.originalName) === "spec");
-  const dataFiles = files.filter((f) => classifyFileType(f.originalName) === "data");
-  const hasDataFiles = dataFiles.length > 0;
+  //
+  // For a per-file retry, only the target file is processed; spec files are
+  // skipped (their text was already extracted in the original run).
+  const allSpecFiles = files.filter((f) => classifyFileType(f.originalName) === "spec");
+  const allDataFiles = files.filter((f) => classifyFileType(f.originalName) === "data");
+
+  // When retrying a single file, scope spec/data routing to only that file.
+  const specFiles = isFileRetry
+    ? allSpecFiles.filter((f) => f.id === targetFileId)
+    : allSpecFiles;
+  const dataFiles = isFileRetry
+    ? allDataFiles.filter((f) => f.id === targetFileId)
+    : allDataFiles;
+  const hasDataFiles = isFileRetry
+    ? allDataFiles.length > 0  // preserve original routing intent
+    : dataFiles.length > 0;
 
   // Extract raw text from spec files for metadata (no AI)
   if (specFiles.length > 0 && hasDataFiles) {
@@ -179,7 +231,11 @@ export async function runPdfProcessor(jobId: string): Promise<void> {
     recordStep("spec_processing", "Spec file processing (text-only)", t_spec, { specFileCount: specFiles.length }, "phase-1");
   }
 
-  const filesToProcess = hasDataFiles ? dataFiles : files;
+  // For a per-file retry, filesToProcess is scoped to just the target file.
+  // The original routing intent (data files vs. all files) still applies.
+  const filesToProcess = isFileRetry
+    ? files.filter((f) => f.id === targetFileId)
+    : (hasDataFiles ? dataFiles : files);
 
   // ── Per-file processing ───────────────────────────────────────────────────
   const parsedResults: Record<string, unknown>[] = [];
@@ -924,10 +980,33 @@ export async function runPdfProcessor(jobId: string): Promise<void> {
   }
 
   // ── Persist schedule parser results (sign_type_specs + signage_schedule_entries) ──
-  // Always clear previous schedule rows first (re-run support, prevents stale data
-  // if no schedule pages are found in a subsequent run).
-  await db.delete(signageScheduleEntriesTable).where(eq(signageScheduleEntriesTable.jobId, jobId));
-  await db.delete(signTypeSpecsTable).where(eq(signTypeSpecsTable.jobId, jobId));
+  // For a full run: always clear previous schedule rows first (re-run support).
+  // For a per-file retry: only clear the specs (and their linked entries) for the
+  // target file so that other files' schedule data is preserved.
+  if (isFileRetry) {
+    const existingTargetSpecIds = (
+      await db
+        .select({ id: signTypeSpecsTable.id })
+        .from(signTypeSpecsTable)
+        .where(
+          and(
+            eq(signTypeSpecsTable.jobId, jobId),
+            eq(signTypeSpecsTable.sourceFileId, targetFileId!)
+          )
+        )
+    ).map((r) => r.id);
+    if (existingTargetSpecIds.length > 0) {
+      await db
+        .delete(signageScheduleEntriesTable)
+        .where(inArray(signageScheduleEntriesTable.signTypeSpecId, existingTargetSpecIds));
+      await db
+        .delete(signTypeSpecsTable)
+        .where(inArray(signTypeSpecsTable.id, existingTargetSpecIds));
+    }
+  } else {
+    await db.delete(signageScheduleEntriesTable).where(eq(signageScheduleEntriesTable.jobId, jobId));
+    await db.delete(signTypeSpecsTable).where(eq(signTypeSpecsTable.jobId, jobId));
+  }
 
   // Track insertion counts for output_db_insert step (always recorded below).
   const t_db_insert = Date.now();
@@ -1217,9 +1296,33 @@ export async function runPdfProcessor(jobId: string): Promise<void> {
   await saveParsedResult(jobId, parsedResults);
 
   const failedCount = parsedResults.filter((r) => "error" in r).length;
-  const allFailed = failedCount === files.length;
+  // For a per-file retry, "allFailed" means the single retried file still failed.
+  // For a full run, it means every file in the job failed.
+  const allFailed = isFileRetry
+    ? failedCount === filesToProcess.length
+    : failedCount === files.length;
 
   recordStep("total", "Total pipeline", jobStart, undefined, "phase-4");
+
+  // For a per-file retry, merge the new steps into the existing processingLog:
+  // remove stale per-file steps for the target file and append the fresh steps.
+  let finalPipelineSteps: ProcessingStep[] = pipelineSteps;
+  if (isFileRetry) {
+    const existingJob = await db
+      .select({ processingLog: jobsTable.processingLog })
+      .from(jobsTable)
+      .where(eq(jobsTable.id, jobId))
+      .then((rows) => rows[0]);
+
+    const existingLog = (existingJob?.processingLog ?? []) as ProcessingStep[];
+
+    // Strip all existing steps that reference the target file (UUID-suffixed step names)
+    const stripped = existingLog.filter(
+      (s) => !s.step.includes(targetFileId!)
+    );
+    // Append all new steps from this retry run
+    finalPipelineSteps = [...stripped, ...pipelineSteps];
+  }
 
   if (allFailed) {
     const errorSummary = parsedResults
@@ -1228,7 +1331,7 @@ export async function runPdfProcessor(jobId: string): Promise<void> {
       .join("; ");
     await db
       .update(jobsTable)
-      .set({ status: "failed", error: `All files failed processing: ${errorSummary}`, processingLog: pipelineSteps, currentStep: null, updatedAt: new Date() })
+      .set({ status: "failed", error: `All files failed processing: ${errorSummary}`, processingLog: finalPipelineSteps, currentStep: null, updatedAt: new Date() })
       .where(eq(jobsTable.id, jobId));
     return;
   }
@@ -1237,16 +1340,18 @@ export async function runPdfProcessor(jobId: string): Promise<void> {
     .update(jobsTable)
     .set({
       status: "completed",
-      processingLog: pipelineSteps,
+      processingLog: finalPipelineSteps,
       currentStep: null,
       updatedAt: new Date(),
       // Always write metadata fields — including null — so re-runs never leave
       // stale values from a prior extraction if the current run found nothing.
       ...(detectedBuildingType ? { buildingType: detectedBuildingType } : {}),
-      projectName: detectedProjectName,
-      jurisdiction: detectedJurisdiction,
-      issueDate: detectedIssueDate,
-      drawingIndexPageNum: detectedDrawingIndexPageNum,
+      ...(isFileRetry ? {} : {
+        projectName: detectedProjectName,
+        jurisdiction: detectedJurisdiction,
+        issueDate: detectedIssueDate,
+        drawingIndexPageNum: detectedDrawingIndexPageNum,
+      }),
     })
     .where(eq(jobsTable.id, jobId));
 

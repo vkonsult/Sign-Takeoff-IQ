@@ -3,7 +3,7 @@ import { useRoute, useSearch, useLocation } from "wouter";
 import { useQueryClient } from "@tanstack/react-query";
 import { AppShell } from "@/components/layout/Shell";
 import { apiFetch, openPdfInNewTab } from "@/lib/apiClient";
-import { useJobDetails, useStartExtraction, downloadExport, useUpdateJobName } from "@/hooks/use-takeoff";
+import { useJobDetails, useStartExtraction, useRetryFile, downloadExport, useUpdateJobName } from "@/hooks/use-takeoff";
 import { useToast } from "@/hooks/use-toast";
 import { UnifiedPlanViewer } from "@/components/UnifiedPlanViewer";
 import type { ExtractedSign as SignMarker } from "@/components/UnifiedPlanViewer";
@@ -240,7 +240,17 @@ interface PhaseGroup {
 }
 
 /** A single per-file summary sub-row inside an expandable step */
-function FileSubRow({ summary, maxMs }: { summary: FileSummary; maxMs: number }) {
+function FileSubRow({
+  summary,
+  maxMs,
+  onRetry,
+  isRetrying,
+}: {
+  summary: FileSummary;
+  maxMs: number;
+  onRetry?: (fileId: string) => void;
+  isRetrying?: boolean;
+}) {
   const widthPct = Math.max(1, (summary.combinedDurationMs / maxMs) * 100);
   const isProblematic = summary.hasError || summary.isSkipped;
 
@@ -315,6 +325,24 @@ function FileSubRow({ summary, maxMs }: { summary: FileSummary; maxMs: number })
           <span className="text-[10px] text-amber-400/70 truncate max-w-[10rem]" title={summary.skipReason}>
             {summary.skipReason}
           </span>
+        )}
+        {summary.hasError && onRetry && (
+          <button
+            onClick={() => onRetry(summary.fileId)}
+            disabled={isRetrying}
+            title="Retry extraction for this file"
+            className="ml-auto shrink-0 flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold
+              bg-red-500/10 hover:bg-red-500/20 text-red-400 hover:text-red-300
+              border border-red-500/30 hover:border-red-500/50
+              disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+          >
+            {isRetrying ? (
+              <Loader2 className="w-2.5 h-2.5 animate-spin" />
+            ) : (
+              <RefreshCw className="w-2.5 h-2.5" />
+            )}
+            {isRetrying ? "Retrying…" : "Retry"}
+          </button>
         )}
       </div>
     </div>
@@ -437,7 +465,7 @@ function PageAuditTable({ entries }: { entries: PageAuditEntryShape[] }) {
   );
 }
 
-function TimelineStepRow({ step, maxMs, fileSummaries }: { step: ProcessingStep; maxMs: number; fileSummaries?: FileSummary[] }) {
+function TimelineStepRow({ step, maxMs, fileSummaries, onRetryFile, retryingFileId }: { step: ProcessingStep; maxMs: number; fileSummaries?: FileSummary[]; onRetryFile?: (fileId: string) => void; retryingFileId?: string | null }) {
   const widthPct = Math.max(2, ((step.durationMs ?? 0) / maxMs) * 100);
   const detailStr = formatDetails(step.details);
   const hasChildren = fileSummaries && fileSummaries.length > 0;
@@ -545,7 +573,13 @@ function TimelineStepRow({ step, maxMs, fileSummaries }: { step: ProcessingStep;
           </div>
           <div className="divide-y divide-border/20">
             {sortedSummaries.map((s) => (
-              <FileSubRow key={s.fileId} summary={s} maxMs={maxMs} />
+              <FileSubRow
+                key={s.fileId}
+                summary={s}
+                maxMs={maxMs}
+                onRetry={onRetryFile}
+                isRetrying={retryingFileId === s.fileId}
+              />
             ))}
           </div>
         </div>
@@ -554,7 +588,7 @@ function TimelineStepRow({ step, maxMs, fileSummaries }: { step: ProcessingStep;
   );
 }
 
-function PhaseSection({ group, maxMs, defaultOpen, extractionFileSummaries, isSlowest }: { group: PhaseGroup; maxMs: number; defaultOpen: boolean; extractionFileSummaries: FileSummary[]; isSlowest?: boolean }) {
+function PhaseSection({ group, maxMs, defaultOpen, extractionFileSummaries, isSlowest, onRetryFile, retryingFileId }: { group: PhaseGroup; maxMs: number; defaultOpen: boolean; extractionFileSummaries: FileSummary[]; isSlowest?: boolean; onRetryFile?: (fileId: string) => void; retryingFileId?: string | null }) {
   const [open, setOpen] = useState(defaultOpen);
   const isLegacy = group.phase === null;
   return (
@@ -589,6 +623,8 @@ function PhaseSection({ group, maxMs, defaultOpen, extractionFileSummaries, isSl
               step={step}
               maxMs={maxMs}
               fileSummaries={step.step === "extraction" ? extractionFileSummaries : undefined}
+              onRetryFile={onRetryFile}
+              retryingFileId={retryingFileId}
             />
           ))}
         </div>
@@ -618,7 +654,7 @@ function PhaseBarSegment({ seg }: PhaseBarSegmentProps) {
   );
 }
 
-function ProcessingTimeline({ steps, isLoading }: { steps: ProcessingStep[]; isLoading?: boolean }) {
+function ProcessingTimeline({ steps, isLoading, onRetryFile, retryingFileId }: { steps: ProcessingStep[]; isLoading?: boolean; onRetryFile?: (fileId: string) => void; retryingFileId?: string | null }) {
   if (isLoading) {
     return (
       <div className="space-y-3 animate-pulse">
@@ -938,6 +974,8 @@ function ProcessingTimeline({ steps, isLoading }: { steps: ProcessingStep[]; isL
                   defaultOpen={i === 0 || groups.length <= 2}
                   extractionFileSummaries={extractionFileSummaries}
                   isSlowest={slowestGroup !== null && group === slowestGroup}
+                  onRetryFile={onRetryFile}
+                  retryingFileId={retryingFileId}
                 />
               ));
             })()}
@@ -1304,8 +1342,21 @@ export default function JobDetails() {
   
   const { data, isLoading, isError, error } = useJobDetails(jobId);
   const extractMutation = useStartExtraction();
+  const retryFileMutation = useRetryFile();
+  const [retryingFileId, setRetryingFileId] = useState<string | null>(null);
   const queryClient = useQueryClient();
   const { toast } = useToast();
+
+  const handleRetryFile = useCallback((fileId: string) => {
+    if (retryingFileId) return;
+    setRetryingFileId(fileId);
+    retryFileMutation.mutate(
+      { jobId, fileId },
+      {
+        onSettled: () => setRetryingFileId(null),
+      }
+    );
+  }, [jobId, retryFileMutation, retryingFileId]);
 
   type SignRow = NonNullable<typeof data>["extractedSigns"][number];
   const [reviewSign, setReviewSign] = useState<SignRow | null>(null);
@@ -2137,7 +2188,11 @@ export default function JobDetails() {
                         return <ProcessingTimeline steps={[]} isLoading />;
                       }
                       return jobLog && jobLog.length > 0 ? (
-                        <ProcessingTimeline steps={jobLog} />
+                        <ProcessingTimeline
+                          steps={jobLog}
+                          onRetryFile={handleRetryFile}
+                          retryingFileId={retryingFileId}
+                        />
                       ) : (
                         <p className="text-sm text-muted-foreground">No processing log available for this job.</p>
                       );

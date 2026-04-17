@@ -12,7 +12,7 @@ import {
 } from "@workspace/db";
 import { buildExcelExport, type VerificationReportDetails } from "../lib/export";
 import { getJobExportPath, PAGES_DIR } from "../lib/storage";
-import { processJob, deduplicateSignRows } from "../lib/process-job";
+import { processJob, retryFileExtraction, deduplicateSignRows } from "../lib/process-job";
 import { extractSignsFromPdfImage, extractSignsFromPdf, visualLocateDoors } from "../lib/extraction";
 import { ai } from "@workspace/integrations-gemini-ai";
 import { AI_CALL_REGISTRY, type AiCallType, runProjectInfoExtraction, runFloorPlanTextExtraction, runBboxDetection, runVisionFallback, runTitleBlockVision, runSignScheduleEnrich } from "../lib/ai-processor";
@@ -479,6 +479,57 @@ router.post("/jobs/:jobId/process", async (req, res) => {
       .set({ status: "failed", error: String(err), currentStep: null, updatedAt: new Date() })
       .where(eq(jobsTable.id, jobId)).catch(() => {});
     res.status(500).json({ error: "Job processing failed", details: String(err) });
+  }
+});
+
+// ── Retry extraction for a single file ────────────────────────────────────────
+router.post("/jobs/:jobId/files/:fileId/retry", async (req, res) => {
+  const { jobId, fileId } = req.params;
+  if (!jobId || !fileId) {
+    res.status(400).json({ error: "Job ID and file ID are required" });
+    return;
+  }
+
+  try {
+    const job = await getJobWithOrgCheck(req, res, jobId);
+    if (!job) return;
+
+    if (job.status === "processing") {
+      res.status(409).json({ error: "Job is already processing" });
+      return;
+    }
+
+    // Verify the file belongs to this job
+    const [file] = await db
+      .select()
+      .from(jobFilesTable)
+      .where(and(eq(jobFilesTable.id, fileId), eq(jobFilesTable.jobId, jobId)));
+
+    if (!file) {
+      res.status(404).json({ error: "File not found in this job" });
+      return;
+    }
+
+    req.log.info({ jobId, fileId, fileName: file.originalName }, "Retrying extraction for file");
+    await retryFileExtraction(jobId, fileId);
+
+    const [updated] = await db.select().from(jobsTable).where(eq(jobsTable.id, jobId));
+    recordActivity(req, "scan_run", jobId);
+
+    res.json({
+      success: true,
+      status: updated?.status,
+      message: updated?.status === "completed"
+        ? `Retry complete for ${file.originalName}.`
+        : `Retry ended with status: ${updated?.status}`,
+    });
+  } catch (err) {
+    req.log.error({ err, jobId, fileId }, "File retry failed");
+    await db
+      .update(jobsTable)
+      .set({ status: "failed", error: String(err), currentStep: null, updatedAt: new Date() })
+      .where(eq(jobsTable.id, jobId)).catch(() => {});
+    res.status(500).json({ error: "File retry failed", details: String(err) });
   }
 });
 

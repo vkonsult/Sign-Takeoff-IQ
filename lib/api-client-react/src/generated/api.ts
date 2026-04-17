@@ -290,6 +290,91 @@ export const useProcessJob = <
 };
 
 /**
+ * Re-run extraction for a single file that previously failed
+ * @summary Retry extraction for a specific file
+ */
+export const getRetryFileExtractionUrl = (jobId: string, fileId: string) => {
+  return `/api/jobs/${jobId}/files/${fileId}/retry`;
+};
+
+export const retryFileExtraction = async (
+  jobId: string,
+  fileId: string,
+  options?: RequestInit,
+): Promise<ProcessResponse> => {
+  return customFetch<ProcessResponse>(getRetryFileExtractionUrl(jobId, fileId), {
+    ...options,
+    method: "POST",
+  });
+};
+
+export const getRetryFileExtractionMutationOptions = <
+  TError = ErrorType<ErrorResponse>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof retryFileExtraction>>,
+    TError,
+    { jobId: string; fileId: string },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof retryFileExtraction>>,
+  TError,
+  { jobId: string; fileId: string },
+  TContext
+> => {
+  const mutationKey = ["retryFileExtraction"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof retryFileExtraction>>,
+    { jobId: string; fileId: string }
+  > = (props) => {
+    const { jobId, fileId } = props ?? {};
+    return retryFileExtraction(jobId, fileId, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type RetryFileExtractionMutationResult = NonNullable<
+  Awaited<ReturnType<typeof retryFileExtraction>>
+>;
+
+export type RetryFileExtractionMutationError = ErrorType<ErrorResponse>;
+
+/**
+ * @summary Retry extraction for a specific file
+ */
+export const useRetryFileExtraction = <
+  TError = ErrorType<ErrorResponse>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof retryFileExtraction>>,
+    TError,
+    { jobId: string; fileId: string },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof retryFileExtraction>>,
+  TError,
+  { jobId: string; fileId: string },
+  TContext
+> => {
+  return useMutation(getRetryFileExtractionMutationOptions(options));
+};
+
+/**
  * Returns the job status, file list, and extracted sign data
  * @summary Get job status and results
  */

@@ -61,3 +61,22 @@ export async function processJob(jobId: string): Promise<void> {
     throw err;
   }
 }
+
+/**
+ * Re-runs extraction for a single file within a job.
+ * Only the target file's data (signs, pageStats, roomInventory) is reset and
+ * re-derived; all other files are left untouched.
+ */
+export async function retryFileExtraction(jobId: string, fileId: string): Promise<void> {
+  logger.info({ jobId, fileId }, "retryFileExtraction → re-processing single file");
+  try {
+    await runPdfProcessor(jobId, { targetFileId: fileId });
+  } catch (err) {
+    await db
+      .update(jobsTable)
+      .set({ currentStep: null })
+      .where(eq(jobsTable.id, jobId))
+      .catch(() => {});
+    throw err;
+  }
+}
