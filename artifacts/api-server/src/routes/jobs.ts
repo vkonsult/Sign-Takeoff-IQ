@@ -16,7 +16,7 @@ import { processJob, retryFileExtraction, deduplicateSignRows } from "../lib/pro
 import { extractSignsFromPdfImage, extractSignsFromPdf, visualLocateDoors } from "../lib/extraction";
 import { ai } from "@workspace/integrations-gemini-ai";
 import { AI_CALL_REGISTRY, type AiCallType, runProjectInfoExtraction, runFloorPlanTextExtraction, runBboxDetection, runVisionFallback, runTitleBlockVision, runSignScheduleEnrich } from "../lib/ai-processor";
-import { extractPagePhrases, matchLocationToCoords, type SpatialPageType } from "../lib/pdf-words";
+import { extractPagePhrases, matchLocationToCoords, detectTableColumnPhrases, isInTitleBlockZone, type SpatialPageType } from "../lib/pdf-words";
 import fs from "fs/promises";
 import fsSync from "fs";
 import { z } from "zod/v4";
@@ -1068,8 +1068,19 @@ router.get("/jobs/:jobId/files/:fileId/pages/:pageNum/words", async (req, res) =
       }
     }
 
+    // For floor plan pages, compute drawing-only phrases by excluding title-block
+    // text and embedded schedule-table columns.  Marker placement uses these filtered
+    // phrases so that sign labels found only in a side-by-side schedule table are not
+    // matched instead of the actual room labels on the drawing.
+    let drawingPhrases = result.phrases;
+    if (pageType === "floor_plan" || pageType === "both") {
+      const nonTitlePhrases = result.phrases.filter((p) => !isInTitleBlockZone(p));
+      const tableExcluded = detectTableColumnPhrases(nonTitlePhrases, result.pageHeight);
+      drawingPhrases = nonTitlePhrases.filter((p) => !tableExcluded.has(p));
+    }
+
     res.setHeader("Cache-Control", "private, max-age=300");
-    res.json({ ...result, pageType });
+    res.json({ ...result, pageType, drawingPhrases });
   } catch (err) {
     req.log.error({ err, fileId, pageNum }, "Failed to extract page words");
     res.status(500).json({ error: "Failed to extract page words" });
