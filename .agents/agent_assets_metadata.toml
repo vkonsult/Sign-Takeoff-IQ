@@ -6,3 +6,9 @@ id = "cC2xkHWpmPyv8xekmYZgr"
 uri = "file://sign-takeoff-frontend.tar.gz"
 type = "unspecified"
 title = "Sign Takeoff Portal — Frontend Source (tar.gz)"
+
+[[outputs]]
+id = "cGwZQBX2iwvKS7VJ7QD2E"
+uri = "file://sign-takeoff-frontend-standalone.tar.gz"
+type = "unspecified"
+title = "Sign TakeOff IQ — Standalone Frontend (no Clerk, no workspace deps)"
