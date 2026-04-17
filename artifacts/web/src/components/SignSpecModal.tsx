@@ -18,18 +18,37 @@ import {
   AlertCircle,
   ArrowUpRight,
   ImageOff,
+  RefreshCw,
 } from "lucide-react";
 pdfjs.GlobalWorkerOptions.workerSrc = `${import.meta.env.BASE_URL}pdf.worker.min.mjs`;
 
 function CropThumbnail({ src, alt }: { src: string; alt: string }) {
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState(false);
+  const [retryCount, setRetryCount] = useState(0);
+
+  const imgSrc = retryCount === 0 ? src : `${src}${src.includes("?") ? "&" : "?"}_r=${retryCount}`;
+
+  const handleRetry = () => {
+    setLoaded(false);
+    setError(false);
+    setRetryCount((c) => c + 1);
+  };
 
   if (error) {
     return (
-      <div className="mb-2 flex items-center justify-center gap-1.5 rounded border border-dashed border-border/50 bg-secondary/20 py-2.5">
-        <ImageOff className="w-3.5 h-3.5 text-muted-foreground/40" />
-        <span className="text-[10px] font-mono text-muted-foreground/40">Image unavailable</span>
+      <div className="mb-2 flex flex-col items-center justify-center gap-1.5 rounded border border-dashed border-border/50 bg-secondary/20 py-2.5">
+        <div className="flex items-center gap-1.5">
+          <ImageOff className="w-3.5 h-3.5 text-muted-foreground/40" />
+          <span className="text-[10px] font-mono text-muted-foreground/40">Image unavailable</span>
+        </div>
+        <button
+          onClick={handleRetry}
+          className="flex items-center gap-1 text-[10px] font-mono text-muted-foreground/60 hover:text-muted-foreground transition-colors"
+        >
+          <RefreshCw className="w-3 h-3" />
+          Retry
+        </button>
       </div>
     );
   }
@@ -40,7 +59,7 @@ function CropThumbnail({ src, alt }: { src: string; alt: string }) {
         <div className="absolute inset-0 bg-secondary/40 animate-pulse" />
       )}
       <img
-        src={src}
+        src={imgSrc}
         alt={alt}
         loading="lazy"
         onLoad={() => setLoaded(true)}
