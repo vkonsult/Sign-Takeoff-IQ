@@ -704,7 +704,7 @@ function deduplicateRooms(labels: RawRoomLabel[]): RawRoomLabel[] {
  *   2. Very short room name (< 4 chars) — likely an abbreviation
  *   3. No boolean flags were derived — the label matched no known keyword
  */
-function isAmbiguousRoom(room: RoomRecord): boolean {
+export function isAmbiguousRoom(room: RoomRecord): boolean {
   if (room.extractionConfidence < 0.5) return true;
   if (room.roomName.replace(/\s+/g, "").length < 4) return true;
 
@@ -1111,7 +1111,7 @@ export async function enrichAmbiguousRoomsWithAI(
 /**
  * Maps a Gemini roomType string to the set of boolean flags it implies.
  */
-function roomTypeToFlags(
+export function roomTypeToFlags(
   roomType: GeminiRoomClassification["roomType"],
 ): Pick<
   RoomRecord,
