@@ -87,9 +87,12 @@ router.get("/jobs", async (req, res) => {
     const whereClause = filter
       ? archivedFilter ? and(filter, archivedFilter) : filter
       : archivedFilter;
+    // Exclude large JSON columns (processingLog, plaqueTable) from the list query
+    // to keep the response payload small. They are returned in the single-job GET only.
+    const { processingLog: _pl, plaqueTable: _pt, ...listColumns } = getTableColumns(jobsTable);
     const jobs = await db
       .select({
-        ...getTableColumns(jobsTable),
+        ...listColumns,
         lastActivityAt: sql<string | null>`(SELECT created_at FROM activity_logs WHERE job_id = ${jobsTable.id} ORDER BY created_at DESC LIMIT 1)`.as("last_activity_at"),
         lastActivityUser: sql<string | null>`(SELECT user_name FROM activity_logs WHERE job_id = ${jobsTable.id} ORDER BY created_at DESC LIMIT 1)`.as("last_activity_user"),
         lastActivityInitials: sql<string | null>`(SELECT user_initials FROM activity_logs WHERE job_id = ${jobsTable.id} ORDER BY created_at DESC LIMIT 1)`.as("last_activity_initials"),
@@ -145,9 +148,22 @@ router.get("/jobs", async (req, res) => {
       }
     }
 
+    // Fetch processingLog separately (slim query) so we can compute per-job failure counts
+    // without including the large JSON blob in the list response.
+    const processingLogByJobId = new Map<string, typeof jobsTable.$inferSelect["processingLog"]>();
+    if (jobIds.length > 0) {
+      const logRows = await db
+        .select({ id: jobsTable.id, processingLog: jobsTable.processingLog })
+        .from(jobsTable)
+        .where(inArray(jobsTable.id, jobIds));
+      for (const row of logRows) {
+        processingLogByJobId.set(row.id, row.processingLog);
+      }
+    }
+
     const enriched = jobs.map((j) => {
       const users = recentUsersByJob.get(j.id) ?? [];
-      const { failedFileCount, skippedFileCount } = countExtractionFailures(j.processingLog);
+      const { failedFileCount, skippedFileCount } = countExtractionFailures(processingLogByJobId.get(j.id));
       return {
         ...j,
         files: filesByJob.get(j.id) ?? [],
