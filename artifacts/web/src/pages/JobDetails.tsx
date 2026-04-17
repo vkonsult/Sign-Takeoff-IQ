@@ -6,7 +6,7 @@ import { apiFetch, openPdfInNewTab } from "@/lib/apiClient";
 import { useJobDetails, useStartExtraction, downloadExport, useUpdateJobName } from "@/hooks/use-takeoff";
 import { UnifiedPlanViewer } from "@/components/UnifiedPlanViewer";
 import type { ExtractedSign as SignMarker } from "@/components/UnifiedPlanViewer";
-import { SignSpecModal } from "@/components/SignSpecModal";
+import { SignSpecModal, type PlaqueTableData } from "@/components/SignSpecModal";
 import { AiScansTab } from "@/components/AiScansTab";
 import { SignSpecsTab } from "@/components/SignSpecsTab";
 import { getGetJobQueryKey } from "@workspace/api-client-react";
@@ -1927,6 +1927,7 @@ export default function JobDetails() {
           fileId={specViewer.fileId}
           fileName={specViewer.fileName}
           specPages={specViewer.specPages}
+          plaqueTable={(data?.job as unknown as { plaqueTable?: PlaqueTableData | null })?.plaqueTable ?? null}
           onClose={() => setSpecViewer(null)}
         />
       )}

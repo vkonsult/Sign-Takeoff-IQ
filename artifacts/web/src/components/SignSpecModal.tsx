@@ -12,24 +12,72 @@ import {
   FileText,
   Loader2,
   Layers,
+  PanelRightOpen,
+  PanelRightClose,
+  CheckCircle2,
+  AlertCircle,
 } from "lucide-react";
-
 pdfjs.GlobalWorkerOptions.workerSrc = `${import.meta.env.BASE_URL}pdf.worker.min.mjs`;
+
+export interface PlaqueTableData {
+  plaqueTypes: {
+    typeCode: string;
+    displayName: string;
+    letterHeight: string | null;
+    hasBraille: boolean;
+    hasInsert: boolean;
+    triggerCondition: string | null;
+    dimensions: string | null;
+    material: string | null;
+    mountingNote: string | null;
+    adaNote: string | null;
+    rawNote: string | null;
+  }[];
+  generalNotes: string[];
+  sourcePages: number[];
+  extractionMethod: "visual" | "text_fallback";
+  warnings: string[];
+}
+
+interface SignTypeSpec {
+  id: string;
+  typeCode: string;
+  dimensions: string | null;
+  material: string | null;
+  features: string[] | null;
+  geminiNotes: Record<string, unknown> | null;
+  geminiEnriched: boolean;
+  hasDrawing: boolean;
+}
+
+interface GeminiNotesFields {
+  displayName?: string;
+  letterHeight?: string | null;
+  hasBraille?: boolean;
+  hasInsert?: boolean;
+  triggerCondition?: string | null;
+  mountingNote?: string | null;
+  adaNote?: string | null;
+}
 
 interface SignSpecModalProps {
   jobId: string;
   fileId: string;
   fileName: string;
   specPages: number[];
+  plaqueTable?: PlaqueTableData | null;
   onClose: () => void;
 }
 
-export function SignSpecModal({ jobId, fileId, fileName, specPages, onClose }: SignSpecModalProps) {
+export function SignSpecModal({ jobId, fileId, fileName, specPages, plaqueTable, onClose }: SignSpecModalProps) {
   const [specIdx, setSpecIdx] = useState(0);
   const [scale, setScale] = useState(1.2);
   const [fitScale, setFitScale] = useState(1.2);
   const [error, setError] = useState<string | null>(null);
   const [isPanning, setIsPanning] = useState(false);
+  const [showPanel, setShowPanel] = useState(true);
+  const [specs, setSpecs] = useState<SignTypeSpec[]>([]);
+  const [specsLoading, setSpecsLoading] = useState(false);
 
   const viewerRef = useRef<HTMLDivElement>(null);
   const pdfContentRef = useRef<HTMLDivElement>(null);
@@ -45,6 +93,23 @@ export function SignSpecModal({ jobId, fileId, fileName, specPages, onClose }: S
   useEffect(() => {
     if (blobError) setError(blobError);
   }, [blobError]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setSpecsLoading(true);
+    fetch(`${import.meta.env.BASE_URL}api/jobs/${jobId}/schedule-entries`, { credentials: "include" })
+      .then((r) => r.ok ? r.json() : Promise.reject(r.statusText))
+      .then((data: { specs: SignTypeSpec[] }) => {
+        if (!cancelled) setSpecs(data.specs ?? []);
+      })
+      .catch(() => {
+        if (!cancelled) setSpecs([]);
+      })
+      .finally(() => {
+        if (!cancelled) setSpecsLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, [jobId]);
 
   const currentPage = specPages[specIdx] ?? 1;
   const totalSpec = specPages.length;
@@ -64,7 +129,6 @@ export function SignSpecModal({ jobId, fileId, fileName, specPages, onClose }: S
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose, totalSpec]);
 
-  // Mouse-wheel zoom
   useEffect(() => {
     const el = viewerRef.current;
     if (!el) return;
@@ -76,7 +140,6 @@ export function SignSpecModal({ jobId, fileId, fileName, specPages, onClose }: S
     return () => el.removeEventListener("wheel", onWheel);
   }, []);
 
-  // Pointer-drag pan
   const handlePointerDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
     e.currentTarget.setPointerCapture(e.pointerId);
     panRef.current = {
@@ -102,7 +165,6 @@ export function SignSpecModal({ jobId, fileId, fileName, specPages, onClose }: S
     e.currentTarget.releasePointerCapture(e.pointerId);
   }, []);
 
-  // Compute fit scale dynamically from the currently rendered PDF content size
   const computeFitScale = useCallback(() => {
     if (!viewerRef.current || !pdfContentRef.current) return null;
     const vw = viewerRef.current.clientWidth - 48;
@@ -110,7 +172,6 @@ export function SignSpecModal({ jobId, fileId, fileName, specPages, onClose }: S
     const cw = pdfContentRef.current.offsetWidth;
     const ch = pdfContentRef.current.offsetHeight;
     if (cw > 0 && ch > 0) {
-      // The PDF content is rendered at current scale, so natural size = rendered / scale
       const naturalW = cw / scale;
       const naturalH = ch / scale;
       return Math.min(3, Math.max(0.3, Math.min(vw / naturalW, vh > 0 ? vh / naturalH : Infinity)));
@@ -118,14 +179,17 @@ export function SignSpecModal({ jobId, fileId, fileName, specPages, onClose }: S
     return null;
   }, [scale]);
 
+  const generalNotes = plaqueTable?.generalNotes ?? [];
+  const extractionMethod = plaqueTable?.extractionMethod ?? null;
+
   return (
     <div
       className="fixed inset-0 z-50 flex items-stretch"
       style={{ background: "rgba(0,0,0,0.85)" }}
       onClick={(e) => e.target === e.currentTarget && onClose()}
     >
-      <div className="flex flex-col w-full h-full max-w-5xl mx-auto">
-        {/* Header — always visible */}
+      <div className="flex flex-col w-full h-full max-w-6xl mx-auto">
+        {/* Header */}
         <div className="flex-none flex items-center justify-between px-4 py-3 bg-background border-b border-border">
           <div className="flex items-center gap-3 min-w-0">
             <div className="w-7 h-7 rounded bg-accent/20 flex items-center justify-center flex-shrink-0">
@@ -138,9 +202,17 @@ export function SignSpecModal({ jobId, fileId, fileName, specPages, onClose }: S
             <span className="ml-2 px-2 py-0.5 rounded bg-accent/15 border border-accent/30 text-accent text-[10px] font-bold uppercase tracking-wider flex-shrink-0">
               {totalSpec} spec {totalSpec === 1 ? "page" : "pages"}
             </span>
+            {extractionMethod && (
+              <span className={`px-2 py-0.5 rounded border text-[10px] font-bold uppercase tracking-wider flex-shrink-0 ${
+                extractionMethod === "visual"
+                  ? "bg-emerald-500/15 border-emerald-500/30 text-emerald-400"
+                  : "bg-amber-500/15 border-amber-500/30 text-amber-400"
+              }`}>
+                {extractionMethod === "visual" ? "Visual Extraction" : "Text Fallback"}
+              </span>
+            )}
           </div>
 
-          {/* Controls */}
           <div className="flex items-center gap-2 flex-shrink-0">
             {/* Zoom */}
             <button
@@ -197,6 +269,21 @@ export function SignSpecModal({ jobId, fileId, fileName, specPages, onClose }: S
 
             <div className="w-px h-5 bg-border mx-1" />
 
+            {/* Toggle sign types panel */}
+            <button
+              onClick={() => setShowPanel((v) => !v)}
+              title={showPanel ? "Hide sign types panel" : "Show sign types panel"}
+              className={`w-7 h-7 rounded flex items-center justify-center transition-colors ${
+                showPanel
+                  ? "text-accent bg-accent/15 hover:bg-accent/25"
+                  : "text-muted-foreground hover:text-foreground hover:bg-secondary"
+              }`}
+            >
+              {showPanel ? <PanelRightClose className="w-4 h-4" /> : <PanelRightOpen className="w-4 h-4" />}
+            </button>
+
+            <div className="w-px h-5 bg-border mx-1" />
+
             <button
               onClick={onClose}
               className="w-7 h-7 rounded flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors"
@@ -224,45 +311,161 @@ export function SignSpecModal({ jobId, fileId, fileName, specPages, onClose }: S
           ))}
         </div>
 
-        {/* PDF Viewer — pointer-drag pan */}
-        <div
-          ref={viewerRef}
-          className="flex-1 overflow-auto flex items-start justify-center p-6 bg-zinc-900 select-none"
-          style={{ cursor: isPanning ? "grabbing" : "grab" }}
-          onPointerDown={handlePointerDown}
-          onPointerMove={handlePointerMove}
-          onPointerUp={handlePointerUp}
-          onPointerCancel={() => { panRef.current = null; setIsPanning(false); }}
-        >
-          {!pdfBuffer && !error && (
-            <div className="flex flex-col items-center gap-3 text-muted-foreground pt-20">
-              <Loader2 className="w-8 h-8 animate-spin" />
-              <p className="text-sm">Loading sign spec...</p>
-            </div>
-          )}
-          {!pdfBuffer && error && (
-            <div className="flex flex-col items-center gap-2 text-destructive pt-20">
-              <FileText className="w-8 h-8" />
-              <p className="text-sm">Failed to load PDF</p>
-              <p className="text-xs opacity-70">{error}</p>
-            </div>
-          )}
-          <Document
-            file={pdfFile}
-            onLoadError={(err) => setError(err.message)}
-            loading={null}
-            error={null}
+        {/* Main content: PDF viewer + optional side panel */}
+        <div className="flex-1 flex min-h-0 overflow-hidden">
+          {/* PDF Viewer */}
+          <div
+            ref={viewerRef}
+            className="flex-1 overflow-auto flex items-start justify-center p-6 bg-zinc-900 select-none min-w-0"
+            style={{ cursor: isPanning ? "grabbing" : "grab" }}
+            onPointerDown={handlePointerDown}
+            onPointerMove={handlePointerMove}
+            onPointerUp={handlePointerUp}
+            onPointerCancel={() => { panRef.current = null; setIsPanning(false); }}
           >
-            <div ref={pdfContentRef} className="shadow-2xl" style={{ pointerEvents: "none" }}>
-              <Page
-                key={currentPage}
-                pageNumber={currentPage}
-                scale={scale}
-                renderTextLayer={true}
-                renderAnnotationLayer={true}
-              />
+            {!pdfBuffer && !error && (
+              <div className="flex flex-col items-center gap-3 text-muted-foreground pt-20">
+                <Loader2 className="w-8 h-8 animate-spin" />
+                <p className="text-sm">Loading sign spec...</p>
+              </div>
+            )}
+            {!pdfBuffer && error && (
+              <div className="flex flex-col items-center gap-2 text-destructive pt-20">
+                <FileText className="w-8 h-8" />
+                <p className="text-sm">Failed to load PDF</p>
+                <p className="text-xs opacity-70">{error}</p>
+              </div>
+            )}
+            <Document
+              file={pdfFile}
+              onLoadError={(err) => setError(err.message)}
+              loading={null}
+              error={null}
+            >
+              <div ref={pdfContentRef} className="shadow-2xl" style={{ pointerEvents: "none" }}>
+                <Page
+                  key={currentPage}
+                  pageNumber={currentPage}
+                  scale={scale}
+                  renderTextLayer={true}
+                  renderAnnotationLayer={true}
+                />
+              </div>
+            </Document>
+          </div>
+
+          {/* Sign Types Side Panel */}
+          {showPanel && (
+            <div className="w-72 flex-none flex flex-col border-l border-border bg-background overflow-hidden">
+              <div className="flex-none px-3 py-2 border-b border-border bg-card flex items-center justify-between">
+                <p className="text-[10px] font-display font-semibold uppercase tracking-wider text-foreground">Sign Type Details</p>
+                {specs.length > 0 && (
+                  <span className="text-[10px] font-mono text-muted-foreground">{specs.length} types</span>
+                )}
+              </div>
+
+              <div className="flex-1 overflow-y-auto">
+                {specsLoading && (
+                  <div className="flex items-center justify-center gap-2 py-8 text-muted-foreground">
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    <span className="text-xs">Loading...</span>
+                  </div>
+                )}
+
+                {!specsLoading && specs.length === 0 && (
+                  <div className="px-3 py-6 text-center">
+                    <p className="text-xs text-muted-foreground">No sign type specs found for this job.</p>
+                  </div>
+                )}
+
+                {/* General notes section */}
+                {!specsLoading && generalNotes.length > 0 && (
+                  <div className="px-3 py-2 border-b border-border/60">
+                    <p className="text-[10px] font-display font-semibold uppercase tracking-wider text-muted-foreground mb-1.5">General Notes</p>
+                    <ul className="space-y-1">
+                      {generalNotes.map((note, i) => (
+                        <li key={i} className="flex items-start gap-1.5">
+                          <span className="mt-0.5 w-1 h-1 rounded-full bg-accent/60 flex-shrink-0" />
+                          <span className="text-[11px] font-mono text-muted-foreground leading-relaxed">{note}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+
+                {/* Sign type rows */}
+                {!specsLoading && specs.map((spec) => {
+                  const notes = (spec.geminiNotes ?? {}) as GeminiNotesFields;
+                  const features = spec.features ?? [];
+                  // Prefer explicit boolean fields from geminiNotes; fall back to features array
+                  const hasBraille = notes.hasBraille ?? features.some((f) => /braille/i.test(f));
+                  const hasInsert = notes.hasInsert ?? features.some((f) => /insert/i.test(f));
+                  // Use Phase 3 schedule extraction method from plaqueTable (not geminiEnriched,
+                  // which tracks a separate diagram-enrichment step)
+                  const rowIsVisual = extractionMethod === "visual";
+
+                  return (
+                    <div key={spec.id} className="px-3 py-2.5 border-b border-border/40 hover:bg-secondary/30 transition-colors">
+                      {/* Type code + extraction badge */}
+                      <div className="flex items-center justify-between gap-2 mb-1">
+                        <span className="text-xs font-display font-bold text-foreground">{spec.typeCode}</span>
+                        <span className={`px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider flex-shrink-0 ${
+                          rowIsVisual
+                            ? "bg-emerald-500/15 text-emerald-400 border border-emerald-500/30"
+                            : "bg-amber-500/15 text-amber-400 border border-amber-500/30"
+                        }`}>
+                          {rowIsVisual ? "Visual" : "Text Fallback"}
+                        </span>
+                      </div>
+
+                      {/* Display name */}
+                      {notes.displayName && notes.displayName !== spec.typeCode && (
+                        <p className="text-[11px] text-foreground/80 font-medium mb-1.5 leading-tight">{notes.displayName}</p>
+                      )}
+
+                      {/* Flags row */}
+                      <div className="flex flex-wrap gap-1 mb-1.5">
+                        {notes.letterHeight && (
+                          <span className="px-1.5 py-0.5 rounded bg-secondary text-[10px] font-mono text-foreground/70">
+                            {notes.letterHeight} letter ht.
+                          </span>
+                        )}
+                        {hasBraille && (
+                          <span className="flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-blue-500/15 border border-blue-500/20 text-[10px] font-mono text-blue-400">
+                            <CheckCircle2 className="w-2.5 h-2.5" />
+                            Braille
+                          </span>
+                        )}
+                        {hasInsert && (
+                          <span className="flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-purple-500/15 border border-purple-500/20 text-[10px] font-mono text-purple-400">
+                            <CheckCircle2 className="w-2.5 h-2.5" />
+                            Insert
+                          </span>
+                        )}
+                      </div>
+
+                      {/* Detail lines */}
+                      {notes.triggerCondition && (
+                        <SpecDetailRow label="Trigger" value={notes.triggerCondition} />
+                      )}
+                      {notes.mountingNote && (
+                        <SpecDetailRow label="Mounting" value={notes.mountingNote} />
+                      )}
+                      {notes.adaNote && (
+                        <SpecDetailRow label="ADA" value={notes.adaNote} icon={<AlertCircle className="w-2.5 h-2.5 text-orange-400 flex-shrink-0 mt-0.5" />} />
+                      )}
+                      {(spec.dimensions || spec.material) && !notes.triggerCondition && !notes.mountingNote && !notes.adaNote && (
+                        <>
+                          {spec.dimensions && <SpecDetailRow label="Dims" value={spec.dimensions} />}
+                          {spec.material && <SpecDetailRow label="Material" value={spec.material} />}
+                        </>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
             </div>
-          </Document>
+          )}
         </div>
 
         {/* Footer note */}
@@ -271,6 +474,26 @@ export function SignSpecModal({ jobId, fileId, fileName, specPages, onClose }: S
             Sign schedules and specs are shown here for reference only. All sign quantities are derived from floor plan analysis.
           </p>
         </div>
+      </div>
+    </div>
+  );
+}
+
+function SpecDetailRow({
+  label,
+  value,
+  icon,
+}: {
+  label: string;
+  value: string;
+  icon?: React.ReactNode;
+}) {
+  return (
+    <div className="flex items-start gap-1.5 mb-0.5">
+      <span className="text-[9px] font-display font-semibold uppercase tracking-wider text-muted-foreground/60 flex-shrink-0 mt-0.5 w-12">{label}</span>
+      <div className="flex items-start gap-0.5 min-w-0">
+        {icon}
+        <span className="text-[10px] font-mono text-muted-foreground leading-relaxed break-words">{value}</span>
       </div>
     </div>
   );
