@@ -15,7 +15,7 @@ export function useJobsList(includeArchived = false) {
 
   const hasProcessingJob = (data: unknown): boolean => {
     const jobs = (data as { jobs?: { status?: string }[] } | undefined)?.jobs ?? [];
-    return jobs.some((j) => j.status === "processing");
+    return jobs.some((j) => j.status === "processing" || j.status === "pending");
   };
 
   const standardResult = useListJobs({
