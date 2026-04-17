@@ -1,5 +1,88 @@
-import { describe, it, expect } from "vitest";
-import { deriveFlags, parseSlashLabel, isLikelyRoomName, isLikelyRoomNumber } from "./room-inventory";
+import { describe, it, expect, vi, beforeEach } from "vitest";
+import type { RoomRecord } from "./room-inventory";
+
+// ── Module mocks (hoisted by Vitest before any imports) ───────────────────────
+
+vi.mock("@workspace/integrations-gemini-ai", () => ({
+  ai: { models: { generateContent: vi.fn() } },
+}));
+
+vi.mock("./pdf-render", () => ({
+  renderFloorPlanPages: vi.fn(),
+}));
+
+vi.mock("./storage", () => ({
+  getFilePageImagesDir: vi.fn().mockReturnValue("/tmp/test-images"),
+}));
+
+vi.mock("@napi-rs/canvas", () => ({
+  loadImage: vi.fn(),
+  createCanvas: vi.fn(),
+}));
+
+vi.mock("./pdf-words", () => ({
+  extractPagePhrases: vi.fn(),
+  extractRawPageItems: vi.fn(),
+}));
+
+vi.mock("./logger", () => ({
+  logger: { info: vi.fn(), warn: vi.fn(), debug: vi.fn() },
+}));
+
+// ── Imports of code under test ────────────────────────────────────────────────
+
+import {
+  deriveFlags,
+  parseSlashLabel,
+  isLikelyRoomName,
+  isLikelyRoomNumber,
+  cropRoomRegion,
+  enrichAmbiguousRoomsWithAI,
+} from "./room-inventory";
+
+import { ai } from "@workspace/integrations-gemini-ai";
+import { renderFloorPlanPages } from "./pdf-render";
+import * as napiCanvas from "@napi-rs/canvas";
+
+// ── Typed mock references ─────────────────────────────────────────────────────
+
+const mockGenerateContent = vi.mocked(
+  (ai as { models: { generateContent: (...args: unknown[]) => unknown } }).models
+    .generateContent as (...args: unknown[]) => Promise<{ text: string }>,
+);
+const mockRenderFloorPlanPages = vi.mocked(renderFloorPlanPages);
+const mockLoadImage = vi.mocked(napiCanvas.loadImage);
+const mockCreateCanvas = vi.mocked(napiCanvas.createCanvas);
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+function makeRoom(overrides: Partial<RoomRecord> = {}): RoomRecord {
+  return {
+    roomNumber: null,
+    roomName: "HOLDING",
+    level: "1",
+    pdfPage: 1,
+    occupantLoad: null,
+    occupancyGroup: null,
+    isRestroom: false,
+    isStair: false,
+    isElevator: false,
+    isVestibule: false,
+    isCorridorOrHall: false,
+    isVehicleBay: false,
+    isMepUnoccupied: false,
+    isVariableUse: false,
+    isPublicFacing: false,
+    isStaffOnly: false,
+    isAssembly: false,
+    boundingBox: null,
+    extractionConfidence: 0.3,
+    ...overrides,
+  };
+}
+
+const DUMMY_AI_RESPONSE = (index: number) =>
+  `[{"index":${index},"roomName":"OFFICE","roomType":"OFFICE","confidence":0.9}]`;
 
 // ── deriveFlags ───────────────────────────────────────────────────────────────
 
@@ -231,5 +314,224 @@ describe("isLikelyRoomNumber", () => {
 
   it('rejects a single digit "5"', () => {
     expect(isLikelyRoomNumber("5")).toBe(false);
+  });
+});
+
+// ── cropRoomRegion ────────────────────────────────────────────────────────────
+
+describe("cropRoomRegion — error handling", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("returns null when the image file does not exist (loadImage throws)", async () => {
+    mockLoadImage.mockRejectedValueOnce(new Error("ENOENT: no such file"));
+
+    const result = await cropRoomRegion("/nonexistent/path.png", {
+      x: 0.1,
+      y: 0.1,
+      w: 0.2,
+      h: 0.2,
+    });
+
+    expect(result).toBeNull();
+  });
+
+  it("returns null when the calculated crop dimensions are too small (< 4 px)", async () => {
+    mockLoadImage.mockResolvedValueOnce({ width: 2, height: 2 });
+
+    const result = await cropRoomRegion("/some/page.png", {
+      x: 0,
+      y: 0,
+      w: 0.5,
+      h: 0.5,
+    });
+
+    expect(result).toBeNull();
+  });
+
+  it("returns null when bbox has out-of-range values (negative width/height)", async () => {
+    mockLoadImage.mockResolvedValueOnce({ width: 1000, height: 800 });
+
+    const result = await cropRoomRegion("/some/page.png", {
+      x: 0.5,
+      y: 0.5,
+      w: -0.2,
+      h: -0.2,
+    });
+
+    expect(result).toBeNull();
+  });
+
+  it("returns a non-empty base64 string for a valid image and bbox", async () => {
+    mockLoadImage.mockResolvedValueOnce({ width: 1000, height: 800 });
+
+    const fakeBuffer = Buffer.from("fake-png-data");
+    const mockCtx = { drawImage: vi.fn() };
+    const mockCanvas = {
+      getContext: vi.fn().mockReturnValue(mockCtx),
+      encode: vi.fn().mockResolvedValue(fakeBuffer),
+    };
+    mockCreateCanvas.mockReturnValueOnce(mockCanvas as unknown as ReturnType<typeof mockCreateCanvas>);
+
+    const result = await cropRoomRegion("/some/valid-page.png", {
+      x: 0.1,
+      y: 0.1,
+      w: 0.1,
+      h: 0.1,
+    });
+
+    expect(result).not.toBeNull();
+    expect(typeof result).toBe("string");
+    expect(result!.length).toBeGreaterThan(0);
+    expect(result).toBe(fakeBuffer.toString("base64"));
+  });
+});
+
+// ── enrichAmbiguousRoomsWithAI — prompt branch selection ─────────────────────
+
+describe("enrichAmbiguousRoomsWithAI — text-only prompt when pdfPath is absent", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("calls Gemini with a single text part and no inlineData when pdfPath is not provided", async () => {
+    const room = makeRoom({ roomName: "HQ", extractionConfidence: 0.3 });
+
+    mockGenerateContent.mockResolvedValueOnce({ text: DUMMY_AI_RESPONSE(0) });
+
+    await enrichAmbiguousRoomsWithAI([room], "file-1", "job-1");
+
+    expect(mockGenerateContent).toHaveBeenCalledOnce();
+    const call = mockGenerateContent.mock.calls[0]![0] as {
+      contents: { role: string; parts: unknown[] }[];
+    };
+    const parts = call.contents[0]!.parts as unknown[];
+
+    const hasInlineData = parts.some(
+      (p) => typeof p === "object" && p !== null && "inlineData" in p,
+    );
+    expect(hasInlineData).toBe(false);
+    expect(parts.length).toBe(1);
+    expect((parts[0] as { text: string }).text).toContain("Rooms to classify");
+  });
+});
+
+describe("enrichAmbiguousRoomsWithAI — multimodal prompt when pdfPath is provided and crop succeeds", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("builds a multimodal prompt with inlineData when a room has a bbox and crop returns base64", async () => {
+    const room = makeRoom({
+      roomName: "EQ",
+      extractionConfidence: 0.3,
+      pdfPage: 2,
+      boundingBox: { x: 0.1, y: 0.1, w: 0.1, h: 0.1 },
+    });
+
+    mockRenderFloorPlanPages.mockResolvedValueOnce(
+      new Map([[2, "/tmp/test-images/page-2.png"]]),
+    );
+
+    mockLoadImage.mockResolvedValueOnce({ width: 1000, height: 800 });
+    const fakeBuffer = Buffer.from("png-bytes");
+    const mockCtx = { drawImage: vi.fn() };
+    const mockCanvas = {
+      getContext: vi.fn().mockReturnValue(mockCtx),
+      encode: vi.fn().mockResolvedValue(fakeBuffer),
+    };
+    mockCreateCanvas.mockReturnValueOnce(
+      mockCanvas as unknown as ReturnType<typeof mockCreateCanvas>,
+    );
+
+    mockGenerateContent.mockResolvedValueOnce({ text: DUMMY_AI_RESPONSE(0) });
+
+    await enrichAmbiguousRoomsWithAI([room], "file-2", "job-2", "/path/to/plan.pdf");
+
+    expect(mockGenerateContent).toHaveBeenCalledOnce();
+    const call = mockGenerateContent.mock.calls[0]![0] as {
+      contents: { role: string; parts: unknown[] }[];
+    };
+    const parts = call.contents[0]!.parts as unknown[];
+
+    const inlineDataParts = parts.filter(
+      (p) => typeof p === "object" && p !== null && "inlineData" in p,
+    );
+    expect(inlineDataParts.length).toBeGreaterThan(0);
+    expect(
+      (inlineDataParts[0] as { inlineData: { mimeType: string; data: string } }).inlineData
+        .mimeType,
+    ).toBe("image/png");
+    expect(
+      (inlineDataParts[0] as { inlineData: { mimeType: string; data: string } }).inlineData.data,
+    ).toBe(fakeBuffer.toString("base64"));
+  });
+});
+
+describe("enrichAmbiguousRoomsWithAI — text-only fallback when pdfPath is given but crop returns null", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("uses text-only prompt when crop returns null even though pdfPath and bbox are provided", async () => {
+    const room = makeRoom({
+      roomName: "XZ",
+      extractionConfidence: 0.3,
+      pdfPage: 3,
+      boundingBox: { x: 0.1, y: 0.1, w: 0.1, h: 0.1 },
+    });
+
+    mockRenderFloorPlanPages.mockResolvedValueOnce(
+      new Map([[3, "/tmp/test-images/page-3.png"]]),
+    );
+
+    mockLoadImage.mockResolvedValueOnce({ width: 2, height: 2 });
+
+    mockGenerateContent.mockResolvedValueOnce({ text: DUMMY_AI_RESPONSE(0) });
+
+    await enrichAmbiguousRoomsWithAI([room], "file-4", "job-4", "/path/to/plan.pdf");
+
+    expect(mockGenerateContent).toHaveBeenCalledOnce();
+    const call = mockGenerateContent.mock.calls[0]![0] as {
+      contents: { role: string; parts: unknown[] }[];
+    };
+    const parts = call.contents[0]!.parts as unknown[];
+
+    const hasInlineData = parts.some(
+      (p) => typeof p === "object" && p !== null && "inlineData" in p,
+    );
+    expect(hasInlineData).toBe(false);
+  });
+});
+
+describe("enrichAmbiguousRoomsWithAI — text-only fallback when pdfPath is given but no bbox available", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("uses text-only prompt when pdfPath is set but the room has no boundingBox", async () => {
+    const room = makeRoom({
+      roomName: "XY",
+      extractionConfidence: 0.3,
+      boundingBox: null,
+    });
+
+    mockGenerateContent.mockResolvedValueOnce({ text: DUMMY_AI_RESPONSE(0) });
+
+    await enrichAmbiguousRoomsWithAI([room], "file-3", "job-3", "/path/to/plan.pdf");
+
+    expect(mockRenderFloorPlanPages).not.toHaveBeenCalled();
+
+    expect(mockGenerateContent).toHaveBeenCalledOnce();
+    const call = mockGenerateContent.mock.calls[0]![0] as {
+      contents: { role: string; parts: unknown[] }[];
+    };
+    const parts = call.contents[0]!.parts as unknown[];
+
+    const hasInlineData = parts.some(
+      (p) => typeof p === "object" && p !== null && "inlineData" in p,
+    );
+    expect(hasInlineData).toBe(false);
   });
 });

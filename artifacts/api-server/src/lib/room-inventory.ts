@@ -615,7 +615,7 @@ const MAX_VISUAL_CROPS = 20;
  *
  * Expects an absolute path to the rendered PNG file.
  */
-async function cropRoomRegion(
+export async function cropRoomRegion(
   imagePath: string,
   bbox: { x: number; y: number; w: number; h: number },
 ): Promise<string | null> {
