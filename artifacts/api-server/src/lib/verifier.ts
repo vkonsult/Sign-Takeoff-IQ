@@ -12,6 +12,8 @@
  *   V3 — EXIT count (IBC Table 1006.3): assembly spaces must have ≥ 2 exits
  *   V4 — "In Case of Fire" count = elevator count (per IBC 11B-407.4)
  *   V5 — Sign count summary for output confirmation
+ *   V6 — Assembly capacity sign: every R10 room must have maxOccupancy > 0
+ *   V7 — Evacuation map per-level: every level must have ≥ 1 evacuation map
  */
 
 import type { SignAssignment } from "./rule-engine";
@@ -67,7 +69,7 @@ export interface VerificationReport {
 // ── Verifier ──────────────────────────────────────────────────────────────────
 
 /**
- * Run V1–V5 pre-output checks against the aggregated rule engine output.
+ * Run V1–V7 pre-output checks against the aggregated rule engine output.
  *
  * Call after all per-file rule engine runs are complete.  Pass the merged
  * assignments together with rawStairCount and rawElevatorCount derived from
@@ -96,10 +98,10 @@ export function verifyRuleEngineResult(
       // This likely means no floor plan pages were detected — flag as a warning
       // so it is visible in the Timeline rather than silently passing.
       warnings.push(
-        "V1–V4: no rule engine assignments produced — no floor plan pages were processed or rule engine output is empty",
+        "V1–V7: no rule engine assignments produced — no floor plan pages were processed or rule engine output is empty",
       );
     } else {
-      checksPassed.push("V1–V4: no files processed");
+      checksPassed.push("V1–V7: no files processed");
     }
     return {
       passed: true,
@@ -224,6 +226,56 @@ export function verifyRuleEngineResult(
     );
   } else if (elevatorCount === 0) {
     checksPassed.push("V4 — In Case of Fire: no elevators detected");
+  }
+
+  // ── V6 — Assembly capacity sign completeness (per R10 / IBC 1004) ─────────
+  // Every assignment where R10 was applied (max-occupancy/capacity sign rule)
+  // must have maxOccupancy > 0.  A zero or null value means the rule fired but
+  // produced no sign, which is a rule-engine bug that must be caught before export.
+  const r10Assignments = assignments.filter((a) => a.appliedRules.includes("R10"));
+  const missingCapacity = r10Assignments.filter(
+    (a) => a.maxOccupancy === null || a.maxOccupancy === 0,
+  );
+  if (missingCapacity.length > 0) {
+    const sample = missingCapacity
+      .slice(0, 3)
+      .map((a) => (a.roomNumber ? `${a.roomNumber} ${a.roomName}` : a.roomName))
+      .join(", ");
+    errors.push(
+      `V6 — Assembly capacity sign: ${missingCapacity.length} assembly room(s) had R10 applied but have no capacity sign assigned` +
+        ` (${sample}${missingCapacity.length > 3 ? " …" : ""}) — verify R10`,
+    );
+  } else if (r10Assignments.length > 0) {
+    checksPassed.push(
+      `V6 — Assembly capacity sign: all ${r10Assignments.length} R10 room(s) have a capacity sign assigned ✓`,
+    );
+  } else {
+    checksPassed.push("V6 — Assembly capacity sign: no R10 (assembly capacity) rooms detected");
+  }
+
+  // ── V7 — Evacuation map per-level coverage (per R13) ──────────────────────
+  // Every level that contains at least one room should have an evacuation map
+  // sign assigned somewhere on that level (R13 targets lobbies/elevator lobbies).
+  // A level with rooms but zero evacuation maps is flagged as a warning because
+  // the level may legitimately lack a lobby (e.g. a mechanical floor).
+  const levelSet = new Set(assignments.map((a) => a.level));
+  const levelsWithoutEvacMap: string[] = [];
+  for (const lvl of levelSet) {
+    const lvlAssignments = assignments.filter((a) => a.level === lvl);
+    const hasMap = lvlAssignments.some((a) => (a.evacuationMap ?? 0) > 0);
+    if (!hasMap) {
+      levelsWithoutEvacMap.push(lvl);
+    }
+  }
+  if (levelsWithoutEvacMap.length > 0) {
+    warnings.push(
+      `V7 — Evacuation map coverage: ${levelsWithoutEvacMap.length} level(s) have no evacuation map sign assigned` +
+        ` (${levelsWithoutEvacMap.join(", ")}) — verify R13 or confirm level has no public lobby`,
+    );
+  } else {
+    checksPassed.push(
+      `V7 — Evacuation map coverage: all ${levelSet.size} level(s) have at least one evacuation map sign ✓`,
+    );
   }
 
   // ── Ambiguous questions forwarded from rule engine ────────────────────────
