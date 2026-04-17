@@ -3,7 +3,7 @@
  *
  * Replaces the keyword/regex heuristic sign extractor (extraction-heuristic.ts)
  * with a deterministic rule engine that operates on:
- *   - Room inventory: extracted inline from floor plan PDF pages
+ *   - Room inventory: Phase 4 RoomInventory (from room-inventory.ts)
  *   - Plaque table:   signageScheduleEntries for the job (Phase 3 output)
  *
  * The engine produces a RuleEngineResult containing:
@@ -15,13 +15,9 @@
 
 import { logger } from "./logger";
 import {
-  extractPagePhrases,
-  classifyPageFromPhrases,
-  type PdfPhrase,
-  type PageWords,
-} from "./pdf-words";
-import { extractFloorLevelName } from "./phase-1-intake";
-import { isCodeOnlyLocation } from "./sign-vocabulary";
+  type RoomInventory as Phase4RoomInventory,
+  type RoomRecord as Phase4RoomRecord,
+} from "./room-inventory";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -120,151 +116,43 @@ export interface RuleEngineResult {
   roomCount: number;
 }
 
-// ── Room extraction helpers ────────────────────────────────────────────────────
+// ── Bridge: Phase 4 → Phase 5 room record ─────────────────────────────────────
 
 /**
- * Pattern for valid floor-plan room codes.
- * Accepted: 3 digits (101–999), 1-2 letters + 3 digits, 2 letters + dash/dot + 3 digits.
+ * Convert a Phase 4 RoomRecord (from room-inventory.ts) into a Phase 5 RoomRecord
+ * by merging Phase 4 flags with additional sub-type flags derived via classifyRoom().
+ *
+ * Phase 4 provides: isRestroom, isStair, isElevator, isCorridorOrHall, isVehicleBay,
+ *   isMepUnoccupied, isVariableUse, isPublicFacing, isStaffOnly, isAssembly.
+ * Phase 5 adds: isGenderedRestroom, isUnisexRestroom, isAccessibleRestroom, isMezzanine,
+ *   isOccupied, and higher-precision sub-type detection via the room name tokens.
  */
-const _D3 = "(?:1(?:0[1-9]|[1-9]\\d)|[2-9]\\d{2})";
-const ROOM_CODE_RE = new RegExp(
-  `^(?:${_D3}|[A-Za-z]${_D3}|[A-Za-z]{2}[-.]?${_D3})$`,
-);
-
-function isRoomCode(text: string): boolean {
-  return ROOM_CODE_RE.test(text.trim());
-}
-
-/**
- * Basic noise filter for floor plan phrases.
- * Rejects strings that are definitely not room labels.
- */
-function isNoisyPhrase(text: string): boolean {
-  const t = text.trim();
-  if (t.length < 2) return true;
-  if (t.length > 17) return true;
-  if (t.includes(":")) return true;
-  if (/[0-9]['"]/.test(t)) return true;
-  if (/[0-9]\/[0-9]/.test(t)) return true;
-  if (!/[A-Za-z0-9]/.test(t)) return true;
-  if (/[0-9]\s*(?:sq\.?\s*ft\.?|sqft|sf|square\s+f(?:eet|oot))/i.test(t)) return true;
-  if (t.includes("©")) return true;
-  const lastWord = t.replace(/[.,!?]+$/, "").split(/\s+/).pop()?.toLowerCase() ?? "";
-  if (["inc", "llc", "corp", "ltd", "co"].includes(lastWord)) return true;
-  if (t.startsWith("(")) return true;
-  const openCount = (t.match(/\(/g) ?? []).length;
-  const closeCount = (t.match(/\)/g) ?? []).length;
-  if (closeCount > openCount) return true;
-  if (/\(EXISTING\)/i.test(t)) return true;
-  return false;
-}
-
-const TITLE_PROXIMITY_THRESHOLD = 0.09;
-
-interface PhraseRecord {
-  text: string;
-  cx_pts: number;
-  cy_pts: number;
-  nx: number;
-  ny: number;
-}
-
-/**
- * Extract code+name room pairs from a floor plan page using code-first
- * spatial proximity matching (same algorithm as the retired heuristic).
- * Returns raw (code, name) pairs — no sign-type classification.
- */
-function extractRoomPairsFromPage(
-  pw: PageWords,
-  pageNum: number,
-  titlePhrases?: PdfPhrase[],
-): Array<{ roomNumber: string | null; roomName: string; page: number }> {
-  const { pageWidth, pageHeight, phrases } = pw;
-
-  const records: PhraseRecord[] = phrases.map((p) => ({
-    text: p.text.trim(),
-    cx_pts: ((p.x0 + p.x1) / 2) * pageWidth,
-    cy_pts: ((p.y0 + p.y1) / 2) * pageHeight,
-    nx: (p.x0 + p.x1) / 2,
-    ny: (p.y0 + p.y1) / 2,
-  }));
-
-  const titleCentroids = (titlePhrases ?? []).map((p) => ({
-    nx: (p.x0 + p.x1) / 2,
-    ny: (p.y0 + p.y1) / 2,
-  }));
-
-  function isInTitleZone(r: PhraseRecord): boolean {
-    if (titleCentroids.length > 0) {
-      return titleCentroids.some(
-        (tc) =>
-          Math.sqrt((r.nx - tc.nx) ** 2 + (r.ny - tc.ny) ** 2) <
-          TITLE_PROXIMITY_THRESHOLD,
-      );
-    }
-    return r.ny >= 0.85 || (r.nx > 0.65 && r.ny > 0.65);
-  }
-
-  const drawingArea = records.filter((r) => !isInTitleZone(r));
-  const roomCodePhrases = drawingArea.filter((r) => isRoomCode(r.text));
-  const usable = drawingArea.filter((r) => !isNoisyPhrase(r.text));
-  const anchorCandidates = usable.filter((r) => !isRoomCode(r.text));
-
-  function findNearestAnchor(code: PhraseRecord): PhraseRecord | null {
-    let best: { rec: PhraseRecord; dist: number } | null = null;
-    for (const candidate of anchorCandidates) {
-      const dx = Math.abs(candidate.cx_pts - code.cx_pts);
-      const dy = Math.abs(candidate.cy_pts - code.cy_pts);
-      if (dx > 80 || dy > 90) continue;
-      const dist = Math.sqrt(dx * dx + dy * dy);
-      if (best === null || dist < best.dist) {
-        best = { rec: candidate, dist };
-      }
-    }
-    return best?.rec ?? null;
-  }
-
-  const results: Array<{ roomNumber: string | null; roomName: string; page: number }> = [];
-  const claimedKeys = new Set<string>();
-
-  // Pass 1: code-first — emit pairs where a code has a nearby name anchor
-  for (const code of roomCodePhrases) {
-    const anchor = findNearestAnchor(code);
-    if (!anchor) continue;
-    const key = `${Math.round(anchor.cx_pts / 10)}:${Math.round(anchor.cy_pts / 10)}`;
-    claimedKeys.add(key);
-
-    const alphaCount = (anchor.text.match(/[a-zA-Z]/g) || []).length;
-    if (alphaCount < 1) continue;
-    if (isCodeOnlyLocation(anchor.text)) continue;
-
-    results.push({ roomNumber: code.text, roomName: anchor.text, page: pageNum });
-  }
-
-  // Pass 2: anchor fallback — name-only rooms with no room code
-  for (const anchor of anchorCandidates) {
-    const key = `${Math.round(anchor.cx_pts / 10)}:${Math.round(anchor.cy_pts / 10)}`;
-    if (claimedKeys.has(key)) continue;
-    const alphaCount = (anchor.text.match(/[a-zA-Z]/g) || []).length;
-    if (alphaCount < 1) continue;
-    if (isCodeOnlyLocation(anchor.text)) continue;
-    results.push({ roomNumber: null, roomName: anchor.text, page: pageNum });
-  }
-
-  // Page-wide deduplication by roomNumber (keep first occurrence)
-  const seen = new Set<string>();
-  const deduped: typeof results = [];
-  for (const r of results) {
-    const key = r.roomNumber
-      ? r.roomNumber.toUpperCase()
-      : r.roomName.toLowerCase().trim();
-    if (!seen.has(key)) {
-      seen.add(key);
-      deduped.push(r);
-    }
-  }
-
-  return deduped;
+function bridgeInventoryRoom(p4: Phase4RoomRecord): RoomRecord {
+  const flags = classifyRoom(p4.roomName, p4.level, p4.roomNumber);
+  const isMepUnoccupied = flags.isMepUnoccupied || p4.isMepUnoccupied;
+  const isVehicleBay = flags.isVehicleBay || p4.isVehicleBay;
+  return {
+    roomNumber: p4.roomNumber,
+    roomName: p4.roomName,
+    level: p4.level,
+    pdfPage: p4.pdfPage,
+    sourceSheet: null,
+    isOccupied: !(isMepUnoccupied || isVehicleBay),
+    isCorridorOrHall: flags.isCorridorOrHall || p4.isCorridorOrHall,
+    isVehicleBay,
+    isMepUnoccupied,
+    isVariableUse: flags.isVariableUse || p4.isVariableUse,
+    isRestroom: flags.isRestroom || p4.isRestroom,
+    isPublicFacing: flags.isPublicFacing || p4.isPublicFacing,
+    isGenderedRestroom: flags.isGenderedRestroom,
+    isStaffOnlyRestroom: flags.isStaffOnlyRestroom || p4.isStaffOnly,
+    isUnisexRestroom: flags.isUnisexRestroom,
+    isAccessibleRestroom: flags.isAccessibleRestroom,
+    isElevator: flags.isElevator || p4.isElevator,
+    isStair: flags.isStair || p4.isStair,
+    isMezzanine: flags.isMezzanine,
+    isAssembly: flags.isAssembly || p4.isAssembly,
+  };
 }
 
 // ── Room classification ────────────────────────────────────────────────────────
@@ -322,13 +210,19 @@ const ASSEMBLY_TOKENS = new Set([
 ]);
 
 function tokenize(text: string): string[] {
-  return text.toLowerCase().trim().split(/[\s/\-_]+/).filter((t) => t.length > 0);
+  return text
+    .toLowerCase()
+    .trim()
+    .replace(/'/g, "") // strip apostrophes so "women's" → "womens", "men's" → "mens"
+    .split(/[\s/\-_]+/)
+    .filter((t) => t.length > 0);
 }
 
 /**
  * Classify a room by its name and level, setting boolean flags.
+ * Exported for unit testing.
  */
-function classifyRoom(
+export function classifyRoom(
   roomName: string,
   level: string,
   roomNumber: string | null,
@@ -346,9 +240,12 @@ function classifyRoom(
       const bigram = `${tokens[i]!} ${tokens[i + 1]!}`;
       if (tokenSet.has(bigram)) return true;
     }
-    // Check full string against set entries
+    // Substring check: ONLY for multi-word entries (entries with spaces).
+    // Single-word tokens are already covered by the first loop above.
+    // Checking single-word tokens via substring causes false positives, e.g.
+    // "STAIRWELL" containing "air" (MEP_TOKENS) → incorrectly isMepUnoccupied.
     for (const entry of tokenSet) {
-      if (lower.includes(entry)) return true;
+      if (entry.includes(" ") && lower.includes(entry)) return true;
     }
     return false;
   }
@@ -676,91 +573,37 @@ function findPlaqueForRoom(
 // ── Public API ────────────────────────────────────────────────────────────────
 
 /**
- * Main entry point: build room inventory from PDF floor plan pages,
- * then apply rules R1-R15 to produce a RuleEngineResult.
+ * Main entry point: apply rules R1–R15 to a Phase 4 RoomInventory.
  *
- * @param filePath         Absolute path to the PDF
- * @param fileId           Job-file DB UUID (used as phrase-cache key)
- * @param floorPlanPages   Set of page numbers classified as floor plans
- * @param levelMap         Map of pageNum → floor level name (from spatial pre-pass)
- * @param plaqueTable      Phase 3 signage schedule entries for R7/R8 lookup
- * @param jobId            Job ID for logging
+ * Phase 4 (room-inventory.ts) must complete before Phase 5 is called.
+ * The inventory is bridged to Phase 5's richer RoomRecord type, which adds
+ * restroom sub-types (gendered/unisex/accessible) and mezzanine detection
+ * that Phase 4 does not explicitly track.
+ *
+ * @param inventory    Phase 4 RoomInventory produced by buildRoomInventory()
+ * @param plaqueTable  Per-file signage schedule entries for R7/R8 lookup
+ * @param jobId        Job ID for logging
  */
-export async function applySignRules(
-  filePath: string,
-  fileId: string,
-  floorPlanPages: Set<number>,
-  levelMap: Map<number, string>,
+export function applySignRules(
+  inventory: Phase4RoomInventory,
   plaqueTable: PlaqueEntry[],
   jobId: string,
-): Promise<RuleEngineResult> {
+): RuleEngineResult {
   logger.info(
-    { jobId, fileId, floorPlanPageCount: floorPlanPages.size },
-    "[RuleEngine] Starting room inventory extraction",
+    { jobId, roomCount: inventory.rooms.length },
+    "[RuleEngine] Starting rule application from Phase 4 inventory",
   );
 
-  // ── Step 1: Extract room inventory from floor plan pages ─────────────────
-  const rawRooms: RoomRecord[] = [];
-  const pageNums = Array.from(floorPlanPages).sort((a, b) => a - b);
-
-  await Promise.all(
-    pageNums.map(async (pageNum) => {
-      try {
-        const pw = await extractPagePhrases(filePath, fileId, pageNum);
-        const { titlePhrases } = classifyPageFromPhrases(pw.phrases);
-        const level =
-          levelMap.get(pageNum) ??
-          extractFloorLevelName(pw.phrases) ??
-          `Page ${pageNum}`;
-
-        const pairs = extractRoomPairsFromPage(pw, pageNum, titlePhrases);
-
-        for (const pair of pairs) {
-          const flags = classifyRoom(pair.roomName, level, pair.roomNumber);
-          rawRooms.push({
-            roomNumber: pair.roomNumber,
-            roomName: pair.roomName,
-            level,
-            pdfPage: pair.page,
-            sourceSheet: null,
-            ...flags,
-          });
-        }
-
-        logger.debug(
-          { pageNum, level, roomsFound: pairs.length },
-          "[RuleEngine] Page inventory complete",
-        );
-      } catch (err) {
-        logger.warn(
-          { err, pageNum, fileId },
-          "[RuleEngine] Page extraction failed — skipping",
-        );
-      }
-    }),
-  );
+  // ── Step 1: Bridge Phase 4 rooms → Phase 5 RoomRecord ────────────────────
+  // classifyRoom() is re-run on the room name to add Phase 5-specific flags
+  // (isGenderedRestroom, isUnisexRestroom, isAccessibleRestroom, isMezzanine).
+  // Phase 4 flags are OR-merged so both systems must agree a room is NOT a
+  // restroom/stair/etc. before it loses that designation.
+  const rooms: RoomRecord[] = inventory.rooms.map(bridgeInventoryRoom);
 
   logger.info(
-    { jobId, fileId, roomCount: rawRooms.length },
-    "[RuleEngine] Room inventory extracted",
-  );
-
-  // ── Step 2: Job-wide de-duplication of rooms ─────────────────────────────
-  // Same room code on different pages should merge (keep first occurrence).
-  const deduped = new Map<string, RoomRecord>();
-  for (const room of rawRooms) {
-    const key = room.roomNumber
-      ? room.roomNumber.toUpperCase()
-      : `${room.level}::${room.roomName.toLowerCase().trim()}`;
-    if (!deduped.has(key)) {
-      deduped.set(key, room);
-    }
-  }
-  const rooms = Array.from(deduped.values());
-
-  logger.info(
-    { jobId, fileId, uniqueRoomCount: rooms.length },
-    "[RuleEngine] Room inventory deduplicated",
+    { jobId, uniqueRoomCount: rooms.length },
+    "[RuleEngine] Phase 4 inventory bridged to Phase 5 room records",
   );
 
   // ── Step 3: Build job-level context for R12/R13/R14 ─────────────────────
@@ -887,7 +730,6 @@ export async function applySignRules(
   logger.info(
     {
       jobId,
-      fileId,
       roomCount: rooms.length,
       assignmentCount: assignments.length,
       ambiguousCount: assignments.filter((a) => a.ambiguous).length,

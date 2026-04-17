@@ -350,108 +350,10 @@ export async function runPdfProcessor(jobId: string): Promise<void> {
           }
         }
 
-        // ── Rule engine sign extraction (Phase 5: R1-R15) ─────────────────
-        // Apply the deterministic rule engine to produce sign assignments.
-        // The engine builds a room inventory inline from floor plan pages,
-        // then applies rules R1-R15 using the room flags and plaque table.
-        // Results are inserted into extractedSignsTable as extraction_method="rule_engine".
-        // Per-file decisions log + verification questions are stored in step details.
-        try {
-          const t_rule = Date.now();
-          const fpPagesForRules = fileFloorPlanPages.get(file.id) ?? new Set<number>();
-          const levelMapForFile = allSpatialFloorLevelNames.get(file.id) ?? new Map<number, string>();
-
-          if (fpPagesForRules.size > 0) {
-            // Build plaque table from already-inserted schedule entries for this file
-            // Note: at this point, schedule entries have not yet been persisted (they are
-            // accumulated and inserted after the per-file loop). Use in-memory allScheduleEntries.
-            const plaqueTableForFile: PlaqueEntry[] = allScheduleEntries
-              .filter((e) => e.fileId === file.id)
-              .map((e) => ({
-                roomNumber: e.roomNumber ?? null,
-                roomName: e.roomName ?? null,
-                signTypeCode: e.signTypeCode,
-                quantity: e.quantity ?? null,
-              }));
-
-            const ruleResult = await applySignRules(
-              file.storedPath,
-              file.id,
-              fpPagesForRules,
-              levelMapForFile,
-              plaqueTableForFile,
-              jobId,
-            );
-
-            // Collect for Phase 6 verification wiring
-            allEngineRuleResults.push(ruleResult);
-
-            // Convert SignAssignments → extractedSignsTable rows
-            const allSignRows = ruleResult.assignments.flatMap((assignment) =>
-              assignmentToRows(assignment).map((row) => ({
-                jobId,
-                jobFileId: file.id,
-                signType: row.signType,
-                signIdentifier: row.signIdentifier,
-                quantity: row.quantity,
-                location: row.location,
-                notes: row.notes,
-                pageNumber: row.pageNumber,
-                confidenceScore: row.confidenceScore,
-                reviewFlag: row.reviewFlag,
-                extractionMethod: row.extractionMethod,
-                placementSource: row.placementSource,
-                exceptionReason: row.exceptionReason,
-                rawJson: row.rawJson,
-                dataSource: "pdf" as const,
-                userVerified: false,
-                manuallyAdded: false,
-              }))
-            );
-
-            if (allSignRows.length > 0) {
-              const CHUNK = 200;
-              for (let i = 0; i < allSignRows.length; i += CHUNK) {
-                await db.insert(extractedSignsTable).values(allSignRows.slice(i, i + CHUNK));
-              }
-            }
-
-            recordStep(
-              `rule_application_${file.id}`,
-              filesToProcess.length > 1
-                ? `Sign extraction (rules) — ${file.originalName}`
-                : "Sign extraction (rules)",
-              t_rule,
-              {
-                roomCount: ruleResult.roomCount,
-                assignmentCount: ruleResult.assignments.length,
-                signRowsInserted: allSignRows.length,
-                ambiguousCount: ruleResult.assignments.filter((a) => a.ambiguous).length,
-                verificationErrors: ruleResult.verificationErrors,
-                decisionsLog: ruleResult.decisionsLog,
-                questionsForVerification: ruleResult.questionsForVerification,
-                assignments: ruleResult.assignments,
-              },
-              "phase-3",
-            );
-
-            logger.info(
-              {
-                jobId,
-                fileId: file.id,
-                roomCount: ruleResult.roomCount,
-                signRowsInserted: allSignRows.length,
-                durationMs: Date.now() - t_rule,
-              },
-              "[PDF Processor] Rule engine (Phase 5) complete",
-            );
-          }
-        } catch (err) {
-          logger.warn({ err, fileId: file.id }, "[PDF Processor] Rule engine extraction failed — non-fatal");
-        }
-
         // ── Signage schedule spatial parsing (no AI) ──────────────────────
         // Parse pages classified as sign_schedule using the deterministic spatial parser.
+        // Must run before Phase 4 and Phase 5 so the plaque table is available to R7/R8.
+        const fileScheduleEntries: Array<ScheduleEntry & { fileId: string }> = [];
         {
           const schedulePageNums = [...new Set([...finalSignSchedulePages, ...finalBothPages])].sort((a, b) => a - b);
           fileSchedulePages.set(file.id, schedulePageNums);
@@ -459,7 +361,6 @@ export async function runPdfProcessor(jobId: string): Promise<void> {
             try {
               const t_schedule = Date.now();
               const mergedSpecs = new Map<string, SignTypeSpec & { fileId: string; fileStoredPath: string }>();
-              const fileEntries: Array<ScheduleEntry & { fileId: string }> = [];
 
               for (const pageNum of schedulePageNums) {
                 try {
@@ -485,32 +386,21 @@ export async function runPdfProcessor(jobId: string): Promise<void> {
                   }
 
                   for (const entry of result.entries) {
-                    fileEntries.push({ ...entry, fileId: file.id });
+                    fileScheduleEntries.push({ ...entry, fileId: file.id });
                   }
                 } catch (pageErr) {
                   logger.warn({ pageErr, fileId: file.id, pageNum }, "[PDF Processor] Schedule parse failed for page — non-fatal");
                 }
               }
 
-              if (fileEntries.length > 0 || mergedSpecs.size > 0) {
+              if (fileScheduleEntries.length > 0 || mergedSpecs.size > 0) {
                 allScheduleSpecs.push(...mergedSpecs.values());
-                allScheduleEntries.push(...fileEntries);
+                allScheduleEntries.push(...fileScheduleEntries);
                 logger.info(
-                  { jobId, fileId: file.id, specs: mergedSpecs.size, entries: fileEntries.length, durationMs: Date.now() - t_schedule },
+                  { jobId, fileId: file.id, specs: mergedSpecs.size, entries: fileScheduleEntries.length, durationMs: Date.now() - t_schedule },
                   "[PDF Processor] Schedule spatial parse complete"
                 );
               }
-              recordStep(
-                `schedule_heuristic_${file.id}`,
-                filesToProcess.length > 1 ? `Sign schedule parse — ${file.originalName}` : "Sign schedule parse",
-                t_schedule,
-                {
-                  schedulePages: schedulePageNums.length,
-                  specs: mergedSpecs.size,
-                  entries: fileEntries.length,
-                },
-                "phase-3",
-              );
             } catch (err) {
               logger.warn({ err, fileId: file.id }, "[PDF Processor] Schedule parsing failed — non-fatal");
             }
@@ -519,6 +409,7 @@ export async function runPdfProcessor(jobId: string): Promise<void> {
 
         // ── Phase 4: Room Inventory ───────────────────────────────────────
         // Build a room inventory from floor plan pages identified above.
+        // Must run before Phase 5 so the rule engine can consume the inventory.
         // Non-fatal: if this step fails the rest of the pipeline continues normally.
         //
         // Phase 4b: The first life safety / egress page from the sheet manifest
@@ -602,7 +493,7 @@ export async function runPdfProcessor(jobId: string): Promise<void> {
                 "phase-3",
               );
 
-              // ── Step 4: AI enrichment for ambiguous rooms ──────────────
+              // ── AI enrichment for ambiguous rooms ──────────────────────
               const t_ai = Date.now();
               const ambiguousCount = fileRoomInventory.rooms.filter((r) => {
                 const c = r.extractionConfidence < 0.5;
@@ -679,6 +570,92 @@ export async function runPdfProcessor(jobId: string): Promise<void> {
               },
               "phase-3",
             );
+          }
+        }
+
+        // ── Phase 5: Apply Rules R1–R15 ───────────────────────────────────
+        // Consume the Phase 4 inventory and the per-file schedule entries to produce
+        // deterministic sign assignments.  Runs after both Phase 4 and schedule parsing
+        // so that restroom sub-type rules (R7/R8) have the full plaque table available.
+        // Results are inserted into extractedSignsTable as extraction_method="rule_engine".
+        if (fileRoomInventory !== null) {
+          try {
+            const t_rule = Date.now();
+
+            // Build plaque table from schedule entries collected for this file above.
+            const plaqueTableForFile: PlaqueEntry[] = fileScheduleEntries.map((e) => ({
+              roomNumber: e.roomNumber ?? null,
+              roomName: e.roomName ?? null,
+              signTypeCode: e.signTypeCode,
+              quantity: e.quantity ?? null,
+            }));
+
+            const ruleResult = applySignRules(fileRoomInventory, plaqueTableForFile, jobId);
+
+            // Collect for Phase 6 verification wiring
+            allEngineRuleResults.push(ruleResult);
+
+            // Convert SignAssignments → extractedSignsTable rows
+            const allSignRows = ruleResult.assignments.flatMap((assignment) =>
+              assignmentToRows(assignment).map((row) => ({
+                jobId,
+                jobFileId: file.id,
+                signType: row.signType,
+                signIdentifier: row.signIdentifier,
+                quantity: row.quantity,
+                location: row.location,
+                notes: row.notes,
+                pageNumber: row.pageNumber,
+                confidenceScore: row.confidenceScore,
+                reviewFlag: row.reviewFlag,
+                extractionMethod: row.extractionMethod,
+                placementSource: row.placementSource,
+                exceptionReason: row.exceptionReason,
+                rawJson: row.rawJson,
+                dataSource: "pdf" as const,
+                userVerified: false,
+                manuallyAdded: false,
+              }))
+            );
+
+            if (allSignRows.length > 0) {
+              const CHUNK = 200;
+              for (let i = 0; i < allSignRows.length; i += CHUNK) {
+                await db.insert(extractedSignsTable).values(allSignRows.slice(i, i + CHUNK));
+              }
+            }
+
+            recordStep(
+              `rule_application_${file.id}`,
+              filesToProcess.length > 1
+                ? `Sign extraction (rules) — ${file.originalName}`
+                : "Sign extraction (rules)",
+              t_rule,
+              {
+                roomCount: ruleResult.roomCount,
+                assignmentCount: ruleResult.assignments.length,
+                signRowsInserted: allSignRows.length,
+                ambiguousCount: ruleResult.assignments.filter((a) => a.ambiguous).length,
+                verificationErrors: ruleResult.verificationErrors,
+                decisionsLog: ruleResult.decisionsLog,
+                questionsForVerification: ruleResult.questionsForVerification,
+                assignments: ruleResult.assignments,
+              },
+              "phase-3",
+            );
+
+            logger.info(
+              {
+                jobId,
+                fileId: file.id,
+                roomCount: ruleResult.roomCount,
+                signRowsInserted: allSignRows.length,
+                durationMs: Date.now() - t_rule,
+              },
+              "[PDF Processor] Rule engine (Phase 5) complete",
+            );
+          } catch (err) {
+            logger.warn({ err, fileId: file.id }, "[PDF Processor] Rule engine extraction failed — non-fatal");
           }
         }
 

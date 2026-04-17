@@ -193,7 +193,7 @@ export const PIPELINE_PHASES: PipelinePhase[] = [
       "pdf-processor.ts → sign extraction loop",
     ],
     newModule: "rule-engine.ts → applySignRules()",
-    taskRef: "#358",
+    taskRef: "#360",
   },
   {
     id: 6,
