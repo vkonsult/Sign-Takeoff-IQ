@@ -197,8 +197,13 @@ export function SignSpecModal({ jobId, fileId, fileName, specPages, plaqueTable,
     const cy = e.clientY - rect.top - rect.height / 2;
     setLbScale((prev) => {
       const next = Math.min(10, Math.max(1, prev * factor));
-      setLbPanX((px) => lbClampAxis(cx * (1 - next / prev) + px * (next / prev), next, "x"));
-      setLbPanY((py) => lbClampAxis(cy * (1 - next / prev) + py * (next / prev), next, "y"));
+      if (next === 1) {
+        setLbPanX(0);
+        setLbPanY(0);
+      } else {
+        setLbPanX((px) => lbClampAxis(cx * (1 - next / prev) + px * (next / prev), next, "x"));
+        setLbPanY((py) => lbClampAxis(cy * (1 - next / prev) + py * (next / prev), next, "y"));
+      }
       return next;
     });
   }, [lbClampAxis]);
