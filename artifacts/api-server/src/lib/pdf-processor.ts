@@ -31,7 +31,7 @@ import {
   extractCodeProximityPairs,
   type PdfPhrase,
 } from "./pdf-words";
-import { buildSheetManifest } from "./sheet-manifest";
+import { runPhase2Classification } from "./phase-2-classification";
 import { runPhase1Intake, classifyFileType } from "./phase-1-intake";
 import {
   extractSignageData,
@@ -228,50 +228,46 @@ export async function runPdfProcessor(jobId: string): Promise<void> {
         // Read any previously rejected page numbers so they are preserved across re-runs.
         const existingRejectedPages: number[] = (file.pageStats as { rejectedPageNumbers?: number[] } | null)?.rejectedPageNumbers ?? [];
 
-        // ── Phase 2: Sheet Manifest ───────────────────────────────────────
-        // Replaces the legacy spatial pre-pass. Classifies every page into
-        // one of 10 buckets using a 3-pass cascade (bookmarks → title block
-        // strips → full-page scan for excerpts).
-        const t_manifest = Date.now();
-        const manifest = await buildSheetManifest(file.storedPath, file.id);
-        manifest.warnings.forEach((w) =>
-          logger.warn({ jobId, fileId: file.id, warning: w }, "[PDF Processor] Sheet manifest warning")
+        // ── Phase 2: Page Classification ──────────────────────────────────
+        // Consolidates all page classification logic (bookmark overlay, title
+        // block spatial pre-pass, full-page excerpt fallback) into a single
+        // dedicated phase module.
+        const t_classification = Date.now();
+        const classification = await runPhase2Classification(
+          file.storedPath,
+          file.id,
+          intakeResult,
         );
 
-        const finalFloorPlanPages = manifest.entries
-          .filter((e) => e.bucket === "floor_plan")
-          .map((e) => e.pdfPage);
-        const finalSignSchedulePages = manifest.entries
-          .filter((e) => e.bucket === "signage_schedule")
-          .map((e) => e.pdfPage);
-        const finalBothPages: number[] = []; // "both" bucket removed in 10-bucket system
+        const finalFloorPlanPages = classification.floorPlanPages;
+        const finalSignSchedulePages = classification.signSchedulePages;
+        const finalBothPages = classification.bothPages;
+        const { manifest } = classification;
+
         const lifeSafetyPages = manifest.entries
           .filter((e) => e.bucket === "life_safety")
           .map((e) => e.pdfPage);
 
-        // Level names from manifest (pdfPage → normalized level)
-        const spatialFloorLevelNames = new Map<number, string>();
-        for (const entry of manifest.entries) {
-          if (entry.level) spatialFloorLevelNames.set(entry.pdfPage, entry.level);
-        }
+        const { spatialFloorLevelNames } = classification;
 
         const fpSet = new Set<number>(finalFloorPlanPages);
         fileFloorPlanPages.set(file.id, fpSet);
         allSpatialFloorLevelNames.set(file.id, spatialFloorLevelNames);
 
         recordStep(
-          `sheet_manifest_${file.id}`,
-          filesToProcess.length > 1 ? `Sheet manifest — ${file.originalName}` : "Sheet manifest",
-          t_manifest,
+          `phase-2-classification_${file.id}`,
+          filesToProcess.length > 1 ? `Page classification — ${file.originalName}` : "Page classification",
+          t_classification,
           {
             totalPages: manifest.totalPages,
             floorPlan: finalFloorPlanPages.length,
             signSchedule: finalSignSchedulePages.length,
             lifeSafety: lifeSafetyPages.length,
+            other: classification.otherPages.length,
             isExcerpt: manifest.isExcerpt,
             source: manifest.entries[0]?.source ?? "none",
           },
-          "phase-2",
+          "phase-2-classification",
         );
 
         // ── Raw text extraction (no AI) ───────────────────────────────────
