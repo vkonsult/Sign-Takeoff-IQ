@@ -763,6 +763,13 @@ const CROP_MIN_PX = 64;
  * lower-priority rooms fall back to text-only context.
  */
 const MAX_VISUAL_CROPS = 20;
+/**
+ * If the fraction of batches that return no parseable JSON array exceeds this
+ * threshold within a single job, a structured error is logged so operators are
+ * alerted to a potential Gemini regression (e.g. the model has started returning
+ * prose instead of JSON for a majority of requests).
+ */
+const NO_JSON_ARRAY_FAILURE_RATE_THRESHOLD = 0.5;
 
 /**
  * Crops the bounding-box region from an already-rendered page PNG.
@@ -952,6 +959,8 @@ export async function enrichAmbiguousRoomsWithAI(
       };
     };
 
+    let failedBatches = 0;
+
     for (let batchIdx = 0; batchIdx < batches.length; batchIdx++) {
       const batch = batches[batchIdx]!;
       // candidateOffset maps batch-local positions back to the original crops Map
@@ -1020,6 +1029,7 @@ export async function enrichAmbiguousRoomsWithAI(
       const text = response.text ?? "";
       const jsonMatch = text.match(/\[[\s\S]*\]/);
       if (!jsonMatch) {
+        failedBatches++;
         logger.warn(
           { fileId, jobId, batch: batchIdx + 1, totalBatches: batches.length, reason: "no_json_array" },
           "[RoomInventory] Gemini returned no JSON array for AI enrichment batch — skipping batch",
@@ -1029,6 +1039,21 @@ export async function enrichAmbiguousRoomsWithAI(
 
       const batchClassifications: GeminiRoomClassification[] = JSON.parse(jsonMatch[0]);
       allClassifications.push(...batchClassifications);
+    }
+
+    if (batches.length > 0 && failedBatches / batches.length > NO_JSON_ARRAY_FAILURE_RATE_THRESHOLD) {
+      logger.error(
+        {
+          fileId,
+          jobId,
+          failedBatches,
+          totalBatches: batches.length,
+          failureRate: failedBatches / batches.length,
+          threshold: NO_JSON_ARRAY_FAILURE_RATE_THRESHOLD,
+          reason: "no_json_array_rate_exceeded",
+        },
+        "[RoomInventory] AI room classification failure rate exceeded threshold — Gemini may be returning unparseable responses",
+      );
     }
 
     const updatedRooms = rooms.map((r) => ({ ...r }));

@@ -274,6 +274,107 @@ describe("enrichAmbiguousRoomsWithAI — unparseable Gemini response telemetry",
   });
 });
 
+describe("enrichAmbiguousRoomsWithAI — no_json_array failure rate alerting", () => {
+  beforeEach(() => {
+    vi.mocked(ai.models.generateContent).mockReset();
+    vi.mocked(renderFloorPlanPages).mockReset().mockResolvedValue(
+      new Map([[1, testPngPath]]),
+    );
+    vi.mocked(logger.warn).mockReset();
+    vi.mocked(logger.error).mockReset();
+  });
+
+  it("emits logger.error with reason 'no_json_array_rate_exceeded' when all batches fail (100% > 50%)", async () => {
+    vi.mocked(ai.models.generateContent).mockResolvedValue({ text: "Sorry, I cannot help." });
+
+    const rooms: RoomRecord[] = Array.from({ length: 25 }, (_, i) =>
+      makeAmbiguousRoom(`ROOM${String(i).padStart(2, "0")}`),
+    );
+
+    await enrichAmbiguousRoomsWithAI(rooms, "file-rate-a", "job-rate-a", "/fake/plan.pdf");
+
+    const errorCalls = vi.mocked(logger.error).mock.calls as Array<[unknown, string]>;
+    const rateAlert = errorCalls.find(
+      ([fields, msg]) =>
+        typeof msg === "string" &&
+        msg.includes("failure rate exceeded threshold") &&
+        (fields as Record<string, unknown>).reason === "no_json_array_rate_exceeded",
+    );
+
+    expect(rateAlert).toBeDefined();
+  });
+
+  it("includes failedBatches, totalBatches, failureRate, and threshold in the structured error payload", async () => {
+    vi.mocked(ai.models.generateContent).mockResolvedValue({ text: "Sorry, I cannot help." });
+
+    const rooms: RoomRecord[] = Array.from({ length: 25 }, (_, i) =>
+      makeAmbiguousRoom(`ROOM${String(i).padStart(2, "0")}`),
+    );
+
+    await enrichAmbiguousRoomsWithAI(rooms, "file-rate-b", "job-rate-b", "/fake/plan.pdf");
+
+    const errorCalls = vi.mocked(logger.error).mock.calls as Array<[unknown, string]>;
+    const rateAlert = errorCalls.find(
+      ([, msg]) => typeof msg === "string" && msg.includes("failure rate exceeded threshold"),
+    );
+
+    expect(rateAlert).toBeDefined();
+    const fields = rateAlert![0] as Record<string, unknown>;
+    expect(fields.failedBatches).toBe(2);
+    expect(fields.totalBatches).toBe(2);
+    expect(fields.failureRate).toBe(1);
+    expect(fields.threshold).toBe(0.5);
+  });
+
+  it("does NOT emit logger.error when exactly 50% of batches fail (not strictly greater than threshold)", async () => {
+    // 2 batches: first fails, second succeeds → 50% failure rate, NOT > 50%
+    vi.mocked(ai.models.generateContent)
+      .mockResolvedValueOnce({ text: "Sorry, I cannot help." })
+      .mockResolvedValueOnce({ text: "[]" });
+
+    const rooms: RoomRecord[] = Array.from({ length: 25 }, (_, i) =>
+      makeAmbiguousRoom(`ROOM${String(i).padStart(2, "0")}`),
+    );
+
+    await enrichAmbiguousRoomsWithAI(rooms, "file-rate-c", "job-rate-c", "/fake/plan.pdf");
+
+    expect(vi.mocked(logger.error)).not.toHaveBeenCalled();
+  });
+
+  it("does NOT emit logger.error when fewer than 50% of batches fail", async () => {
+    // 3 batches: one fails → 33% failure rate, NOT > 50%
+    vi.mocked(ai.models.generateContent)
+      .mockResolvedValueOnce({ text: "Sorry, I cannot help." })
+      .mockResolvedValueOnce({ text: "[]" })
+      .mockResolvedValueOnce({ text: "[]" });
+
+    const rooms: RoomRecord[] = Array.from({ length: 45 }, (_, i) =>
+      makeAmbiguousRoom(`ROOM${String(i).padStart(2, "0")}`),
+    );
+
+    await enrichAmbiguousRoomsWithAI(rooms, "file-rate-d", "job-rate-d", "/fake/plan.pdf");
+
+    expect(vi.mocked(logger.error)).not.toHaveBeenCalled();
+  });
+
+  it("preserves non-fatal fallback: rooms that succeeded in other batches are still enriched despite high failure rate", async () => {
+    // 2 batches: first fails (rooms 0-19), second succeeds with a classification for room 20
+    vi.mocked(ai.models.generateContent)
+      .mockResolvedValueOnce({ text: "Sorry, I cannot help." })
+      .mockResolvedValueOnce({ text: JSON.stringify([{ index: 20, roomName: "RESTROOM", roomType: "RESTROOM", confidence: 0.9 }]) });
+
+    const rooms: RoomRecord[] = Array.from({ length: 25 }, (_, i) =>
+      makeAmbiguousRoom(`ROOM${String(i).padStart(2, "0")}`),
+    );
+
+    const { rooms: result } = await enrichAmbiguousRoomsWithAI(rooms, "file-rate-e", "job-rate-e", "/fake/plan.pdf");
+
+    expect(result[20]!.aiEnriched).toBe(true);
+    expect(result[20]!.roomName).toBe("RESTROOM");
+    expect(result[0]!.aiEnriched).toBe(false);
+  });
+});
+
 describe("enrichAmbiguousRoomsWithAI — batch progress logging", () => {
   beforeEach(() => {
     vi.mocked(ai.models.generateContent).mockReset().mockResolvedValue(EMPTY_GEMINI_RESPONSE);
