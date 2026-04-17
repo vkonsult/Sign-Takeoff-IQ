@@ -1,0 +1,412 @@
+
+
+Content is user-generated and unverified. SignTakeoff System Prompt v1.0 You are an expert sign estimator specialized in reading architectural construction documents and producing interior signage takeoffs. You have deep knowledge of ADA 2010 Standards (§216, §703), IBC egress requirements (Tables
+
+pasted
+
+Apr 16
+I've read through the SignTakeoff system prompt. This is a well-structured specification for an AI-assisted interior signage estimating workflow. Before I do anything with it, let me confirm what you're looking for — there are several directions this could go:
+
+Use it as-is — you want me to adopt this as my operating instructions and wait for you to upload a plan set (PDF) to produce a takeoff
+Review/critique it — you want feedback on the prompt itself (gaps in rules, ambiguities, workflow issues, code citations that may be outdated, etc.)
+Improve/revise it — you want me to propose edits and produce a v1.1
+Test it — you have a sample plan set and want to see how it performs
+A few observations I'd flag regardless of direction, in case they're useful:
+
+R10 (Capacity sign) conflates two triggers with an "OR" but the quantity rule ("number of separable assembly spaces") only makes sense for the variable-use case. A straight 50+ occupant assembly room without subdivision should just get 1. Worth tightening.
+R11 stair landing count says "per level's landing" but stairs typically have two landings per level (intermediate + floor). The intent is clearly "floor landing only" — should say so explicitly.
+R13 Evacuation Map uses "key circulation decision points" which directly violates the prompt's own "deterministic for unambiguous rooms" standard. This rule will produce run-to-run variance. Needs either a hard rule or an explicit flag-and-ask.
+521 CMR and CBC 11B citations — if this is meant to stay current, these get amended. Worth noting the prompt should direct the estimator (or me) to verify the cited edition against the project's permit date rather than baking in a specific standard.
+"Text extraction first, fall back to visual" in Phase 3 — in practice, architectural PDFs with schedule tables almost always garble under text extraction because they're laid out with positioned text boxes, not tables. Defaulting to visual reading of the rasterized schedule page is usually faster and more reliable.
+Phase 4 flag derivation relies entirely on name-matching heuristics, but the prompt never addresses what to do when a room label is abbreviated or unclear (very common). Worth adding a "flag for verification" fallback.
+Which direction do you want to go?
+
+i have the claude code and i want it to point to my repo in replit or github provide instructions for both
+
+Apr 16
+I'll search Anthropic's docs to give you current, accurate setup instructions for both.
+
+
+Searched the web
+Searched the web
+Before I write instructions, one quick clarification — "Claude Code" can mean a couple of different things, and the setup is different for each:
+
+While you answer, here's the short version for all three paths so you can pick.
+
+GitHub — Terminal/CLI Claude Code
+This is the most common setup. Claude Code doesn't "connect to" a repo in a config sense — it just operates on whatever folder you launch it in. So you clone the repo locally and cd into it.
+
+bash
+# 1. Clone your repo
+git clone https://github.com/YOUR-USERNAME/YOUR-REPO.git
+cd YOUR-REPO
+
+# 2. Launch Claude Code in that directory
+claude
+That's it. Claude now has read/write access to every file in that folder and will use git as normal (commits, branches, pushes). If you want to push commits Claude makes, make sure git is already authenticated on your machine (either gh auth login or an SSH key set up with GitHub).
+
+Optional but recommended: create a CLAUDE.md at the repo root with project conventions, commands to run, and anything else you want Claude to know on every session. Claude Code reads this automatically.
+
+GitHub — Claude Code on the web
+This runs in an Anthropic-managed cloud VM, so it needs explicit GitHub authorization:
+
+Go to claude.ai/code and sign in
+You'll be prompted to install the Claude GitHub App — follow it and grant access to the specific repos you want (or "all repositories")
+You'll then be prompted to create a cloud environment (name it, pick network access level, optionally add a setup script that runs on session start)
+Click the repository selector below the input box and pick your repo. You can also pick a branch.
+Send a message — Claude clones the repo into the VM, works, and pushes a branch back to GitHub when done
+If you need to add a repo later: github.com → Settings → Applications → Claude → Configure → add the repo under "Repository access."
+
+Replit
+Replit is trickier because Replit isn't git in the traditional sense — it's a cloud IDE. Two realistic options:
+
+Option A — Connect your Replit to GitHub, then point Claude Code at GitHub (recommended). Replit has built-in GitHub sync. In your Repl, open the Git pane (left sidebar) → "Connect to GitHub" → push your Repl to a new or existing GitHub repo. Once it's on GitHub, follow either of the GitHub paths above. This is by far the cleanest workflow — you edit via Claude Code, push to GitHub, and Replit pulls the changes (or auto-syncs).
+
+Option B — Run Claude Code inside the Replit shell. Open your Repl's Shell tab and install Claude Code there:
+
+bash
+npm install -g @anthropic-ai/claude-code
+claude
+You'll need to authenticate (it'll walk you through it). This runs Claude directly against your Repl's filesystem. Caveats: the Repl needs enough resources, Node must be available (it is on most Repls), and authentication persists only as long as the Repl's storage does. This works but is less reliable than Option A.
+
+Let me know which Claude Code you're using and I'll tighten this down to just the steps you need — including anything specific to your repo setup (private vs. public, whether you already have gh installed, etc.).
+
+Q: Which Claude Code are you using?
+A: Terminal/CLI on my computer
+
+Apr 16
+Good — that's the simplest path. Here's the tightened version for your setup.
+
+One-time setup
+Make sure you have Claude Code installed and git authenticated. In your terminal:
+
+bash
+# Check Claude Code is installed
+claude --version
+
+# Check git is authenticated to GitHub (pick one)
+gh auth status          # if you use GitHub CLI
+ssh -T git@github.com   # if you use SSH keys
+If gh auth status fails or you've never set up git with GitHub, run gh auth login and follow the prompts (install via brew install gh on Mac, or grab it from cli.github.com). This is what lets Claude push commits on your behalf later.
+
+Point Claude Code at a GitHub repo
+bash
+# 1. Clone the repo wherever you keep projects
+cd ~/projects                                          # or wherever
+git clone https://github.com/YOUR-USERNAME/YOUR-REPO.git
+cd YOUR-REPO
+
+# 2. Launch Claude Code
+claude
+That's it. Claude now sees every file in that folder and can read, edit, run commands, and use git. When you want to work on the repo again later, just cd into the folder and run claude.
+
+Point Claude Code at a Replit repo
+Replit isn't a git host, so you connect it through GitHub. One-time:
+
+Open your Repl → left sidebar → Git pane (or Version Control)
+Click Connect to GitHub → authorize if prompted → Create a GitHub repository (or connect to an existing one)
+Push your Repl's current state to that GitHub repo
+Now treat it like any GitHub repo:
+
+bash
+cd ~/projects
+git clone https://github.com/YOUR-USERNAME/YOUR-REPL-REPO.git
+cd YOUR-REPL-REPO
+claude
+Workflow going forward: you edit locally via Claude Code, commit, and git push. On the Replit side, open the Git pane and click Pull to sync the changes back into the Repl. If you also edit inside Replit, push from Replit and git pull locally before your next Claude session so you don't fork the history.
+
+Recommended: drop a CLAUDE.md in the repo root
+Claude Code reads this file automatically on every session. A minimal one:
+
+markdown
+# Project notes for Claude
+
+## Stack
+- [language/framework]
+
+## Commands
+- Run dev: `npm run dev`
+- Test: `npm test`
+- Lint: `npm run lint`
+
+## Conventions
+- [anything specific: file layout, naming, what not to touch]
+This saves you from re-explaining context every session and noticeably improves Claude's output.
+
+Quick sanity check in your first session
+Once claude is running in the repo, try:
+
+"Summarize what this repo does based on the README and top-level files."
+
+If it can read your files and answer, you're set. If it says it can't see files, you're probably not in the repo directory — exit and cd back in.
+
+Anything failing on your end? Happy to troubleshoot — if you paste the error or tell me what you're seeing, I can narrow it down.
+
+the phase 2 listed above what rules apply to detecting relevant pages to look from 100+ pages ?
+
+Apr 16
+Good question — this is the weakest part of the spec as written. "Search the drawing index for sheet titles containing [keywords]" sounds deterministic, but on a real 100+ page plan set it falls apart for several reasons. Let me lay out what actually needs to happen, what rules are missing, and what I'd add.
+
+Why the current Phase 2 is under-specified
+The existing rule is essentially a keyword match against sheet titles in the drawing index. Problems:
+
+The drawing index itself isn't always on page 1. Large sets often have a cover sheet, then a separate sheet index on G-001 or T-001. Some sets split the index across multiple sheets (architectural index, MEP index, civil index).
+Sheet titles lie or abbreviate. "LIFE SAFETY PLAN" might be titled "CODE PLAN," "EGRESS PLAN," "EXITING PLAN," or just sit inside a sheet called "GENERAL NOTES." Occupant load tables frequently live on a sheet titled something like "A-003 CODE COMPLIANCE" with no "egress" keyword anywhere.
+Signage schedules hide. The prompt correctly notes they often live in A-7XX millwork/interiors sheets, but they can also be on a single page inside A-000 general notes, inside the specs (Division 10 14 00), or on an interior elevation sheet with no "sign" in the title.
+Keyword collisions. "EXIT" matches exit stair details, exit sign schedules, and exterior elevations depending on tokenizer. "PLAN" matches everything.
+Sheet numbering conventions vary. A-1XX for floor plans is common but not universal — some offices use A-101/A-102 for first floor, A-201/A-202 for second floor (the hundreds digit is the level), others use A-101 through A-105 all on level 1. You can't assume numbering tells you level without checking.
+Sheets get reissued. A 100-page set might have A-003, A-003.1, A-003R2. The index should reflect the latest, but doesn't always.
+Rules I would add to Phase 2
+Here's a revised Phase 2 that's actually robust on a 100-page set:
+
+P2.1 — Locate the drawing index, don't assume page 1.
+
+Open the table of contents / bookmarks in the PDF first. If the PDF has bookmarks, the sheet index is almost always there and gives you page-number-to-sheet-number mapping for free.
+If no bookmarks: scan pages 1–5 for a page titled "DRAWING INDEX," "SHEET INDEX," "LIST OF DRAWINGS," or "TABLE OF CONTENTS." If not found there, scan the first page of each discipline section (cover sheets are often G-001, T-001, A-000, or the first A-sheet).
+Record the full index as a structured list: sheet_number → sheet_title → pdf_page_number. This mapping is the foundation for everything downstream.
+P2.2 — Classify every sheet, don't just search for keywords. Walk the entire index once and tag each sheet into one of these buckets using a priority-ordered ruleset (first match wins):
+
+Priority	Bucket	Matches if sheet title contains (case-insensitive)	Or sheet number matches
+1	signage_schedule	"signage", "sign schedule", "plaque", "signage details", "sign types"	—
+2	life_safety	"life safety", "egress", "code plan", "code compliance", "exiting", "occupant load"	—
+3	floor_plan	"floor plan", "overall plan", "enlarged plan" AND not "reflected", "ceiling", "roof", "foundation", "demo"	A-1XX, A-2XX where level prefix matches
+4	general_notes	"general notes", "abbreviations", "symbols", "mounting heights", "typical details"	A-000, A-001, G-series
+5	millwork_interiors	"millwork", "casework", "interior elevations", "interior details"	A-7XX, A-8XX
+6	accessibility	"accessibility", "ADA", "MAAB", "CBC 11B", "barrier-free"	—
+7	specifications	"specifications", "specs"	—
+8	other	—	—
+Negative keywords matter: "REFLECTED CEILING PLAN," "ROOF PLAN," "FOUNDATION PLAN," and "DEMOLITION PLAN" are NOT floor plans for this purpose and should be excluded even though they match "plan."
+
+P2.3 — Confirm classification with a page-level check, not just the index title. Sheet titles in the index occasionally disagree with what's actually on the page (reissues, retitled sheets, scope changes mid-project). For each sheet in the three highest-value buckets (signage_schedule, life_safety, floor_plan), open the page and confirm:
+
+Signage schedule: page contains a table with columns resembling "type / description / size / mounting" and/or sign-type identifiers (A, B, C… or S1, S2…)
+Life safety: page contains an occupant load table OR egress-labeled plan with travel distance arrows/exit capacity calcs
+Floor plan: page contains rooms with name/number labels at the scale of the building (not an enlarged detail)
+If the page-level check fails, demote the sheet and flag it.
+
+P2.4 — Find the signage schedule even when no sheet is titled "signage." Fallback search order if P2.2 didn't find a signage_schedule sheet:
+
+Search sheet keynotes/legends on floor plans for "see sign schedule on sheet XX" or "S-1, S-2" tag references — trace to the referenced sheet
+Scan A-000 and general-notes sheets for a sign schedule table
+Scan A-7XX millwork sheets page by page for a schedule table
+Check the specifications index for Division 10 14 00 (Signage) — the schedule may be in specs rather than on drawings
+If all of the above fail, stop and ask the user for the signage spec/schedule rather than guessing
+P2.5 — Map floor plans to levels explicitly. Don't infer level from sheet number. For each sheet classified as floor_plan, read the sheet title ("LEVEL 1 FLOOR PLAN," "FIRST FLOOR PLAN," "GROUND FLOOR PLAN," "MEZZANINE PLAN") and record level explicitly. If a sheet shows multiple levels (small buildings), record all of them. If the title is ambiguous, open the page and look for a level indicator in the title block.
+
+P2.6 — Handle enlarged plans and plan-match-lines. On large buildings, floor plans get split: "A-101 LEVEL 1 - AREA A," "A-102 LEVEL 1 - AREA B," with a key plan showing how they fit. Treat each as a separate floor_plan sheet tagged with the same level and an area field. The key plan sheet itself is usually titled "KEY PLAN" or "OVERALL PLAN" and tells you how many area sheets to expect — use it as a checklist. If you've processed three area sheets but the key plan shows four areas, you're missing one.
+
+P2.7 — Capture sheet revision status. Record the revision number/date from each sheet's title block for every sheet you're using. If you see a superseded sheet (lower revision than another copy in the set), use only the latest. Flag any case where two sheets have the same number with different revisions.
+
+P2.8 — Output a reference-sheet manifest before proceeding to Phase 3. Before doing any extraction, emit:
+
+Signage schedule: A-702 (PDF pg 84), rev 3, 2026-02-14
+Life safety:     A-003 (PDF pg 7), rev 2, 2026-01-20
+Floor plans:     A-101 Level 1 Area A (PDF pg 12)
+                 A-102 Level 1 Area B (PDF pg 13)
+                 A-201 Level 2 (PDF pg 20)
+                 A-301 Mezzanine (PDF pg 28)
+General notes:   A-000 (PDF pg 4)
+Accessibility:   G-002 (PDF pg 2)
+This manifest is the user's first checkpoint. If they spot a missing sheet, they catch it before any takeoff work starts — which on a 100+ page set saves hours.
+
+What I'd also add as a separate principle
+There should be an explicit rule that says: never assume a sheet exists by convention. If you need a signage schedule and none of the detection passes find one, ask — do not fabricate one or apply generic rules blindly. Phase 3 currently reads the signage sheet to build the plaque type list; if that sheet doesn't exist and no one notices, the entire downstream takeoff is running on the AI's assumptions about what plaque types "should" be, which is exactly the failure mode these kinds of tools are rightly criticized for.
+
+Bottom line
+The current Phase 2 is roughly three sentences. For a 100+ page set it needs to be a proper discovery phase with (1) an index-first pass, (2) bucketed classification with priority-ordered rules and negative keywords, (3) page-level verification of high-value sheets, (4) explicit fallback paths for missing signage schedules, (5) explicit level mapping, (6) handling for area-split plans, (7) revision handling, and (8) a manifest checkpoint before downstream phases run.
+
+Want me to produce a revised Phase 2 section you could drop into the prompt verbatim? I can also take a pass at the whole prompt with these kinds of robustness upgrades applied throughout (the same critique applies to Phases 3–6).
+
+3rd Floor Union at Tower Dist (1).pdf
+pdf
+
+Church Plan one page.pdf
+pdf
+
+Church Plan Tests.pdf
+pdf
+
+floor plans.pdf
+pdf
+
+Floor PlansDtc_1.pdf
+pdf
+
+look at these plans and let me know the rules for phase 2 and also document index in pdf can be bookmarks not all pdfs have coversheet or index
+
+Apr 16
+You're right, and looking at these five uploads confirms it. Let me walk through what each one actually shows about sheet discovery, then revise Phase 2 accordingly.
+
+What the uploaded plans actually look like
+1. 3rd_Floor_Union_at_Tower_Dist__1_.pdf — Sheet A1.3, "OVERALL THIRD FLOOR PLAN - ABC." Three separate buildings (A, B, C) on one sheet, each with its own room numbering scheme (3XX series in Building A, similar in B, 3XXC in Building C). No index. No cover. Just a single floor plan sheet pulled from a larger set.
+
+2. Church_Plan_one_page.pdf — Sheet A102, "MAIN LEVEL FLOOR PLAN." Single page. Occupant loads are embedded inside each room label on the plan itself (e.g., "WORSHIP 101, 2,201.25 sq ft, Occupancy Load: 315"). There is no separate life safety/code sheet — the code info is ON the floor plan. No index.
+
+3. Church_Plan_Tests.pdf — Westborough Public Library, 5 pages: A2.1 Code Plans, A3.1 Lower Level Plan, A3.2 Main Level Plan, A3.3 Upper Level & Attic, A3.4 Roof Plan. This one has a proper code sheet (A2.1) with occupancy schedules, exit capacity tables, and plumbing fixture counts. No drawing index — just 5 pages pulled from the set. Sheets number starts at A2.1 (not A001), so the index is somewhere before this excerpt.
+
+4. floor_plans.pdf — Brighton Willow Bend, Sheet A-111 "FIRST FLOOR PLAN - OVERALL." School with Areas A, B, C (key plan in title block shows match-line split). Lots of rooms, no code info on this sheet, no index.
+
+5. Floor_PlansDtc_1.pdf — Same A-111 sheet as #4, identical content.
+
+Key observations that break the original Phase 2
+None of these have a drawing index. The prompt's Phase 2 opener — "Read the drawing index on page 1" — would fail on every one of these inputs. You are correct that this is typical: users often upload only the sheets they need, not the whole set with the cover/index.
+"Cover sheet on page 1" is a wrong assumption. In all five uploads, page 1 is an actual plan sheet, not an index.
+Occupant loads can live in three different places:
+On a dedicated code sheet (Westborough A2.1)
+Inline on each room label on the floor plan (Living Stone Church A102)
+Nowhere in the uploaded excerpt, requiring the user to provide it (Brighton, Union at Tower)
+Sheet numbers don't map cleanly to levels. Westborough has A3.1 = Lower, A3.2 = Main, A3.3 = Upper. Brighton has A-111 = First Floor Overall with internal area splits. Union at Tower has A1.3 = Third Floor with three buildings side-by-side on one sheet.
+Bookmarks are the real table of contents. You're right. A native-PDF plan set exported from Revit or AutoCAD almost always has bookmarks (one per sheet). Those bookmarks give you sheet_number → sheet_title → page_number for free, often with better fidelity than the printed index page.
+Revised Phase 2
+Here's the replacement section. It's organized as a decision cascade — try the cheapest/most reliable method first, fall back down the list, and know when to stop and ask.
+
+Phase 2 (revised) — Locate and classify reference sheets
+The goal of Phase 2 is to produce a sheet manifest: a list of {sheet_number, sheet_title, pdf_page, bucket, level, revision} for every page in the uploaded file, with each page classified into one of these buckets:
+
+signage_schedule | life_safety | floor_plan | general_notes | millwork_interiors | accessibility | specifications | key_plan | other | ignore
+
+P2.1 — Discovery cascade for the table of contents. Try these in order; use the first one that succeeds:
+
+PDF bookmarks. Read the PDF's bookmark tree. If present, it almost always lists every sheet with the sheet number and title and maps to PDF page numbers. This is the most reliable source and should be tried first, before looking at any page content.
+Printed drawing index. Scan the first 5 pages AND the first page of each discipline section for a page titled "DRAWING INDEX," "SHEET INDEX," "LIST OF DRAWINGS," or "TABLE OF CONTENTS." The index is often on G-001, T-001, A-000, or A-001, but not always.
+Title block scraping. If neither bookmarks nor an index page exists, extract the sheet number and sheet title from the title block of every page (bottom-right corner on most sheets). Build the manifest from these. This is slower and fuzzier but works on any PDF.
+User excerpt flag. If the PDF is fewer than ~10 pages and has no bookmarks and no index, assume the user uploaded an excerpt, not a full set. Do not fabricate missing sheets. Proceed with what's provided and flag explicitly in the manifest output that key reference sheets may be missing.
+P2.2 — Bookmark-first manifest construction. When bookmarks exist:
+
+Bookmark label usually reads like A3.1 - LOWER LEVEL PLAN or A-111 FIRST FLOOR PLAN - OVERALL. Parse sheet number and title from this.
+Bookmarks may be nested (discipline → series → sheet). Flatten to a list.
+Cross-check by sampling 2–3 bookmarks against the actual page title block — bookmarks are occasionally stale after sheet reissues. If mismatch, fall back to title block scraping.
+P2.3 — Sheet classification rules. For each sheet in the manifest, apply these in priority order (first match wins):
+
+Priority	Bucket	Matches if title contains	Or sheet number pattern
+1	signage_schedule	"signage", "sign schedule", "plaque", "sign types"	—
+2	life_safety	"life safety", "egress", "code plan", "code compliance", "exiting", "occupant load"	—
+3	key_plan	"key plan", "overall key" (title-block key plans excluded)	—
+4	floor_plan	"floor plan", "level plan", "overall plan", "enlarged plan" AND NOT "reflected", "ceiling", "roof", "foundation", "demo", "slab", "framing"	A-1XX, A-2XX, A-3XX when titled as plans
+5	general_notes	"general notes", "abbreviations", "symbols", "mounting heights", "typical details"	A-000, A-001, G-series
+6	accessibility	"accessibility", "ADA", "MAAB", "CBC 11B", "barrier-free"	—
+7	millwork_interiors	"millwork", "casework", "interior elevations", "interior details"	A-7XX, A-8XX
+8	specifications	"specifications", "specs"	—
+9	ignore	"reflected ceiling", "roof plan", "foundation", "demolition", "site plan"	—
+10	other	—	—
+P2.4 — Handle missing code/life-safety sheets. If no sheet is classified as life_safety, do NOT assume occupant loads are unavailable. Check each floor plan page for inline occupant load annotations on room labels (as in the Living Stone Church example: "Occupancy Load: 315" printed beneath the room name). If found on one floor plan, assume the same convention applies to all floor plans in the set and extract occupant loads directly from plan labels during Phase 4 instead of from a separate table.
+
+P2.5 — Handle missing signage schedules. Fallback search order (each of these is a real-world pattern worth checking):
+
+Sheet keynotes on floor plans referencing "see sign schedule on sheet XX"
+A schedule table on A-000 or general-notes sheets
+A schedule on an A-7XX millwork sheet
+Division 10 14 00 in the specifications
+If none of the above: stop and ask the user for the signage specification. Do not proceed into Phase 3 with a guessed plaque list. This is a hard stop, not a soft warning.
+P2.6 — Level assignment for floor plans. Do not infer level from sheet number alone. For each floor_plan sheet:
+
+Read the sheet title explicitly — "LOWER LEVEL," "MAIN LEVEL," "FIRST FLOOR," "THIRD FLOOR," "MEZZANINE"
+Normalize to a level identifier (e.g., B1, L1, L2, L3, MEZZ)
+If the same title appears on multiple sheets (e.g., "FIRST FLOOR - AREA A" and "FIRST FLOOR - AREA B"), assign the same level and add an area field
+If a single sheet covers multiple buildings side-by-side (as in Union at Tower A1.3 with Buildings A/B/C on one page), create one manifest entry per building, each with its own building field and shared pdf_page
+P2.7 — Handle match-lined plans. When a floor plan is split across sheets with match lines (Brighton's Area A/B/C), look for a key plan sheet that shows how they fit together. The key plan is typically titled "KEY PLAN" and may be on its own sheet OR embedded as a small diagram in the title block of each area sheet (as in Brighton A-111). Use it as a completeness checklist: if the key plan shows 4 areas but you only have 3 area sheets in the manifest, flag the missing one.
+
+P2.8 — Revision handling. For each sheet, capture the revision number and date from the title block's revision schedule (typically labeled "REVISIONS" with columns Mark/Date/Description). If two manifest entries have the same sheet number but different revisions, keep the latest and flag the duplicate.
+
+P2.9 — Output the manifest before proceeding. Emit the manifest as a structured table AND a summary. The summary must state:
+
+Total pages processed
+Count in each bucket
+Which levels have floor_plan coverage
+Whether a signage_schedule was found, and if not, what fallbacks were attempted
+Whether a life_safety sheet was found, and if not, whether inline occupant load data was detected
+Whether the upload appears to be a full set or an excerpt
+If any of the following are true, stop and ask the user rather than proceeding to Phase 3:
+
+No signage schedule found and all P2.5 fallbacks exhausted
+No floor_plan sheets found at all
+No occupant load data in either a code sheet or inline on floor plans (and the scope requires capacity or egress signs)
+The manifest contains fewer than one floor plan per level the project is known to have (requires knowing level count — ask user if unclear)
+What this would produce on your five uploads
+Upload	P2.1 result	Manifest
+Union at Tower A1.3	Excerpt, no bookmarks/index	1 sheet, bucket=floor_plan, level=L3, buildings=[A,B,C]. Flag: no code sheet, no signage schedule, request from user.
+Church A102 (one page)	Excerpt, no bookmarks/index	1 sheet, bucket=floor_plan, level=Main, inline occupant loads detected ✓. Flag: no signage schedule, request from user.
+Church_Plan_Tests (5 pg)	Excerpt, no index in excerpt	5 sheets: A2.1=life_safety ✓, A3.1/3.2/3.3=floor_plan (levels Lower/Main/Upper), A3.4=ignore (roof). Flag: no signage schedule, request from user.
+Brighton A-111	Excerpt, single sheet	1 sheet, bucket=floor_plan, level=L1, areas=[A,B,C] per title-block key plan. Flag: no code sheet, no signage schedule, areas B & C sheets missing — request from user.
+Floor_PlansDtc_1	Duplicate of Brighton	Same as above.
+Notice that four of five uploads would correctly hit a "stop and ask the user" gate rather than silently proceeding into Phase 3 with fabricated assumptions. That's the correct behavior for excerpted uploads, and it's the behavior the original Phase 2 would not have produced.
+
+Want me to write this up as a drop-in replacement for the Phase 2 section of your system prompt (i.e., formatted to slot directly into the existing v1.0 document), or would you rather I keep going and revise Phase 3 next? The same kind of robustness gaps exist there too — particularly around extracting the plaque schedule from non-standard layouts.
+
+update the replit prompt for this
+
+Apr 16
+I'll produce a drop-in replacement for the Phase 2 section that you can paste directly into your system prompt in Replit. Since the original is a single coherent document, I'll give you the revised Phase 2 plus the small edits needed in Phase 1 and the Workflow intro to stay consistent.
+
+Let me put this in a file so it's easy to copy/paste into Replit.
+
+
+Created a file, ran a command, read a file
+Created a file, ran a command, read a file
+Done. The file is a drop-in patch to your existing system prompt — it tells you exactly which blocks to find and what to replace them with, rather than giving you a full rewritten prompt you'd have to diff yourself.
+
+What's in it
+Five edits to your v1.0 prompt:
+
+Version bump — v1.0 → v1.1
+Phase 1 — adds the full_set vs excerpt scope determination up front, and explicitly moves index discovery out of Phase 1
+Phase 2 — full replacement with the 4-step discovery cascade (bookmarks → index page → title block scrape → excerpt handling), priority-ordered classification with negative keywords, inline-occupant-load handling for plans like the Living Stone Church, match-line/key-plan area coverage checks, revision handling, required manifest output, and explicit hard-stop conditions differentiated for full sets vs. excerpts
+"When you need the user's help" — adds a line referencing the new P2.9 stop conditions
+"What NOT to do" — adds three new prohibitions: don't guess occupant loads from area, don't assume an index page exists, don't fabricate missing sheets
+To apply it in Replit
+Open your prompt file in the Repl, use the find/replace function, and work through the five edits in order. Each one shows the exact text to find and the exact text to replace it with, so there's no ambiguity. After you're done, commit and push — if you have Claude Code pointed at the same repo, it'll pick up the new prompt on next session.
+
+Want me to keep going on Phase 3 next? The plaque schedule extraction has similar robustness gaps — especially around what to do when the schedule is split across two pages, uses nonstandard column headers, or lives in the specs rather than on a drawing sheet.
+
+
+Signtakeoff phase2 update
+Document · MD 
+this phase in the replit app is called step 2
+
+Apr 16
+Got it — your Replit app uses "Step 2" instead of "Phase 2." Let me regenerate the file with that terminology throughout so it matches your app's vocabulary and drops in cleanly.
+
+
+Created a file, read a file
+Created a file, read a file
+Updated. Every reference to "Phase 2" is now "Step 2" (and "Phase 1" is "Step 1"), and the sub-section numbering uses 2.1, 2.2, …, 2.9 instead of P2.1, P2.2, ….
+
+One thing to flag: your existing prompt currently uses "Phase" for Steps 3 through 6 as well (Phase 3 — Extract the plaque schedule, Phase 4 — Build room inventory, etc.). Once you apply these edits, the prompt will mix "Step 1/Step 2" with "Phase 3/Phase 4/Phase 5/Phase 6." That's fine to leave for now, but when you get a chance, do a find-and-replace on "Phase 3" → "Step 3," "Phase 4" → "Step 4," etc., so the whole prompt uses consistent terminology. I noted that at the top of the file and again at the bottom.
+
+Ready to move on to Step 3 whenever you want.
+
+
+Signtakeoff step2 update
+Document · MD 
+
+
+
+
+Claude is AI and can make mistakes. Please double-check responses.
+Artifacts
+
+Signtakeoff step2 update
+Document · MD 
+
+Signtakeoff phase2 update
+Document · MD 
+Content
+3rd Floor Union at Tower Dist (1).pdf
+pdf
+
+Church Plan one page.pdf
+pdf
+
+Church Plan Tests.pdf
+pdf
+
+floor plans.pdf
+pdf
+
+Floor PlansDtc_1.pdf
+pdf
+
+
+Content is user-generated and unverified. SignTakeoff System Prompt v1.0 You are an expert sign estimator specialized in reading architectural construction documents and producing interior signage takeoffs. You have deep knowledge of ADA 2010 Standards (§216, §703), IBC egress requirements (Tables
+
+pasted
