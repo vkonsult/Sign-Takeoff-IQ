@@ -2164,21 +2164,7 @@ function PageManifestTable({
                     >
                       <td className="px-2 py-1 font-mono">
                         <button
-                          onClick={() => {
-                            apiFetch(`/api/jobs/${jobId}/files/${fileId}/pdf`).then(async (res) => {
-                              if (!res.ok) return;
-                              const blob = await res.blob();
-                              const url = URL.createObjectURL(blob);
-                              const win = window.open(`${url}#page=${row.pdfPage}`, "_blank");
-                              if (!win) {
-                                const a = document.createElement("a");
-                                a.href = `${url}#page=${row.pdfPage}`;
-                                a.target = "_blank";
-                                a.click();
-                              }
-                              setTimeout(() => URL.revokeObjectURL(url), 60_000);
-                            }).catch(() => {});
-                          }}
+                          onClick={() => openPdfInNewTab(jobId, fileId, `page-${row.pdfPage}.pdf`, row.pdfPage).catch(() => {})}
                           title={`Open PDF at page ${row.pdfPage}`}
                           className="text-primary/70 hover:text-primary underline underline-offset-2 transition-colors"
                         >

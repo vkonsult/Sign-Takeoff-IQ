@@ -17,12 +17,14 @@ export function isGuestMode(): boolean {
 }
 
 /** Fetches the PDF with proper auth headers and opens it in a new browser tab as a blob URL.
- *  Works for both Clerk-authenticated users and guest-token sessions. */
-export async function openPdfInNewTab(jobId: string, fileId: string, originalName: string): Promise<void> {
+ *  Works for both Clerk-authenticated users and guest-token sessions.
+ *  Pass an optional `page` number to jump directly to that page (appends `#page=N`). */
+export async function openPdfInNewTab(jobId: string, fileId: string, originalName: string, page?: number): Promise<void> {
   const res = await apiFetch(`/api/jobs/${jobId}/files/${fileId}/pdf`);
   if (!res.ok) throw new Error(`Failed to load PDF: ${res.status}`);
   const blob = await res.blob();
-  const url = URL.createObjectURL(blob);
+  const blobUrl = URL.createObjectURL(blob);
+  const url = page != null ? `${blobUrl}#page=${page}` : blobUrl;
   const win = window.open(url, "_blank");
   if (!win) {
     // Pop-up blocked — fall back to creating a temporary <a> click
@@ -33,7 +35,7 @@ export async function openPdfInNewTab(jobId: string, fileId: string, originalNam
     a.click();
   }
   // Revoke after 60 s to free memory — the tab will have loaded by then
-  setTimeout(() => URL.revokeObjectURL(url), 60_000);
+  setTimeout(() => URL.revokeObjectURL(blobUrl), 60_000);
 }
 
 export async function apiFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
