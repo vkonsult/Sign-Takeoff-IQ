@@ -1,5 +1,12 @@
 import { describe, it, expect } from "vitest";
-import { classifyPageFromPhrases, type PdfPhrase } from "./pdf-words";
+import {
+  classifyPageFromPhrases,
+  extractFloorPlanTextCandidates,
+  TABLE_COL_MIN_PHRASES,
+  TABLE_COL_X_TOLERANCE,
+  type PdfPhrase,
+  type PageWords,
+} from "./pdf-words";
 
 /**
  * Helper: create a PdfPhrase centred at (cx, cy) in title-block zone.
@@ -113,5 +120,102 @@ describe("classifyPageFromPhrases — exclusion veto scope (task-124 fix)", () =
     expect(result.type).toBe("floor_plan");
     expect(result.titlePhrases).toContain(title);
     expect(result.titlePhrases).not.toContain(incidental);
+  });
+});
+
+// ── extractFloorPlanTextCandidates — table-column exclusion heuristic ─────────
+
+/**
+ * Build a PageWords payload with a synthetic table column and scattered room labels.
+ *
+ * Table column: normalised x-centre = 0.50, placed in the drawing area (cx ≤ 0.75)
+ * so it survives the title-block pre-filter and reaches the column detector.
+ * Row y-centres are 0.10 apart in normalised units (80 pts with pageHeight=800),
+ * producing perfectly uniform spacing that satisfies the regularity check.
+ *
+ * Room labels sit in the left quarter of the page at varied x positions.
+ */
+function makePageWithTableAndRoomLabels(): PageWords {
+  const pageWidth = 1000;
+  const pageHeight = 800;
+
+  // 8 rows — safely above TABLE_COL_MIN_PHRASES (currently 6)
+  const tableRowCount = TABLE_COL_MIN_PHRASES + 2;
+
+  // Normalised x-centre 0.50; bucket = round(0.50 / TABLE_COL_X_TOLERANCE) * TABLE_COL_X_TOLERANCE = 0.50
+  const tableCx = Math.round(0.50 / TABLE_COL_X_TOLERANCE) * TABLE_COL_X_TOLERANCE;
+  const half = 0.03; // half-width of each phrase bounding box in normalised units
+
+  const tablePhrases: PdfPhrase[] = Array.from({ length: tableRowCount }, (_, i) => {
+    // y-centres: 0.10, 0.20, … — uniform 0.10 spacing (80 pts) satisfies TABLE_COL_Y_SPACING_MAX
+    const cy = 0.10 + i * 0.10;
+    return {
+      text: `SIGN TYPE ${i + 1}`,
+      x0: tableCx - half,
+      x1: tableCx + half,
+      y0: cy - 0.03,
+      y1: cy + 0.03,
+    };
+  });
+
+  // A handful of room labels at irregular x positions in the left half of the page,
+  // outside the title-block zone (centre must not be in bottom-right corner).
+  const roomPhrases: PdfPhrase[] = [
+    { text: "OFFICE", x0: 0.10, x1: 0.20, y0: 0.20, y1: 0.26 },
+    { text: "CONFERENCE ROOM", x0: 0.25, x1: 0.45, y0: 0.40, y1: 0.46 },
+    { text: "RECEPTION", x0: 0.05, x1: 0.20, y0: 0.60, y1: 0.66 },
+  ];
+
+  return {
+    pageWidth,
+    pageHeight,
+    phrases: [...tablePhrases, ...roomPhrases],
+  };
+}
+
+describe("extractFloorPlanTextCandidates — embedded table-column exclusion", () => {
+  it("excludes table-column phrases while preserving room labels", () => {
+    const pw = makePageWithTableAndRoomLabels();
+    const candidates = extractFloorPlanTextCandidates(pw, 1);
+
+    const texts = candidates.map((c) => c.text);
+
+    // Room labels must be present
+    expect(texts).toContain("OFFICE");
+    expect(texts).toContain("CONFERENCE ROOM");
+    expect(texts).toContain("RECEPTION");
+
+    // Table column phrases must be absent
+    for (let i = 1; i <= TABLE_COL_MIN_PHRASES + 2; i++) {
+      expect(texts).not.toContain(`SIGN TYPE ${i}`);
+    }
+  });
+
+  it("does not exclude a column with fewer than TABLE_COL_MIN_PHRASES phrases", () => {
+    const pageWidth = 1000;
+    const pageHeight = 800;
+
+    // Only 4 phrases in the column — below the threshold of 6.
+    // Centre at cx=0.30 so the title-block-zone filter (cx > 0.75 or
+    // bottom-right quadrant) does not remove them before the column check.
+    const shortColumnPhrases: PdfPhrase[] = Array.from({ length: TABLE_COL_MIN_PHRASES - 2 }, (_, i) => {
+      const cy = 0.10 + i * 0.10;
+      return {
+        text: `LEGEND ITEM ${i + 1}`,
+        x0: 0.27,
+        x1: 0.33,
+        y0: cy - 0.03,
+        y1: cy + 0.03,
+      };
+    });
+
+    const pw: PageWords = { pageWidth, pageHeight, phrases: shortColumnPhrases };
+    const candidates = extractFloorPlanTextCandidates(pw, 1);
+    const texts = candidates.map((c) => c.text);
+
+    // All four legend items should survive (column too short to be excluded)
+    for (let i = 1; i <= TABLE_COL_MIN_PHRASES - 2; i++) {
+      expect(texts).toContain(`LEGEND ITEM ${i}`);
+    }
   });
 });

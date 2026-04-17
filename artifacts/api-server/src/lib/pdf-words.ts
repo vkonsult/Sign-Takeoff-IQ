@@ -1022,6 +1022,54 @@ export async function extractPdfMetadata(
 
 // ── Floor plan all-text candidate extractor ───────────────────────────────────
 
+// ── Table-column detection thresholds ────────────────────────────────────────
+// These constants govern the embedded-table-column heuristic inside
+// extractFloorPlanTextCandidates.  They are extracted here (rather than kept
+// as inline literals) so they are easy to locate, understand, and tune when a
+// new drawing layout causes false-positives or false-negatives.
+//
+// Known limitations:
+//   • Rotated tables – the heuristic operates on normalised viewport-space
+//     coordinates.  A 90°-rotated table's "columns" become rows in viewport
+//     space, so the column detector may miss them entirely.
+//   • Condensed / narrow-row tables – if row heights are very small the
+//     y-spacing between centres can fall below TABLE_COL_Y_SPACING_MAX even
+//     for irregular room label clusters, causing real labels to be excluded.
+//   • Legend boxes with irregular spacing – if a legend's row spacing varies
+//     by more than TABLE_COL_Y_SPACING_MAX the heuristic correctly leaves it
+//     alone, but a legend with coincidentally regular spacing (e.g. a uniform
+//     grid) may be incorrectly suppressed.
+//
+// Tuning guidance:
+//   • Lower TABLE_COL_MIN_PHRASES to catch short tables (risk: more false positives).
+//   • Widen TABLE_COL_X_TOLERANCE to tolerate more x-jitter (risk: merges nearby columns).
+//   • Increase TABLE_COL_Y_SPACING_MAX to tolerate less-uniform spacing (risk: suppresses irregular room clusters).
+
+/**
+ * Minimum number of phrases that must share an x-centre bucket before a
+ * vertical cluster is treated as a table column.  Raising this reduces
+ * false-positives (real room labels incorrectly excluded) but risks missing
+ * short embedded tables.
+ */
+export const TABLE_COL_MIN_PHRASES = 6;
+
+/**
+ * Width of each x-centre bucket expressed as a fraction of page width (0–1).
+ * Phrases whose normalised x-centre rounds to the same bucket are considered
+ * to share a column.  A value of 0.02 means ±1% of page width is tolerated.
+ * Increase to handle drawings where column text is horizontally jittered;
+ * decrease to avoid merging two adjacent but distinct columns.
+ */
+export const TABLE_COL_X_TOLERANCE = 0.02;
+
+/**
+ * Maximum allowable deviation (in viewport points) of any consecutive row gap
+ * from the median row gap within a candidate column.  A column is considered
+ * "regular" (and thus table-like) only when ALL gaps satisfy this criterion.
+ * Increase to accept more irregular spacing; decrease to be more conservative.
+ */
+export const TABLE_COL_Y_SPACING_MAX = 15;
+
 /**
  * A candidate room label extracted from a floor plan page.
  * Coordinates are normalized to [0, 1] with origin at top-left.
@@ -1049,6 +1097,14 @@ export interface RoomCandidate {
  *      so that drawing title text is not offered as room candidates.
  *   7. Adjacent short tokens within a proximity threshold are grouped into a
  *      single multi-word candidate (e.g. "ART" "ROOM" → "ART ROOM").
+ *   8. Embedded schedule-table columns are excluded so that table cells do not
+ *      become spurious marker targets.  The detection heuristic (see
+ *      TABLE_COL_MIN_PHRASES / TABLE_COL_X_TOLERANCE / TABLE_COL_Y_SPACING_MAX)
+ *      looks for vertical clusters of 6+ phrases with closely-aligned x-centres
+ *      and uniform row spacing.  It works well for standard tabular schedules
+ *      but has known limitations with rotated tables, condensed narrow-row
+ *      tables, and legend boxes whose row spacing happens to be uniform — see
+ *      the constant declarations above for details and tuning guidance.
  *
  * @param pw                 PageWords from extractPagePhrases
  * @param pageNum            1-indexed page number (stored in results)
@@ -1069,16 +1125,8 @@ export function extractFloorPlanTextCandidates(
   // Such tables produce a dense grid of text that, if included, causes markers to
   // snap to table cells instead of real room labels.
   //
-  // Heuristic: identify vertical columns of 6+ phrases whose x-centres cluster
-  // within 2% of page width AND whose consecutive y-spacings are regular (median
-  // spacing ± 15 pts). Phrases in these columns are excluded from candidates.
-  //
-  // The heuristic targets grid-like tabular layouts; irregular room label clusters
-  // (which don't have uniform y-spacing) are not affected.
-  const TABLE_COL_MIN_PHRASES = 6;
-  const TABLE_COL_X_TOLERANCE = 0.02;   // normalised page-width units
-  const TABLE_COL_Y_SPACING_MAX = 15;   // pts — max deviation from median row gap
-
+  // Uses the module-level TABLE_COL_* constants — see their declarations above
+  // for threshold values, rationale, known limitations, and tuning guidance.
   const tableExcludedPhrases = new Set<PdfPhrase>();
 
   // Group phrases by similar normalised x-centre
