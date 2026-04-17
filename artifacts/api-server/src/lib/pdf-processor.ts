@@ -455,9 +455,6 @@ export async function runPdfProcessor(jobId: string): Promise<void> {
                 lifeSafetyPageNum,
               );
 
-              // Collect for Phase 6 verification wiring
-              allFileRoomInventories.push(fileRoomInventory);
-
               recordStep(
                 `room_inventory_${file.id}`,
                 filesToProcess.length > 1
@@ -593,7 +590,12 @@ export async function runPdfProcessor(jobId: string): Promise<void> {
 
             const ruleResult = applySignRules(fileRoomInventory, plaqueTableForFile, jobId);
 
-            // Collect for Phase 6 verification wiring
+            // Collect for Phase 6 verification wiring.
+            // Push fileRoomInventory here (post-AI-enrichment) so the verifier
+            // sees the same room flags that the rule engine acted on.  The earlier
+            // push that happened before AI enrichment has been removed so both
+            // arrays are always in sync.
+            allFileRoomInventories.push(fileRoomInventory);
             allEngineRuleResults.push(ruleResult);
 
             // Convert SignAssignments → extractedSignsTable rows
