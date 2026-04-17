@@ -98,6 +98,18 @@ const TITLE_BLOCK_Y_THRESHOLD = 0.82;
 
 // ── Flag derivation ───────────────────────────────────────────────────────────
 
+/**
+ * Returns true if `keyword` appears as a complete word (or phrase) within `text`.
+ * Uses regex word-boundary anchors so "WORKSHOP" in "WORKSHOP STORAGE" matches
+ * but "WORKSHOP" in "WORKSHOPPING" does not.
+ * Handles hyphenated keywords (e.g. "CO-WORKING") correctly because hyphens are
+ * non-word characters and \b anchors naturally at the hyphen boundary.
+ */
+function includesWholeWord(text: string, keyword: string): boolean {
+  const escaped = keyword.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`\\b${escaped}\\b`, "i").test(text);
+}
+
 export function deriveFlags(
   roomName: string,
   occupantLoad: number | null,
@@ -114,7 +126,7 @@ export function deriveFlags(
   const isMepUnoccupied =
     MEP_KEYWORDS.some((k) => u.includes(k)) &&
     (occupantLoad === null || occupantLoad === 0);
-  const isVariableUse = VARIABLE_USE_KEYWORDS.some((k) => u.includes(k));
+  const isVariableUse = VARIABLE_USE_KEYWORDS.some((k) => includesWholeWord(u, k)) && !isMepUnoccupied;
   const isPublicFacing = PUBLIC_FACING_KEYWORDS.some((k) => u.includes(k));
   const isStaffOnly = STAFF_KEYWORDS.some((k) => u.includes(k));
   const isAssembly =

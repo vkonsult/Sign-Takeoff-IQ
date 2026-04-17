@@ -200,6 +200,49 @@ describe("classifyRoom — assembly / variable use flags", () => {
   });
 });
 
+describe("classifyRoom — collaboration/breakout room detection (Task 457)", () => {
+  it("COLLABORATION ROOM → isVariableUse=true", () => {
+    const f = classifyRoom("COLLABORATION ROOM", "L1", "201");
+    expect(f.isVariableUse).toBe(true);
+    expect(f.isMepUnoccupied).toBe(false);
+  });
+
+  it("BREAKOUT ROOM → isVariableUse=true", () => {
+    const f = classifyRoom("BREAKOUT ROOM", "L1", "202");
+    expect(f.isVariableUse).toBe(true);
+    expect(f.isMepUnoccupied).toBe(false);
+  });
+
+  it("HUDDLE ROOM → isVariableUse=true", () => {
+    const f = classifyRoom("HUDDLE ROOM", "L1", "203");
+    expect(f.isVariableUse).toBe(true);
+  });
+
+  it("WORKSHOP STORAGE → isVariableUse=false (storage qualifier overrides workshop keyword)", () => {
+    const f = classifyRoom("WORKSHOP STORAGE", "L1", "204");
+    expect(f.isVariableUse).toBe(false);
+    // storage is not in MEP_TOKENS (to avoid R15 regression); it is in STORAGE_QUALIFIER_TOKENS
+    expect(f.isMepUnoccupied).toBe(false);
+  });
+
+  it("COLLABORATION STORAGE → isVariableUse=false (storage qualifier overrides collaboration keyword)", () => {
+    const f = classifyRoom("COLLABORATION STORAGE", "L1", "205");
+    expect(f.isVariableUse).toBe(false);
+    expect(f.isMepUnoccupied).toBe(false);
+  });
+
+  it("COLLAB CLOSET → isVariableUse=false (closet qualifier overrides collab keyword)", () => {
+    const f = classifyRoom("COLLAB CLOSET", "L1", "206");
+    expect(f.isVariableUse).toBe(false);
+    expect(f.isMepUnoccupied).toBe(false);
+  });
+
+  it("WORKSHOP → isVariableUse=true (standalone workshop, no storage qualifier)", () => {
+    const f = classifyRoom("WORKSHOP", "L1", "207");
+    expect(f.isVariableUse).toBe(true);
+  });
+});
+
 describe("classifyRoom — mezzanine flag", () => {
   it("room on MEZZ level → isMezzanine", () => {
     const f = classifyRoom("STORAGE", "MEZZ", null);

@@ -213,6 +213,51 @@ describe("deriveFlags — isMepUnoccupied", () => {
   });
 });
 
+describe("deriveFlags — collaboration/breakout room detection (Task 457)", () => {
+  it("WORKSHOP STORAGE → isVariableUse=false, isMepUnoccupied=true", () => {
+    const flags = deriveFlags("WORKSHOP STORAGE", null, null);
+    expect(flags.isVariableUse).toBe(false);
+    expect(flags.isMepUnoccupied).toBe(true);
+  });
+
+  it("COLLABORATION ROOM → isVariableUse=true, isMepUnoccupied=false", () => {
+    const flags = deriveFlags("COLLABORATION ROOM", null, null);
+    expect(flags.isVariableUse).toBe(true);
+    expect(flags.isMepUnoccupied).toBe(false);
+  });
+
+  it("WORKSHOP → isVariableUse=true (no storage qualifier)", () => {
+    const flags = deriveFlags("WORKSHOP", null, null);
+    expect(flags.isVariableUse).toBe(true);
+  });
+
+  it("BREAKOUT CLOSET → isVariableUse=false (storage type overrides collaboration)", () => {
+    const flags = deriveFlags("BREAKOUT CLOSET", null, null);
+    expect(flags.isVariableUse).toBe(false);
+    expect(flags.isMepUnoccupied).toBe(true);
+  });
+
+  it("COLLAB STORAGE → isVariableUse=false", () => {
+    const flags = deriveFlags("COLLAB STORAGE", null, null);
+    expect(flags.isVariableUse).toBe(false);
+  });
+
+  it("HUDDLE ROOM → isVariableUse=true", () => {
+    const flags = deriveFlags("HUDDLE ROOM", null, null);
+    expect(flags.isVariableUse).toBe(true);
+  });
+
+  it("WORKSHOPPING → isVariableUse=false (partial word, whole-word matching required)", () => {
+    const flags = deriveFlags("WORKSHOPPING", null, null);
+    expect(flags.isVariableUse).toBe(false);
+  });
+
+  it("COLLABORATIVE SPACE → isVariableUse=true", () => {
+    const flags = deriveFlags("COLLABORATIVE SPACE", null, null);
+    expect(flags.isVariableUse).toBe(true);
+  });
+});
+
 // ── parseSlashLabel ───────────────────────────────────────────────────────────
 
 describe("parseSlashLabel — room label parsing", () => {

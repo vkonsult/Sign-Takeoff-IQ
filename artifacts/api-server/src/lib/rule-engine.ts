@@ -196,6 +196,16 @@ const MEP_TOKENS = new Set([
   "boiler", "chiller", "generator", "switchgear", "transformer", "pump",
   "cooling", "hvac", "sprinkler", "fire", "ahu", "air", "handler",
 ]);
+/**
+ * Storage/utility qualifier words that, when present alongside a collaboration
+ * keyword, indicate the room is a storage or service space rather than a true
+ * variable-use room (e.g. "Workshop Storage", "Collab Closet").
+ * These are intentionally kept separate from MEP_TOKENS to avoid reclassifying
+ * plain storage rooms as MEP-unoccupied, which would trigger the R15 mezzanine veto.
+ */
+const STORAGE_QUALIFIER_TOKENS = new Set([
+  "storage", "storeroom", "closet", "supply", "supplies", "janitor", "jan",
+]);
 const VARIABLE_USE_TOKENS = new Set([
   "training", "multipurpose", "multi-purpose", "flex", "flexible",
   "adaptable", "convertible", "assembly", "conference", "seminar",
@@ -310,7 +320,11 @@ export function classifyRoom(
     lower.includes("mezz");
 
   const isAssembly = hasToken(ASSEMBLY_TOKENS);
-  const isVariableUse = hasToken(VARIABLE_USE_TOKENS) && !isAssembly;
+  const isVariableUse =
+    hasToken(VARIABLE_USE_TOKENS) &&
+    !isAssembly &&
+    !isMepUnoccupied &&
+    !hasToken(STORAGE_QUALIFIER_TOKENS);
 
   // isOccupied: false for MEP/unoccupied, vehicle bays, and explicitly excluded rooms
   const isOccupied = !isMepUnoccupied && !isVehicleBay;
