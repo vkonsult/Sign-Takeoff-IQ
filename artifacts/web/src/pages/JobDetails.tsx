@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, useCallback, Fragment } from "react";
 import { useRoute, useSearch, useLocation } from "wouter";
+import { parseTabParam } from "@/lib/tab-param";
 import { useQueryClient } from "@tanstack/react-query";
 import { AppShell } from "@/components/layout/Shell";
 import { apiFetch, openPdfInNewTab } from "@/lib/apiClient";
@@ -1336,14 +1337,6 @@ function VerificationPanel({ verificationStep }: {
       </div>
     </div>
   );
-}
-
-function parseTabParam(search: string): "table" | "sheets" | "summary" | "floorplans" | "signpages" | "specs" | "timeline" | "coords" | "ai_scans" | "rooms" | "verification" | null {
-  const p = new URLSearchParams(search);
-  const t = p.get("tab");
-  if (t === "signs") return "table";
-  const valid = ["table", "sheets", "summary", "floorplans", "signpages", "specs", "timeline", "coords", "ai_scans", "rooms", "verification"] as const;
-  return (valid as readonly string[]).includes(t ?? "") ? (t as ReturnType<typeof parseTabParam>) : null;
 }
 
 export default function JobDetails() {
