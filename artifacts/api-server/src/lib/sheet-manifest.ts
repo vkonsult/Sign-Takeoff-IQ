@@ -87,18 +87,28 @@ const KEY_PLAN_PHRASES = ["key plan", "overall key"];
 
 /**
  * Ignore bucket — MEP, structural, and other non-architectural discipline sheets.
- * These use FLOOR_PLAN_EXCLUSION_PHRASES as a base plus explicit multi-word
- * identifiers that are safe to check anywhere on a page.
+ * Derived from FLOOR_PLAN_EXCLUSION_PHRASES (the canonical token list) plus
+ * explicit multi-word full-phrase forms that are safe to match anywhere on a
+ * page. Spreading the canonical list here means any new exclusion term added
+ * to FLOOR_PLAN_EXCLUSION_PHRASES is automatically picked up without a
+ * separate manual edit.
+ *
+ * Entries that belong to downstream buckets (general_notes at P6) are filtered
+ * out of the spread so those sheets are not swallowed by the ignore check at P4.
  */
 const IGNORE_PHRASES = [
+  ...FLOOR_PLAN_EXCLUSION_PHRASES.filter(
+    // "general notes" and "abbreviation" belong to the general_notes bucket (P6)
+    // and must not be caught here at P4.
+    (p) => p !== "general notes" && p !== "abbreviation"
+  ),
+  // Multi-word full-phrase forms (more targeted than the single-token base)
   "reflected ceiling",
   "roof plan",
-  "foundation",
   "demolition plan",
   "site plan",
   "framing plan",
   "structural plan",
-  "rcp",
   "mechanical plan",
   "electrical plan",
   "plumbing plan",
