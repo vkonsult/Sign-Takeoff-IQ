@@ -107,9 +107,12 @@ function getClassificationLabel(details: Record<string, unknown> | undefined): s
  * Known per-file step base names that belong to the extraction phase.
  * Gating to this set prevents future non-extraction UUID-suffixed steps
  * from being incorrectly folded into the extraction breakdown.
+ * Includes both the new `sheet_manifest` prefix and the legacy
+ * `phase-2-classification` key emitted by older backend versions.
  */
 const EXTRACTION_STEP_PREFIXES = new Set([
   "sheet_manifest",
+  "phase-2-classification",
   "text_extraction",
   "sign_schedule_extract",
 ]);
@@ -148,9 +151,11 @@ function buildFileSummaries(allSteps: ProcessingStep[]): FileSummary[] {
     const textStep = steps.find((s) => s.step.startsWith("text_extraction_"));
     if (textStep?.details?.pages != null) pageCount = Number(textStep.details.pages);
 
-    // Classification comes from the sheet_manifest_* step (floorPlan / signSchedule counts)
+    // Classification comes from the sheet_manifest_* or legacy phase-2-classification_* step
     let classificationLabel: string | null = null;
-    const manifestStep = steps.find((s) => s.step.startsWith("sheet_manifest_"));
+    const manifestStep = steps.find(
+      (s) => s.step.startsWith("sheet_manifest_") || s.step.startsWith("phase-2-classification_")
+    );
     if (manifestStep?.details) classificationLabel = getClassificationLabel(manifestStep.details);
 
     // Error / skip state — check all per-file steps for this file
@@ -628,7 +633,7 @@ function PhaseSection({ group, maxMs, defaultOpen, extractionFileSummaries, isSl
       </button>
       {open && (
         <div className="px-4 py-1 divide-y divide-border/30">
-          {group.steps.map((step) => (
+          {group.steps.length > 0 ? group.steps.map((step) => (
             <TimelineStepRow
               key={step.step}
               step={step}
@@ -638,7 +643,11 @@ function PhaseSection({ group, maxMs, defaultOpen, extractionFileSummaries, isSl
               retryingFileId={retryingFileId}
               onNavigateToPage={onNavigateToPage}
             />
-          ))}
+          )) : (
+            <div className="py-3 text-xs text-muted-foreground/40 italic">
+              No steps recorded — phase not yet reached
+            </div>
+          )}
         </div>
       )}
     </div>
@@ -707,6 +716,12 @@ function ProcessingTimeline({ steps, isLoading, onRetryFile, retryingFileId, onN
 
   // Group steps: check step.phase first (backend-tagged), then resolvePhaseForStep fallback
   const phaseGroupMap = new Map<string, { label: string; steps: ProcessingStep[] }>();
+
+  // Pre-populate all 6 phases so they always appear in Step Details
+  for (const p of PIPELINE_PHASES) {
+    phaseGroupMap.set(`phase-${p.id}`, { label: `Phase ${p.id} — ${p.name}`, steps: [] });
+  }
+
   const legacySteps: ProcessingStep[] = [];
   for (const step of visibleSteps) {
     if (step.phase) {
@@ -717,8 +732,6 @@ function ProcessingTimeline({ steps, isLoading, onRetryFile, retryingFileId, onN
       const resolved = resolvePhaseForStep(step.step);
       if (resolved) {
         const key = `phase-${resolved.id}`;
-        const label = `Phase ${resolved.id} — ${resolved.name}`;
-        if (!phaseGroupMap.has(key)) phaseGroupMap.set(key, { label, steps: [] });
         phaseGroupMap.get(key)!.steps.push(step);
       } else {
         legacySteps.push(step);
@@ -733,6 +746,44 @@ function ProcessingTimeline({ steps, isLoading, onRetryFile, retryingFileId, onN
   if (legacySteps.length > 0) {
     groups.push({ phase: null, label: "Pipeline Steps", steps: legacySteps, totalMs: legacySteps.reduce((sum, s) => sum + (s.durationMs ?? 0), 0) });
   }
+
+  // ── AI call collection (from all steps, including per-file UUID-suffixed ones) ─
+  interface AiCall {
+    step: string;
+    label: string;
+    phase: string;
+    phaseName: string;
+    model: string | null;
+    inputTokens: number | null;
+    outputTokens: number | null;
+    durationMs: number;
+    failed: boolean;
+  }
+  const AI_KEY_PREFIXES = ["sheet_manifest_ai_fallback_", "room_inventory_ai_", "sign_schedule_extract_", "ai_fallback"];
+  const aiCalls: AiCall[] = steps
+    .filter((s) => {
+      const d = s.details ?? {};
+      const hasTokens = d.inputTokens != null || d.outputTokens != null;
+      const isAiKey = AI_KEY_PREFIXES.some((pfx) => s.step.startsWith(pfx));
+      return hasTokens || isAiKey;
+    })
+    .map((s): AiCall => {
+      const resolved = resolvePhaseForStep(s.step);
+      const phaseKey = s.phase ?? (resolved ? `phase-${resolved.id}` : "unknown");
+      const phaseName = resolved ? resolved.name : (s.phase ?? "Unknown");
+      const d = s.details ?? {};
+      return {
+        step: s.step,
+        label: s.label,
+        phase: phaseKey,
+        phaseName,
+        model: (d.model as string | null) ?? (d.modelName as string | null) ?? null,
+        inputTokens: d.inputTokens != null ? Number(d.inputTokens) : null,
+        outputTokens: d.outputTokens != null ? Number(d.outputTokens) : null,
+        durationMs: s.durationMs ?? 0,
+        failed: !!(d.error),
+      };
+    });
 
   const maxMs = Math.max(...visibleSteps.map((s) => s.durationMs ?? 0), 1);
 
@@ -1055,6 +1106,101 @@ function ProcessingTimeline({ steps, isLoading, onRetryFile, retryingFileId, onN
           })()}
         </div>
       )}
+
+      {/* ── AI Calls ─────────────────────────────────────────────────────────── */}
+      {(() => {
+        const totalInTokens = aiCalls.reduce((s, c) => s + (c.inputTokens ?? 0), 0);
+        const totalOutTokens = aiCalls.reduce((s, c) => s + (c.outputTokens ?? 0), 0);
+        const failedAiCalls = aiCalls.filter((c) => c.failed).length;
+        return (
+          <div>
+            <div className="text-[10px] font-display font-bold uppercase tracking-widest text-muted-foreground mb-3 flex items-center gap-2">
+              <Brain className="w-3 h-3" />
+              AI Calls
+              {aiCalls.length > 0 && (
+                <span className="font-mono font-normal normal-case tracking-normal text-muted-foreground/60">
+                  {aiCalls.length} call{aiCalls.length !== 1 ? "s" : ""}
+                  {totalInTokens > 0 && ` · ${totalInTokens.toLocaleString()} in / ${totalOutTokens.toLocaleString()} out tok`}
+                  {failedAiCalls > 0 && (
+                    <span className="ml-2 text-red-400">{failedAiCalls} failed</span>
+                  )}
+                </span>
+              )}
+            </div>
+            <div className="rounded-lg border border-border/60 overflow-hidden">
+              {aiCalls.length === 0 ? (
+                <div className="px-4 py-3 text-xs text-muted-foreground/40 italic">
+                  No AI calls recorded for this job
+                </div>
+              ) : (
+                <div className="divide-y divide-border/30">
+                  {/* Header */}
+                  <div className="grid px-4 py-1.5 text-[10px] font-display font-semibold uppercase tracking-wider text-muted-foreground/50 bg-muted/20"
+                    style={{ gridTemplateColumns: "1fr 7rem 7rem 5rem 5rem 4rem 4.5rem" }}>
+                    <span>Step</span>
+                    <span>Phase</span>
+                    <span>Model</span>
+                    <span className="text-right">In tok</span>
+                    <span className="text-right">Out tok</span>
+                    <span className="text-right">Duration</span>
+                    <span className="text-right">Status</span>
+                  </div>
+                  {aiCalls.map((call, idx) => {
+                    const phaseObj = PIPELINE_PHASES.find((p) => `phase-${p.id}` === call.phase);
+                    const phaseColor = phaseObj ? phaseColorClasses(phaseObj.color, "badge") : "";
+                    return (
+                      <div
+                        key={idx}
+                        className={`grid items-center px-4 py-2 text-xs gap-2 ${call.failed ? "bg-red-500/5" : ""}`}
+                        style={{ gridTemplateColumns: "1fr 7rem 7rem 5rem 5rem 4rem 4.5rem" }}
+                      >
+                        <div className="flex items-center gap-1.5 truncate min-w-0">
+                          <span className={`truncate font-mono text-[11px] ${call.failed ? "text-red-400" : "text-foreground/70"}`} title={call.label}>
+                            {call.label}
+                          </span>
+                        </div>
+                        <div>
+                          {phaseObj ? (
+                            <span className={`inline-flex items-center px-1.5 py-0.5 rounded border text-[10px] font-semibold ${phaseColor}`}>
+                              P{phaseObj.id} {phaseObj.shortName}
+                            </span>
+                          ) : (
+                            <span className="text-muted-foreground/40 text-[10px]">{call.phaseName}</span>
+                          )}
+                        </div>
+                        <div className="font-mono text-[11px] text-muted-foreground truncate" title={call.model ?? undefined}>
+                          {call.model ?? <span className="text-muted-foreground/30">—</span>}
+                        </div>
+                        <div className="text-right font-mono tabular-nums text-[11px] text-foreground/60">
+                          {call.inputTokens != null ? call.inputTokens.toLocaleString() : <span className="text-muted-foreground/30">—</span>}
+                        </div>
+                        <div className="text-right font-mono tabular-nums text-[11px] text-foreground/60">
+                          {call.outputTokens != null ? call.outputTokens.toLocaleString() : <span className="text-muted-foreground/30">—</span>}
+                        </div>
+                        <div className="text-right font-mono tabular-nums text-[11px] text-foreground/60">
+                          {formatDuration(call.durationMs)}
+                        </div>
+                        <div className="flex justify-end">
+                          {call.failed ? (
+                            <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded border text-[10px] font-semibold bg-red-500/20 text-red-400 border-red-500/30">
+                              <AlertTriangle className="w-2.5 h-2.5" />
+                              failed
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded border text-[10px] font-semibold bg-teal-500/15 text-teal-400 border-teal-500/30">
+                              ✓ ok
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </div>
+        );
+      })()}
 
       {/* ── Decisions Log (Phase 5 — Rules R1–R15) ──────────────────────────── */}
       {(() => {

@@ -115,6 +115,7 @@ export const PIPELINE_PHASES: PipelinePhase[] = [
     stepKeys: [
       { key: "sheet_manifest_", prefix: true },
       { key: "sheet_manifest_ai_fallback_", prefix: true },
+      { key: "phase-2-classification_", prefix: true },
     ],
     legacyStepKeys: [
       { key: "spatial_prepass_", prefix: true },
