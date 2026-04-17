@@ -91,6 +91,11 @@ export const FLOOR_PLAN_INCLUSION_PHRASES: string[] = [
  *
  * NOTE: "attic plan" is intentionally kept as two words — removing "plan" would
  * veto "ATTIC FLOOR PLAN" (a valid floor level) since exclusions run before inclusions.
+ *
+ * Several entries here have companion full-phrase forms in HARD_DISCIPLINE_IDENTIFIERS
+ * (e.g. "framing" → "framing plan", "structural" → "structural plan").  The two lists
+ * serve different matching granularities; see the HARD_DISCIPLINE_IDENTIFIERS comment
+ * for a full explanation of the overlap policy.
  */
 export const FLOOR_PLAN_EXCLUSION_PHRASES: string[] = [
   // Ceiling / overhead
@@ -160,15 +165,46 @@ export const FLOOR_PLAN_EXCLUSION_PHRASES: string[] = [
  * an inclusion keyword) so that incidental corner-zone text cannot veto a valid
  * floor-plan classification.
  *
- * Unlike the single-word entries in FLOOR_PLAN_EXCLUSION_PHRASES, these require the
- * full phrase to match — e.g. "framing plan" must not veto "first floor plan".
+ * --- Semantic distinction from FLOOR_PLAN_EXCLUSION_PHRASES ---
+ * FLOOR_PLAN_EXCLUSION_PHRASES contains short tokens (single words or tight
+ * two-word phrases) applied broadly to any page title text.  These are efficient
+ * but deliberately coarse — e.g. "framing" catches both "FRAMING PLAN" and any
+ * other title containing that word.
+ *
+ * HARD_DISCIPLINE_IDENTIFIERS contains full multi-word phrases that must match as
+ * a unit.  They exist to make veto intent explicit and self-documenting, and to
+ * serve as the authoritative list if a future call-site needs phrase-level matching
+ * without the single-word exclusions.
+ *
+ * Overlap note: in the current pdf-words.ts call-site both lists are OR-checked on
+ * the same candidate string, so any entry here whose root word already appears in
+ * FLOOR_PLAN_EXCLUSION_PHRASES is operationally redundant at that call-site.
+ * Such entries are retained for documentation clarity and forward compatibility.
+ * If you add a new entry, check whether the root word belongs in
+ * FLOOR_PLAN_EXCLUSION_PHRASES too (for broad coverage) or only here (phrase-only).
+ *
+ * Removed: "attic plan" — was an exact duplicate of the same string already present
+ * in FLOOR_PLAN_EXCLUSION_PHRASES, providing no additional coverage.
  */
 export const HARD_DISCIPLINE_IDENTIFIERS: readonly string[] = [
+  // Root word "framing" is also in FLOOR_PLAN_EXCLUSION_PHRASES (broad coverage).
+  // Kept here as the explicit phrase-level form.
   "framing plan",
+
+  // Root phrase "reflected ceiling" is also in FLOOR_PLAN_EXCLUSION_PHRASES.
+  // Kept here as the canonical full-phrase form for documentation.
   "reflected ceiling plan",
+
+  // Root word "demolition" is also in FLOOR_PLAN_EXCLUSION_PHRASES.
+  // Kept here as the canonical full-phrase form for documentation.
   "demolition plan",
-  "attic plan",
+
+  // Root word "roof" is also in FLOOR_PLAN_EXCLUSION_PHRASES (broad coverage).
+  // Kept here as the canonical full-phrase form for documentation.
   "roof framing",
+
+  // Root word "structural" is also in FLOOR_PLAN_EXCLUSION_PHRASES.
+  // Kept here as the canonical full-phrase form for documentation.
   "structural plan",
 ];
 
