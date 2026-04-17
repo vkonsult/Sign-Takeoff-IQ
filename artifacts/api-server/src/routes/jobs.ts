@@ -1,6 +1,6 @@
 import path from "path";
 import { Router, type IRouter, type Request, type Response } from "express";
-import { eq, desc, inArray, and, or, ne, isNull, isNotNull, not, SQL, sql, getTableColumns } from "drizzle-orm";
+import { eq, asc, desc, inArray, and, or, ne, isNull, isNotNull, not, SQL, sql, getTableColumns } from "drizzle-orm";
 import { db } from "@workspace/db";
 import {
   jobsTable,
@@ -1162,8 +1162,8 @@ router.delete("/extracted-signs/:signId", async (req, res) => {
 });
 
 // NOTE: occurrenceIndex and occurrenceTotal are intentionally absent from this schema.
-// Those columns are computed at extraction time (deduplicateSignRows) and must never
-// be overwritten via the single-sign PATCH endpoint or any bulk-update path.
+// Those columns are recomputed by the PATCH handler whenever the occurrence group key
+// (location + signType) changes.  They must NOT be accepted as raw client input.
 // Do NOT add them here — add a regression test to sign-occurrence-bulk.test.ts instead.
 const UpdateSignSchema = z.object({
   sheetNumber: z.string().nullable().optional(),
@@ -1229,11 +1229,71 @@ router.patch("/extracted-signs/:signId", async (req, res) => {
       ? { ...parsed.data, userVerified: true }
       : { ...parsed.data };
 
-    const [updated] = await db
+    let [updated] = await db
       .update(extractedSignsTable)
       .set(updatePayload)
       .where(eq(extractedSignsTable.id, signId))
       .returning();
+
+    // Recompute occurrence indices when the group key (location + signType) changes.
+    // The group key determines which signs share an "(index/total)" label, so any
+    // rename of either field must recalculate both the old group (now missing this
+    // sign) and the new group (which this sign just joined).
+    const groupKeyChanged = parsed.data.location !== undefined || parsed.data.signType !== undefined;
+    if (groupKeyChanged) {
+      const groupKey = (loc: string | null | undefined, type: string | null | undefined) =>
+        `${(type ?? "").toLowerCase().trim()}||${(loc ?? "").toLowerCase().trim()}`;
+
+      const oldKey = groupKey(existing.location, existing.signType);
+      const newKey = groupKey(updated.location, updated.signType);
+
+      if (oldKey !== newKey) {
+        // Fetch all signs in the job so we can recompute both affected groups in one query.
+        // Order by id (stable surrogate) so occurrence index assignment is deterministic
+        // regardless of DB execution plan or insertion order.
+        const allJobSigns = await db
+          .select()
+          .from(extractedSignsTable)
+          .where(eq(extractedSignsTable.jobId, existing.jobId))
+          .orderBy(asc(extractedSignsTable.id));
+
+        const oldGroup = allJobSigns.filter(
+          (s) => groupKey(s.location, s.signType) === oldKey && s.id !== signId,
+        );
+        const newGroup = allJobSigns.filter(
+          (s) => groupKey(s.location, s.signType) === newKey,
+        );
+
+        const assignOccurrences = (group: typeof allJobSigns) =>
+          group.map((s, i) => ({
+            id: s.id,
+            occurrenceIndex: group.length > 1 ? i + 1 : null,
+            occurrenceTotal: group.length > 1 ? group.length : null,
+          }));
+
+        for (const sign of assignOccurrences(oldGroup)) {
+          await db
+            .update(extractedSignsTable)
+            .set({ occurrenceIndex: sign.occurrenceIndex, occurrenceTotal: sign.occurrenceTotal })
+            .where(eq(extractedSignsTable.id, sign.id));
+        }
+        for (const sign of assignOccurrences(newGroup)) {
+          await db
+            .update(extractedSignsTable)
+            .set({ occurrenceIndex: sign.occurrenceIndex, occurrenceTotal: sign.occurrenceTotal })
+            .where(eq(extractedSignsTable.id, sign.id));
+        }
+
+        // Patch the in-memory `updated` object to reflect the new occurrence values
+        // so the API response is immediately correct without a second round-trip.
+        const myPositionInNewGroup = newGroup.findIndex((s) => s.id === signId);
+        updated = {
+          ...updated,
+          occurrenceIndex: newGroup.length > 1 ? myPositionInNewGroup + 1 : null,
+          occurrenceTotal: newGroup.length > 1 ? newGroup.length : null,
+        };
+      }
+    }
 
     recordActivity(req, "sign_updated", existing.jobId);
 
