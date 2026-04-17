@@ -2519,8 +2519,8 @@ function PageManifestTable({
 
   const statsAny = stats as unknown as Record<string, unknown>;
   const manifestRows: ManifestRow[] = statsAny.manifest as ManifestRow[] ?? [];
-  const warnings: string[] = statsAny.manifestWarnings as string[] ?? [];
-  const isExcerpt = statsAny.isExcerpt === true;
+  const warnings: string[] = stats.manifestWarnings ?? [];
+  const isExcerpt = stats.isExcerpt === true;
 
   const fallbackRows = buildFallbackRows(stats);
   const rows = manifestRows.length > 0 ? manifestRows : fallbackRows;
@@ -2872,6 +2872,11 @@ function SheetsPanel({
   }, 0);
   const totalFloorPlan = files.reduce((sum, f) => sum + (f.pageStats?.floorPlanPages?.length ?? 0), 0);
 
+  // Collect all manifest warnings across all files (deduplicated)
+  const allManifestWarnings = Array.from(new Set(
+    files.flatMap((f) => f.pageStats?.manifestWarnings ?? [])
+  ));
+
   // Find the first file that has sign spec pages (sign schedule OR both)
   const firstSpecFile = files.find(
     (f) => (f.pageStats?.signSchedulePages?.length ?? 0) > 0 ||
@@ -2901,6 +2906,11 @@ function SheetsPanel({
               </span>
             ) : (
               <span className="text-[10px] text-muted-foreground/50 font-mono">No sign spec pages detected</span>
+            )}
+            {allManifestWarnings.length > 0 && (
+              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-amber-500/15 text-amber-400 border border-amber-500/30 text-[10px] font-bold uppercase tracking-wider">
+                ⚠ {allManifestWarnings.length} {allManifestWarnings.length === 1 ? "Warning" : "Warnings"}
+              </span>
             )}
             <span className="text-[10px] font-mono text-muted-foreground/50">
               {totalFloorPlan} floor plan{totalFloorPlan !== 1 ? "s" : ""} · {totalPages} total pages
@@ -2932,6 +2942,21 @@ function SheetsPanel({
 
         {open && (
           <div className="pb-3 space-y-2">
+            {allManifestWarnings.length > 0 && (
+              <div className="flex flex-col gap-1">
+                {allManifestWarnings.map((w) => (
+                  <div
+                    key={w}
+                    className="flex items-start gap-2 px-3 py-2 rounded-lg bg-amber-500/10 border border-amber-500/25 text-amber-400"
+                  >
+                    <svg className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" viewBox="0 0 16 16" fill="currentColor">
+                      <path d="M8 1.5a.5.5 0 0 1 .447.276l6 12A.5.5 0 0 1 14 14.5H2a.5.5 0 0 1-.447-.724l6-12A.5.5 0 0 1 8 1.5zM8 5.5a.5.5 0 0 0-.5.5v3a.5.5 0 0 0 1 0V6a.5.5 0 0 0-.5-.5zm0 6a.75.75 0 1 0 0-1.5.75.75 0 0 0 0 1.5z"/>
+                    </svg>
+                    <span className="text-xs">{w}</span>
+                  </div>
+                ))}
+              </div>
+            )}
             {files.map((f) => {
               const stats = f.pageStats;
               const total = f.pageCount ?? 0;

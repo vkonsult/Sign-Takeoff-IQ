@@ -5,17 +5,8 @@
  * Sign Takeoff Portal API
  * OpenAPI spec version: 0.1.0
  */
-
-export interface PdfOutlineSection {
-  /** Outline bookmark title */
-  title: string;
-  /** First PDF page index (1-based) covered by this section */
-  pageStart: number;
-  /** Last PDF page index (1-based) covered by this section */
-  pageEnd: number;
-  /** Classified section type */
-  type: "floor_plan" | "sign_schedule" | "other" | null;
-}
+import type { PageStatsPageImagePaths } from "./pageStatsPageImagePaths";
+import type { PdfOutlineSection } from "./pdfOutlineSection";
 
 export interface PageStats {
   /** PDF page numbers classified as floor plans */
@@ -26,10 +17,16 @@ export interface PageStats {
   otherPages: number[];
   /** PDF page numbers classified as both floor plan and sign schedule */
   bothPages?: number[];
-  /** Logical page labels extracted from the PDF page dictionary (e.g. "A1.1") */
+  /** PDF logical page labels (e.g. "A1.1") indexed by page number (0-based) */
   pageLabels?: (string | null)[] | null;
-  /** Outline (bookmark) sections extracted from the PDF, used to boost page classification */
+  /** Top-level PDF outline (bookmark) sections with classified page ranges */
   outlineSections?: PdfOutlineSection[] | null;
-  /** Map of page number (as string key) to absolute file path of pre-rendered PNG image */
-  pageImagePaths?: Record<string, string> | null;
+  /** Page numbers manually rejected by the user and excluded from extraction */
+  rejectedPageNumbers?: number[] | null;
+  /** Non-blocking warnings produced during sheet classification (e.g. no floor plan pages found) */
+  manifestWarnings?: string[] | null;
+  /** True when the upload appears to be a plan excerpt with few pages and no bookmarks */
+  isExcerpt?: boolean | null;
+  /** Map of page number (as string key) to server-relative path of pre-rendered PNG image (resolved server-side; not exposed to clients) */
+  pageImagePaths?: PageStatsPageImagePaths;
 }

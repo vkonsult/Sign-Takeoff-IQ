@@ -5,6 +5,7 @@
  * Sign Takeoff Portal API
  * OpenAPI spec version: 0.1.0
  */
+import type { JobFileRoomInventory } from "./jobFileRoomInventory";
 import type { PageStats } from "./pageStats";
 
 export interface JobFile {
@@ -13,5 +14,7 @@ export interface JobFile {
   pageCount?: number | null;
   /** Per-page classification breakdown from the extraction pass */
   pageStats?: PageStats | null;
+  /** Phase 4 room inventory — extracted room labels, occupant loads, and derived flags */
+  roomInventory?: JobFileRoomInventory;
   createdAt: Date;
 }

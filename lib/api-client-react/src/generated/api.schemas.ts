@@ -61,12 +61,34 @@ export interface JobSummary {
   updatedAt: string;
 }
 
+/**
+ * Classified type of this outline section
+ */
+export type PdfOutlineSectionType =
+  | (typeof PdfOutlineSectionType)[keyof typeof PdfOutlineSectionType]
+  | null;
+
+export const PdfOutlineSectionType = {
+  floor_plan: "floor_plan",
+  sign_schedule: "sign_schedule",
+  other: "other",
+} as const;
+
 export interface PdfOutlineSection {
+  /** Bookmark / outline item title */
   title: string;
+  /** First page of this section (1-indexed) */
   pageStart: number;
+  /** Last page of this section (1-indexed, inclusive) */
   pageEnd: number;
-  type: "floor_plan" | "sign_schedule" | "other" | null;
+  /** Classified type of this outline section */
+  type: PdfOutlineSectionType;
 }
+
+/**
+ * Map of page number (as string key) to server-relative path of pre-rendered PNG image (resolved server-side; not exposed to clients)
+ */
+export type PageStatsPageImagePaths = { [key: string]: string } | null;
 
 export interface PageStats {
   /** PDF page numbers classified as floor plans */
@@ -81,9 +103,20 @@ export interface PageStats {
   pageLabels?: (string | null)[] | null;
   /** Top-level PDF outline (bookmark) sections with classified page ranges */
   outlineSections?: PdfOutlineSection[] | null;
-  /** Map of page number (as string key) to absolute file path of pre-rendered PNG image */
-  pageImagePaths?: Record<string, string> | null;
+  /** Page numbers manually rejected by the user and excluded from extraction */
+  rejectedPageNumbers?: number[] | null;
+  /** Non-blocking warnings produced during sheet classification (e.g. no floor plan pages found) */
+  manifestWarnings?: string[] | null;
+  /** True when the upload appears to be a plan excerpt with few pages and no bookmarks */
+  isExcerpt?: boolean | null;
+  /** Map of page number (as string key) to server-relative path of pre-rendered PNG image (resolved server-side; not exposed to clients) */
+  pageImagePaths?: PageStatsPageImagePaths;
 }
+
+/**
+ * Phase 4 room inventory — extracted room labels, occupant loads, and derived flags
+ */
+export type JobFileRoomInventory = { [key: string]: unknown } | null;
 
 export interface JobFile {
   id: string;
@@ -91,6 +124,8 @@ export interface JobFile {
   pageCount?: number | null;
   /** Per-page classification breakdown from the extraction pass */
   pageStats?: PageStats | null;
+  /** Phase 4 room inventory — extracted room labels, occupant loads, and derived flags */
+  roomInventory?: JobFileRoomInventory;
   createdAt: string;
 }
 
@@ -116,7 +151,10 @@ export interface ExtractedSign {
    */
   confidenceScore: number;
   reviewFlag: boolean;
-  exceptionReason?: string | null;
+  /** True if this sign was manually placed by the user (not AI-extracted) */
+  manuallyAdded?: boolean;
+  /** True if the user has saved/confirmed this sign entry; preserved across re-extractions */
+  userVerified?: boolean;
   createdAt: string;
 }
 

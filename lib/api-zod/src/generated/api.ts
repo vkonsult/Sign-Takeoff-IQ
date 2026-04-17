@@ -98,9 +98,71 @@ export const GetJobResponse = zod.object({
             .describe(
               "PDF page numbers not matching floor plan or sign schedule patterns",
             ),
+          bothPages: zod
+            .array(zod.number())
+            .optional()
+            .describe(
+              "PDF page numbers classified as both floor plan and sign schedule",
+            ),
+          pageLabels: zod
+            .array(zod.string().nullable())
+            .nullish()
+            .describe(
+              'PDF logical page labels (e.g. \"A1.1\") indexed by page number (0-based)',
+            ),
+          outlineSections: zod
+            .array(
+              zod.object({
+                title: zod.string().describe("Bookmark \/ outline item title"),
+                pageStart: zod
+                  .number()
+                  .describe("First page of this section (1-indexed)"),
+                pageEnd: zod
+                  .number()
+                  .describe("Last page of this section (1-indexed, inclusive)"),
+                type: zod
+                  .enum(["floor_plan", "sign_schedule", "other"])
+                  .nullable()
+                  .describe("Classified type of this outline section"),
+              }),
+            )
+            .nullish()
+            .describe(
+              "Top-level PDF outline (bookmark) sections with classified page ranges",
+            ),
+          rejectedPageNumbers: zod
+            .array(zod.number())
+            .nullish()
+            .describe(
+              "Page numbers manually rejected by the user and excluded from extraction",
+            ),
+          manifestWarnings: zod
+            .array(zod.string())
+            .nullish()
+            .describe(
+              "Non-blocking warnings produced during sheet classification (e.g. no floor plan pages found)",
+            ),
+          isExcerpt: zod
+            .boolean()
+            .nullish()
+            .describe(
+              "True when the upload appears to be a plan excerpt with few pages and no bookmarks",
+            ),
+          pageImagePaths: zod
+            .record(zod.string(), zod.string())
+            .nullish()
+            .describe(
+              "Map of page number (as string key) to server-relative path of pre-rendered PNG image (resolved server-side; not exposed to clients)",
+            ),
         })
         .nullish()
         .describe("Per-page classification breakdown from the extraction pass"),
+      roomInventory: zod
+        .record(zod.string(), zod.unknown())
+        .nullish()
+        .describe(
+          "Phase 4 room inventory — extracted room labels, occupant loads, and derived flags",
+        ),
       createdAt: zod.date(),
     }),
   ),
@@ -126,6 +188,18 @@ export const GetJobResponse = zod.object({
         .min(getJobResponseExtractedSignsItemConfidenceScoreMin)
         .max(getJobResponseExtractedSignsItemConfidenceScoreMax),
       reviewFlag: zod.boolean(),
+      manuallyAdded: zod
+        .boolean()
+        .optional()
+        .describe(
+          "True if this sign was manually placed by the user (not AI-extracted)",
+        ),
+      userVerified: zod
+        .boolean()
+        .optional()
+        .describe(
+          "True if the user has saved\/confirmed this sign entry; preserved across re-extractions",
+        ),
       createdAt: zod.date(),
     }),
   ),
