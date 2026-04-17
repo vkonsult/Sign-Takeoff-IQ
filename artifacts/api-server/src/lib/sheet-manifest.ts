@@ -7,13 +7,12 @@
  *
  * Cascade order:
  *   A. PDF bookmarks (primary — most reliable)
+ *   B.0 Drawing index table scan (pages 1–5): if a printed sheet index is found,
+ *       classifies all sheets in one pass and fills gaps per-page scraping misses.
  *   B. Title block scrape: 3-pass zone widening per page
  *       Pass 1 — narrow title strip (cy > 0.90)
  *       Pass 2 — full title-block corner zone
  *       Pass 3 — full-page scan (excerpt safeguard, ≤10 pages only)
- *
- * TODO: Index-page scan (P2.1 Step 2) — scanning pages 1-5 for a printed drawing
- * index table is deferred to a follow-up task.
  */
 
 import { logger } from "./logger";
@@ -52,7 +51,7 @@ export interface SheetManifestEntry {
   levelRaw: string | null;
   area: string | null;
   building: string | null;
-  source: "bookmark" | "title_block" | "full_page_fallback" | "excerpt_fallback";
+  source: "bookmark" | "index_page" | "title_block" | "full_page_fallback" | "excerpt_fallback";
 }
 
 export interface SheetManifest {
@@ -289,9 +288,189 @@ function extractSheetNumber(phrases: PdfPhrase[]): string | null {
   return null;
 }
 
+// ── Drawing index table scanner (Step B.0) ────────────────────────────────────
+
+/**
+ * Regex for a sheet number as it appears in a drawing index table.
+ * Matches patterns like: A-101, A.101, A101, G-001, S-2.1, M-01, A-101A.
+ * Must appear as an isolated token (word boundary on right side).
+ */
+const INDEX_SHEET_NUM_RE = /^([A-Z]{1,3}[-.]?\d{1,4}(?:[-.]\d{1,2})?[A-Z]?)\b/i;
+
+/**
+ * Minimum number of sheet-number rows found on a page before it is treated
+ * as a drawing index (rather than a regular sheet that happens to list a few
+ * numbers in a notes table).
+ */
+const MIN_INDEX_ROWS = 3;
+
+/**
+ * Maximum allowed spread (standard deviation) of sheet-number column x-positions,
+ * in normalised page-width units.  Sheet numbers in a real drawing index always
+ * form a vertical column; scattered x-positions indicate coincidental matches
+ * in a notes/general-text page rather than a true index table.
+ */
+const INDEX_COLUMN_MAX_SPREAD = 0.12;
+
+/**
+ * Normalise a sheet number for comparison: uppercase and strip all whitespace,
+ * dashes, and dots so that "A-101", "A.101", and "A101" all map to the same
+ * canonical key ("A101").
+ *
+ * Exported for unit testing.
+ */
+export function normalizeSheetNum(s: string): string {
+  return s.toUpperCase().replace(/[\s\-.]/g, "");
+}
+
+/**
+ * Group an array of PdfPhrase values by their visual row (shared Y centre
+ * within ROW_TOLERANCE).  Returns groups in top-to-bottom order.
+ */
+function groupPhrasesByRow(phrases: PdfPhrase[]): PdfPhrase[][] {
+  const ROW_TOLERANCE = 0.012; // ~1.2 % of page height
+  const rows: Array<{ cy: number; phrases: PdfPhrase[] }> = [];
+
+  for (const phrase of phrases) {
+    const cy = (phrase.y0 + phrase.y1) / 2;
+    const existing = rows.find((r) => Math.abs(r.cy - cy) <= ROW_TOLERANCE);
+    if (existing) {
+      existing.phrases.push(phrase);
+    } else {
+      rows.push({ cy, phrases: [phrase] });
+    }
+  }
+
+  rows.sort((a, b) => a.cy - b.cy);
+  return rows.map((r) => r.phrases);
+}
+
+/**
+ * Extract one index row from a list of phrases that share the same visual row.
+ * The first phrase (left-most) that matches INDEX_SHEET_NUM_RE is the sheet
+ * number; everything to its right is joined as the title.
+ *
+ * Also returns `sheetNumX0` — the normalised left-edge x-position of the
+ * sheet-number phrase — used by the caller to check that all sheet numbers on
+ * the page form a vertical column (i.e. a real index table, not scattered text).
+ *
+ * Returns null when the row does not contain a recognisable sheet number with
+ * an accompanying title.
+ */
+function extractIndexRow(
+  rowPhrases: PdfPhrase[],
+): { sheetNumber: string; title: string; sheetNumX0: number } | null {
+  const sorted = [...rowPhrases].sort((a, b) => a.x0 - b.x0);
+
+  for (let i = 0; i < sorted.length; i++) {
+    const phrase = sorted[i]!;
+    const m = phrase.text.trim().match(INDEX_SHEET_NUM_RE);
+    if (!m) continue;
+
+    const sheetNumber = m[1]!;
+    const titlePhrases = sorted.slice(i + 1);
+    const title = titlePhrases.map((p) => p.text).join(" ").trim();
+
+    // Require at least some title text — rows with only a sheet number are
+    // usually continuation rows or headers, not real index entries.
+    if (title.length === 0) return null;
+
+    return { sheetNumber, title, sheetNumX0: phrase.x0 };
+  }
+
+  return null;
+}
+
+interface IndexEntry {
+  sheetNumber: string;
+  title: string;
+}
+
+/**
+ * Scan pages 1–5 of the PDF for a printed drawing index table.
+ *
+ * Detection criteria:
+ *  1. The page has ≥ MIN_INDEX_ROWS rows each starting with a sheet-number
+ *     pattern followed by a title.
+ *  2. The sheet-number phrases form a vertical column: their left-edge
+ *     x-positions have a standard deviation ≤ INDEX_COLUMN_MAX_SPREAD.
+ *     Scattered x-positions indicate coincidental matches on a notes page.
+ *
+ * All discovered entries are stored in the Map with NORMALISED sheet-number
+ * keys (uppercase, punctuation stripped) so that "A-101", "A.101", and "A101"
+ * all resolve to the same entry at lookup time.
+ *
+ * Returns an empty Map when no index table is detected.
+ */
+async function scanForDrawingIndex(
+  pdfPath: string,
+  fileId: string,
+  numPages: number,
+): Promise<Map<string, IndexEntry>> {
+  const SCAN_PAGES = Math.min(5, numPages);
+  const result = new Map<string, IndexEntry>();
+
+  for (let pageNum = 1; pageNum <= SCAN_PAGES; pageNum++) {
+    let phrases: PdfPhrase[];
+    try {
+      const pageWords = await extractPagePhrases(pdfPath, fileId, pageNum);
+      phrases = pageWords.phrases;
+    } catch {
+      continue;
+    }
+
+    if (phrases.length === 0) continue;
+
+    const rows = groupPhrasesByRow(phrases);
+    const rawRows: Array<{ sheetNumber: string; title: string; sheetNumX0: number }> = [];
+
+    for (const rowPhrases of rows) {
+      const entry = extractIndexRow(rowPhrases);
+      if (entry) rawRows.push(entry);
+    }
+
+    if (rawRows.length < MIN_INDEX_ROWS) continue;
+
+    // Column-clustering guard: reject the page if the sheet-number phrases are
+    // horizontally scattered.  A real drawing index has all sheet numbers in a
+    // single left-aligned column.
+    const xs = rawRows.map((r) => r.sheetNumX0);
+    const mean = xs.reduce((a, b) => a + b, 0) / xs.length;
+    const variance = xs.reduce((a, b) => a + (b - mean) ** 2, 0) / xs.length;
+    const stdDev = Math.sqrt(variance);
+    if (stdDev > INDEX_COLUMN_MAX_SPREAD) {
+      logger.debug(
+        { fileId, pageNum, rowCount: rawRows.length, stdDev: stdDev.toFixed(3) },
+        "[Sheet Manifest] Skipping candidate index page — sheet-number column too spread out",
+      );
+      continue;
+    }
+
+    logger.debug(
+      { fileId, pageNum, rowCount: rawRows.length, stdDev: stdDev.toFixed(3) },
+      "[Sheet Manifest] Drawing index table detected",
+    );
+
+    for (const entry of rawRows) {
+      const key = normalizeSheetNum(entry.sheetNumber);
+      if (!result.has(key)) {
+        result.set(key, { sheetNumber: entry.sheetNumber, title: entry.title });
+      }
+    }
+  }
+
+  return result;
+}
+
+// ── Per-page title-block helpers ──────────────────────────────────────────────
+
 /**
  * 3-pass classification of a single page using phrase lists.
- * Returns the bucket and source, or null if all passes return "other".
+ *
+ * Returns the classified bucket, title, sheet number, and source.
+ * When all three passes resolve to "other" the function still returns a result
+ * so the caller can attempt a drawing-index lookup using the sheet number —
+ * returning null only when no phrases could be extracted at all.
  */
 async function classifyPagePhrases(
   pdfPath: string,
@@ -309,11 +488,16 @@ async function classifyPagePhrases(
 
   if (phrases.length === 0) return null;
 
+  // Track the best sheet number found across all passes so we can return it
+  // even when no pass yields a non-"other" bucket (enables index lookup).
+  let bestSheetNumber: string | null = null;
+
   // Pass 1 — narrow title strip
   const stripPhrases = phrases.filter(isInTitleStrip);
   if (stripPhrases.length > 0) {
     const text = phrasesToText(stripPhrases);
     const sheetNumber = extractSheetNumber(stripPhrases);
+    if (sheetNumber && !bestSheetNumber) bestSheetNumber = sheetNumber;
     const bucket = classifyTitle(text, sheetNumber);
     if (bucket !== "other") {
       return { bucket, sheetTitle: text.trim().slice(0, 120), sheetNumber, source: "title_block" };
@@ -325,6 +509,7 @@ async function classifyPagePhrases(
   if (zonePhrases.length > 0) {
     const text = phrasesToText(zonePhrases);
     const sheetNumber = extractSheetNumber(zonePhrases);
+    if (sheetNumber && !bestSheetNumber) bestSheetNumber = sheetNumber;
     const bucket = classifyTitle(text, sheetNumber);
     if (bucket !== "other") {
       return { bucket, sheetTitle: text.trim().slice(0, 120), sheetNumber, source: "title_block" };
@@ -335,13 +520,17 @@ async function classifyPagePhrases(
   if (isExcerptCandidate) {
     const text = phrasesToText(phrases);
     const sheetNumber = extractSheetNumber(phrases);
+    if (sheetNumber && !bestSheetNumber) bestSheetNumber = sheetNumber;
     const bucket = classifyTitle(text, sheetNumber);
     if (bucket !== "other") {
       return { bucket, sheetTitle: text.trim().slice(0, 120), sheetNumber, source: "full_page_fallback" };
     }
   }
 
-  return null;
+  // All passes returned "other".  Return the best sheet number we found so the
+  // caller can still do a drawing-index lookup — this is the key path that lets
+  // the index scanner fill gaps that per-page title-block scraping misses.
+  return { bucket: "other", sheetTitle: "", sheetNumber: bestSheetNumber, source: "title_block" };
 }
 
 // ── Main export ───────────────────────────────────────────────────────────────
@@ -393,6 +582,24 @@ export async function buildSheetManifest(
     logger.warn({ err, fileId }, "[Sheet Manifest] Bookmark extraction failed — falling back to title block scrape");
   }
 
+  // ── Step B.0: Drawing index table scan (pages 1–5) ────────────────────────
+  // Scan the first 5 pages for a printed drawing index before doing per-page
+  // title-block scraping.  A successful scan populates sheetNumber→title pairs
+  // for every sheet in the set so that later per-page work can match against
+  // authoritative titles rather than fragmented title-block text.
+  let drawingIndex = new Map<string, IndexEntry>();
+  try {
+    drawingIndex = await scanForDrawingIndex(pdfPath, fileId, numPages);
+    if (drawingIndex.size > 0) {
+      logger.info(
+        { fileId, indexSize: drawingIndex.size },
+        "[Sheet Manifest] Drawing index found — will resolve sheet titles from index",
+      );
+    }
+  } catch (err) {
+    logger.warn({ err, fileId }, "[Sheet Manifest] Drawing index scan failed — continuing without it");
+  }
+
   // ── Step B: Title block scrape (fallback for pages not covered by bookmarks) ─
   const isExcerptCandidate = numPages <= 10 && !usedBookmarks;
   const coveredPages = new Set(entries.map((e) => e.pdfPage));
@@ -404,11 +611,37 @@ export async function buildSheetManifest(
   if (uncoveredPages.length > 0) {
     await Promise.all(
       uncoveredPages.map(async (pageNum) => {
+        // Always extract the sheet number from the title block first so we can
+        // look it up in the drawing index (Step B.0).
         const result = await classifyPagePhrases(pdfPath, fileId, pageNum, isExcerptCandidate);
-        const bucket = result?.bucket ?? "other";
-        const sheetTitle = result?.sheetTitle ?? "";
-        const sheetNumber = result?.sheetNumber ?? null;
-        const source: SheetManifestEntry["source"] = result?.source ?? "title_block";
+        const extractedSheetNumber = result?.sheetNumber ?? null;
+
+        // If this page's sheet number appears in the drawing index, prefer the
+        // authoritative index title over whatever the title block returned.
+        // Normalise the extracted number so "A-101" matches a key stored as
+        // "A101" (or any other punctuation variant).
+        const indexMatch =
+          extractedSheetNumber !== null
+            ? drawingIndex.get(normalizeSheetNum(extractedSheetNumber)) ?? null
+            : null;
+
+        let bucket: SheetBucket;
+        let sheetTitle: string;
+        let sheetNumber: string | null;
+        let source: SheetManifestEntry["source"];
+
+        if (indexMatch) {
+          bucket = classifyTitle(indexMatch.title, indexMatch.sheetNumber);
+          sheetTitle = indexMatch.title;
+          sheetNumber = indexMatch.sheetNumber;
+          source = "index_page";
+        } else {
+          bucket = result?.bucket ?? "other";
+          sheetTitle = result?.sheetTitle ?? "";
+          sheetNumber = extractedSheetNumber;
+          source = result?.source ?? "title_block";
+        }
+
         const levelInfo = extractLevelFromTitle(sheetTitle);
         entries.push({
           sheetNumber,
@@ -460,6 +693,10 @@ export async function buildSheetManifest(
       lifeSafety: entries.filter((e) => e.bucket === "life_safety").length,
       ignore: entries.filter((e) => e.bucket === "ignore").length,
       other: entries.filter((e) => e.bucket === "other").length,
+      fromBookmarks: entries.filter((e) => e.source === "bookmark").length,
+      fromIndex: entries.filter((e) => e.source === "index_page").length,
+      fromTitleBlock: entries.filter((e) => e.source === "title_block" || e.source === "full_page_fallback").length,
+      drawingIndexSize: drawingIndex.size,
       usedBookmarks,
       isExcerpt,
     },

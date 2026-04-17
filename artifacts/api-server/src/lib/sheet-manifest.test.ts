@@ -1,5 +1,59 @@
-import { describe, it, expect } from "vitest";
-import { classifyTitle, extractLevelFromTitle } from "./sheet-manifest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
+import type { PdfPhrase } from "./pdf-words";
+
+vi.mock("./pdf-words", () => ({
+  extractPdfMetadata: vi.fn(),
+  extractPagePhrases: vi.fn(),
+  getPdfPageCount: vi.fn(),
+  getOrOpenPdfjsDoc: vi.fn(),
+}));
+
+import {
+  buildSheetManifest,
+  classifyTitle,
+  extractLevelFromTitle,
+  normalizeSheetNum,
+} from "./sheet-manifest";
+import {
+  extractPdfMetadata,
+  extractPagePhrases,
+  getPdfPageCount,
+} from "./pdf-words";
+
+const mockMeta = vi.mocked(extractPdfMetadata);
+const mockPhrases = vi.mocked(extractPagePhrases);
+const mockPageCount = vi.mocked(getPdfPageCount);
+
+function phrase(
+  text: string,
+  x0: number,
+  x1: number,
+  y0: number,
+  y1: number,
+): PdfPhrase {
+  return { text, x0, x1, y0, y1 };
+}
+
+function pageWords(phrases: PdfPhrase[]) {
+  return { pageWidth: 800, pageHeight: 600, phrases };
+}
+
+/**
+ * Set up extractPagePhrases mock to return phrases keyed by page number.
+ * Each page can be requested multiple times (once during index scan, once
+ * during per-page classification) and always gets the same data.
+ */
+function setupPageMocks(pages: Record<number, PdfPhrase[]>) {
+  mockPhrases.mockImplementation(
+    (_path: string, _fileId: string, pageNum: number) =>
+      Promise.resolve(pageWords(pages[pageNum] ?? [])),
+  );
+}
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  mockMeta.mockResolvedValue({ pageLabels: [], outlineSections: [] });
+});
 
 // ── classifyTitle ─────────────────────────────────────────────────────────────
 
@@ -153,10 +207,6 @@ describe("classifyTitle — P4 ignore (discipline veto before floor_plan)", () =
   });
 
   it('any title containing "foundation" is ignored — not just "foundation plan"', () => {
-    // The IGNORE_PHRASES entry is "foundation" (not "foundation plan") so titles
-    // like "FOUNDATION FLOOR PLAN" are correctly caught.  The trade-off is that
-    // unusual titles such as "FOUNDATION NOTES" also land in ignore rather than
-    // other — this is intentional and desirable for sign-takeoff purposes.
     expect(classifyTitle("FOUNDATION NOTES")).toBe("ignore");
     expect(classifyTitle("FOUNDATION DETAIL")).toBe("ignore");
   });
@@ -540,5 +590,184 @@ describe("extractLevelFromTitle — combined area + building + level", () => {
     expect(result.level).toBe("L2");
     expect(result.building).toBe("BUILDING A");
     expect(result.area).toBe("AREA B");
+  });
+});
+
+// ── normalizeSheetNum ─────────────────────────────────────────────────────────
+
+describe("normalizeSheetNum — sheet-number format normalisation", () => {
+  it.each([
+    ["A-101", "A101"],
+    ["A.101", "A101"],
+    ["A101", "A101"],
+    ["a-101", "A101"],
+    ["G-001", "G001"],
+    ["S 2.1", "S21"],
+    ["M-01", "M01"],
+    ["A-101A", "A101A"],
+  ])("normalizeSheetNum(%s) === %s", (input, expected) => {
+    expect(normalizeSheetNum(input)).toBe(expected);
+  });
+});
+
+// ── buildSheetManifest — drawing index integration ────────────────────────────
+
+describe("buildSheetManifest — drawing index table detection", () => {
+  it("uses index_page source when an index table is detected and sheet number matches", async () => {
+    mockPageCount.mockResolvedValue(3);
+
+    setupPageMocks({
+      1: [
+        phrase("A-101", 0.05, 0.12, 0.10, 0.14),
+        phrase("FIRST FLOOR PLAN", 0.30, 0.70, 0.10, 0.14),
+        phrase("A-102", 0.05, 0.12, 0.20, 0.24),
+        phrase("SECOND FLOOR PLAN", 0.30, 0.70, 0.20, 0.24),
+        phrase("A-001", 0.05, 0.12, 0.30, 0.34),
+        phrase("GENERAL NOTES", 0.30, 0.70, 0.30, 0.34),
+      ],
+      2: [
+        phrase("A-101", 0.70, 0.80, 0.92, 0.96),
+        phrase("FIRST FLOOR PLAN", 0.50, 0.85, 0.93, 0.97),
+      ],
+      3: [
+        phrase("A-102", 0.70, 0.80, 0.92, 0.96),
+        phrase("SECOND FLOOR PLAN", 0.50, 0.85, 0.93, 0.97),
+      ],
+    });
+
+    const manifest = await buildSheetManifest("/fake/file.pdf", "test-file");
+
+    const page2 = manifest.entries.find((e) => e.pdfPage === 2);
+    const page3 = manifest.entries.find((e) => e.pdfPage === 3);
+
+    expect(page2?.source).toBe("index_page");
+    expect(page2?.bucket).toBe("floor_plan");
+    expect(page2?.sheetTitle).toBe("FIRST FLOOR PLAN");
+
+    expect(page3?.source).toBe("index_page");
+    expect(page3?.bucket).toBe("floor_plan");
+    expect(page3?.sheetTitle).toBe("SECOND FLOOR PLAN");
+  });
+
+  it("classifies via index when title-block scrape returns 'other' but sheet number matches index", async () => {
+    mockPageCount.mockResolvedValue(2);
+
+    setupPageMocks({
+      1: [
+        phrase("A-101", 0.05, 0.12, 0.10, 0.14),
+        phrase("FIRST FLOOR PLAN", 0.30, 0.70, 0.10, 0.14),
+        phrase("A-102", 0.05, 0.12, 0.20, 0.24),
+        phrase("SECOND FLOOR PLAN", 0.30, 0.70, 0.20, 0.24),
+        phrase("A-001", 0.05, 0.12, 0.30, 0.34),
+        phrase("GENERAL NOTES", 0.30, 0.70, 0.30, 0.34),
+      ],
+      2: [phrase("A-102", 0.40, 0.47, 0.40, 0.44)],
+    });
+
+    const manifest = await buildSheetManifest("/fake/file.pdf", "test-file");
+
+    const page2 = manifest.entries.find((e) => e.pdfPage === 2);
+    expect(page2?.source).toBe("index_page");
+    expect(page2?.bucket).toBe("floor_plan");
+    expect(page2?.sheetTitle).toBe("SECOND FLOOR PLAN");
+  });
+
+  it("falls back to title_block source when no drawing index is found", async () => {
+    mockPageCount.mockResolvedValue(2);
+
+    setupPageMocks({
+      1: [
+        phrase("PROJECT NOTES", 0.10, 0.50, 0.05, 0.09),
+        phrase("These notes apply to all sheets.", 0.10, 0.90, 0.12, 0.16),
+      ],
+      2: [
+        phrase("A-101", 0.70, 0.80, 0.92, 0.96),
+        phrase("FIRST FLOOR PLAN", 0.50, 0.85, 0.93, 0.97),
+      ],
+    });
+
+    const manifest = await buildSheetManifest("/fake/file.pdf", "test-file");
+
+    const page2 = manifest.entries.find((e) => e.pdfPage === 2);
+    expect(page2?.source).toBe("title_block");
+    expect(page2?.bucket).toBe("floor_plan");
+  });
+
+  it("resolves index entries when title block and index use different sheet number formats", async () => {
+    mockPageCount.mockResolvedValue(2);
+
+    setupPageMocks({
+      1: [
+        phrase("A101", 0.05, 0.12, 0.10, 0.14),
+        phrase("FIRST FLOOR PLAN", 0.30, 0.70, 0.10, 0.14),
+        phrase("A102", 0.05, 0.12, 0.20, 0.24),
+        phrase("SECOND FLOOR PLAN", 0.30, 0.70, 0.20, 0.24),
+        phrase("A001", 0.05, 0.12, 0.30, 0.34),
+        phrase("GENERAL NOTES", 0.30, 0.70, 0.30, 0.34),
+      ],
+      2: [
+        phrase("A-101", 0.70, 0.80, 0.92, 0.96),
+        phrase("FIRST FLOOR PLAN", 0.50, 0.85, 0.93, 0.97),
+      ],
+    });
+
+    const manifest = await buildSheetManifest("/fake/file.pdf", "test-file");
+
+    const page2 = manifest.entries.find((e) => e.pdfPage === 2);
+    expect(page2?.source).toBe("index_page");
+    expect(page2?.sheetTitle).toBe("FIRST FLOOR PLAN");
+  });
+
+  it("rejects a candidate index page when sheet numbers are horizontally scattered", async () => {
+    mockPageCount.mockResolvedValue(2);
+
+    setupPageMocks({
+      1: [
+        phrase("A-101", 0.05, 0.12, 0.10, 0.14),
+        phrase("note about sheet A-101", 0.30, 0.90, 0.10, 0.14),
+        phrase("A-202", 0.55, 0.62, 0.25, 0.29),
+        phrase("structural sheet", 0.65, 0.90, 0.25, 0.29),
+        phrase("G-001", 0.80, 0.87, 0.40, 0.44),
+        phrase("general notes", 0.88, 0.99, 0.40, 0.44),
+      ],
+      2: [
+        phrase("A-101", 0.70, 0.80, 0.92, 0.96),
+        phrase("FIRST FLOOR PLAN", 0.50, 0.85, 0.93, 0.97),
+      ],
+    });
+
+    const manifest = await buildSheetManifest("/fake/file.pdf", "test-file");
+
+    const page2 = manifest.entries.find((e) => e.pdfPage === 2);
+    expect(page2?.source).toBe("title_block");
+    expect(page2?.bucket).toBe("floor_plan");
+  });
+
+  it("preserves bookmarks cascade — bookmark-covered pages are not reclassified by index", async () => {
+    mockPageCount.mockResolvedValue(2);
+    mockMeta.mockResolvedValue({
+      pageLabels: [],
+      outlineSections: [
+        { title: "Floor Plans", pageStart: 2, pageEnd: 2, type: "floor_plan" },
+      ],
+    });
+
+    setupPageMocks({
+      1: [
+        phrase("A-101", 0.05, 0.12, 0.10, 0.14),
+        phrase("SIGN SCHEDULE", 0.30, 0.70, 0.10, 0.14),
+        phrase("A-102", 0.05, 0.12, 0.20, 0.24),
+        phrase("SIGN CRITERIA", 0.30, 0.70, 0.20, 0.24),
+        phrase("A-001", 0.05, 0.12, 0.30, 0.34),
+        phrase("GENERAL NOTES", 0.30, 0.70, 0.30, 0.34),
+      ],
+      2: [],
+    });
+
+    const manifest = await buildSheetManifest("/fake/file.pdf", "test-file");
+
+    const page2 = manifest.entries.find((e) => e.pdfPage === 2);
+    expect(page2?.source).toBe("bookmark");
+    expect(page2?.sheetTitle).toBe("Floor Plans");
   });
 });
