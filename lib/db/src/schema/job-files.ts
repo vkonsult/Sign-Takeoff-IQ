@@ -14,16 +14,29 @@ export const jobFilesTable = pgTable("job_files", {
     floorPlanPages: number[];
     signSchedulePages: number[];
     bothPages?: number[];
+    lifeSafetyPages?: number[];
     otherPages: number[];
     pageTypes?: Record<string, "floor_plan" | "sign_schedule" | "both" | "other">;
     pageImagePaths?: Record<string, string> | null;
     pageLabels?: (string | null)[];
     rejectedPageNumbers?: number[];
+    floorPageLevels?: Record<number, string>;
+    bookmarkTitles?: Record<number, string>;
+    sheetManifest?: Array<{
+      pdfPage: number;
+      bucket: string;
+      sheetTitle: string;
+      sheetNumber: string | null;
+      level: string | null;
+      area: string | null;
+      building: string | null;
+      source: string;
+    }>;
     outlineSections?: Array<{
       title: string;
       pageStart: number;
       pageEnd: number;
-      type: "floor_plan" | "sign_schedule" | "other" | null;
+      bucket: string;
     }>;
   }>(),
   roomInventory: jsonb("room_inventory").$type<object | null>(),

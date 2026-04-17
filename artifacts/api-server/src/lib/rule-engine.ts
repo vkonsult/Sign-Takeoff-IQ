@@ -16,11 +16,11 @@
 import { logger } from "./logger";
 import {
   extractPagePhrases,
-  extractFloorLevelName,
   classifyPageFromPhrases,
   type PdfPhrase,
   type PageWords,
 } from "./pdf-words";
+import { extractFloorLevelName } from "./phase-1-intake";
 import { isCodeOnlyLocation } from "./sign-vocabulary";
 
 // ── Types ─────────────────────────────────────────────────────────────────────

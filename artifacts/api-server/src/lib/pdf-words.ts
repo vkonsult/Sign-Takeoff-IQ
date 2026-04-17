@@ -636,7 +636,7 @@ export interface ClassifyPageResult {
  *   - Full right-side vertical strip (cx > 0.75, any cy) — catches tall title
  *     blocks that occupy the rightmost ~25 % of the page width at any height.
  */
-function isInTitleBlockZone(p: PdfPhrase): boolean {
+export function isInTitleBlockZone(p: PdfPhrase): boolean {
   const cx = (p.x0 + p.x1) / 2;
   const cy = (p.y0 + p.y1) / 2;
   return (cx > 0.60 && cy > 0.60) || cy > 0.80 || cx > 0.75;
@@ -729,31 +729,6 @@ export function classifyPageFromPhrases(phrases: PdfPhrase[]): ClassifyPageResul
  */
 export const CANONICAL_LEVEL_NAMES = CANONICAL_LEVEL_NAMES_FROM_VOCAB;
 
-/**
- * Extract a normalized floor level name from the title-block phrases of a page
- * that has already been classified as `floor_plan` or `both`.
- *
- * Reads the same title-block region as `classifyPageFromPhrases` (bottom-right
- * quadrant and bottom strip) and searches for known level names in order.
- *
- * Returns the matched level name string (e.g. "lower level") or `null` when no
- * level indicator is found.
- */
-export function extractFloorLevelName(phrases: PdfPhrase[]): string | null {
-  if (phrases.length === 0) return null;
-
-  const titleBlockPhrases = phrases.filter(isInTitleBlockZone);
-
-  const combined = (titleBlockPhrases.length > 0 ? titleBlockPhrases : phrases)
-    .map((p) => p.text)
-    .join(" ")
-    .toLowerCase();
-
-  for (const level of CANONICAL_LEVEL_NAMES) {
-    if (combined.includes(level)) return level;
-  }
-  return null;
-}
 
 /**
  * Detect a floor level indicator in a sign location string.
@@ -1055,27 +1030,6 @@ export async function extractPdfMetadata(
   return result;
 }
 
-// ── Building-type detection from title block ──────────────────────────────────
-
-/**
- * Scan the title-block region of a page's phrase list for project-name text
- * and map it to a canonical building type.
- *
- * The title block is defined as the same zone used by `isInTitleBlockZone`:
- *   - Bottom-right quadrant (cx > 0.60 AND cy > 0.60), OR
- *   - Bottom strip (cy > 0.80), OR
- *   - Right-side vertical strip (cx > 0.75)
- *
- * Returns the detected CanonicalBuildingType, or null when no match is found.
- */
-export function extractTitleBlockBuildingType(phrases: PdfPhrase[]): CanonicalBuildingType | null {
-  if (phrases.length === 0) return null;
-  const titleBlockPhrases = phrases.filter(isInTitleBlockZone);
-  const searchText = (titleBlockPhrases.length > 0 ? titleBlockPhrases : phrases)
-    .map((p) => p.text)
-    .join(" ");
-  return detectBuildingType(searchText);
-}
 
 // ── Floor plan all-text candidate extractor ───────────────────────────────────
 

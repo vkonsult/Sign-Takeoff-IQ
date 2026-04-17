@@ -18,8 +18,9 @@ import {
   type PlaqueTableData,
 } from "@workspace/db";
 
-import { extractTextFromPdf, isSpecFile } from "./extraction";
-import { FLOOR_PLAN_EXCLUSION_PHRASES, SIGN_SCHEDULE_PHRASES, isCodeOnlyLocation } from "./sign-vocabulary";
+import { extractTextFromPdf } from "./extraction";
+import { extractSignsHeuristic } from "./extraction-heuristic";
+import { isCodeOnlyLocation } from "./sign-vocabulary";
 import { saveParsedResult, getFilePageImagesDir, PAGES_DIR } from "./storage";
 import { renderFloorPlanPages } from "./pdf-render";
 import { logger } from "./logger";
@@ -27,11 +28,11 @@ import {
   extractPagePhrases,
   extractRawPageItems,
   matchLocationToCoords,
-  extractTitleBlockBuildingType,
-  extractPdfMetadata,
+  extractCodeProximityPairs,
   type PdfPhrase,
 } from "./pdf-words";
 import { buildSheetManifest } from "./sheet-manifest";
+import { runPhase1Intake, classifyFileType } from "./phase-1-intake";
 import {
   extractSignageData,
   type SignTypeSpec,
@@ -126,8 +127,12 @@ export async function runPdfProcessor(jobId: string): Promise<void> {
   }
 
   // ── Spec vs data file routing ─────────────────────────────────────────────
-  const specFiles = files.filter((f) => isSpecFile(f.originalName));
-  const dataFiles = files.filter((f) => !isSpecFile(f.originalName));
+  // `classifyFileType` is filename-only (no I/O) and intentionally runs before
+  // the Phase 1 prepass so we know which files to run the full Phase 1 intake
+  // on (data files only).  This is not a duplicate classification — it is the
+  // lightweight routing gate that determines the Phase 1 scope.
+  const specFiles = files.filter((f) => classifyFileType(f.originalName) === "spec");
+  const dataFiles = files.filter((f) => classifyFileType(f.originalName) === "data");
   const hasDataFiles = dataFiles.length > 0;
 
   // Extract raw text from spec files for metadata (no AI)
@@ -164,9 +169,50 @@ export async function runPdfProcessor(jobId: string): Promise<void> {
   // Track schedule pages per file so extractSignSchedule() can be called after the parallel loop
   const fileSchedulePages = new Map<string, number[]>();
 
-  // Building type is detected from the title block of the first/cover page
-  // and shared across all files in this job.  Set once; never overwritten.
+  // ── Phase 1 Intake pre-pass (filesToProcess, parallel) ──────────────────────
+  // Run Phase 1 for every file in `filesToProcess` (data files when data files
+  // are present; all files otherwise).  Spec files are excluded when data files
+  // exist because they go through a separate text-only extraction path above.
+  // Running in parallel is fine because each file's intake is independent; the
+  // phrase cache is warmed here so all subsequent spatial pre-pass calls are
+  // cheap.  Building-type assignment is done AFTER this pass to ensure "first
+  // file in list order wins" determinism.
+  const intakeResultsMap = new Map<string, import("./phase-1-intake").IntakeResult>();
+  await Promise.all(
+    filesToProcess.map(async (file) => {
+      const t_intake = Date.now();
+      const intakeResult = await runPhase1Intake(file.storedPath, file.originalName, file.id);
+      intakeResultsMap.set(file.id, intakeResult);
+      pipelineSteps.push({
+        step: "phase-1-intake",
+        label: filesToProcess.length > 1 ? `Phase 1 intake — ${file.originalName}` : "Phase 1 intake",
+        durationMs: Date.now() - t_intake,
+        startedAt: new Date(t_intake).toISOString(),
+        details: {
+          file: file.originalName,
+          fileType: intakeResult.fileType,
+          projectName: intakeResult.projectName,
+          jurisdiction: intakeResult.jurisdiction,
+          issueDate: intakeResult.issueDate,
+          buildingType: intakeResult.buildingType,
+          levelCount: intakeResult.levelCount,
+          levelNames: intakeResult.levelNames,
+          drawingIndexPageNum: intakeResult.drawingIndexPageNum,
+        },
+      });
+    })
+  );
+
+  // Deterministically pick building type: first file in list order that detected one.
   let detectedBuildingType: string | null = null;
+  for (const file of filesToProcess) {
+    const intake = intakeResultsMap.get(file.id);
+    if (intake?.buildingType) {
+      detectedBuildingType = intake.buildingType;
+      logger.info({ jobId, fileId: file.id, buildingType: detectedBuildingType }, "[PDF Processor] Building type set from Phase 1 intake");
+      break;
+    }
+  }
 
   await setCurrentStep("Extracting floor plans…");
   const t_extraction = Date.now();
@@ -175,6 +221,9 @@ export async function runPdfProcessor(jobId: string): Promise<void> {
     filesToProcess.map(async (file) => {
       try {
         logger.info({ jobId, file: file.originalName }, "[PDF Processor] Processing file");
+
+        // Use pre-computed Phase 1 intake result (phrase cache is already warm).
+        const intakeResult = intakeResultsMap.get(file.id)!;
 
         // Read any previously rejected page numbers so they are preserved across re-runs.
         const existingRejectedPages: number[] = (file.pageStats as { rejectedPageNumbers?: number[] } | null)?.rejectedPageNumbers ?? [];
@@ -209,18 +258,6 @@ export async function runPdfProcessor(jobId: string): Promise<void> {
         const fpSet = new Set<number>(finalFloorPlanPages);
         fileFloorPlanPages.set(file.id, fpSet);
         allSpatialFloorLevelNames.set(file.id, spatialFloorLevelNames);
-
-        // Building-type detection from first page title block (phrase cache warm from manifest)
-        try {
-          const firstPagePhrases = await extractPagePhrases(file.storedPath, file.id, 1);
-          const detected = extractTitleBlockBuildingType(firstPagePhrases.phrases);
-          if (detected && !detectedBuildingType) {
-            detectedBuildingType = detected;
-            logger.info({ jobId, fileId: file.id, buildingType: detected }, "[PDF Processor] Building type detected from title block");
-          }
-        } catch {
-          // non-fatal
-        }
 
         recordStep(
           `sheet_manifest_${file.id}`,

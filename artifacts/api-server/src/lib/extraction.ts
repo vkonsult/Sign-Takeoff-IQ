@@ -6,10 +6,10 @@ import {
   buildPageTextsFromPhraseCache,
   getPdfPageCount,
   extractPagePhrases,
-  extractTitleBlockBuildingType,
   extractFloorPlanTextCandidates,
   type RoomCandidate,
 } from "./pdf-words";
+import { extractTitleBlockBuildingType } from "./phase-1-intake";
 import type { PdfOutlineSection } from "./pdf-words";
 import { CANONICAL_LEVEL_NAMES } from "./sign-vocabulary";
 import { classifyPage, type PageType, type TitleBlockType, type ScoredPage } from "./extraction-classification";
@@ -1780,22 +1780,6 @@ export async function extractProjectInfo(
 // ─── SPEC FILE HELPERS ────────────────────────────────────────────────────────
 
 /**
- * Returns true when the uploaded filename clearly indicates a CSI specification
- * document (Section 10 14 00 SIGNAGE, "Specs_Signage", etc.) rather than a
- * drawing with actual sign location data.  Used by process-job to route spec
- * files to context injection instead of standalone sign-row extraction.
- */
-export function isSpecFile(filename: string): boolean {
-  const lower = filename.toLowerCase().replace(/[^a-z0-9]/g, " ");
-  // CSI section 10 14 XX patterns (e.g. "10-14-00", "10_14", "101400")
-  if (/10\s*14/.test(lower)) return true;
-  // Explicit "spec(s)" or "specification" near "sign" or "signage"
-  if ((lower.includes("spec") || lower.includes("specification")) &&
-    (lower.includes("sign") || lower.includes("signage"))) return true;
-  return false;
-}
-
-/**
  * Formats raw spec PDF text into a context block that can be injected into
  * schedule / floor-plan prompts so Gemini knows the project's sign type
  * definitions (materials, mounting rules, compliance notes) before it reads
@@ -2023,6 +2007,9 @@ Pages:
     // Detect building type from the first page's title block (no AI) and
     // collect room label candidates from all floor plan pages.  The phrase cache
     // is warm from the text-extraction pass above, so these calls are cheap.
+    // extractTitleBlockBuildingType is imported from phase-1-intake.ts (the single
+    // authoritative owner) and used here as the sole approved call site outside
+    // the default pipeline — this on-demand AI scan path is not in the default flow.
     let detectedBuildingType: string | null = null;
     const allRoomCandidates: RoomCandidate[] = [];
     try {
