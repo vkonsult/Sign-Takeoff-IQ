@@ -143,7 +143,23 @@ export function SignSpecModal({ jobId, fileId, fileName, specPages, plaqueTable,
   const [lbPanY, setLbPanY] = useState(0);
   const lbDragRef = useRef<{ startX: number; startY: number; startPanX: number; startPanY: number; pointerId: number } | null>(null);
   const lbContainerRef = useRef<HTMLDivElement>(null);
+  const lbImgRef = useRef<HTMLImageElement>(null);
+  const lbScaleRef = useRef(1);
   const [lbIsDragging, setLbIsDragging] = useState(false);
+
+  const lbClampAxis = useCallback((value: number, scale: number, axis: "x" | "y"): number => {
+    const container = lbContainerRef.current;
+    const img = lbImgRef.current;
+    if (!container || !img) return value;
+    const minOverlap = 60;
+    if (axis === "x") {
+      const max = (img.offsetWidth * scale) / 2 + container.clientWidth / 2 - minOverlap;
+      return Math.max(-max, Math.min(max, value));
+    } else {
+      const max = (img.offsetHeight * scale) / 2 + container.clientHeight / 2 - minOverlap;
+      return Math.max(-max, Math.min(max, value));
+    }
+  }, []);
 
   const lbResetView = useCallback(() => {
     setLbScale(1);
@@ -175,17 +191,17 @@ export function SignSpecModal({ jobId, fileId, fileName, specPages, plaqueTable,
     e.preventDefault();
     e.stopPropagation();
     const factor = e.deltaY < 0 ? 1.12 : 1 / 1.12;
+    const rect = lbContainerRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    const cx = e.clientX - rect.left - rect.width / 2;
+    const cy = e.clientY - rect.top - rect.height / 2;
     setLbScale((prev) => {
       const next = Math.min(10, Math.max(1, prev * factor));
-      const rect = lbContainerRef.current?.getBoundingClientRect();
-      if (!rect) return next;
-      const cx = e.clientX - rect.left - rect.width / 2;
-      const cy = e.clientY - rect.top - rect.height / 2;
-      setLbPanX((px) => cx * (1 - next / prev) + px * (next / prev));
-      setLbPanY((py) => cy * (1 - next / prev) + py * (next / prev));
+      setLbPanX((px) => lbClampAxis(cx * (1 - next / prev) + px * (next / prev), next, "x"));
+      setLbPanY((py) => lbClampAxis(cy * (1 - next / prev) + py * (next / prev), next, "y"));
       return next;
     });
-  }, []);
+  }, [lbClampAxis]);
 
   const lbHandlePointerDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
     if (e.button !== 0) return;
@@ -204,9 +220,10 @@ export function SignSpecModal({ jobId, fileId, fileName, specPages, plaqueTable,
     if (!lbDragRef.current || lbDragRef.current.pointerId !== e.pointerId) return;
     const dx = e.clientX - lbDragRef.current.startX;
     const dy = e.clientY - lbDragRef.current.startY;
-    setLbPanX(lbDragRef.current.startPanX + dx);
-    setLbPanY(lbDragRef.current.startPanY + dy);
-  }, []);
+    const s = lbScaleRef.current;
+    setLbPanX(lbClampAxis(lbDragRef.current.startPanX + dx, s, "x"));
+    setLbPanY(lbClampAxis(lbDragRef.current.startPanY + dy, s, "y"));
+  }, [lbClampAxis]);
 
   const lbHandlePointerUp = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
     if (lbDragRef.current?.pointerId === e.pointerId) {
@@ -217,6 +234,7 @@ export function SignSpecModal({ jobId, fileId, fileName, specPages, plaqueTable,
 
   const lightboxIndexRef = useRef<number | null>(null);
   useEffect(() => { lightboxIndexRef.current = lightboxIndex; }, [lightboxIndex]);
+  useEffect(() => { lbScaleRef.current = lbScale; }, [lbScale]);
 
   const activeSpecRowRefs = useRef<Map<string, HTMLDivElement>>(new Map());
 
@@ -793,6 +811,7 @@ export function SignSpecModal({ jobId, fileId, fileName, specPages, plaqueTable,
                   onDoubleClick={(e) => { e.stopPropagation(); lbResetView(); }}
                 >
                   <img
+                    ref={lbImgRef}
                     src={lightboxUrl}
                     alt={`Drawing for ${currentSpec.typeCode}`}
                     className="max-w-[80%] max-h-[80%] object-contain rounded shadow-2xl select-none pointer-events-none"
