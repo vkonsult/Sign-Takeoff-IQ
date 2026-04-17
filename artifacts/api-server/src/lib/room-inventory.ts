@@ -589,10 +589,73 @@ interface GeminiRoomClassification {
   confidence: number;
 }
 
+// ── Visual crop helper ────────────────────────────────────────────────────────
+
+const CROP_RENDER_SCALE = 1.5;
+const CROP_PADDING_FACTOR = 3.0;
+const CROP_MIN_PX = 64;
+
+/**
+ * Crops the bounding-box region from an already-rendered page PNG.
+ * Returns null on any failure so callers can fall back to text-only.
+ *
+ * Expects an absolute path to the rendered PNG file.
+ */
+async function cropRoomRegion(
+  imagePath: string,
+  bbox: { x: number; y: number; w: number; h: number },
+): Promise<string | null> {
+  try {
+    const { loadImage, createCanvas } = await import("@napi-rs/canvas");
+    const img = await loadImage(imagePath);
+    const imgW = img.width as number;
+    const imgH = img.height as number;
+
+    // Convert normalised bbox to pixel coordinates
+    const bx = bbox.x * imgW;
+    const by = bbox.y * imgH;
+    const bw = bbox.w * imgW;
+    const bh = bbox.h * imgH;
+
+    // Add generous padding so Gemini can see surrounding context
+    const padX = Math.max(bw * CROP_PADDING_FACTOR, CROP_MIN_PX);
+    const padY = Math.max(bh * CROP_PADDING_FACTOR, CROP_MIN_PX);
+
+    const cx = Math.max(0, Math.round(bx - padX));
+    const cy = Math.max(0, Math.round(by - padY));
+    const cw = Math.min(imgW - cx, Math.round(bw + padX * 2));
+    const ch = Math.min(imgH - cy, Math.round(bh + padY * 2));
+
+    if (cw < 4 || ch < 4) return null;
+
+    const canvas = createCanvas(cw, ch);
+    const ctx = canvas.getContext("2d");
+    ctx.drawImage(img, cx, cy, cw, ch, 0, 0, cw, ch);
+
+    const pngBuffer = await canvas.encode("png");
+    return pngBuffer.toString("base64");
+  } catch (err) {
+    logger.debug({ err, imagePath }, "[RoomInventory] cropRoomRegion failed — text-only fallback");
+    return null;
+  }
+}
+
+// ── Gemini content part types ─────────────────────────────────────────────────
+
+type GeminiTextPart = { text: string };
+type GeminiInlineDataPart = { inlineData: { mimeType: string; data: string } };
+type GeminiPart = GeminiTextPart | GeminiInlineDataPart;
+
+// ── AI enrichment for ambiguous rooms (text + optional visual context) ────────
+
 /**
  * Sends ambiguous room records to Gemini for classification.
  * Returns an updated copy of the rooms array with aiEnriched flags and
  * corrected roomName / flags for enriched records.
+ *
+ * When pdfPath is provided, each ambiguous room's bounding-box region is
+ * cropped from the rasterised floor plan page and sent as an inline image
+ * alongside the text label, improving accuracy for short/cryptic names.
  *
  * Non-fatal: if Gemini fails the original rooms are returned unchanged.
  */
@@ -600,6 +663,7 @@ export async function enrichAmbiguousRoomsWithAI(
   rooms: RoomRecord[],
   fileId: string,
   jobId: string,
+  pdfPath?: string,
 ): Promise<{ rooms: RoomRecord[]; enrichedCount: number }> {
   const ambiguousIndices: number[] = [];
   for (let i = 0; i < rooms.length; i++) {
@@ -615,13 +679,58 @@ export async function enrichAmbiguousRoomsWithAI(
     return { index: idx, roomName: r.roomName, roomNumber: r.roomNumber ?? null, level: r.level };
   });
 
-  const prompt = `You are a building architecture expert analyzing floor plan room labels from a construction document set.
+  // ── Attempt to build per-room visual crops ────────────────────────────────
+  // Map: ambiguous array position → base64 PNG crop (null = not available)
+  const crops = new Map<number, string | null>();
+  let anyVisual = false;
 
-The following room labels were extracted from a PDF floor plan but could not be confidently classified by keyword heuristics because they are very short abbreviations, unusual names, or non-standard labels.
+  if (pdfPath) {
+    // Collect the unique page numbers that have at least one ambiguous room with
+    // a bounding box, then render all of them in one batch (the rasterizer
+    // already caches PNGs on disk so subsequent calls are fast no-ops, but
+    // batching here avoids redundant PDF decode work for busy drawings).
+    const uniquePages = new Set<number>();
+    for (const c of candidates) {
+      const room = rooms[c.index]!;
+      if (room.boundingBox) uniquePages.add(room.pdfPage);
+    }
 
-For each room, determine the most likely room type from the list below, and if the label is an abbreviation, expand it to the full standard room name.
+    let renderedPages = new Map<number, string>();
+    if (uniquePages.size > 0) {
+      try {
+        const outputDir = getFilePageImagesDir(fileId);
+        renderedPages = await renderFloorPlanPages(
+          pdfPath,
+          Array.from(uniquePages),
+          outputDir,
+          CROP_RENDER_SCALE,
+        );
+      } catch (err) {
+        logger.warn({ err, fileId, jobId }, "[RoomInventory] Page render for visual crops failed — text-only fallback");
+      }
+    }
 
-Room type options:
+    await Promise.all(
+      candidates.map(async (c, pos) => {
+        const room = rooms[c.index]!;
+        if (!room.boundingBox) {
+          crops.set(pos, null);
+          return;
+        }
+        const imagePath = renderedPages.get(room.pdfPage);
+        if (!imagePath) {
+          crops.set(pos, null);
+          return;
+        }
+        const b64 = await cropRoomRegion(imagePath, room.boundingBox);
+        crops.set(pos, b64);
+        if (b64) anyVisual = true;
+      }),
+    );
+  }
+
+  // ── Build the Gemini prompt ───────────────────────────────────────────────
+  const ROOM_TYPE_OPTIONS = `Room type options:
 - RESTROOM: toilets, restrooms, bathrooms, showers, WC, lavatory
 - STAIR: stairwells, stair towers
 - ELEVATOR: elevators, lifts
@@ -635,7 +744,51 @@ Room type options:
 - ASSEMBLY: assembly areas, auditoriums, large gathering spaces
 - OFFICE: offices, workstations, administrative areas
 - STORAGE: storage areas, warehouses, stock rooms
-- OTHER: anything that doesn't fit the above
+- OTHER: anything that doesn't fit the above`;
+
+  const parts: GeminiPart[] = [];
+
+  if (anyVisual) {
+    // Multimodal prompt: interleave images with per-room text descriptions
+    parts.push({
+      text:
+        `You are a building architecture expert analyzing floor plan room labels from a construction document set.\n\n` +
+        `The following room labels were extracted from a PDF floor plan but could not be confidently classified by ` +
+        `keyword heuristics because they are very short abbreviations, unusual names, or non-standard labels.\n\n` +
+        `For each room you will see the text label and, where available, a cropped image from the floor plan showing ` +
+        `the surrounding area. Use both sources of information to determine the room type and, if the label is an ` +
+        `abbreviation, expand it to the full standard room name.\n\n` +
+        ROOM_TYPE_OPTIONS,
+    });
+
+    for (let pos = 0; pos < candidates.length; pos++) {
+      const c = candidates[pos]!;
+      const crop = crops.get(pos) ?? null;
+      parts.push({
+        text: `\nRoom entry (index ${c.index}): "${c.roomName}"${c.roomNumber ? ` / room number ${c.roomNumber}` : ""}${c.level ? ` on level ${c.level}` : ""}`,
+      });
+      if (crop) {
+        parts.push({ inlineData: { mimeType: "image/png", data: crop } });
+      }
+    }
+
+    parts.push({
+      text:
+        `\nRespond with ONLY a valid JSON array. Each element must have:\n` +
+        `- "index": the original index number (integer)\n` +
+        `- "roomName": the expanded/corrected room name in ALL CAPS (keep original if already clear)\n` +
+        `- "roomType": one of the room type strings above\n` +
+        `- "confidence": a number from 0.0 to 1.0 indicating your certainty`,
+    });
+  } else {
+    // Text-only prompt (no pdfPath or no bounding boxes available)
+    const prompt = `You are a building architecture expert analyzing floor plan room labels from a construction document set.
+
+The following room labels were extracted from a PDF floor plan but could not be confidently classified by keyword heuristics because they are very short abbreviations, unusual names, or non-standard labels.
+
+For each room, determine the most likely room type from the list below, and if the label is an abbreviation, expand it to the full standard room name.
+
+${ROOM_TYPE_OPTIONS}
 
 Respond with ONLY a valid JSON array. Each element must have:
 - "index": the original index number (integer)
@@ -645,11 +798,28 @@ Respond with ONLY a valid JSON array. Each element must have:
 
 Rooms to classify:
 ${JSON.stringify(candidates, null, 2)}`;
+    parts.push({ text: prompt });
+  }
+
+  logger.info(
+    { fileId, jobId, ambiguous: ambiguousIndices.length, visual: anyVisual },
+    "[RoomInventory] Sending ambiguous rooms to Gemini for classification",
+  );
 
   try {
-    const response = await ai.models.generateContent({
+    const geminiClient = ai as {
+      models: {
+        generateContent: (opts: {
+          model: string;
+          contents: { role: string; parts: GeminiPart[] }[];
+          config?: { temperature?: number };
+        }) => Promise<{ text: string | undefined }>;
+      };
+    };
+
+    const response = await geminiClient.models.generateContent({
       model: "gemini-2.5-flash",
-      contents: [{ role: "user", parts: [{ text: prompt }] }],
+      contents: [{ role: "user", parts }],
       config: { temperature: 0.1 },
     });
 

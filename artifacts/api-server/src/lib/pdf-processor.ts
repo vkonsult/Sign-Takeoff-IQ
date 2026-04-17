@@ -508,6 +508,7 @@ export async function runPdfProcessor(jobId: string): Promise<void> {
                   fileRoomInventory.rooms,
                   file.id,
                   jobId,
+                  file.storedPath,
                 );
                 fileRoomInventory = {
                   ...fileRoomInventory,
