@@ -461,6 +461,8 @@ export default function JobsList() {
                     {/* Checkbox */}
                     <button
                       onClick={(e) => toggleSelect(job.id, e)}
+                      aria-label={isChecked ? `Deselect ${job.name ?? "this job"}` : `Select ${job.name ?? "this job"}`}
+                      aria-pressed={isChecked}
                       className={`flex items-center justify-center pl-3 py-4 transition-all
                         ${isChecked ? "opacity-100" : "opacity-0 group-hover:opacity-100"}`}
                     >
