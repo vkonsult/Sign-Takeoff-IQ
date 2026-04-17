@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from "react";
-import { useRoute, useSearch } from "wouter";
+import { useRoute, useSearch, useLocation } from "wouter";
 import { useQueryClient } from "@tanstack/react-query";
 import { AppShell } from "@/components/layout/Shell";
 import { apiFetch, openPdfInNewTab } from "@/lib/apiClient";
@@ -906,6 +906,7 @@ export default function JobDetails() {
   const [, params] = useRoute("/jobs/:jobId");
   const jobId = params?.jobId || "";
   const search = useSearch();
+  const [, navigate] = useLocation();
   
   const { data, isLoading, isError, error } = useJobDetails(jobId);
   const extractMutation = useStartExtraction();
@@ -993,9 +994,14 @@ export default function JobDetails() {
   const [summaryFilter, setSummaryFilter] = useState<null | "flagged">(null);
   const [activeTab, setActiveTab] = useState<"table" | "sheets" | "summary" | "floorplans" | "signpages" | "specs" | "timeline" | "coords" | "ai_scans" | "rooms">(() => parseTabParam(search) ?? "table");
   useEffect(() => {
-    const parsed = parseTabParam(search);
-    if (parsed) setActiveTab(parsed);
+    setActiveTab(parseTabParam(search) ?? "table");
   }, [search]);
+  const setTab = (tab: "table" | "sheets" | "summary" | "floorplans" | "signpages" | "specs" | "timeline" | "coords" | "ai_scans" | "rooms") => {
+    setActiveTab(tab);
+    const params = new URLSearchParams(search);
+    params.set("tab", tab);
+    navigate(`/jobs/${jobId}?${params.toString()}`);
+  };
   const [showAiHighlight, setShowAiHighlight] = useState(false);
 
   const PROCESSING_TIMEOUT_SECONDS = 5 * 60;
@@ -1505,7 +1511,7 @@ export default function JobDetails() {
               <div className="flex-none flex items-center border-b border-border bg-secondary/20">
                 <div className="flex items-center px-4 gap-0">
                   <button
-                    onClick={() => setActiveTab("table")}
+                    onClick={() => setTab("table")}
                     className={`flex items-center gap-1.5 px-3 py-2 text-[10px] font-display font-semibold uppercase tracking-wider border-b-2 transition-all ${
                       activeTab === "table"
                         ? "border-primary text-primary"
@@ -1525,7 +1531,7 @@ export default function JobDetails() {
                     )}
                   </button>
                   <button
-                    onClick={() => setActiveTab("sheets")}
+                    onClick={() => setTab("sheets")}
                     className={`flex items-center gap-1.5 px-3 py-2 text-[10px] font-display font-semibold uppercase tracking-wider border-b-2 transition-all ${
                       activeTab === "sheets"
                         ? "border-primary text-primary"
@@ -1536,7 +1542,7 @@ export default function JobDetails() {
                     Sheets Analysis
                   </button>
                   <button
-                    onClick={() => setActiveTab("summary")}
+                    onClick={() => setTab("summary")}
                     className={`flex items-center gap-1.5 px-3 py-2 text-[10px] font-display font-semibold uppercase tracking-wider border-b-2 transition-all ${
                       activeTab === "summary"
                         ? "border-primary text-primary"
@@ -1547,7 +1553,7 @@ export default function JobDetails() {
                     Sign Type Summary
                   </button>
                   <button
-                    onClick={() => setActiveTab("floorplans")}
+                    onClick={() => setTab("floorplans")}
                     className={`flex items-center gap-1.5 px-3 py-2 text-[10px] font-display font-semibold uppercase tracking-wider border-b-2 transition-all ${
                       activeTab === "floorplans"
                         ? "border-primary text-primary"
@@ -1558,7 +1564,7 @@ export default function JobDetails() {
                     Floor Plans
                   </button>
                   <button
-                    onClick={() => setActiveTab("signpages")}
+                    onClick={() => setTab("signpages")}
                     className={`flex items-center gap-1.5 px-3 py-2 text-[10px] font-display font-semibold uppercase tracking-wider border-b-2 transition-all ${
                       activeTab === "signpages"
                         ? "border-primary text-primary"
@@ -1569,7 +1575,7 @@ export default function JobDetails() {
                     Sign Pages
                   </button>
                   <button
-                    onClick={() => setActiveTab("specs")}
+                    onClick={() => setTab("specs")}
                     className={`flex items-center gap-1.5 px-3 py-2 text-[10px] font-display font-semibold uppercase tracking-wider border-b-2 transition-all ${
                       activeTab === "specs"
                         ? "border-primary text-primary"
@@ -1580,7 +1586,7 @@ export default function JobDetails() {
                     Sign Specs
                   </button>
                   <button
-                    onClick={() => setActiveTab("timeline")}
+                    onClick={() => setTab("timeline")}
                     className={`flex items-center gap-1.5 px-3 py-2 text-[10px] font-display font-semibold uppercase tracking-wider border-b-2 transition-all ${
                       activeTab === "timeline"
                         ? "border-primary text-primary"
@@ -1592,7 +1598,7 @@ export default function JobDetails() {
                   </button>
                   {(isCompleted || isFailed) && (
                     <button
-                      onClick={() => setActiveTab("coords")}
+                      onClick={() => setTab("coords")}
                       className={`flex items-center gap-1.5 px-3 py-2 text-[10px] font-display font-semibold uppercase tracking-wider border-b-2 transition-all ${
                         activeTab === "coords"
                           ? "border-primary text-primary"
@@ -1605,7 +1611,7 @@ export default function JobDetails() {
                   )}
                   {(isCompleted || isFailed) && (
                     <button
-                      onClick={() => setActiveTab("ai_scans")}
+                      onClick={() => setTab("ai_scans")}
                       className={`flex items-center gap-1.5 px-3 py-2 text-[10px] font-display font-semibold uppercase tracking-wider border-b-2 transition-all ${
                         activeTab === "ai_scans"
                           ? "border-violet-500 text-violet-400"
@@ -1618,7 +1624,7 @@ export default function JobDetails() {
                   )}
                   {(isCompleted || isFailed) && (
                     <button
-                      onClick={() => setActiveTab("rooms")}
+                      onClick={() => setTab("rooms")}
                       className={`flex items-center gap-1.5 px-3 py-2 text-[10px] font-display font-semibold uppercase tracking-wider border-b-2 transition-all ${
                         activeTab === "rooms"
                           ? "border-emerald-500 text-emerald-400"
