@@ -2842,6 +2842,7 @@ interface RoomRecord {
   isPublicFacing: boolean;
   isStaffOnly: boolean;
   isAssembly: boolean;
+  isOccupied?: boolean;
   extractionConfidence: number;
   aiEnriched?: boolean;
 }
@@ -3102,6 +3103,7 @@ interface RoomInventoryTabProps {
 function RoomInventoryTab({ files, processingLog }: RoomInventoryTabProps) {
   const [filterLevel, setFilterLevel] = useState<string>("all");
   const [filterFlag, setFilterFlag] = useState<string>("all");
+  const [filterMissing, setFilterMissing] = useState<boolean>(false);
 
   type RoomEntry = RoomRecord & {
     sourceFile: string;
@@ -3147,6 +3149,19 @@ function RoomInventoryTab({ files, processingLog }: RoomInventoryTabProps) {
 
   const hasAnyAssignmentData = allRooms.some((r) => r.hasAssignmentData);
 
+  function isMissingSignsRoom(r: (typeof allRooms)[number]): boolean {
+    if (!r.hasAssignmentData) return false;
+    const occupied = r.isOccupied ?? !r.isMepUnoccupied;
+    if (!occupied) return false;
+    const excluded = r.assignment?.exclusionReasons ?? [];
+    if (excluded.length > 0) return false;
+    const badges = r.assignment ? assignmentSignBadges(r.assignment) : [];
+    return badges.length === 0;
+  }
+
+  const missingSignsRooms = allRooms.filter(isMissingSignsRoom);
+  const missingSignsCount = missingSignsRooms.length;
+
   const levels = Array.from(new Set(allRooms.map((r) => r.level))).sort();
   const flagOptions = [
     { value: "restroom", label: "Restroom" },
@@ -3158,6 +3173,7 @@ function RoomInventoryTab({ files, processingLog }: RoomInventoryTabProps) {
   ];
 
   const filtered = allRooms.filter((r) => {
+    if (filterMissing && !isMissingSignsRoom(r)) return false;
     if (filterLevel !== "all" && r.level !== filterLevel) return false;
     if (filterFlag !== "all") {
       if (filterFlag === "restroom" && !r.isRestroom) return false;
@@ -3233,8 +3249,44 @@ function RoomInventoryTab({ files, processingLog }: RoomInventoryTabProps) {
               <option key={o.value} value={o.value}>{o.label}</option>
             ))}
           </select>
+          {hasAnyAssignmentData && missingSignsCount > 0 && (
+            <button
+              onClick={() => setFilterMissing((v) => !v)}
+              className={`inline-flex items-center gap-1 px-2 py-1 rounded border text-[11px] font-mono transition-colors ${
+                filterMissing
+                  ? "bg-amber-500/20 border-amber-500/50 text-amber-300"
+                  : "bg-amber-500/10 border-amber-500/25 text-amber-400 hover:bg-amber-500/20 hover:border-amber-500/40"
+              }`}
+            >
+              <AlertTriangle className="w-3 h-3 shrink-0" />
+              {filterMissing ? "Showing" : "Show"} {missingSignsCount} missing
+            </button>
+          )}
         </div>
       </div>
+
+      {/* Missing signs summary banner */}
+      {hasAnyAssignmentData && missingSignsCount > 0 && (
+        <button
+          onClick={() => setFilterMissing((v) => !v)}
+          className={`w-full flex items-center gap-2 px-3 py-2.5 rounded border text-left transition-colors ${
+            filterMissing
+              ? "bg-amber-500/20 border-amber-500/50"
+              : "bg-amber-500/10 border-amber-500/20 hover:bg-amber-500/15 hover:border-amber-500/30"
+          }`}
+        >
+          <AlertTriangle className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+          <span className="text-[11px] font-mono text-amber-300 font-semibold">
+            {missingSignsCount} room{missingSignsCount !== 1 ? "s" : ""} may be missing signs
+          </span>
+          <span className="text-[11px] font-mono text-amber-400/60 ml-1">
+            — occupied room{missingSignsCount !== 1 ? "s" : ""} with no assigned signs detected
+          </span>
+          <span className="ml-auto text-[10px] font-mono text-amber-400/50 shrink-0">
+            {filterMissing ? "Clear filter" : "Click to filter"}
+          </span>
+        </button>
+      )}
 
       {/* Warnings */}
       {allWarnings.length > 0 && (
@@ -3282,13 +3334,17 @@ function RoomInventoryTab({ files, processingLog }: RoomInventoryTabProps) {
                   const flags = roomFlags(room);
                   const badges = room.assignment ? assignmentSignBadges(room.assignment) : [];
                   const excluded = room.assignment?.exclusionReasons ?? [];
+                  const missing = isMissingSignsRoom(room);
                   return (
                     <tr
                       key={`${room.sourceFile}-${room.roomName}-${room.roomNumber}-${i}`}
-                      className={`border-b border-border/20 last:border-0 hover:bg-secondary/20 transition-colors ${i % 2 === 0 ? "" : "bg-card/30"}`}
+                      className={`border-b border-border/20 last:border-0 hover:bg-secondary/20 transition-colors ${missing ? "bg-amber-500/5" : i % 2 === 0 ? "" : "bg-card/30"}`}
                     >
                       <td className="px-3 py-2 text-xs font-mono text-muted-foreground whitespace-nowrap">
-                        {room.roomNumber ?? <span className="text-muted-foreground/30">—</span>}
+                        <div className="flex items-center gap-1">
+                          {missing && <AlertTriangle className="w-3 h-3 text-amber-400 shrink-0" title="No signs assigned" />}
+                          {room.roomNumber ?? <span className="text-muted-foreground/30">—</span>}
+                        </div>
                       </td>
                       <td className="px-3 py-2 text-xs font-mono text-foreground/80 max-w-[200px] truncate" title={room.roomName}>
                         {room.roomName}
@@ -3325,6 +3381,11 @@ function RoomInventoryTab({ files, processingLog }: RoomInventoryTabProps) {
                           <span className="text-[10px] font-mono text-muted-foreground/50 italic" title={excluded.join("; ")}>
                             excluded
                           </span>
+                        ) : missing ? (
+                          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded border text-[9px] font-mono bg-amber-500/15 text-amber-400 border-amber-500/30 whitespace-nowrap">
+                            <AlertTriangle className="w-2.5 h-2.5 shrink-0" />
+                            no signs assigned
+                          </span>
                         ) : (
                           <span className="text-[10px] text-muted-foreground/30 font-mono">none assigned</span>
                         )}
@@ -3342,7 +3403,7 @@ function RoomInventoryTab({ files, processingLog }: RoomInventoryTabProps) {
           </div>
           <div className="px-3 py-2 border-t border-border/40 bg-secondary/30 text-[10px] font-mono text-muted-foreground/50">
             {filtered.length} of {allRooms.length} room{allRooms.length !== 1 ? "s" : ""}
-            {filterLevel !== "all" || filterFlag !== "all" ? " (filtered)" : ""}
+            {filterLevel !== "all" || filterFlag !== "all" || filterMissing ? " (filtered)" : ""}
           </div>
         </div>
       )}
