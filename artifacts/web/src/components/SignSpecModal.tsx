@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo, useRef, useCallback } from "react";
+import { computeWheelZoom, resetLbView } from "@/lib/lightbox-zoom";
 import { Document, Page, pdfjs } from "react-pdf";
 import "react-pdf/dist/Page/AnnotationLayer.css";
 import "react-pdf/dist/Page/TextLayer.css";
@@ -164,16 +165,18 @@ export function SignSpecModal({ jobId, fileId, fileName, specPages, plaqueTable,
   }, []);
 
   const lbResetView = useCallback(() => {
-    setLbScale(1);
-    setLbPanX(0);
-    setLbPanY(0);
+    const s = resetLbView();
+    setLbScale(s.scale);
+    setLbPanX(s.panX);
+    setLbPanY(s.panY);
   }, []);
 
   const closeLightbox = useCallback(() => {
     setLightboxIndex(null);
-    setLbScale(1);
-    setLbPanX(0);
-    setLbPanY(0);
+    const s = resetLbView();
+    setLbScale(s.scale);
+    setLbPanX(s.panX);
+    setLbPanY(s.panY);
     lbPointersRef.current.clear();
     lbPanStartRef.current = null;
     lbPinchRef.current = null;
@@ -187,9 +190,10 @@ export function SignSpecModal({ jobId, fileId, fileName, specPages, plaqueTable,
       if (next < 0 || next >= total) return i;
       return next;
     });
-    setLbScale(1);
-    setLbPanX(0);
-    setLbPanY(0);
+    const s = resetLbView();
+    setLbScale(s.scale);
+    setLbPanX(s.panX);
+    setLbPanY(s.panY);
     lbPointersRef.current.clear();
     lbPanStartRef.current = null;
     lbPinchRef.current = null;
@@ -198,21 +202,27 @@ export function SignSpecModal({ jobId, fileId, fileName, specPages, plaqueTable,
   const lbHandleWheel = useCallback((e: React.WheelEvent<HTMLDivElement>) => {
     e.preventDefault();
     e.stopPropagation();
-    const factor = e.deltaY < 0 ? 1.12 : 1 / 1.12;
     const rect = lbContainerRef.current?.getBoundingClientRect();
     if (!rect) return;
     const cx = e.clientX - rect.left - rect.width / 2;
     const cy = e.clientY - rect.top - rect.height / 2;
-    setLbScale((prev) => {
-      const next = Math.min(10, Math.max(1, prev * factor));
-      if (next === 1) {
-        setLbPanX(0);
-        setLbPanY(0);
-      } else {
-        setLbPanX((px) => lbClampAxis(cx * (1 - next / prev) + px * (next / prev), next, "x"));
-        setLbPanY((py) => lbClampAxis(cy * (1 - next / prev) + py * (next / prev), next, "y"));
-      }
-      return next;
+    setLbScale((prevScale) => {
+      const next = computeWheelZoom(
+        { scale: prevScale, panX: 0, panY: 0 },
+        e.deltaY,
+        cx,
+        cy,
+        lbClampAxis,
+      );
+      setLbPanX((px) => {
+        const full = computeWheelZoom({ scale: prevScale, panX: px, panY: 0 }, e.deltaY, cx, cy, lbClampAxis);
+        return full.panX;
+      });
+      setLbPanY((py) => {
+        const full = computeWheelZoom({ scale: prevScale, panX: 0, panY: py }, e.deltaY, cx, cy, lbClampAxis);
+        return full.panY;
+      });
+      return next.scale;
     });
   }, [lbClampAxis]);
 
