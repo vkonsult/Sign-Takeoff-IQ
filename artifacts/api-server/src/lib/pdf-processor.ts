@@ -319,6 +319,13 @@ export async function runPdfProcessor(jobId: string): Promise<void> {
               allPageImagePaths.set(file.id, pageImagePathsRelative);
             }
             logger.info({ fileId: file.id, pagesRendered: rendered.size, durationMs: Date.now() - t_render }, "[PDF Processor] PNG pre-render complete");
+            recordStep(
+              `png_render_${file.id}`,
+              filesToProcess.length > 1 ? `PNG pre-render — ${file.originalName}` : "PNG pre-render",
+              t_render,
+              { pagesRendered: rendered.size, pagesRequested: pngPageNums.length },
+              "phase-3",
+            );
           } catch (err) {
             logger.warn({ err, fileId: file.id }, "[PDF Processor] PNG pre-render failed — non-fatal");
           }
@@ -387,15 +394,13 @@ export async function runPdfProcessor(jobId: string): Promise<void> {
               }
             }
 
-            const durationMs = Date.now() - t_rule;
-            pipelineSteps.push({
-              step: `rule_application_${file.id}`,
-              label: filesToProcess.length > 1
-                ? `Apply Rules R1-R15 — ${file.originalName}`
-                : "Apply Rules R1–R15",
-              durationMs,
-              startedAt: new Date(t_rule).toISOString(),
-              details: {
+            recordStep(
+              `rule_application_${file.id}`,
+              filesToProcess.length > 1
+                ? `Sign extraction (rules) — ${file.originalName}`
+                : "Sign extraction (rules)",
+              t_rule,
+              {
                 roomCount: ruleResult.roomCount,
                 assignmentCount: ruleResult.assignments.length,
                 signRowsInserted: allSignRows.length,
@@ -404,7 +409,8 @@ export async function runPdfProcessor(jobId: string): Promise<void> {
                 decisionsLog: ruleResult.decisionsLog,
                 questionsForVerification: ruleResult.questionsForVerification,
               },
-            });
+              "phase-3",
+            );
 
             logger.info(
               {
@@ -412,7 +418,7 @@ export async function runPdfProcessor(jobId: string): Promise<void> {
                 fileId: file.id,
                 roomCount: ruleResult.roomCount,
                 signRowsInserted: allSignRows.length,
-                durationMs,
+                durationMs: Date.now() - t_rule,
               },
               "[PDF Processor] Rule engine (Phase 5) complete",
             );
@@ -471,6 +477,17 @@ export async function runPdfProcessor(jobId: string): Promise<void> {
                   "[PDF Processor] Schedule spatial parse complete"
                 );
               }
+              recordStep(
+                `schedule_heuristic_${file.id}`,
+                filesToProcess.length > 1 ? `Sign schedule parse — ${file.originalName}` : "Sign schedule parse",
+                t_schedule,
+                {
+                  schedulePages: schedulePageNums.length,
+                  specs: mergedSpecs.size,
+                  entries: fileEntries.length,
+                },
+                "phase-3",
+              );
             } catch (err) {
               logger.warn({ err, fileId: file.id }, "[PDF Processor] Schedule parsing failed — non-fatal");
             }
