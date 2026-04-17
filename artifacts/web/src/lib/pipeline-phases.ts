@@ -145,8 +145,8 @@ export const PIPELINE_PHASES: PipelinePhase[] = [
       "signage-schedule-parser.ts (text extraction path)",
       "ai-processor.ts → sign_schedule_enrich (on-demand only → now in-pipeline)",
     ],
-    newModule: "sign-schedule-extractor.ts (planned)",
-    taskRef: null,
+    newModule: "sign-schedule-extractor.ts → extractSignSchedule()",
+    taskRef: "#356",
   },
   {
     id: 4,

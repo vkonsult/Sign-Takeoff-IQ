@@ -31,6 +31,7 @@ export const jobsTable = pgTable("jobs", {
   buildingType: text("building_type"),
   scanMethod: text("scan_method").default("gemini"),
   processingLog: json("processing_log").$type<ProcessingStep[]>(),
+  plaqueTable: json("plaque_table").$type<PlaqueTableData | null>(),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
@@ -42,6 +43,28 @@ export interface ProcessingStep {
   startedAt: string;
   phase?: string;
   details?: Record<string, unknown>;
+}
+
+export interface PlaqueTypeRow {
+  typeCode: string;
+  displayName: string;
+  letterHeight: string | null;
+  hasBraille: boolean;
+  hasInsert: boolean;
+  triggerCondition: string | null;
+  dimensions: string | null;
+  material: string | null;
+  mountingNote: string | null;
+  adaNote: string | null;
+  rawNote: string | null;
+}
+
+export interface PlaqueTableData {
+  plaqueTypes: PlaqueTypeRow[];
+  generalNotes: string[];
+  sourcePages: number[];
+  extractionMethod: "visual" | "text_fallback";
+  warnings: string[];
 }
 
 export const insertJobSchema = createInsertSchema(jobsTable).omit({ id: true, createdAt: true, updatedAt: true });

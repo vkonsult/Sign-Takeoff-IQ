@@ -15,6 +15,7 @@ import {
   signTypeSpecsTable,
   signageScheduleEntriesTable,
   type ProcessingStep,
+  type PlaqueTableData,
 } from "@workspace/db";
 
 import { extractTextFromPdf, isSpecFile } from "./extraction";
@@ -37,6 +38,7 @@ import {
   type SignTypeSpec,
   type ScheduleEntry,
 } from "./signage-schedule-parser";
+import { extractSignSchedule } from "./sign-schedule-extractor";
 
 export async function runPdfProcessor(jobId: string): Promise<void> {
   const pipelineSteps: ProcessingStep[] = [];
@@ -103,7 +105,7 @@ export async function runPdfProcessor(jobId: string): Promise<void> {
 
   await db
     .update(jobsTable)
-    .set({ status: "processing", updatedAt: new Date() })
+    .set({ status: "processing", plaqueTable: null, updatedAt: new Date() })
     .where(eq(jobsTable.id, jobId));
 
   const files = await db
@@ -154,6 +156,9 @@ export async function runPdfProcessor(jobId: string): Promise<void> {
   // Accumulate schedule parser results across all files for batch DB insertion
   const allScheduleSpecs: Array<SignTypeSpec & { fileId: string; fileStoredPath: string }> = [];
   const allScheduleEntries: Array<ScheduleEntry & { fileId: string }> = [];
+
+  // Track schedule pages per file so extractSignSchedule() can be called after the parallel loop
+  const fileSchedulePages = new Map<string, number[]>();
 
   // Building type is detected from the title block of the first/cover page
   // and shared across all files in this job.  Set once; never overwritten.
@@ -363,6 +368,7 @@ export async function runPdfProcessor(jobId: string): Promise<void> {
         // Parse pages classified as sign_schedule using the deterministic spatial parser.
         {
           const schedulePageNums = [...new Set([...finalSignSchedulePages, ...finalBothPages])].sort((a, b) => a - b);
+          fileSchedulePages.set(file.id, schedulePageNums);
           if (schedulePageNums.length > 0) {
             try {
               const t_schedule = Date.now();
@@ -587,6 +593,113 @@ export async function runPdfProcessor(jobId: string): Promise<void> {
 
     } catch (err) {
       logger.warn({ err, jobId }, "[PDF Processor] Schedule data persistence failed — non-fatal");
+    }
+  }
+
+  // ── Phase 3: Sign Schedule Extraction (Gemini visual read) ───────────────
+  // For every file that has signage schedule pages, run the Gemini visual read
+  // to produce a structured plaque table (PlaqueTypeRow[]).  Falls back to the
+  // text parser if Gemini fails or returns 0 rows.
+  // Results are collected in-memory across all files, then aggregated into a
+  // single authoritative job-level plaqueTable (no stale carryover from prior runs).
+  {
+    type FileResult = { plaqueTypes: import("@workspace/db").PlaqueTypeRow[]; generalNotes: string[]; sourcePages: number[]; extractionMethod: "visual" | "text_fallback"; warnings: string[] };
+    const phase3Results: FileResult[] = [];
+
+    for (const file of filesToProcess) {
+      const schedulePageNums = fileSchedulePages.get(file.id) ?? [];
+      if (schedulePageNums.length === 0) continue;
+
+      const t_extract = Date.now();
+      try {
+        const extractResult = await extractSignSchedule(
+          file.storedPath,
+          file.id,
+          schedulePageNums,
+          jobId,
+        );
+        phase3Results.push(extractResult);
+        pipelineSteps.push({
+          step: `sign_schedule_extract_${file.id}`,
+          label: filesToProcess.length > 1
+            ? `Sign schedule extraction — ${file.originalName}`
+            : "Sign schedule extraction",
+          durationMs: Date.now() - t_extract,
+          startedAt: new Date(t_extract).toISOString(),
+          details: {
+            pages: schedulePageNums.length,
+            plaqueTypes: extractResult.plaqueTypes.length,
+            method: extractResult.extractionMethod,
+            warnings: extractResult.warnings,
+          },
+        });
+        logger.info(
+          {
+            jobId,
+            fileId: file.id,
+            pages: schedulePageNums.length,
+            plaqueTypes: extractResult.plaqueTypes.length,
+            method: extractResult.extractionMethod,
+            durationMs: Date.now() - t_extract,
+          },
+          "[PDF Processor] Phase 3 sign schedule extraction complete"
+        );
+      } catch (err) {
+        logger.warn({ err, fileId: file.id }, "[PDF Processor] Phase 3 sign schedule extraction failed — non-fatal");
+        pipelineSteps.push({
+          step: `sign_schedule_extract_${file.id}`,
+          label: filesToProcess.length > 1
+            ? `Sign schedule extraction — ${file.originalName}`
+            : "Sign schedule extraction",
+          durationMs: Date.now() - t_extract,
+          startedAt: new Date(t_extract).toISOString(),
+          details: { error: String(err), pages: schedulePageNums.length },
+        });
+      }
+    }
+
+    // Aggregate all per-file results into a single authoritative job-level plaqueTable.
+    // extractionMethod: "visual" only if ALL files used visual; otherwise "text_fallback".
+    if (phase3Results.length > 0) {
+      const allPlaqueTypes = new Map<string, import("@workspace/db").PlaqueTypeRow>();
+      const allGeneralNotes: string[] = [];
+      const allSourcePages: number[] = [];
+      const allWarnings: string[] = [];
+      let anyTextFallback = false;
+
+      for (const r of phase3Results) {
+        if (r.extractionMethod === "text_fallback") anyTextFallback = true;
+        for (const pt of r.plaqueTypes) {
+          const key = pt.typeCode.toUpperCase();
+          if (!allPlaqueTypes.has(key)) allPlaqueTypes.set(key, pt);
+        }
+        for (const note of r.generalNotes) {
+          if (!allGeneralNotes.includes(note)) allGeneralNotes.push(note);
+        }
+        allSourcePages.push(...r.sourcePages);
+        allWarnings.push(...r.warnings);
+      }
+
+      const aggregatedPlaqueTable: PlaqueTableData = {
+        plaqueTypes: [...allPlaqueTypes.values()],
+        generalNotes: allGeneralNotes,
+        sourcePages: [...new Set(allSourcePages)].sort((a, b) => a - b),
+        extractionMethod: anyTextFallback ? "text_fallback" : "visual",
+        warnings: allWarnings,
+      };
+
+      try {
+        await db
+          .update(jobsTable)
+          .set({ plaqueTable: aggregatedPlaqueTable })
+          .where(eq(jobsTable.id, jobId));
+        logger.info(
+          { jobId, plaqueTypes: aggregatedPlaqueTable.plaqueTypes.length, method: aggregatedPlaqueTable.extractionMethod },
+          "[PDF Processor] Phase 3 plaqueTable persisted on job"
+        );
+      } catch (err) {
+        logger.warn({ err, jobId }, "[PDF Processor] Phase 3 plaqueTable persistence failed — non-fatal");
+      }
     }
   }
 
