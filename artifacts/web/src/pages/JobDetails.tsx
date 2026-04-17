@@ -2844,6 +2844,7 @@ interface RoomInventoryData {
   occupantLoadTableFound: boolean;
   warnings: string[];
   sourcePages: number[];
+  aiEnrichedCount?: number;
 }
 
 function RoomFlagChip({ label }: { label: string }) {
@@ -2872,7 +2873,7 @@ function roomFlags(r: RoomRecord): string[] {
 
 function RoomInventoryPanel({ inventory }: { inventory: RoomInventoryData }) {
   const [open, setOpen] = useState(false);
-  const { rooms, occupantLoadTableFound, warnings } = inventory;
+  const { rooms, occupantLoadTableFound, warnings, aiEnrichedCount } = inventory;
 
   if (rooms.length === 0) return null;
 
@@ -2928,6 +2929,11 @@ function RoomInventoryPanel({ inventory }: { inventory: RoomInventoryData }) {
         )}
         {occupantLoadTableFound && (
           <span className="ml-1 text-[9px] font-mono text-emerald-400/60 bg-emerald-500/10 border border-emerald-500/20 px-1 rounded">occ loads ✓</span>
+        )}
+        {aiEnrichedCount != null && aiEnrichedCount > 0 && (
+          <span className="ml-1 text-[9px] font-mono text-violet-400/70 bg-violet-500/10 border border-violet-500/20 px-1 rounded">
+            {aiEnrichedCount} {aiEnrichedCount === 1 ? "room" : "rooms"} AI-labeled
+          </span>
         )}
       </button>
 
