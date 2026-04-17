@@ -13,10 +13,15 @@ export function useJobsList(includeArchived = false) {
   const standardQueryKey = getListJobsQueryKey();
   const archivedQueryKey = [...standardQueryKey, "includeArchived"];
 
+  const hasProcessingJob = (data: unknown): boolean => {
+    const jobs = (data as { jobs?: { status?: string }[] } | undefined)?.jobs ?? [];
+    return jobs.some((j) => j.status === "processing");
+  };
+
   const standardResult = useListJobs({
     query: {
       queryKey: standardQueryKey,
-      refetchInterval: 10000,
+      refetchInterval: (query) => hasProcessingJob(query.state.data) ? 5000 : false,
       enabled: !includeArchived,
     },
   });
@@ -28,7 +33,7 @@ export function useJobsList(includeArchived = false) {
       if (!res.ok) throw new Error("Failed to fetch jobs");
       return res.json() as Promise<{ jobs: unknown[] }>;
     },
-    refetchInterval: 10000,
+    refetchInterval: (query) => hasProcessingJob(query.state.data) ? 5000 : false,
     enabled: includeArchived,
   });
 
