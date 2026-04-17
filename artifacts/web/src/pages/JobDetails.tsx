@@ -25,6 +25,7 @@ import {
   MapPin,
   Crosshair,
   ChevronDown,
+  ChevronRight,
   ChevronUp,
   ChevronsUpDown,
   Layers,
@@ -1991,6 +1992,225 @@ function OutlineSectionsTree({ sections }: { sections: OutlineSection[] }) {
   );
 }
 
+// ─── PAGE MANIFEST TABLE ──────────────────────────────────────────────────────
+
+type ManifestRow = {
+  pdfPage: number;
+  sheetTitle: string;
+  bucket: string;
+  source: string;
+  level: string | null;
+  area: string | null;
+};
+
+function buildFallbackRows(stats: RawPageStats): ManifestRow[] {
+  const rows: ManifestRow[] = [];
+  const fp = stats.floorPlanPages ?? [];
+  const ss = stats.signSchedulePages ?? [];
+  const both = (stats as unknown as Record<string, unknown>).bothPages as number[] ?? [];
+  const other = (stats as unknown as Record<string, unknown>).otherPages as number[] ?? [];
+
+  const allFp = fp.filter((p) => !both.includes(p));
+  const allSs = ss.filter((p) => !both.includes(p));
+
+  for (const p of allFp) rows.push({ pdfPage: p, sheetTitle: "", bucket: "floor_plan", source: "inferred", level: null, area: null });
+  for (const p of allSs) rows.push({ pdfPage: p, sheetTitle: "", bucket: "signage_schedule", source: "inferred", level: null, area: null });
+  for (const p of both) rows.push({ pdfPage: p, sheetTitle: "", bucket: "floor_plan + signage", source: "inferred", level: null, area: null });
+  for (const p of other) rows.push({ pdfPage: p, sheetTitle: "", bucket: "other", source: "inferred", level: null, area: null });
+
+  rows.sort((a, b) => a.pdfPage - b.pdfPage);
+  return rows;
+}
+
+const BUCKET_CLASS: Record<string, string> = {
+  floor_plan: "bg-emerald-500/15 text-emerald-400 border-emerald-500/30",
+  "floor_plan + signage": "bg-violet-500/15 text-violet-400 border-violet-500/30",
+  signage_schedule: "bg-accent/15 text-accent border-accent/30",
+  life_safety: "bg-orange-500/15 text-orange-400 border-orange-500/30",
+  key_plan: "bg-blue-500/15 text-blue-400 border-blue-500/30",
+  general_notes: "bg-slate-500/15 text-slate-400 border-slate-500/30",
+  accessibility: "bg-purple-500/15 text-purple-400 border-purple-500/30",
+  millwork_interiors: "bg-indigo-500/15 text-indigo-400 border-indigo-500/30",
+  specifications: "bg-cyan-500/15 text-cyan-400 border-cyan-500/30",
+  ignore: "bg-red-500/15 text-red-400 border-red-500/30",
+  other: "bg-secondary text-muted-foreground border-border",
+  inferred: "bg-secondary text-muted-foreground border-border",
+};
+
+const BUCKET_DOT: Record<string, string> = {
+  floor_plan: "🟢",
+  "floor_plan + signage": "🟣",
+  signage_schedule: "🟡",
+  life_safety: "🟠",
+  key_plan: "🔵",
+  general_notes: "⬜",
+  accessibility: "🟣",
+  millwork_interiors: "🔷",
+  specifications: "🔹",
+  ignore: "🔴",
+  other: "⬜",
+  inferred: "~",
+};
+
+function sourceBadgeLabel(source: string): string {
+  switch (source) {
+    case "bookmark": return "📌 Bookmark";
+    case "title_block": return "🔍 Title Block";
+    case "full_page_fallback": return "📄 Full Page";
+    case "excerpt_fallback": return "📄 Excerpt";
+    default: return "~ Inferred";
+  }
+}
+
+function primarySourceBadge(rows: ManifestRow[]): string {
+  if (rows.length === 0) return "~ Inferred";
+  const sources = new Set(rows.map((r) => r.source));
+  if (sources.size === 1) {
+    const src = [...sources][0];
+    if (src === "bookmark") return "📌 Bookmarks";
+    if (src === "title_block") return "🔍 Title Block";
+    if (src === "full_page_fallback" || src === "excerpt_fallback") return "📄 Full Page Scan";
+  }
+  // Mixed sources — show the dominant one with a modifier
+  if (sources.has("bookmark")) return "📌 Bookmarks";
+  if (sources.has("title_block")) return "🔍 Title Block";
+  if (sources.has("full_page_fallback") || sources.has("excerpt_fallback")) return "📄 Full Page Scan";
+  return "~ Inferred";
+}
+
+function PageManifestTable({
+  stats,
+  fileId,
+  jobId,
+  originalName,
+}: {
+  stats: FileWithStats["pageStats"];
+  fileId: string;
+  jobId: string;
+  originalName: string;
+}) {
+  const [open, setOpen] = useState(false);
+
+  if (!stats) return null;
+
+  const statsAny = stats as unknown as Record<string, unknown>;
+  const manifestRows: ManifestRow[] = statsAny.manifest as ManifestRow[] ?? [];
+  const warnings: string[] = statsAny.manifestWarnings as string[] ?? [];
+  const isExcerpt = statsAny.isExcerpt === true;
+
+  const fallbackRows = buildFallbackRows(stats);
+  const rows = manifestRows.length > 0 ? manifestRows : fallbackRows;
+
+  if (rows.length === 0) return null;
+
+  const hasManifest = manifestRows.length > 0;
+
+  const fpCount = rows.filter((r) => r.bucket === "floor_plan" || r.bucket === "floor_plan + signage").length;
+  const ssCount = rows.filter((r) => r.bucket === "signage_schedule" || r.bucket === "floor_plan + signage").length;
+  const sourceSummary = hasManifest ? primarySourceBadge(rows) : "~ Inferred";
+
+  return (
+    <div className="mt-3 pt-2 border-t border-border/40">
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className="flex items-center gap-1.5 w-full text-left group"
+      >
+        {open
+          ? <ChevronDown className="w-3 h-3 text-muted-foreground/50 flex-shrink-0" />
+          : <ChevronRight className="w-3 h-3 text-muted-foreground/50 flex-shrink-0" />
+        }
+        <span className="text-[10px] font-display font-bold uppercase tracking-wider text-muted-foreground">
+          All Pages
+        </span>
+        <span className="text-[10px] font-mono text-muted-foreground/60">
+          {rows.length} pages · {fpCount} floor plan{fpCount !== 1 ? "s" : ""} · {ssCount} sign schedule{ssCount !== 1 ? "s" : ""}
+        </span>
+        <span className="ml-1 text-[10px] font-mono text-muted-foreground/50">{sourceSummary}</span>
+      </button>
+
+      {open && (
+        <div className="mt-2">
+          {isExcerpt && (
+            <div className="text-[10px] text-blue-400 bg-blue-500/10 border border-blue-500/20 rounded px-2 py-1 mb-1">
+              📄 This upload appears to be a plan excerpt — some reference sheets may be missing.
+            </div>
+          )}
+          {warnings.map((w) => (
+            <div key={w} className="text-[10px] text-amber-400 bg-amber-500/10 border border-amber-500/20 rounded px-2 py-1 mb-1">
+              ⚠ {w}
+            </div>
+          ))}
+          <div className="max-h-96 overflow-y-auto rounded border border-border/60">
+            <table className="w-full text-left border-collapse text-[10px] font-mono">
+              <thead className="sticky top-0 bg-card z-10">
+                <tr className="border-b border-border/60">
+                  <th className="px-2 py-1 text-[10px] font-display font-bold uppercase tracking-wider text-muted-foreground whitespace-nowrap">Pg</th>
+                  <th className="px-2 py-1 text-[10px] font-display font-bold uppercase tracking-wider text-muted-foreground">Sheet Title</th>
+                  <th className="px-2 py-1 text-[10px] font-display font-bold uppercase tracking-wider text-muted-foreground whitespace-nowrap">Classification</th>
+                  <th className="px-2 py-1 text-[10px] font-display font-bold uppercase tracking-wider text-muted-foreground whitespace-nowrap">Source</th>
+                  <th className="px-2 py-1 text-[10px] font-display font-bold uppercase tracking-wider text-muted-foreground whitespace-nowrap">Level</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((row, i) => {
+                  const bucketKey = row.bucket in BUCKET_CLASS ? row.bucket : "other";
+                  const dot = BUCKET_DOT[bucketKey] ?? "⬜";
+                  const pillCls = BUCKET_CLASS[bucketKey] ?? BUCKET_CLASS.other;
+                  const displayBucket = row.source === "inferred" ? `~ ${row.bucket}` : row.bucket;
+                  return (
+                    <tr
+                      key={`${row.pdfPage}-${i}`}
+                      className={`border-b border-border/30 last:border-0 ${i % 2 === 0 ? "" : "bg-secondary/30"}`}
+                    >
+                      <td className="px-2 py-1 font-mono">
+                        <button
+                          onClick={() => {
+                            apiFetch(`/api/jobs/${jobId}/files/${fileId}/pdf`).then(async (res) => {
+                              if (!res.ok) return;
+                              const blob = await res.blob();
+                              const url = URL.createObjectURL(blob);
+                              const win = window.open(`${url}#page=${row.pdfPage}`, "_blank");
+                              if (!win) {
+                                const a = document.createElement("a");
+                                a.href = `${url}#page=${row.pdfPage}`;
+                                a.target = "_blank";
+                                a.click();
+                              }
+                              setTimeout(() => URL.revokeObjectURL(url), 60_000);
+                            }).catch(() => {});
+                          }}
+                          title={`Open PDF at page ${row.pdfPage}`}
+                          className="text-primary/70 hover:text-primary underline underline-offset-2 transition-colors"
+                        >
+                          {row.pdfPage}
+                        </button>
+                      </td>
+                      <td className="px-2 py-1 text-foreground/80 max-w-[160px] truncate font-mono" title={row.sheetTitle || undefined}>
+                        {row.sheetTitle || "—"}
+                      </td>
+                      <td className="px-2 py-1 whitespace-nowrap">
+                        <span className={`inline-flex items-center gap-0.5 px-1.5 py-px rounded border text-[9px] font-bold uppercase tracking-wider ${pillCls}`}>
+                          {dot} {displayBucket}
+                        </span>
+                      </td>
+                      <td className="px-2 py-1 text-muted-foreground whitespace-nowrap font-mono text-[9px]">
+                        {sourceBadgeLabel(row.source)}
+                      </td>
+                      <td className="px-2 py-1 text-muted-foreground font-mono">
+                        {row.level || "—"}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function SheetsPanel({
   files,
   onOpenSpec,
@@ -2016,8 +2236,8 @@ function SheetsPanel({
   const totalPages = files.reduce((sum, f) => sum + (f.pageCount ?? 0), 0);
   const totalSignSchedule = files.reduce((sum, f) => {
     const ss = f.pageStats?.signSchedulePages?.length ?? 0;
-    const both = (f.pageStats as Record<string, unknown>)?.bothPages instanceof Array
-      ? ((f.pageStats as Record<string, unknown>).bothPages as number[]).length : 0;
+    const psAny = f.pageStats as unknown as Record<string, unknown> | null | undefined;
+    const both = psAny?.bothPages instanceof Array ? (psAny.bothPages as number[]).length : 0;
     return sum + ss + both;
   }, 0);
   const totalFloorPlan = files.reduce((sum, f) => sum + (f.pageStats?.floorPlanPages?.length ?? 0), 0);
@@ -2025,13 +2245,13 @@ function SheetsPanel({
   // Find the first file that has sign spec pages (sign schedule OR both)
   const firstSpecFile = files.find(
     (f) => (f.pageStats?.signSchedulePages?.length ?? 0) > 0 ||
-      (((f.pageStats as Record<string, unknown>)?.bothPages as number[] | undefined)?.length ?? 0) > 0
+      (((f.pageStats as unknown as Record<string, unknown>)?.bothPages as number[] | undefined)?.length ?? 0) > 0
   );
 
   // Build the combined spec page list for a given file's pageStats
   const getSpecPages = (stats: NonNullable<typeof firstSpecFile>["pageStats"]): number[] => {
     const ss = stats?.signSchedulePages ?? [];
-    const both = (stats as Record<string, unknown>)?.bothPages as number[] | undefined ?? [];
+    const both = (stats as unknown as Record<string, unknown>)?.bothPages as number[] | undefined ?? [];
     return [...new Set([...ss, ...both])].sort((a, b) => a - b);
   };
 
@@ -2226,6 +2446,14 @@ function SheetsPanel({
                           </>
                         );
                       })()}
+
+                      {/* All Pages manifest table */}
+                      <PageManifestTable
+                        stats={f.pageStats}
+                        fileId={f.id}
+                        jobId={jobId}
+                        originalName={f.originalName}
+                      />
                     </>
                   ) : (
                     <p className="text-[10px] text-muted-foreground/40 font-mono">
