@@ -10,6 +10,10 @@
 
 import { extractPagePhrases, extractRawPageItems } from "./pdf-words";
 import { logger } from "./logger";
+import { renderFloorPlanPages } from "./pdf-render";
+import { getFilePageImagesDir } from "./storage";
+import { ai } from "@workspace/integrations-gemini-ai";
+import fs from "fs/promises";
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
@@ -40,6 +44,8 @@ export interface RoomRecord {
 export interface RoomInventory {
   rooms: RoomRecord[];
   occupantLoadTableFound: boolean;
+  occupantLoadSource: "gemini" | "text" | "none";
+  occupantLoadRoomsMatched: number;
   warnings: string[];
   sourcePages: number[];
 }
@@ -124,6 +130,118 @@ function deriveFlags(
     isStaffOnly,
     isAssembly,
   };
+}
+
+// ── Gemini occupant loads extraction ─────────────────────────────────────────
+
+const OCCUPANT_LOADS_DPI = 200;
+const OCCUPANT_LOADS_SCALE = OCCUPANT_LOADS_DPI / 72; // ≈ 2.78 — rasterize at 200 DPI
+
+const OCCUPANT_LOADS_GEMINI_PROMPT = `You are examining a life safety / egress plan sheet from a set of architectural drawings.
+This page typically contains an occupant loads table listing each room with its design occupant load and occupancy classification.
+
+Extract every row from the occupant loads table and return a JSON array where each element has exactly these four fields:
+- room_num: the room number (string, e.g. "101", "A-202") — use null if not shown
+- room_name: the room or space name (string)
+- occupant_load: the numeric occupant load (integer) — use null if not shown
+- occupancy_group: the IBC occupancy group code (string, e.g. "A-2", "B", "E") — use null if not shown
+
+Return ONLY a valid JSON array with no markdown, no explanation, and no surrounding text.
+If no occupant loads table is visible on this page, return an empty array: []`;
+
+interface GeminiOccupantLoadRow {
+  room_num: string | null;
+  room_name: string;
+  occupant_load: number | null;
+  occupancy_group: string | null;
+}
+
+/**
+ * Rasterizes the given life safety page at 200 DPI and sends it to Gemini to
+ * extract the occupant loads table. Returns parsed rows or [] on failure.
+ */
+async function extractOccupantLoadsViaGemini(
+  pdfPath: string,
+  pageNum: number,
+  fileId: string,
+  jobId: string,
+): Promise<{ entries: OccupantLoadEntry[]; found: boolean }> {
+  try {
+    // Use a dedicated subdirectory so the 200 DPI render never collides with
+    // the default-scale (1.5×) images cached under the main pages directory.
+    const outputDir = `${getFilePageImagesDir(fileId)}/200dpi`;
+    const rendered = await renderFloorPlanPages(pdfPath, [pageNum], outputDir, OCCUPANT_LOADS_SCALE);
+    const imagePath = rendered.get(pageNum);
+    if (!imagePath) {
+      logger.warn({ fileId, pageNum, jobId }, "[RoomInventory] Gemini: page render returned no path");
+      return { entries: [], found: false };
+    }
+
+    const pngBuffer = await fs.readFile(imagePath);
+    const base64 = pngBuffer.toString("base64");
+
+    const geminiClient = ai as {
+      models: {
+        generateContent: (opts: {
+          model: string;
+          contents: { role: string; parts: ({ text: string } | { inlineData: { mimeType: string; data: string } })[] }[];
+          config?: { maxOutputTokens?: number; temperature?: number; thinkingConfig?: { thinkingBudget: number } };
+        }) => Promise<{ text: string | undefined }>;
+      };
+    };
+
+    const response = await geminiClient.models.generateContent({
+      model: "gemini-2.5-flash",
+      contents: [
+        {
+          role: "user",
+          parts: [
+            { inlineData: { mimeType: "image/png", data: base64 } },
+            { text: OCCUPANT_LOADS_GEMINI_PROMPT },
+          ],
+        },
+      ],
+      config: { maxOutputTokens: 4096, temperature: 0.0, thinkingConfig: { thinkingBudget: 0 } },
+    });
+
+    const raw = (response.text ?? "").trim();
+    if (!raw) return { entries: [], found: false };
+
+    // Strip optional markdown code fence
+    const jsonText = raw.replace(/^```(?:json)?\s*/i, "").replace(/\s*```\s*$/, "").trim();
+    let rows: GeminiOccupantLoadRow[];
+    try {
+      rows = JSON.parse(jsonText) as GeminiOccupantLoadRow[];
+    } catch {
+      logger.warn({ fileId, pageNum, jobId, raw: raw.slice(0, 200) }, "[RoomInventory] Gemini: JSON parse failed");
+      return { entries: [], found: false };
+    }
+
+    if (!Array.isArray(rows) || rows.length === 0) {
+      return { entries: [], found: false };
+    }
+
+    const entries: OccupantLoadEntry[] = [];
+    for (const row of rows) {
+      if (!row.room_num && !row.room_name) continue;
+      if (row.occupant_load == null || isNaN(Number(row.occupant_load))) continue;
+      const load = Number(row.occupant_load);
+      if (load < 0 || load >= 10000) continue;
+      const roomNum = (row.room_num ?? row.room_name ?? "").toString().trim().toUpperCase();
+      if (!roomNum) continue;
+      entries.push({
+        roomNumber: roomNum,
+        occupantLoad: load,
+        occupancyGroup: row.occupancy_group ? row.occupancy_group.trim().toUpperCase() : null,
+      });
+    }
+
+    logger.info({ fileId, pageNum, jobId, count: entries.length }, "[RoomInventory] Gemini occupant loads extracted");
+    return { entries, found: entries.length > 0 };
+  } catch (err) {
+    logger.warn({ err, fileId, pageNum, jobId }, "[RoomInventory] Gemini occupant loads call failed — will fall back to text");
+    return { entries: [], found: false };
+  }
 }
 
 // ── Occupant loads table parser ───────────────────────────────────────────────
@@ -411,14 +529,17 @@ function deduplicateRooms(labels: RawRoomLabel[]): RawRoomLabel[] {
 /**
  * Build a room inventory from all floor plan pages in a PDF file.
  *
- * @param pdfPath         Absolute path to the PDF on disk
- * @param fileId          UUID of the job_files row (phrase cache key)
- * @param floorPlanPages  Page numbers classified as floor plans (1-indexed)
- * @param level           Default level string (fallback when pageToLevel misses a page)
- * @param jobId           UUID of the parent job (for logging only)
- * @param pageToLevel     Optional per-page level map from the sheet manifest.
- *                        When provided, each RoomRecord gets its correct level
- *                        (e.g. "L1", "L2") rather than the single file-level default.
+ * @param pdfPath           Absolute path to the PDF on disk
+ * @param fileId            UUID of the job_files row (phrase cache key)
+ * @param floorPlanPages    Page numbers classified as floor plans (1-indexed)
+ * @param level             Default level string (fallback when pageToLevel misses a page)
+ * @param jobId             UUID of the parent job (for logging only)
+ * @param pageToLevel       Optional per-page level map from the sheet manifest.
+ *                          When provided, each RoomRecord gets its correct level
+ *                          (e.g. "L1", "L2") rather than the single file-level default.
+ * @param lifeSafetyPageNum Optional 1-indexed page number of the life safety / egress sheet.
+ *                          When provided, Gemini image extraction is tried first for the
+ *                          occupant loads table (Phase 4b). Text extraction is the fallback.
  */
 export async function buildRoomInventory(
   pdfPath: string,
@@ -427,6 +548,7 @@ export async function buildRoomInventory(
   level: string,
   jobId: string,
   pageToLevel?: Map<number, string>,
+  lifeSafetyPageNum?: number,
 ): Promise<RoomInventory> {
   const warnings: string[] = [];
 
@@ -434,6 +556,8 @@ export async function buildRoomInventory(
     return {
       rooms: [],
       occupantLoadTableFound: false,
+      occupantLoadSource: "none",
+      occupantLoadRoomsMatched: 0,
       warnings: ["No floor plan pages provided"],
       sourcePages: [],
     };
@@ -460,26 +584,50 @@ export async function buildRoomInventory(
   // Deduplicate across pages
   const dedupedLabels = deduplicateRooms(allRawLabels);
 
-  // ── Step 2: Cross-reference occupant loads table ──────────────────────────
-  // The occupant loads table is typically on a life_safety or cover sheet —
-  // NOT on the floor plan pages themselves. We therefore scan ALL non-floor-plan
-  // pages first (highest likelihood), then floor-plan pages as fallback.
-  // No hard page-count cap: parseOccupantLoadsTable early-exits once found.
-  const { getPdfPageCount } = await import("./pdf-words");
-  let totalPages = 1;
-  try {
-    totalPages = await getPdfPageCount(pdfPath);
-  } catch {
-    // ignore; fallback to single page
-  }
-  const floorPlanPageSet = new Set(floorPlanPages);
-  const nonFloorPlanPages = Array.from({ length: totalPages }, (_, i) => i + 1)
-    .filter((p) => !floorPlanPageSet.has(p));
-  // Scan order: non-floor-plan pages first (most likely), then floor-plan pages.
-  const scanOrder = [...nonFloorPlanPages, ...floorPlanPages];
+  // ── Step 2: Cross-reference occupant loads table (Gemini-first, text fallback) ──
+  // Phase 4b: When the sheet manifest identifies a life safety / egress page,
+  // rasterize it at 200 DPI and send it to Gemini (primary path). Gemini handles
+  // merged cells and multi-column tables that confuse text-based parsers.
+  // If Gemini returns empty or errors, fall through to the text extraction path.
+  let occupantEntries: OccupantLoadEntry[] = [];
+  let occupantLoadTableFound = false;
+  let occupantLoadSource: RoomInventory["occupantLoadSource"] = "none";
 
-  const { entries: occupantEntries, found: occupantLoadTableFound } =
-    await parseOccupantLoadsTable(pdfPath, scanOrder);
+  if (lifeSafetyPageNum != null) {
+    logger.info({ fileId, jobId, lifeSafetyPageNum }, "[RoomInventory] Phase 4b: trying Gemini for occupant loads");
+    const geminiResult = await extractOccupantLoadsViaGemini(pdfPath, lifeSafetyPageNum, fileId, jobId);
+    if (geminiResult.found && geminiResult.entries.length > 0) {
+      occupantEntries = geminiResult.entries;
+      occupantLoadTableFound = true;
+      occupantLoadSource = "gemini";
+      logger.info({ fileId, jobId, count: occupantEntries.length }, "[RoomInventory] Phase 4b: Gemini occupant loads OK");
+    } else {
+      logger.info({ fileId, jobId }, "[RoomInventory] Phase 4b: Gemini returned empty — falling back to text extraction");
+    }
+  }
+
+  // Text-extraction fallback (also used when no life safety page was identified)
+  if (!occupantLoadTableFound) {
+    const { getPdfPageCount } = await import("./pdf-words");
+    let totalPages = 1;
+    try {
+      totalPages = await getPdfPageCount(pdfPath);
+    } catch {
+      // ignore; fallback to single page
+    }
+    const floorPlanPageSet = new Set(floorPlanPages);
+    const nonFloorPlanPages = Array.from({ length: totalPages }, (_, i) => i + 1)
+      .filter((p) => !floorPlanPageSet.has(p));
+    // Scan order: non-floor-plan pages first (most likely), then floor-plan pages.
+    const scanOrder = [...nonFloorPlanPages, ...floorPlanPages];
+
+    const textResult = await parseOccupantLoadsTable(pdfPath, scanOrder);
+    if (textResult.found && textResult.entries.length > 0) {
+      occupantEntries = textResult.entries;
+      occupantLoadTableFound = true;
+      occupantLoadSource = "text";
+    }
+  }
 
   const occupantMap = new Map<string, OccupantLoadEntry>();
   for (const entry of occupantEntries) {
@@ -516,9 +664,12 @@ export async function buildRoomInventory(
   });
 
   // ── Validate cross-references ─────────────────────────────────────────────
+  let occupantLoadRoomsMatched = 0;
   if (occupantLoadTableFound) {
     for (const room of rooms) {
-      if (room.roomNumber && !occupantMap.has(room.roomNumber.toUpperCase())) {
+      if (room.roomNumber && occupantMap.has(room.roomNumber.toUpperCase())) {
+        occupantLoadRoomsMatched++;
+      } else if (room.roomNumber) {
         warnings.push(`Room ${room.roomNumber} not found in occupant loads table`);
       }
     }
@@ -532,6 +683,8 @@ export async function buildRoomInventory(
       floorPlanPages: floorPlanPages.length,
       rooms: rooms.length,
       occupantLoadTableFound,
+      occupantLoadSource,
+      occupantLoadRoomsMatched,
     },
     "[RoomInventory] Room inventory built",
   );
@@ -539,6 +692,8 @@ export async function buildRoomInventory(
   return {
     rooms,
     occupantLoadTableFound,
+    occupantLoadSource,
+    occupantLoadRoomsMatched,
     warnings,
     sourcePages: floorPlanPages,
   };

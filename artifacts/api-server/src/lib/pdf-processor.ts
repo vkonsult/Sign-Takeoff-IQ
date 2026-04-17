@@ -480,9 +480,18 @@ export async function runPdfProcessor(jobId: string): Promise<void> {
         // ── Phase 4: Room Inventory ───────────────────────────────────────
         // Build a room inventory from floor plan pages identified above.
         // Non-fatal: if this step fails the rest of the pipeline continues normally.
+        //
+        // Phase 4b: The first life safety / egress page from the sheet manifest
+        // is passed to buildRoomInventory so Gemini can read the occupant loads
+        // table from its rasterized image (Gemini-first; text extraction fallback).
+        //
+        // The occupant_loads_<fileId> step is ALWAYS emitted (done or skipped).
         let fileRoomInventory: RoomInventory | null = null;
         {
           const fpPagesForInventory = Array.from(fileFloorPlanPages.get(file.id) ?? []).sort((a, b) => a - b);
+          const lifeSafetyPageNum = lifeSafetyPages[0] ?? undefined;
+          const hasLifeSafetyPage = lifeSafetyPageNum != null;
+
           if (fpPagesForInventory.length > 0) {
             try {
               const t_ri = Date.now();
@@ -511,6 +520,8 @@ export async function runPdfProcessor(jobId: string): Promise<void> {
                 // RoomRecord gets the correct level (L1, L2, MEZZ…) rather than
                 // a single file-wide default.
                 spatialFloorLevelNames ?? undefined,
+                // Phase 4b: life safety page for Gemini-first occupant loads extraction
+                lifeSafetyPageNum,
               );
 
               recordStep(
@@ -526,9 +537,56 @@ export async function runPdfProcessor(jobId: string): Promise<void> {
                   warnings: fileRoomInventory.warnings.length,
                 },
               );
+
+              // ── Phase 4b: Occupant Loads step record (always emitted) ──────
+              // Records whether Gemini or text extraction was used, and how many
+              // rooms were matched. Displayed as a distinct card in the Processing
+              // Timeline regardless of outcome.
+              recordStep(
+                `occupant_loads_${file.id}`,
+                filesToProcess.length > 1
+                  ? `Occupant Loads — ${file.originalName}`
+                  : "Occupant Loads",
+                t_ri,
+                {
+                  roomsMatched: fileRoomInventory.occupantLoadRoomsMatched,
+                  occupantLoadSource: fileRoomInventory.occupantLoadSource,
+                  lifeSafetyPage: lifeSafetyPageNum ?? null,
+                  ...(hasLifeSafetyPage
+                    ? {}
+                    : { skipped: true, skipReason: "No egress/life safety sheet identified in manifest" }),
+                },
+                "phase-3",
+              );
             } catch (err) {
               logger.warn({ err, fileId: file.id, jobId }, "[PDF Processor] Room inventory failed — non-fatal");
+              // Still emit a step so the timeline always shows Phase 4b
+              recordStep(
+                `occupant_loads_${file.id}`,
+                filesToProcess.length > 1
+                  ? `Occupant Loads — ${file.originalName}`
+                  : "Occupant Loads",
+                Date.now(),
+                { skipped: true, skipReason: "Room inventory error" },
+                "phase-3",
+              );
             }
+          } else {
+            // No floor plan pages — emit skipped step for the timeline
+            recordStep(
+              `occupant_loads_${file.id}`,
+              filesToProcess.length > 1
+                ? `Occupant Loads — ${file.originalName}`
+                : "Occupant Loads",
+              Date.now(),
+              {
+                skipped: true,
+                skipReason: hasLifeSafetyPage
+                  ? "No floor plan pages found"
+                  : "No egress/life safety sheet identified in manifest",
+              },
+              "phase-3",
+            );
           }
         }
 
@@ -616,6 +674,44 @@ export async function runPdfProcessor(jobId: string): Promise<void> {
     succeeded: parsedResults.filter((r) => !("error" in r)).length,
     failed: parsedResults.filter((r) => "error" in r).length,
   }, "phase-3");
+
+  // ── Aggregate occupant_loads step (Phase 4b summary) ─────────────────────
+  // Collects per-file occupant_loads_<fileId> steps into a single job-level
+  // summary step so the Processing Timeline always shows a visible Phase 4b
+  // card. The per-file steps are UUID-suffixed and filtered from the timeline's
+  // visible rows; this aggregate step (no UUID suffix) is always displayed.
+  {
+    const olSteps = pipelineSteps.filter((s) => s.step.startsWith("occupant_loads_"));
+    if (olSteps.length > 0) {
+      const executedSteps = olSteps.filter((s) => !s.details?.skipped);
+      const totalRoomsMatched = executedSteps.reduce(
+        (sum, s) => sum + ((s.details?.roomsMatched as number) ?? 0),
+        0,
+      );
+      const sources = new Set(
+        executedSteps
+          .map((s) => s.details?.occupantLoadSource as string | undefined)
+          .filter((src): src is string => !!src && src !== "none"),
+      );
+      const allSkipped = executedSteps.length === 0;
+      pipelineSteps.push({
+        step: "occupant_loads",
+        label: "Occupant Loads (Phase 4b)",
+        durationMs: olSteps.reduce((sum, s) => sum + s.durationMs, 0),
+        startedAt: olSteps[0]!.startedAt,
+        details: allSkipped
+          ? {
+              skipped: true,
+              skipReason: (olSteps[0]?.details?.skipReason as string | undefined) ?? "No egress/life safety sheet identified in manifest",
+            }
+          : {
+              roomsMatched: totalRoomsMatched,
+              occupantLoadSource: sources.size === 1 ? [...sources][0] : sources.size > 1 ? "mixed" : "none",
+              fileCount: executedSteps.length,
+            },
+      });
+    }
+  }
 
   // ── Aggregate rule_application step (Phase 5 summary) ────────────────────
   // Collects per-file rule_application_<fileId> steps into a single job-level

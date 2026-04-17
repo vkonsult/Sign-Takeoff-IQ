@@ -157,10 +157,12 @@ function formatDetails(details: Record<string, unknown> | undefined): string | n
   if (!details) return null;
   const parts: string[] = [];
   const d = details as Record<string, number | string | boolean | undefined>;
-  const { rows, pages, inputTokens, outputTokens, verified, discoveries, matched, totalSigns, textAfter, imageAfter, textRows, imageRows, signsExtracted, specFileCount, succeeded, failed, textBefore, imageBefore, classified, floorPlan, signSchedule, filesWithBboxes, pagesWithBboxes, fileCount, totalRooms, totalSignsAssigned } = d;
+  const { rows, pages, inputTokens, outputTokens, verified, discoveries, matched, totalSigns, textAfter, imageAfter, textRows, imageRows, signsExtracted, specFileCount, succeeded, failed, textBefore, imageBefore, classified, floorPlan, signSchedule, filesWithBboxes, pagesWithBboxes, fileCount, totalRooms, totalSignsAssigned, roomsMatched, occupantLoadSource } = d;
   const { skipReason, skipped } = details as Record<string, string | boolean | undefined>;
   if (totalRooms != null) parts.push(`${totalRooms} rooms`);
   if (totalSignsAssigned != null) parts.push(`${totalSignsAssigned} signs`);
+  if (roomsMatched != null) parts.push(`${roomsMatched} rooms matched`);
+  if (occupantLoadSource != null && occupantLoadSource !== "none") parts.push(`via ${occupantLoadSource}`);
   if (specFileCount != null) parts.push(`${specFileCount} spec file${Number(specFileCount) !== 1 ? "s" : ""}`);
   if (fileCount != null) parts.push(`${fileCount} file${Number(fileCount) !== 1 ? "s" : ""}`);
   if (rows != null) parts.push(`${rows} rows`);

@@ -30,10 +30,11 @@
  *                   rasterized schedule pages + structured plaque table output.
  *
  * Phase 4 — Room Inventory (NEW — no equivalent in legacy pipeline)
- *   New step keys:  room_inventory_<fileId>
+ *   New step keys:  room_inventory_<fileId>, occupant_loads_<fileId>
  *   Legacy keys:    (none — this capability did not exist)
  *   Replaces:       Nothing. Adds: systematic room label extraction from
- *                   floor plan pages, occupant load cross-reference,
+ *                   floor plan pages, occupant load cross-reference via
+ *                   Gemini-first image extraction (Phase 4b), and
  *                   room-flag derivation (is_restroom, is_stair, etc.)
  *
  * Phase 5 — Apply Rules R1-R15 (was: extraction-heuristic + extraction-classification)
@@ -158,6 +159,8 @@ export const PIPELINE_PHASES: PipelinePhase[] = [
     color: "emerald",
     stepKeys: [
       { key: "room_inventory_", prefix: true },
+      { key: "occupant_loads", prefix: false },
+      { key: "occupant_loads_", prefix: true },
     ],
     legacyStepKeys: [],
     legacyModulesReplaced: [
