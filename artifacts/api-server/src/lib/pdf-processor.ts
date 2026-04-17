@@ -106,6 +106,9 @@ export async function runPdfProcessor(jobId: string): Promise<void> {
     .set({ pageStats: null, pageCount: null, roomInventory: null })
     .where(eq(jobFilesTable.jobId, jobId));
 
+  // plaqueTable must be reset to null here so each rescan starts from a clean
+  // slate — leaving it unset would cause stale type codes from a previous run
+  // to persist additively when the new scan returns fewer or different types.
   await db
     .update(jobsTable)
     .set({ status: "processing", plaqueTable: null, updatedAt: new Date() })
