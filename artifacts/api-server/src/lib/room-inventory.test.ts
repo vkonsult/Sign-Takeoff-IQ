@@ -33,6 +33,7 @@ vi.mock("./logger", () => ({
 
 import {
   deriveFlags,
+  isAmbiguousRoom,
   parseSlashLabel,
   isLikelyRoomName,
   isLikelyRoomNumber,
@@ -80,6 +81,7 @@ function makeRoom(overrides: Partial<RoomRecord> = {}): RoomRecord {
     isAssembly: false,
     isOffice: false,
     isSuite: false,
+    isResidentialUnit: false,
     boundingBox: null,
     extractionConfidence: 0.3,
     ...overrides,
@@ -714,5 +716,201 @@ describe("detectGeometricStaffOnlyRestrooms — K-nearest spatial detection", ()
     const office = makeRoom({ roomName: "OFFICE", isOffice: true, boundingBox: bbox(100, 100), pdfPage: 1 });
     detectGeometricStaffOnlyRestrooms([restroom, office]);
     expect(restroom.isStaffOnly).toBe(false);
+  });
+});
+
+// ── Task 602: new keyword abbreviations ───────────────────────────────────────
+
+describe("deriveFlags — restroom abbreviations (Task 602)", () => {
+  it('sets isRestroom=true for "MRR" (Men\'s Restroom Room abbreviation)', () => {
+    const flags = deriveFlags("MRR", null, null);
+    expect(flags.isRestroom).toBe(true);
+  });
+
+  it('sets isRestroom=true for "WRR" (Women\'s Restroom Room abbreviation)', () => {
+    const flags = deriveFlags("WRR", null, null);
+    expect(flags.isRestroom).toBe(true);
+  });
+
+  it('sets isRestroom=true for "MR" (Men\'s Room abbreviation)', () => {
+    const flags = deriveFlags("MR", null, null);
+    expect(flags.isRestroom).toBe(true);
+  });
+
+  it('sets isRestroom=true for "WR" (Women\'s Room abbreviation)', () => {
+    const flags = deriveFlags("WR", null, null);
+    expect(flags.isRestroom).toBe(true);
+  });
+
+  it('sets isRestroom=true for "RR" (Restroom abbreviation)', () => {
+    const flags = deriveFlags("RR", null, null);
+    expect(flags.isRestroom).toBe(true);
+  });
+});
+
+describe("deriveFlags — MEP abbreviations (Task 602)", () => {
+  it('sets isMepUnoccupied=true for "MECH" with no occupant load', () => {
+    const flags = deriveFlags("MECH", null, null);
+    expect(flags.isMepUnoccupied).toBe(true);
+  });
+
+  it('sets isMepUnoccupied=false for "MECH" when occupants are present', () => {
+    const flags = deriveFlags("MECH", 5, null);
+    expect(flags.isMepUnoccupied).toBe(false);
+  });
+
+  it('sets isMepUnoccupied=true for "UTIL" with no occupant load', () => {
+    const flags = deriveFlags("UTIL", null, null);
+    expect(flags.isMepUnoccupied).toBe(true);
+  });
+
+  it('sets isMepUnoccupied=true for "UTILITY ROOM" with no occupant load', () => {
+    const flags = deriveFlags("UTILITY ROOM", null, null);
+    expect(flags.isMepUnoccupied).toBe(true);
+  });
+});
+
+describe("deriveFlags — assembly/variable-use abbreviations (Task 602)", () => {
+  it('sets isVariableUse=true for "GYM"', () => {
+    const flags = deriveFlags("GYM", null, null);
+    expect(flags.isVariableUse).toBe(true);
+  });
+
+  it('sets isVariableUse=true for "LAB"', () => {
+    const flags = deriveFlags("LAB", null, null);
+    expect(flags.isVariableUse).toBe(true);
+  });
+
+  it('sets isVariableUse=true for "ART"', () => {
+    const flags = deriveFlags("ART", null, null);
+    expect(flags.isVariableUse).toBe(true);
+  });
+
+  it('sets isVariableUse=false for "GYM STORAGE" (storage qualifier suppresses it)', () => {
+    const flags = deriveFlags("GYM STORAGE", null, null);
+    expect(flags.isVariableUse).toBe(false);
+  });
+
+  it('does NOT set isVariableUse for "APARTMENT" (ART is not a whole-word match)', () => {
+    const flags = deriveFlags("APARTMENT", null, null);
+    expect(flags.isVariableUse).toBe(false);
+  });
+});
+
+describe("deriveFlags — isResidentialUnit (Task 602)", () => {
+  it('sets isResidentialUnit=true for "1A" (apartment unit pattern)', () => {
+    expect(deriveFlags("1A", null, null).isResidentialUnit).toBe(true);
+  });
+
+  it('sets isResidentialUnit=true for "202" (pure numeric unit)', () => {
+    expect(deriveFlags("202", null, null).isResidentialUnit).toBe(true);
+  });
+
+  it('sets isResidentialUnit=true for "UNIT 5"', () => {
+    expect(deriveFlags("UNIT 5", null, null).isResidentialUnit).toBe(true);
+  });
+
+  it('sets isResidentialUnit=true for "APT 101"', () => {
+    expect(deriveFlags("APT 101", null, null).isResidentialUnit).toBe(true);
+  });
+
+  it('sets isResidentialUnit=false for "CONFERENCE ROOM"', () => {
+    expect(deriveFlags("CONFERENCE ROOM", null, null).isResidentialUnit).toBe(false);
+  });
+
+  it('sets isResidentialUnit=false for "STAIR 1" (numeric in stair label but not a unit pattern)', () => {
+    expect(deriveFlags("STAIR 1", null, null).isResidentialUnit).toBe(false);
+  });
+});
+
+// ── Task 602: isAmbiguousRoom — known-abbreviation whitelist ──────────────────
+
+describe("isAmbiguousRoom — known short abbreviations are NOT ambiguous (Task 602)", () => {
+  const knownAbbreviations = ["WC", "MR", "WR", "RR", "MRR", "WRR", "MDF", "IDF", "JAN", "BAY", "EOC", "GYM", "LAB", "ART"];
+
+  for (const abbr of knownAbbreviations) {
+    it(`returns false for known abbreviation "${abbr}" (high confidence, correct flag set)`, () => {
+      const flags = deriveFlags(abbr, null, null);
+      const room = makeRoom({
+        roomName: abbr,
+        extractionConfidence: 0.9,
+        ...flags,
+        isResidentialUnit: flags.isResidentialUnit,
+      });
+      expect(isAmbiguousRoom(room)).toBe(false);
+    });
+  }
+});
+
+describe("isAmbiguousRoom — residential unit patterns are excluded (Task 602)", () => {
+  const residentialPatterns = ["1A", "202", "12B", "UNIT 5", "APT 101", "STE 200"];
+
+  for (const name of residentialPatterns) {
+    it(`returns false for residential unit pattern "${name}"`, () => {
+      const flags = deriveFlags(name, null, null);
+      const room = makeRoom({
+        roomName: name,
+        extractionConfidence: 0.3,
+        ...flags,
+        isResidentialUnit: flags.isResidentialUnit,
+      });
+      expect(isAmbiguousRoom(room)).toBe(false);
+    });
+  }
+});
+
+describe("isAmbiguousRoom — genuinely unknown short labels ARE ambiguous (Task 602)", () => {
+  it('returns true for an unknown 2-char label "XZ" (not in whitelist)', () => {
+    const room = makeRoom({ roomName: "XZ", extractionConfidence: 0.9, isResidentialUnit: false });
+    expect(isAmbiguousRoom(room)).toBe(true);
+  });
+
+  it('returns true for an unknown 3-char label "FOO" (not in whitelist)', () => {
+    const room = makeRoom({ roomName: "FOO", extractionConfidence: 0.9, isResidentialUnit: false });
+    expect(isAmbiguousRoom(room)).toBe(true);
+  });
+});
+
+describe('deriveFlags — regression: short restroom abbreviations must not cause false positives (Task 602)', () => {
+  it('sets isRestroom=false for "CORRIDOR" — "RR" substring must not match via whole-word rule', () => {
+    expect(deriveFlags("CORRIDOR", null, null).isRestroom).toBe(false);
+  });
+
+  it('sets isRestroom=true for standalone "RR" (the abbreviation itself)', () => {
+    expect(deriveFlags("RR", null, null).isRestroom).toBe(true);
+  });
+
+  it('sets isRestroom=true for "BATHROOM" — long keyword "BATH" uses substring match', () => {
+    expect(deriveFlags("BATHROOM", null, null).isRestroom).toBe(true);
+  });
+
+  it('sets isRestroom=true for "RESTROOMS" — "RESTROOM" substring present', () => {
+    expect(deriveFlags("RESTROOMS", null, null).isRestroom).toBe(true);
+  });
+
+  it('sets isRestroom=true for "WC ROOM" — short abbreviation whole-word matches at word boundary', () => {
+    expect(deriveFlags("WC ROOM", null, null).isRestroom).toBe(true);
+  });
+});
+
+describe('deriveFlags — regression: residential unit regex is end-anchored (Task 602)', () => {
+  it('sets isResidentialUnit=false for "202 CONFERENCE ROOM" (digit prefix, not a bare unit label)', () => {
+    expect(deriveFlags("202 CONFERENCE ROOM", null, null).isResidentialUnit).toBe(false);
+  });
+
+  it('sets isResidentialUnit=true for bare "202" (standalone unit number)', () => {
+    expect(deriveFlags("202", null, null).isResidentialUnit).toBe(true);
+  });
+
+  it('sets isResidentialUnit=true for "UNIT 5" (explicit unit prefix)', () => {
+    expect(deriveFlags("UNIT 5", null, null).isResidentialUnit).toBe(true);
+  });
+
+  it('sets isResidentialUnit=true for "APT 3B" (explicit apartment prefix)', () => {
+    expect(deriveFlags("APT 3B", null, null).isResidentialUnit).toBe(true);
+  });
+
+  it('sets isResidentialUnit=true for "STE 200" (explicit suite prefix — residential/commercial unit)', () => {
+    expect(deriveFlags("STE 200", null, null).isResidentialUnit).toBe(true);
   });
 });

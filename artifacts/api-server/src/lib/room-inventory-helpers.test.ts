@@ -31,6 +31,7 @@ const BASE_ROOM: RoomRecord = {
   isAssembly: false,
   isOffice: false,
   isSuite: false,
+  isResidentialUnit: false,
   boundingBox: null,
   extractionConfidence: 0.9,
 };

@@ -39,7 +39,7 @@ import {
 import { extractSignSchedule } from "./sign-schedule-extractor";
 import { applySignRules, assignmentToRows, type PlaqueEntry, type RuleEngineResult as EngineRuleEngineResult, type SignAssignment } from "./rule-engine";
 import { verifyRuleEngineResult } from "./verifier";
-import { buildRoomInventory, enrichAmbiguousRoomsWithAI, type RoomInventory, type RoomRecord } from "./room-inventory";
+import { buildRoomInventory, enrichAmbiguousRoomsWithAI, isAmbiguousRoom, type RoomInventory, type RoomRecord } from "./room-inventory";
 import { occurrenceGroupKey } from "./occurrence-group-key";
 
 /**
@@ -62,6 +62,29 @@ export async function resetScanData(jobId: string): Promise<void> {
   await db
     .delete(signageScheduleEntriesTable)
     .where(eq(signageScheduleEntriesTable.jobId, jobId));
+}
+
+/**
+ * Pure function: determines what the Room AI Enrichment step should do.
+ *
+ * Returns a discriminated union so callers can handle the "skipped" and
+ * "will enrich" branches without duplicating the gate condition.
+ * Exported for unit testing.
+ *
+ * Gate rule: enrichment only runs when a life safety / egress sheet was
+ * identified in the manifest (`hasLifeSafetyPage === true`).  Without that
+ * sheet there is no occupant load context for R9/R10 rules, and
+ * floor-plan-only PDFs (e.g. residential buildings) would otherwise stall
+ * the pipeline with hundreds of unnecessary Gemini calls.
+ */
+export function planAiEnrichment(
+  rooms: RoomRecord[],
+  hasLifeSafetyPage: boolean,
+): { skipped: true; skipReason: string } | { skipped: false; ambiguousCount: number } {
+  if (!hasLifeSafetyPage) {
+    return { skipped: true, skipReason: "No life safety sheet in manifest" };
+  }
+  return { skipped: false, ambiguousCount: rooms.filter((r) => isAmbiguousRoom(r)).length };
 }
 
 export interface PdfProcessorOptions {
@@ -661,53 +684,67 @@ export async function runPdfProcessor(jobId: string, opts: PdfProcessorOptions =
               );
 
               // ── AI enrichment for ambiguous rooms ──────────────────────
+              // Gate: skip enrichment entirely when no life safety sheet was found.
+              // Without a life safety sheet there is no occupant load context to
+              // inform R9/R10 or load-dependent rules, and floor-plan-only PDFs
+              // (e.g. residential buildings with hundreds of unit rooms) would
+              // otherwise stall the pipeline with hundreds of unnecessary Gemini calls.
               const t_ai = Date.now();
-              const ambiguousCount = fileRoomInventory.rooms.filter((r) => {
-                const c = r.extractionConfidence < 0.5;
-                const s = r.roomName.replace(/\s+/g, "").length < 4;
-                const f = !(r.isRestroom || r.isStair || r.isElevator || r.isVestibule ||
-                  r.isCorridorOrHall || r.isVehicleBay || r.isMepUnoccupied ||
-                  r.isVariableUse || r.isPublicFacing || r.isStaffOnly || r.isAssembly);
-                return c || s || f;
-              }).length;
-              try {
-                const { rooms: enrichedRooms, enrichedCount } = await enrichAmbiguousRoomsWithAI(
-                  fileRoomInventory.rooms,
-                  file.id,
-                  jobId,
-                  file.storedPath,
-                );
-                fileRoomInventory = {
-                  ...fileRoomInventory,
-                  rooms: enrichedRooms,
-                  aiEnrichedCount: enrichedCount,
-                };
+              const aiStepLabel = filesToProcess.length > 1
+                ? `Room AI Enrichment — ${file.originalName}`
+                : "Room AI Enrichment";
+
+              const enrichmentPlan = planAiEnrichment(fileRoomInventory.rooms, hasLifeSafetyPage);
+
+              if (enrichmentPlan.skipped) {
                 recordStep(
                   `room_inventory_ai_${file.id}`,
-                  filesToProcess.length > 1
-                    ? `Room AI Enrichment — ${file.originalName}`
-                    : "Room AI Enrichment",
+                  aiStepLabel,
                   t_ai,
                   {
-                    ambiguousSubmitted: ambiguousCount,
-                    enrichedCount,
-                    skipped: ambiguousCount === 0,
-                  },
-                );
-              } catch (err) {
-                logger.warn({ err, fileId: file.id, jobId }, "[PDF Processor] Room AI enrichment failed — non-fatal");
-                recordStep(
-                  `room_inventory_ai_${file.id}`,
-                  filesToProcess.length > 1
-                    ? `Room AI Enrichment — ${file.originalName}`
-                    : "Room AI Enrichment",
-                  t_ai,
-                  {
-                    ambiguousSubmitted: ambiguousCount,
+                    ambiguousSubmitted: 0,
                     enrichedCount: 0,
-                    error: err instanceof Error ? err.message : String(err),
+                    skipped: true,
+                    skipReason: enrichmentPlan.skipReason,
                   },
                 );
+              } else {
+                const ambiguousCount = enrichmentPlan.ambiguousCount;
+                try {
+                  const { rooms: enrichedRooms, enrichedCount } = await enrichAmbiguousRoomsWithAI(
+                    fileRoomInventory.rooms,
+                    file.id,
+                    jobId,
+                    file.storedPath,
+                  );
+                  fileRoomInventory = {
+                    ...fileRoomInventory,
+                    rooms: enrichedRooms,
+                    aiEnrichedCount: enrichedCount,
+                  };
+                  recordStep(
+                    `room_inventory_ai_${file.id}`,
+                    aiStepLabel,
+                    t_ai,
+                    {
+                      ambiguousSubmitted: ambiguousCount,
+                      enrichedCount,
+                      skipped: ambiguousCount === 0,
+                    },
+                  );
+                } catch (err) {
+                  logger.warn({ err, fileId: file.id, jobId }, "[PDF Processor] Room AI enrichment failed — non-fatal");
+                  recordStep(
+                    `room_inventory_ai_${file.id}`,
+                    aiStepLabel,
+                    t_ai,
+                    {
+                      ambiguousSubmitted: ambiguousCount,
+                      enrichedCount: 0,
+                      error: err instanceof Error ? err.message : String(err),
+                    },
+                  );
+                }
               }
             } catch (err) {
               logger.warn({ err, fileId: file.id, jobId }, "[PDF Processor] Room inventory failed — non-fatal");

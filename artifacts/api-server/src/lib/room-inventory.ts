@@ -41,6 +41,9 @@ export interface RoomRecord {
   isOffice: boolean;
   /** True when the room name identifies it as a suite (R6 applies). */
   isSuite: boolean;
+  /** True when the room name matches a residential unit pattern (e.g. "1A", "202", "UNIT 5").
+   *  These rooms are never sent to AI enrichment. */
+  isResidentialUnit: boolean;
 
   boundingBox: { x: number; y: number; w: number; h: number } | null;
   extractionConfidence: number;
@@ -91,7 +94,14 @@ interface OccupantLoadEntry {
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
-const RESTROOM_KEYWORDS = ["TOILET", "BATH", "SHOWER", "WC", "RESTROOM", "LAVATORY", "WASHROOM"];
+// Long restroom keywords: use substring matching so "BATHROOM" matches "BATH",
+// "WASHROOM" matches "WASH", etc.
+const RESTROOM_KEYWORDS = [
+  "TOILET", "BATH", "SHOWER", "RESTROOM", "LAVATORY", "WASHROOM",
+];
+// Short restroom abbreviations that require whole-word matching to avoid
+// substring collisions: "RR" in "CORRIDOR", "WC" in theory, etc.
+const RESTROOM_ABBREVIATIONS = ["WC", "MRR", "WRR", "MR", "WR", "RR"];
 const STAIR_PREFIXES = ["STAIR"];
 const ELEVATOR_KEYWORDS = ["ELEV", "ELEVATOR", "LIFT"];
 const VESTIBULE_KEYWORDS = ["VEST", "VESTIBULE"];
@@ -104,16 +114,45 @@ const VEHICLE_BAY_KEYWORDS = ["APPARATUS", "VEHICLE BAY", "SALLY PORT", "GARAGE"
 // Adding storage terms to this list would conflate MEP rooms with storage rooms
 // (the R15 hardening objective) and cause storage rooms to be silently zero-signed.
 const MEP_KEYWORDS = [
-  "MECHANICAL", "ELECTRICAL", "ELEC", "DATA", "IT ROOM", "SERVER",
+  "MECHANICAL", "MECH", "ELECTRICAL", "ELEC", "DATA", "IT ROOM", "SERVER",
   "FIRE SPRINKLER", "TELECOM", "TELEPHONE", "COMM", "MDF", "IDF", "SPRINKLER",
-  "RISER", "JANITOR", "JAN",
+  "RISER", "JANITOR", "JAN", "UTIL", "UTILITY",
 ];
 const VARIABLE_USE_KEYWORDS = [
   "TRAINING", "COMMUNITY", "EOC", "MULTIPURPOSE", "MULTI-PURPOSE",
   "CONFERENCE", "MEETING", "BREAKOUT", "CLASSROOM", "ASSEMBLY ROOM",
   "COLLABORATION", "COLLAB", "COLLABORATIVE", "CO-WORKING", "COWORKING",
   "IDEATION", "WORKSHOP", "HUDDLE", "FLEX", "FLEXIBLE",
+  // Short facility labels that indicate assembly/variable-use occupancy
+  "GYM", "LAB", "ART",
 ];
+
+/**
+ * Known short abbreviations (< 4 non-space chars) that have well-defined
+ * meanings in architectural drawings.  A room whose stripped name matches one
+ * of these entries is NOT considered ambiguous solely due to its length —
+ * the deterministic keyword lists already classify them correctly.
+ *
+ * Keep this set in sync with the short entries in the keyword lists above.
+ */
+const KNOWN_SHORT_ABBREVIATIONS = new Set([
+  // Restroom abbreviations
+  "WC", "MR", "WR", "RR", "MRR", "WRR",
+  // MEP rooms
+  "MDF", "IDF", "JAN",
+  // Vehicle bays
+  "BAY",
+  // Variable-use / assembly
+  "EOC", "GYM", "LAB", "ART",
+]);
+
+/**
+ * Residential unit name patterns.  Rooms whose names match these patterns are
+ * apartment / condo / suite identifiers (e.g. "1A", "202", "UNIT 5") and must
+ * never be sent to AI enrichment — they carry no sign-relevant semantic beyond
+ * "residential unit".
+ */
+const RESIDENTIAL_UNIT_RE = /^(?:\d{1,4}[A-Z]?$|(?:UNIT|APT|STE)\s)/i;
 // Storage qualifier words: presence in a room name suppresses isVariableUse so
 // that "WORKSHOP STORAGE" or "BREAKOUT CLOSET" are not classified as variable-use
 // rooms.  These are NOT in MEP_KEYWORDS (storage is occupied use, not MEP).
@@ -158,7 +197,13 @@ export function deriveFlags(
 ): Omit<RoomRecord, "roomNumber" | "roomName" | "level" | "pdfPage" | "occupantLoad" | "occupancyGroup" | "boundingBox" | "extractionConfidence"> {
   const u = roomName.toUpperCase();
 
-  const isRestroom = RESTROOM_KEYWORDS.some((k) => u.includes(k));
+  // Restroom detection uses two buckets:
+  // - Long keywords (BATH, TOILET…) use substring matching so "BATHROOM" → "BATH", etc.
+  // - Short abbreviations (RR, MR, WR, WC…) use whole-word matching to avoid
+  //   substring false positives like "RR" matching inside "CORRIDOR".
+  const isRestroom =
+    RESTROOM_KEYWORDS.some((k) => u.includes(k)) ||
+    RESTROOM_ABBREVIATIONS.some((k) => includesWholeWord(u, k));
   const isStair = STAIR_PREFIXES.some((k) => u.startsWith(k));
   const isElevator = ELEVATOR_KEYWORDS.some((k) => u.includes(k));
   const isVestibule = VESTIBULE_KEYWORDS.some((k) => u.includes(k));
@@ -180,6 +225,7 @@ export function deriveFlags(
 
   const isOffice = [...OFFICE_TOKENS].some((tok) => u.includes(tok.toUpperCase()));
   const isSuite = [...SUITE_TOKENS].some((tok) => u.includes(tok.toUpperCase()));
+  const isResidentialUnit = RESIDENTIAL_UNIT_RE.test(roomName.trim());
 
   return {
     isRestroom,
@@ -195,6 +241,7 @@ export function deriveFlags(
     isAssembly,
     isOffice,
     isSuite,
+    isResidentialUnit,
   };
 }
 
@@ -701,12 +748,24 @@ function deduplicateRooms(labels: RawRoomLabel[]): RawRoomLabel[] {
  *
  * Criteria (any one is sufficient):
  *   1. Low extraction confidence (< 0.5)
- *   2. Very short room name (< 4 chars) — likely an abbreviation
+ *   2. Very short room name whose stripped form is NOT in KNOWN_SHORT_ABBREVIATIONS
+ *      (replaces the blunt < 4 chars check — known abbreviations like MRR, WC, GYM
+ *      are never ambiguous even though they are short)
  *   3. No boolean flags were derived — the label matched no known keyword
+ *
+ * Rooms that match a residential unit pattern (e.g. "1A", "202", "UNIT 5") are
+ * always excluded: there is no meaningful sign-rule classification for those labels
+ * and they represent the bulk of rooms on residential floor plans.
  */
 export function isAmbiguousRoom(room: RoomRecord): boolean {
+  // Residential units are never sent to AI — no sign classification applies
+  if (room.isResidentialUnit) return false;
+
   if (room.extractionConfidence < 0.5) return true;
-  if (room.roomName.replace(/\s+/g, "").length < 4) return true;
+
+  // Short label: only flag as ambiguous when NOT in the known-abbreviation whitelist
+  const stripped = room.roomName.replace(/\s+/g, "").toUpperCase();
+  if (stripped.length < 4 && !KNOWN_SHORT_ABBREVIATIONS.has(stripped)) return true;
 
   const hasAnyFlag =
     room.isRestroom ||

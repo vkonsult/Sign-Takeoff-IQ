@@ -81,6 +81,7 @@ const NO_FLAGS = {
   isAssembly: false,
   isOffice: false,
   isSuite: false,
+  isResidentialUnit: false,
 };
 
 /**
