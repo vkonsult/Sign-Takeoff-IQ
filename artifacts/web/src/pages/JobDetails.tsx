@@ -340,6 +340,27 @@ function PhaseSection({ group, maxMs, defaultOpen, extractionFileSummaries, isSl
   );
 }
 
+interface PhaseBarSegmentProps {
+  seg: { label: string; ms: number; pct: number; color: string };
+}
+
+function PhaseBarSegment({ seg }: PhaseBarSegmentProps) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <div
+          className="h-full transition-opacity hover:opacity-80 cursor-default"
+          style={{ width: `${seg.pct}%`, backgroundColor: seg.color, minWidth: "2px" }}
+        />
+      </TooltipTrigger>
+      <TooltipContent>
+        <div className="text-xs font-semibold">{seg.label}</div>
+        <div className="text-[11px] font-mono text-muted-foreground">{formatDuration(seg.ms)} · {seg.pct.toFixed(1)}%</div>
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
 function ProcessingTimeline({ steps, isLoading }: { steps: ProcessingStep[]; isLoading?: boolean }) {
   if (isLoading) {
     return (
@@ -597,24 +618,75 @@ function ProcessingTimeline({ steps, isLoading }: { steps: ProcessingStep[]; isL
               ));
             })()}
           </div>
-          {/* Grand total row */}
+          {/* Grand total row + phase breakdown bar */}
           {(() => {
             const grandTotalMs = totalStep?.durationMs ?? groups.reduce((sum, g) => sum + g.totalMs, 0);
             if (grandTotalMs == null) return null;
+
+            // Colors for each phase segment (by index)
+            const PHASE_COLORS = [
+              "#6366f1", // indigo
+              "#3b82f6", // blue
+              "#10b981", // emerald
+              "#f59e0b", // amber
+              "#ef4444", // red
+              "#8b5cf6", // violet
+              "#ec4899", // pink
+              "#14b8a6", // teal
+            ];
+
+            const phaseSegments = groups
+              .filter((g) => g.totalMs > 0)
+              .map((g, i) => ({
+                label: g.label,
+                ms: g.totalMs,
+                pct: (g.totalMs / grandTotalMs) * 100,
+                color: PHASE_COLORS[i % PHASE_COLORS.length],
+              }));
+
             return (
-              <div className="mt-3 flex items-center gap-3 px-4 py-2.5 rounded-lg border border-border/60 bg-muted/20">
-                <span className="text-xs font-display font-bold uppercase tracking-wider text-foreground/70">
-                  Total
-                </span>
-                <span className="flex-1" />
-                {totalStep && (
-                  <span className="text-[10px] text-muted-foreground font-mono mr-2">
-                    pipeline total
+              <div className="mt-3 rounded-lg border border-border/60 bg-muted/20 overflow-hidden">
+                <div className="flex items-center gap-3 px-4 py-2.5">
+                  <span className="text-xs font-display font-bold uppercase tracking-wider text-foreground/70">
+                    Total
                   </span>
+                  <span className="flex-1" />
+                  {totalStep && (
+                    <span className="text-[10px] text-muted-foreground font-mono mr-2">
+                      pipeline total
+                    </span>
+                  )}
+                  <span className="inline-flex items-center px-2.5 py-0.5 rounded bg-foreground/10 text-xs font-mono font-bold tabular-nums text-foreground/80">
+                    {formatDuration(grandTotalMs)}
+                  </span>
+                </div>
+                {phaseSegments.length > 1 && (
+                  <div className="px-4 pb-3 space-y-2">
+                    {/* Stacked bar */}
+                    <TooltipProvider>
+                      <div className="flex h-3 w-full rounded overflow-hidden gap-px">
+                        {phaseSegments.map((seg, i) => (
+                          <PhaseBarSegment key={i} seg={seg} />
+                        ))}
+                      </div>
+                    </TooltipProvider>
+                    {/* Legend */}
+                    <div className="flex flex-wrap gap-x-4 gap-y-1">
+                      {phaseSegments.map((seg, i) => (
+                        <div key={i} className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
+                          <span
+                            className="inline-block w-2 h-2 rounded-sm shrink-0"
+                            style={{ backgroundColor: seg.color }}
+                          />
+                          <span className="truncate max-w-[14rem]">{seg.label}</span>
+                          <span className="font-mono tabular-nums text-foreground/50">
+                            {seg.pct.toFixed(0)}%
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
                 )}
-                <span className="inline-flex items-center px-2.5 py-0.5 rounded bg-foreground/10 text-xs font-mono font-bold tabular-nums text-foreground/80">
-                  {formatDuration(grandTotalMs)}
-                </span>
               </div>
             );
           })()}
