@@ -150,6 +150,8 @@ export function SignSpecModal({ jobId, fileId, fileName, specPages, plaqueTable,
   const lbScaleRef = useRef(1);
   const [lbIsDragging, setLbIsDragging] = useState(false);
   const [lbIsPinching, setLbIsPinching] = useState(false);
+  const [lbIsResetting, setLbIsResetting] = useState(false);
+  const lbResetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const lbClampAxis = useCallback((value: number, scale: number, axis: "x" | "y"): number => {
     const container = lbContainerRef.current;
@@ -166,10 +168,16 @@ export function SignSpecModal({ jobId, fileId, fileName, specPages, plaqueTable,
   }, []);
 
   const lbResetView = useCallback(() => {
+    if (lbResetTimerRef.current !== null) clearTimeout(lbResetTimerRef.current);
+    setLbIsResetting(true);
     const s = resetLbView();
     setLbScale(s.scale);
     setLbPanX(s.panX);
     setLbPanY(s.panY);
+    lbResetTimerRef.current = setTimeout(() => {
+      setLbIsResetting(false);
+      lbResetTimerRef.current = null;
+    }, 200);
   }, []);
 
   const closeLightbox = useCallback(() => {
@@ -200,6 +208,15 @@ export function SignSpecModal({ jobId, fileId, fileName, specPages, plaqueTable,
     lbPinchRef.current = null;
   }, []);
 
+  const lbStartResetAnimation = useCallback(() => {
+    if (lbResetTimerRef.current !== null) clearTimeout(lbResetTimerRef.current);
+    setLbIsResetting(true);
+    lbResetTimerRef.current = setTimeout(() => {
+      setLbIsResetting(false);
+      lbResetTimerRef.current = null;
+    }, 200);
+  }, []);
+
   const lbHandleWheel = useCallback((e: React.WheelEvent<HTMLDivElement>) => {
     e.preventDefault();
     e.stopPropagation();
@@ -215,20 +232,36 @@ export function SignSpecModal({ jobId, fileId, fileName, specPages, plaqueTable,
         cy,
         lbClampAxis,
       );
-      setLbPanX((px) => {
-        const full = computeWheelZoom({ scale: prevScale, panX: px, panY: 0 }, e.deltaY, cx, cy, lbClampAxis);
-        return full.panX;
-      });
-      setLbPanY((py) => {
-        const full = computeWheelZoom({ scale: prevScale, panX: 0, panY: py }, e.deltaY, cx, cy, lbClampAxis);
-        return full.panY;
-      });
+      if (next.scale === 1) {
+        lbStartResetAnimation();
+        setLbPanX(0);
+        setLbPanY(0);
+      } else {
+        if (lbResetTimerRef.current !== null) {
+          clearTimeout(lbResetTimerRef.current);
+          lbResetTimerRef.current = null;
+          setLbIsResetting(false);
+        }
+        setLbPanX((px) => {
+          const full = computeWheelZoom({ scale: prevScale, panX: px, panY: 0 }, e.deltaY, cx, cy, lbClampAxis);
+          return full.panX;
+        });
+        setLbPanY((py) => {
+          const full = computeWheelZoom({ scale: prevScale, panX: 0, panY: py }, e.deltaY, cx, cy, lbClampAxis);
+          return full.panY;
+        });
+      }
       return next.scale;
     });
-  }, [lbClampAxis]);
+  }, [lbClampAxis, lbStartResetAnimation]);
 
   const lbHandlePointerDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
     if (e.pointerType === "mouse" && e.button !== 0) return;
+    if (lbResetTimerRef.current !== null) {
+      clearTimeout(lbResetTimerRef.current);
+      lbResetTimerRef.current = null;
+      setLbIsResetting(false);
+    }
     e.currentTarget.setPointerCapture(e.pointerId);
     lbPointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
     const pointers = Array.from(lbPointersRef.current.values());
@@ -317,6 +350,9 @@ export function SignSpecModal({ jobId, fileId, fileName, specPages, plaqueTable,
   const lightboxIndexRef = useRef<number | null>(null);
   useEffect(() => { lightboxIndexRef.current = lightboxIndex; }, [lightboxIndex]);
   useEffect(() => { lbScaleRef.current = lbScale; }, [lbScale]);
+  useEffect(() => () => {
+    if (lbResetTimerRef.current !== null) clearTimeout(lbResetTimerRef.current);
+  }, []);
 
   const activeSpecRowRefs = useRef<Map<string, HTMLDivElement>>(new Map());
 
@@ -900,7 +936,7 @@ export function SignSpecModal({ jobId, fileId, fileName, specPages, plaqueTable,
                     style={{
                       transform: `translate(${lbPanX}px, ${lbPanY}px) scale(${lbScale})`,
                       transformOrigin: "center",
-                      transition: (lbIsDragging || lbIsPinching) ? "none" : "transform 0.05s ease-out",
+                      transition: (lbIsDragging || lbIsPinching) ? "none" : lbIsResetting ? "transform 0.15s ease-out" : "none",
                     }}
                     draggable={false}
                   />
