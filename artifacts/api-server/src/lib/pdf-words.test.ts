@@ -44,6 +44,7 @@
  */
 
 import { vi, describe, it, expect, beforeEach } from "vitest";
+import fs from "fs/promises";
 import {
   classifyPageFromPhrases,
   extractRawPageItems,
@@ -495,7 +496,17 @@ describe("extractPagePhrases", () => {
     setupDoc([makeTextItem("PAGE1", 0, 100, 40, 8)]);
     const r1 = await extractPagePhrases(uniquePath(), uniqueFileId(), 1);
 
-    setupDoc([makeTextItem("PAGE2", 0, 100, 40, 8)]);
+    // Use a two-page document for the second call so page 2 is in range
+    mockGetViewport.mockReturnValue(makeIdentityViewport(100, 200));
+    mockGetTextContent.mockResolvedValue({ items: [makeTextItem("PAGE2", 0, 100, 40, 8)] });
+    mockGetPage.mockResolvedValue({
+      getViewport: mockGetViewport,
+      getTextContent: mockGetTextContent,
+    });
+    const doc2 = { numPages: 2, getPage: mockGetPage, destroy: vi.fn() };
+    mockDocumentPromise.mockResolvedValue(doc2);
+    mockGetDocument.mockReturnValue({ promise: mockDocumentPromise() });
+
     const r2 = await extractPagePhrases(uniquePath(), uniqueFileId(), 2);
 
     expect(r1.phrases[0]!.text).toBe("PAGE1");
@@ -542,6 +553,93 @@ describe("extractPagePhrases", () => {
     const result = await extractPagePhrases(uniquePath(), uniqueFileId(), 1);
     expect(result.phrases).toHaveLength(1);
     expect(result.phrases[0]!.text).toBe("OK");
+  });
+});
+
+// ── Error handling: missing file and out-of-range page number ────────────────
+
+describe("extractRawPageItems — error cases", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("rejects with a descriptive error when the PDF file does not exist", async () => {
+    const enoent = Object.assign(
+      new Error("ENOENT: no such file or directory, open '/tmp/missing.pdf'"),
+      { code: "ENOENT" },
+    );
+    vi.mocked(fs.readFile).mockRejectedValueOnce(enoent);
+
+    await expect(
+      extractRawPageItems("/tmp/missing.pdf", 1),
+    ).rejects.toThrow("ENOENT");
+  });
+
+  it("rejects with a clear message when the page number exceeds numPages", async () => {
+    // setupDoc creates a document with numPages: 1
+    setupDoc([], 612, 792);
+    const path = uniquePath();
+
+    await expect(
+      extractRawPageItems(path, 999),
+    ).rejects.toThrow(/page 999 is out of range/i);
+  });
+
+  it("rejects with a clear message when the page number is 0 (below range)", async () => {
+    setupDoc([], 612, 792);
+
+    await expect(
+      extractRawPageItems(uniquePath(), 0),
+    ).rejects.toThrow(/page 0 is out of range/i);
+  });
+
+  it("rejects with a clear message when the page number is negative", async () => {
+    setupDoc([], 612, 792);
+
+    await expect(
+      extractRawPageItems(uniquePath(), -5),
+    ).rejects.toThrow(/page -5 is out of range/i);
+  });
+});
+
+describe("extractPagePhrases — error cases", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("rejects with a descriptive error when the PDF file does not exist", async () => {
+    const enoent = Object.assign(
+      new Error("ENOENT: no such file or directory, open '/tmp/missing-phrases.pdf'"),
+      { code: "ENOENT" },
+    );
+    vi.mocked(fs.readFile).mockRejectedValueOnce(enoent);
+
+    await expect(
+      extractPagePhrases("/tmp/missing-phrases.pdf", "file-missing", 1),
+    ).rejects.toThrow("ENOENT");
+  });
+
+  it("rejects with a clear message when the page number exceeds numPages", async () => {
+    // setupDoc creates a document with numPages: 1
+    setupDoc([], 612, 792);
+    const path = uniquePath();
+    const fileId = uniqueFileId();
+
+    await expect(
+      extractPagePhrases(path, fileId, 999),
+    ).rejects.toThrow(/page 999 is out of range/i);
+  });
+
+  it("rejects with a clear message when the page number is 0 (below range)", async () => {
+    setupDoc([], 612, 792);
+
+    await expect(
+      extractPagePhrases(uniquePath(), uniqueFileId(), 0),
+    ).rejects.toThrow(/page 0 is out of range/i);
+  });
+
+  it("rejects with a clear message when the page number is negative", async () => {
+    setupDoc([], 612, 792);
+
+    await expect(
+      extractPagePhrases(uniquePath(), uniqueFileId(), -3),
+    ).rejects.toThrow(/page -3 is out of range/i);
   });
 });
 

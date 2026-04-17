@@ -270,6 +270,11 @@ export async function extractRawPageItems(
   pageNum: number,
 ): Promise<{ items: Array<{ text: string; x: number; y: number; w: number; h: number }>; pageWidth: number; pageHeight: number }> {
   const doc = await getOrOpenPdfjsDoc(pdfPath);
+  if (pageNum < 1 || pageNum > doc.numPages) {
+    throw new Error(
+      `Page ${pageNum} is out of range for "${pdfPath}" (document has ${doc.numPages} page${doc.numPages === 1 ? "" : "s"})`,
+    );
+  }
   const page = await doc.getPage(pageNum);
   const viewport = page.getViewport({ scale: 1.0 });
   const pageW = viewport.width;
@@ -329,6 +334,11 @@ export async function extractPagePhrases(
   if (cached) return cached;
 
   const doc = await getOrOpenPdfjsDoc(pdfPath);
+  if (pageNum < 1 || pageNum > doc.numPages) {
+    throw new Error(
+      `Page ${pageNum} is out of range for "${pdfPath}" (document has ${doc.numPages} page${doc.numPages === 1 ? "" : "s"})`,
+    );
+  }
 
   const page = await doc.getPage(pageNum);
   // getViewport({ scale: 1.0 }) without an explicit rotation argument uses the
