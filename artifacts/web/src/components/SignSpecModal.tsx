@@ -21,6 +21,36 @@ import {
 } from "lucide-react";
 pdfjs.GlobalWorkerOptions.workerSrc = `${import.meta.env.BASE_URL}pdf.worker.min.mjs`;
 
+function CropThumbnail({ src, alt }: { src: string; alt: string }) {
+  const [loaded, setLoaded] = useState(false);
+  const [error, setError] = useState(false);
+
+  if (error) {
+    return (
+      <div className="mb-2 flex items-center justify-center gap-1.5 rounded border border-dashed border-border/50 bg-secondary/20 py-2.5">
+        <ImageOff className="w-3.5 h-3.5 text-muted-foreground/40" />
+        <span className="text-[10px] font-mono text-muted-foreground/40">Image unavailable</span>
+      </div>
+    );
+  }
+
+  return (
+    <div className="mb-2 rounded overflow-hidden border border-border/60 bg-white relative h-24">
+      {!loaded && (
+        <div className="absolute inset-0 bg-secondary/40 animate-pulse" />
+      )}
+      <img
+        src={src}
+        alt={alt}
+        loading="lazy"
+        onLoad={() => setLoaded(true)}
+        onError={() => setError(true)}
+        className={`w-full h-full object-contain transition-opacity duration-300 ${loaded ? "opacity-100" : "opacity-0"}`}
+      />
+    </div>
+  );
+}
+
 export interface PlaqueTableData {
   plaqueTypes: {
     typeCode: string;
@@ -475,14 +505,10 @@ export function SignSpecModal({ jobId, fileId, fileName, specPages, plaqueTable,
 
                       {/* Crop image thumbnail */}
                       {spec.hasDrawing && spec.cropImageUrl ? (
-                        <div className="mb-2 rounded overflow-hidden border border-border/60 bg-white">
-                          <img
-                            src={`${import.meta.env.BASE_URL}${spec.cropImageUrl.replace(/^\//, "")}`}
-                            alt={`Drawing for ${spec.typeCode}`}
-                            className="w-full h-auto object-contain max-h-32"
-                            loading="lazy"
-                          />
-                        </div>
+                        <CropThumbnail
+                          src={`${import.meta.env.BASE_URL}${spec.cropImageUrl.replace(/^\//, "")}`}
+                          alt={`Drawing for ${spec.typeCode}`}
+                        />
                       ) : (
                         <div className="mb-2 flex items-center justify-center gap-1.5 rounded border border-dashed border-border/50 bg-secondary/20 py-2.5">
                           <ImageOff className="w-3.5 h-3.5 text-muted-foreground/40" />
