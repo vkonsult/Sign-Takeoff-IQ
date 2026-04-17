@@ -1,0 +1,8 @@
+uploads = []
+generated = []
+
+[[outputs]]
+id = "cC2xkHWpmPyv8xekmYZgr"
+uri = "file://sign-takeoff-frontend.tar.gz"
+type = "unspecified"
+title = "Sign Takeoff Portal — Frontend Source (tar.gz)"
