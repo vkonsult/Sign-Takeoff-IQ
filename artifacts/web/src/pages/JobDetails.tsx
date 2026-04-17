@@ -4056,7 +4056,7 @@ function RoomInventoryTab({ files, processingLog }: RoomInventoryTabProps) {
                               <div className="flex items-center gap-1.5 pl-3">
                                 <span className="truncate" title={room.roomName}>{room.roomName}</span>
                                 <span className="text-[9px] font-mono text-muted-foreground/50 shrink-0 whitespace-nowrap">
-                                  {subIdx + 1} of {groupRooms.length}
+                                  ({subIdx + 1}/{groupRooms.length})
                                 </span>
                               </div>
                             </td>
