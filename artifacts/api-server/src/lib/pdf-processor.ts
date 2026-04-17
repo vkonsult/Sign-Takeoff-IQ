@@ -1445,6 +1445,7 @@ export async function runPdfProcessor(jobId: string, opts: PdfProcessorOptions =
       .filter((r): r is { fileId: string; fileName: string; error: string } => "error" in r)
       .map((r) => `${r.fileName}: ${r.error}`)
       .join("; ");
+    cancelCurrentStepTimer();
     await db
       .update(jobsTable)
       .set({ status: "failed", error: `All files failed processing: ${errorSummary}`, processingLog: finalPipelineSteps, currentStep: null, updatedAt: new Date() })
@@ -1452,6 +1453,7 @@ export async function runPdfProcessor(jobId: string, opts: PdfProcessorOptions =
     return;
   }
 
+  cancelCurrentStepTimer();
   await db
     .update(jobsTable)
     .set({
