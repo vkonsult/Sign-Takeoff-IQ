@@ -430,6 +430,7 @@ export async function runPdfProcessor(jobId: string): Promise<void> {
                 verificationErrors: ruleResult.verificationErrors,
                 decisionsLog: ruleResult.decisionsLog,
                 questionsForVerification: ruleResult.questionsForVerification,
+                assignments: ruleResult.assignments,
               },
               "phase-3",
             );

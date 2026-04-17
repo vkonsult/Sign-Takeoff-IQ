@@ -40,6 +40,7 @@ import {
   ExternalLink,
   Clock,
   Brain,
+  Building2,
 } from "lucide-react";
 import { format, formatDistanceToNow } from "date-fns";
 import { exportMarkedupPdf, type MarkerSign } from "@/lib/exportMarkedupPdf";
@@ -892,11 +893,11 @@ function ProcessingTimeline({ steps, isLoading }: { steps: ProcessingStep[]; isL
   );
 }
 
-function parseTabParam(search: string): "table" | "sheets" | "summary" | "floorplans" | "signpages" | "specs" | "timeline" | "coords" | "ai_scans" | null {
+function parseTabParam(search: string): "table" | "sheets" | "summary" | "floorplans" | "signpages" | "specs" | "timeline" | "coords" | "ai_scans" | "rooms" | null {
   const p = new URLSearchParams(search);
   const t = p.get("tab");
   if (t === "signs") return "table";
-  const valid = ["table", "sheets", "summary", "floorplans", "signpages", "specs", "timeline", "coords", "ai_scans"] as const;
+  const valid = ["table", "sheets", "summary", "floorplans", "signpages", "specs", "timeline", "coords", "ai_scans", "rooms"] as const;
   return (valid as readonly string[]).includes(t ?? "") ? (t as ReturnType<typeof parseTabParam>) : null;
 }
 
@@ -983,7 +984,7 @@ export default function JobDetails() {
   const [sortField, setSortField] = useState<string | null>(null);
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
   const [summaryFilter, setSummaryFilter] = useState<null | "flagged">(null);
-  const [activeTab, setActiveTab] = useState<"table" | "sheets" | "summary" | "floorplans" | "signpages" | "specs" | "timeline" | "coords" | "ai_scans">(() => parseTabParam(search) ?? "table");
+  const [activeTab, setActiveTab] = useState<"table" | "sheets" | "summary" | "floorplans" | "signpages" | "specs" | "timeline" | "coords" | "ai_scans" | "rooms">(() => parseTabParam(search) ?? "table");
   useEffect(() => {
     const parsed = parseTabParam(search);
     if (parsed) setActiveTab(parsed);
@@ -1608,6 +1609,30 @@ export default function JobDetails() {
                       AI Scans
                     </button>
                   )}
+                  {(isCompleted || isFailed) && (
+                    <button
+                      onClick={() => setActiveTab("rooms")}
+                      className={`flex items-center gap-1.5 px-3 py-2 text-[10px] font-display font-semibold uppercase tracking-wider border-b-2 transition-all ${
+                        activeTab === "rooms"
+                          ? "border-emerald-500 text-emerald-400"
+                          : "border-transparent text-muted-foreground hover:text-foreground"
+                      }`}
+                    >
+                      <Building2 className="w-3.5 h-3.5" />
+                      Room Inventory
+                      {(() => {
+                        const totalRooms = (files as FileWithInventory[]).reduce(
+                          (sum, f) => sum + ((f.roomInventory as RoomInventoryData | null | undefined)?.rooms?.length ?? 0), 0
+                        );
+                        if (totalRooms === 0) return null;
+                        return (
+                          <span className="ml-0.5 text-[9px] font-mono px-1 py-px rounded border bg-emerald-500/10 text-emerald-400 border-emerald-500/30">
+                            {totalRooms}
+                          </span>
+                        );
+                      })()}
+                    </button>
+                  )}
                 </div>
               </div>
 
@@ -1687,6 +1712,13 @@ export default function JobDetails() {
                     onScansComplete={() => {
                       queryClient.invalidateQueries({ queryKey: getGetJobQueryKey(jobId) });
                     }}
+                  />
+                </div>
+              ) : activeTab === "rooms" ? (
+                <div className="flex-1 overflow-auto bg-card border-t border-border">
+                  <RoomInventoryTab
+                    files={files as FileWithInventory[]}
+                    processingLog={(job as Record<string, unknown>).processingLog as Array<{ step: string; details?: Record<string, unknown> }> | null | undefined}
                   />
                 </div>
               ) : (
@@ -2966,6 +2998,327 @@ function RoomInventoryPanel({ inventory }: { inventory: RoomInventoryData }) {
                 })}
               </tbody>
             </table>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+interface RuleAssignment {
+  roomNumber: string | null;
+  roomName: string;
+  level: string;
+  pdfPage: number;
+  roomId: number | null;
+  roomIdWithInsert: number | null;
+  restroom: number | null;
+  exit: number | null;
+  maxOccupancy: number | null;
+  stairCorridor: number | null;
+  stairLanding: number | null;
+  inCaseOfFire: number | null;
+  evacuationMap: number | null;
+  officeDirectory: number | null;
+  exclusionReasons: string[];
+  ambiguous: boolean;
+}
+
+const SIGN_TYPE_LABELS: Array<{ key: keyof RuleAssignment; label: string }> = [
+  { key: "roomId", label: "Room ID" },
+  { key: "roomIdWithInsert", label: "Room ID w/ Insert" },
+  { key: "restroom", label: "Restroom Plaque" },
+  { key: "exit", label: "Exit Sign" },
+  { key: "maxOccupancy", label: "Max Occupancy" },
+  { key: "stairCorridor", label: "Stair (Corridor)" },
+  { key: "stairLanding", label: "Stair (Landing)" },
+  { key: "inCaseOfFire", label: "In Case of Fire" },
+  { key: "evacuationMap", label: "Evacuation Map" },
+  { key: "officeDirectory", label: "Office Directory" },
+];
+
+function assignmentSignBadges(a: RuleAssignment): Array<{ label: string; qty: number }> {
+  return SIGN_TYPE_LABELS
+    .map(({ key, label }) => ({ label, qty: (a[key] as number | null) ?? 0 }))
+    .filter(({ qty }) => qty > 0);
+}
+
+function findAssignmentForRoom(
+  assignments: RuleAssignment[],
+  room: RoomRecord
+): RuleAssignment | null {
+  const num = room.roomNumber?.trim() ?? null;
+  const name = room.roomName.trim().toLowerCase();
+  const level = room.level.trim().toLowerCase();
+  const page = room.pdfPage;
+
+  const byLevel = assignments.filter((a) => a.level.trim().toLowerCase() === level);
+
+  if (num) {
+    const byNum = byLevel.filter((a) => a.roomNumber?.trim() === num);
+    if (byNum.length === 1) return byNum[0]!;
+    const byNumPage = byNum.find((a) => a.pdfPage === page);
+    if (byNumPage) return byNumPage;
+    if (byNum.length > 0) return byNum[0]!;
+  }
+
+  const byName = byLevel.filter((a) => a.roomName.trim().toLowerCase() === name);
+  if (byName.length === 1) return byName[0]!;
+  const byNamePage = byName.find((a) => a.pdfPage === page);
+  if (byNamePage) return byNamePage;
+
+  return null;
+}
+
+interface RoomInventoryTabProps {
+  files: FileWithInventory[];
+  processingLog: Array<{ step: string; details?: Record<string, unknown> }> | null | undefined;
+}
+
+function RoomInventoryTab({ files, processingLog }: RoomInventoryTabProps) {
+  const [filterLevel, setFilterLevel] = useState<string>("all");
+  const [filterFlag, setFilterFlag] = useState<string>("all");
+
+  type RoomEntry = RoomRecord & {
+    sourceFile: string;
+    fileId: string;
+    assignment: RuleAssignment | null;
+    hasAssignmentData: boolean;
+  };
+
+  const fileAssignments = new Map<string, RuleAssignment[]>();
+  if (processingLog) {
+    for (const step of processingLog) {
+      if (step.step.startsWith("rule_application_")) {
+        const fileId = step.step.slice("rule_application_".length);
+        const raw = step.details?.assignments;
+        if (Array.isArray(raw)) {
+          fileAssignments.set(fileId, raw as RuleAssignment[]);
+        }
+      }
+    }
+  }
+
+  const allRooms: RoomEntry[] = [];
+  const allWarnings: string[] = [];
+  for (const f of files) {
+    const ri = f.roomInventory as RoomInventoryData | null | undefined;
+    if (!ri) continue;
+    for (const w of ri.warnings ?? []) {
+      if (!allWarnings.includes(w)) allWarnings.push(w);
+    }
+    const fileAsgns = fileAssignments.get(f.id) ?? null;
+    const hasAssignmentData = fileAsgns !== null;
+    for (const room of ri.rooms) {
+      const assignment = fileAsgns ? findAssignmentForRoom(fileAsgns, room) : null;
+      allRooms.push({
+        ...room,
+        sourceFile: f.originalName,
+        fileId: f.id,
+        assignment,
+        hasAssignmentData,
+      });
+    }
+  }
+
+  const hasAnyAssignmentData = allRooms.some((r) => r.hasAssignmentData);
+
+  const levels = Array.from(new Set(allRooms.map((r) => r.level))).sort();
+  const flagOptions = [
+    { value: "restroom", label: "Restroom" },
+    { value: "stair", label: "Stair" },
+    { value: "elevator", label: "Elevator" },
+    { value: "corridor", label: "Corridor" },
+    { value: "assembly", label: "Assembly" },
+    { value: "mep", label: "MEP/Unoccupied" },
+  ];
+
+  const filtered = allRooms.filter((r) => {
+    if (filterLevel !== "all" && r.level !== filterLevel) return false;
+    if (filterFlag !== "all") {
+      if (filterFlag === "restroom" && !r.isRestroom) return false;
+      if (filterFlag === "stair" && !r.isStair) return false;
+      if (filterFlag === "elevator" && !r.isElevator) return false;
+      if (filterFlag === "corridor" && !r.isCorridorOrHall) return false;
+      if (filterFlag === "assembly" && !r.isAssembly) return false;
+      if (filterFlag === "mep" && !r.isMepUnoccupied) return false;
+    }
+    return true;
+  });
+
+  if (allRooms.length === 0) {
+    return (
+      <div className="flex flex-col items-center justify-center h-full p-16 text-center">
+        <Building2 className="w-12 h-12 text-muted-foreground/25 mb-4" />
+        <p className="text-base font-display font-semibold text-muted-foreground mb-1">
+          No floor-plan rooms detected
+        </p>
+        <p className="text-sm text-muted-foreground/60 max-w-sm leading-relaxed">
+          Room inventory is built during extraction. Run or re-run the extraction to populate this view.
+        </p>
+      </div>
+    );
+  }
+
+  const restroomCount = allRooms.filter((r) => r.isRestroom).length;
+  const stairCount = allRooms.filter((r) => r.isStair).length;
+  const elevatorCount = allRooms.filter((r) => r.isElevator).length;
+  const roomsWithAssignments = allRooms.filter((r) => r.assignment && assignmentSignBadges(r.assignment).length > 0).length;
+
+  return (
+    <div className="p-6 space-y-4 max-w-7xl mx-auto">
+      {/* Header summary */}
+      <div className="flex items-center justify-between flex-wrap gap-3">
+        <div>
+          <h2 className="text-sm font-display font-bold uppercase tracking-wider text-emerald-400 mb-1 flex items-center gap-1.5">
+            <Building2 className="w-4 h-4" />
+            Room Inventory
+          </h2>
+          <div className="flex items-center gap-3 text-[11px] font-mono text-muted-foreground flex-wrap">
+            <span>{allRooms.length} room{allRooms.length !== 1 ? "s" : ""} across {files.filter((f) => (f.roomInventory as RoomInventoryData | null | undefined)?.rooms?.length).length} file{files.length !== 1 ? "s" : ""}</span>
+            {restroomCount > 0 && <span className="text-emerald-400/80">{restroomCount} restroom{restroomCount !== 1 ? "s" : ""}</span>}
+            {stairCount > 0 && <span className="text-emerald-400/80">{stairCount} stair{stairCount !== 1 ? "s" : ""}</span>}
+            {elevatorCount > 0 && <span className="text-emerald-400/80">{elevatorCount} elevator{elevatorCount !== 1 ? "s" : ""}</span>}
+            {hasAnyAssignmentData && roomsWithAssignments > 0 && (
+              <span className="text-blue-400/80">{roomsWithAssignments} with assigned signs</span>
+            )}
+          </div>
+        </div>
+
+        {/* Filters */}
+        <div className="flex items-center gap-2 flex-wrap">
+          {levels.length > 1 && (
+            <select
+              value={filterLevel}
+              onChange={(e) => setFilterLevel(e.target.value)}
+              className="text-[11px] font-mono bg-secondary border border-border rounded px-2 py-1 text-foreground/80 focus:outline-none focus:border-emerald-500/50"
+            >
+              <option value="all">All levels</option>
+              {levels.map((l) => (
+                <option key={l} value={l}>{l}</option>
+              ))}
+            </select>
+          )}
+          <select
+            value={filterFlag}
+            onChange={(e) => setFilterFlag(e.target.value)}
+            className="text-[11px] font-mono bg-secondary border border-border rounded px-2 py-1 text-foreground/80 focus:outline-none focus:border-emerald-500/50"
+          >
+            <option value="all">All types</option>
+            {flagOptions.map((o) => (
+              <option key={o.value} value={o.value}>{o.label}</option>
+            ))}
+          </select>
+        </div>
+      </div>
+
+      {/* Warnings */}
+      {allWarnings.length > 0 && (
+        <div className="space-y-1">
+          {allWarnings.slice(0, 4).map((w, i) => (
+            <div key={i} className="text-[11px] text-amber-400 bg-amber-500/10 border border-amber-500/20 rounded px-3 py-1.5 flex items-start gap-1.5">
+              <AlertTriangle className="w-3 h-3 mt-px shrink-0" />
+              {w}
+            </div>
+          ))}
+          {allWarnings.length > 4 && (
+            <div className="text-[11px] text-muted-foreground/50 font-mono px-3">+{allWarnings.length - 4} more warnings</div>
+          )}
+        </div>
+      )}
+
+      {/* No assignment data notice (old jobs pre-dating this feature) */}
+      {!hasAnyAssignmentData && (
+        <div className="text-[11px] text-muted-foreground/60 bg-secondary/40 border border-border/40 rounded px-3 py-2 font-mono">
+          Sign assignment data is not available for this job. Re-run extraction to populate the Assigned Signs column.
+        </div>
+      )}
+
+      {/* Table */}
+      {filtered.length === 0 ? (
+        <div className="text-center py-10 text-sm text-muted-foreground">No rooms match the selected filters.</div>
+      ) : (
+        <div className="rounded border border-border/60 overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="w-full text-left border-collapse">
+              <thead className="sticky top-0 z-10 bg-card border-b border-border/60">
+                <tr>
+                  <th className="px-3 py-2 text-[10px] font-display font-bold uppercase tracking-wider text-muted-foreground whitespace-nowrap w-20">Room #</th>
+                  <th className="px-3 py-2 text-[10px] font-display font-bold uppercase tracking-wider text-muted-foreground">Name</th>
+                  <th className="px-3 py-2 text-[10px] font-display font-bold uppercase tracking-wider text-muted-foreground whitespace-nowrap w-16">Level</th>
+                  <th className="px-3 py-2 text-[10px] font-display font-bold uppercase tracking-wider text-muted-foreground">Detected Flags</th>
+                  <th className="px-3 py-2 text-[10px] font-display font-bold uppercase tracking-wider text-muted-foreground">Assigned Signs</th>
+                  {files.length > 1 && (
+                    <th className="px-3 py-2 text-[10px] font-display font-bold uppercase tracking-wider text-muted-foreground">Source File</th>
+                  )}
+                </tr>
+              </thead>
+              <tbody>
+                {filtered.map((room, i) => {
+                  const flags = roomFlags(room);
+                  const badges = room.assignment ? assignmentSignBadges(room.assignment) : [];
+                  const excluded = room.assignment?.exclusionReasons ?? [];
+                  return (
+                    <tr
+                      key={`${room.sourceFile}-${room.roomName}-${room.roomNumber}-${i}`}
+                      className={`border-b border-border/20 last:border-0 hover:bg-secondary/20 transition-colors ${i % 2 === 0 ? "" : "bg-card/30"}`}
+                    >
+                      <td className="px-3 py-2 text-xs font-mono text-muted-foreground whitespace-nowrap">
+                        {room.roomNumber ?? <span className="text-muted-foreground/30">—</span>}
+                      </td>
+                      <td className="px-3 py-2 text-xs font-mono text-foreground/80 max-w-[200px] truncate" title={room.roomName}>
+                        {room.roomName}
+                      </td>
+                      <td className="px-3 py-2 text-xs font-mono text-muted-foreground whitespace-nowrap">
+                        {room.level}
+                      </td>
+                      <td className="px-3 py-2">
+                        {flags.length > 0 ? (
+                          <div className="flex flex-wrap gap-0.5">
+                            {flags.map((f) => <RoomFlagChip key={f} label={f} />)}
+                          </div>
+                        ) : (
+                          <span className="text-[10px] text-muted-foreground/30 font-mono">none</span>
+                        )}
+                      </td>
+                      <td className="px-3 py-2">
+                        {!room.hasAssignmentData ? (
+                          <span className="text-[10px] text-muted-foreground/25 font-mono italic">re-run to populate</span>
+                        ) : badges.length > 0 ? (
+                          <div className="flex flex-wrap gap-0.5">
+                            {badges.map(({ label, qty }) => (
+                              <span key={label} className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded border text-[9px] font-mono bg-blue-500/10 text-blue-400 border-blue-500/25 whitespace-nowrap">
+                                {qty > 1 ? `${qty}× ` : ""}{label}
+                              </span>
+                            ))}
+                            {room.assignment?.ambiguous && (
+                              <span className="inline-flex items-center px-1.5 py-0.5 rounded border text-[9px] font-mono bg-amber-500/10 text-amber-400 border-amber-500/20 whitespace-nowrap">
+                                ?ambiguous
+                              </span>
+                            )}
+                          </div>
+                        ) : excluded.length > 0 ? (
+                          <span className="text-[10px] font-mono text-muted-foreground/50 italic" title={excluded.join("; ")}>
+                            excluded
+                          </span>
+                        ) : (
+                          <span className="text-[10px] text-muted-foreground/30 font-mono">none assigned</span>
+                        )}
+                      </td>
+                      {files.length > 1 && (
+                        <td className="px-3 py-2 text-[10px] font-mono text-muted-foreground/50 max-w-[160px] truncate" title={room.sourceFile}>
+                          {room.sourceFile}
+                        </td>
+                      )}
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+          <div className="px-3 py-2 border-t border-border/40 bg-secondary/30 text-[10px] font-mono text-muted-foreground/50">
+            {filtered.length} of {allRooms.length} room{allRooms.length !== 1 ? "s" : ""}
+            {filterLevel !== "all" || filterFlag !== "all" ? " (filtered)" : ""}
           </div>
         </div>
       )}
