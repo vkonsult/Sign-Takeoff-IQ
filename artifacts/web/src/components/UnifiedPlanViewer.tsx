@@ -663,10 +663,29 @@ function PageViewer({
       const total = posGroups.size;
       if (total <= 1) continue;
 
+      // Sort position groups by spatial coordinates so the occurrence index
+      // (1/N, 2/N, …) matches the top-to-bottom / left-to-right order that
+      // the PDF room extractor uses when building ri.rooms — keeping the table
+      // sub-row numbering consistent with the canvas marker numbering.
       const orderedPosGroups = [...posGroups.entries()].sort((a, b) => {
-        const aIdx = legacySigns.findIndex((s) => a[1].includes(s.id));
-        const bIdx = legacySigns.findIndex((s) => b[1].includes(s.id));
-        return aIdx - bIdx;
+        const parseCoords = (posKey: string): { x: number; y: number } | null => {
+          if (posKey === "unplaced") return null;
+          const parts = posKey.split(",");
+          if (parts.length !== 2) return null;
+          const x = parseFloat(parts[0]);
+          const y = parseFloat(parts[1]);
+          return isNaN(x) || isNaN(y) ? null : { x, y };
+        };
+        const aC = parseCoords(a[0]);
+        const bC = parseCoords(b[0]);
+        // Unplaced markers go last.
+        if (aC === null && bC === null) return 0;
+        if (aC === null) return 1;
+        if (bC === null) return -1;
+        // Primary: top-to-bottom (ascending yPos — origin is top-left in canvas space).
+        if (aC.y !== bC.y) return aC.y - bC.y;
+        // Secondary: left-to-right (ascending xPos).
+        return aC.x - bC.x;
       });
 
       orderedPosGroups.forEach(([, signIds], idx) => {
