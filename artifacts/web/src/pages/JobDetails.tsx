@@ -242,7 +242,7 @@ function FileSubRow({ summary, maxMs }: { summary: FileSummary; maxMs: number })
 }
 
 function TimelineStepRow({ step, maxMs, fileSummaries }: { step: ProcessingStep; maxMs: number; fileSummaries?: FileSummary[] }) {
-  const widthPct = Math.max(2, (step.durationMs / maxMs) * 100);
+  const widthPct = Math.max(2, ((step.durationMs ?? 0) / maxMs) * 100);
   const detailStr = formatDetails(step.details);
   const hasChildren = fileSummaries && fileSummaries.length > 0;
   const [childOpen, setChildOpen] = useState(false);
@@ -312,7 +312,10 @@ function PhaseSection({ group, maxMs, defaultOpen, extractionFileSummaries }: { 
           {group.label}
         </span>
         <span className="flex-1" />
-        <span className="text-xs font-mono text-foreground/50 tabular-nums">
+        <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-mono font-semibold tabular-nums
+          ${isLegacy
+            ? "bg-muted/60 text-muted-foreground"
+            : "bg-primary/10 text-primary/90"}`}>
           {formatDuration(group.totalMs)}
         </span>
         <ChevronDown
@@ -397,13 +400,13 @@ function ProcessingTimeline({ steps, isLoading }: { steps: ProcessingStep[]; isL
 
   const groups: PhaseGroup[] = [];
   for (const [phase, { label, steps: phaseSteps }] of [...phaseGroupMap.entries()].sort(([a], [b]) => a.localeCompare(b))) {
-    groups.push({ phase, label, steps: phaseSteps, totalMs: phaseSteps.reduce((sum, s) => sum + s.durationMs, 0) });
+    groups.push({ phase, label, steps: phaseSteps, totalMs: phaseSteps.reduce((sum, s) => sum + (s.durationMs ?? 0), 0) });
   }
   if (legacySteps.length > 0) {
-    groups.push({ phase: null, label: "Pipeline Steps", steps: legacySteps, totalMs: legacySteps.reduce((sum, s) => sum + s.durationMs, 0) });
+    groups.push({ phase: null, label: "Pipeline Steps", steps: legacySteps, totalMs: legacySteps.reduce((sum, s) => sum + (s.durationMs ?? 0), 0) });
   }
 
-  const maxMs = Math.max(...visibleSteps.map((s) => s.durationMs), 1);
+  const maxMs = Math.max(...visibleSteps.map((s) => s.durationMs ?? 0), 1);
 
   return (
     <div className="space-y-8">
