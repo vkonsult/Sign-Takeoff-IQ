@@ -1289,6 +1289,30 @@ export default function JobDetails() {
                     {[job.projectAddress, job.projectCity, job.projectState].filter(Boolean).join(", ")}
                   </span>
                 )}
+                {job.projectName && (
+                  <span className="flex items-center gap-1 text-sm text-muted-foreground font-mono">
+                    <FileText className="w-3.5 h-3.5 flex-shrink-0" />
+                    {job.projectName}
+                  </span>
+                )}
+                {job.jurisdiction && (
+                  <span className="flex items-center gap-1 text-sm text-muted-foreground font-mono">
+                    <ShieldCheck className="w-3.5 h-3.5 flex-shrink-0" />
+                    {job.jurisdiction}
+                  </span>
+                )}
+                {job.issueDate && (
+                  <span className="flex items-center gap-1 text-sm text-muted-foreground font-mono">
+                    <Clock className="w-3.5 h-3.5 flex-shrink-0" />
+                    {job.issueDate}
+                  </span>
+                )}
+                {job.drawingIndexPageNum != null && (
+                  <span className="flex items-center gap-1 text-sm text-muted-foreground font-mono" title="Drawing index page">
+                    <Layers className="w-3.5 h-3.5 flex-shrink-0" />
+                    Index p.{job.drawingIndexPageNum}
+                  </span>
+                )}
               </div>
               {(lastScan || lastEdit) && (
                 <div className="flex flex-wrap gap-x-4 gap-y-1 mt-1">

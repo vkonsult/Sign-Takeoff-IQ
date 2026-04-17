@@ -57,6 +57,14 @@ export interface JobSummary {
   projectCity?: string | null;
   /** 2-letter state code extracted from the plan (e.g. CA, TX, NY) */
   projectState?: string | null;
+  /** Project name extracted from the plan title block (Phase 1 intake) */
+  projectName?: string | null;
+  /** Authority Having Jurisdiction (AHJ) extracted from the plan title block */
+  jurisdiction?: string | null;
+  /** Project issue date extracted from the plan title block */
+  issueDate?: string | null;
+  /** 1-based page number of the drawing index / sheet list */
+  drawingIndexPageNum?: number | null;
   createdAt: string;
   updatedAt: string;
 }

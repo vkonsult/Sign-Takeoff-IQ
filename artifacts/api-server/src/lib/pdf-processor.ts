@@ -204,16 +204,34 @@ export async function runPdfProcessor(jobId: string): Promise<void> {
     })
   );
 
-  // Deterministically pick building type: first file in list order that detected one.
+  // Deterministically pick building type and project metadata from the first data file
+  // in list order that has a result.  This is stable across re-runs as long as the
+  // file list order is stable.
+  //
+  // buildingType: first file in list order that detected one (legacy behaviour).
+  // Phase 1 metadata (projectName, jurisdiction, issueDate, drawingIndexPageNum):
+  // sourced exclusively from the primary data file — the first file in filesToProcess
+  // that produced an intake result — so all four values come from the same file.
   let detectedBuildingType: string | null = null;
+  let primaryIntake: import("./phase-1-intake").IntakeResult | null = null;
+
   for (const file of filesToProcess) {
     const intake = intakeResultsMap.get(file.id);
-    if (intake?.buildingType) {
+    if (!intake) continue;
+    if (!detectedBuildingType && intake.buildingType) {
       detectedBuildingType = intake.buildingType;
       logger.info({ jobId, fileId: file.id, buildingType: detectedBuildingType }, "[PDF Processor] Building type set from Phase 1 intake");
-      break;
+    }
+    if (!primaryIntake) {
+      primaryIntake = intake;
+      logger.info({ jobId, fileId: file.id }, "[PDF Processor] Primary data file intake result selected for project metadata");
     }
   }
+
+  const detectedProjectName = primaryIntake?.projectName ?? null;
+  const detectedJurisdiction = primaryIntake?.jurisdiction ?? null;
+  const detectedIssueDate = primaryIntake?.issueDate ?? null;
+  const detectedDrawingIndexPageNum = primaryIntake?.drawingIndexPageNum ?? null;
 
   await setCurrentStep("Extracting floor plans…");
   const t_extraction = Date.now();
@@ -1148,7 +1166,13 @@ export async function runPdfProcessor(jobId: string): Promise<void> {
       processingLog: pipelineSteps,
       currentStep: null,
       updatedAt: new Date(),
+      // Always write metadata fields — including null — so re-runs never leave
+      // stale values from a prior extraction if the current run found nothing.
       ...(detectedBuildingType ? { buildingType: detectedBuildingType } : {}),
+      projectName: detectedProjectName,
+      jurisdiction: detectedJurisdiction,
+      issueDate: detectedIssueDate,
+      drawingIndexPageNum: detectedDrawingIndexPageNum,
     })
     .where(eq(jobsTable.id, jobId));
 

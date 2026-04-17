@@ -303,6 +303,22 @@ components:
           type: string
           nullable: true
           description: 2-letter state code extracted from the plan (e.g. CA, TX, NY)
+        projectName:
+          type: string
+          nullable: true
+          description: Project name extracted from the plan title block (Phase 1 intake)
+        jurisdiction:
+          type: string
+          nullable: true
+          description: Authority Having Jurisdiction (AHJ) extracted from the plan title block
+        issueDate:
+          type: string
+          nullable: true
+          description: Project issue date extracted from the plan title block
+        drawingIndexPageNum:
+          type: integer
+          nullable: true
+          description: 1-based page number of the drawing index / sheet list
         createdAt:
           type: string
           format: date-time
