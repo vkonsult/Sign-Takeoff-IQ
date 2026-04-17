@@ -26,8 +26,8 @@ import {
 import {
   FLOOR_PLAN_INCLUSION_PHRASES,
   FLOOR_PLAN_EXCLUSION_PHRASES,
-  SIGN_SCHEDULE_PHRASES,
 } from "./sign-vocabulary";
+import { SIGN_SCHEDULE_PHRASES } from "./extraction-classification";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -65,21 +65,12 @@ export interface SheetManifest {
 // ── Classification (P2.3) ─────────────────────────────────────────────────────
 
 /**
- * Signage schedule phrases — superset of SIGN_SCHEDULE_PHRASES from sign-vocabulary.ts
+ * Signage schedule phrases — superset of SIGN_SCHEDULE_PHRASES from extraction-classification.ts
  * with additional aliases used in architectural drawings.
  */
 const SCHEDULE_PHRASES = [
   ...SIGN_SCHEDULE_PHRASES,
-  "sign schedule",
-  "signage schedule",
-  "sign criteria",
-  "signage criteria",
-  "sign list",
-  "sign detail schedule",
-  "sign type detail",
-  "sign panel detail",
-  "signage plan",
-  "signage",
+  // Additional aliases not in SIGN_SCHEDULE_PHRASES
   "plaque",
   "sign types",
 ];

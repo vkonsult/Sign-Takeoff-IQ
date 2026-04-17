@@ -1,10 +1,14 @@
 /**
- * sign-vocabulary.ts — Single source of truth for all sign-related vocabulary.
+ * sign-vocabulary.ts — Rule-engine vocabulary: room labels and building-type mappings.
  *
- * All phrase lists and room-label mappings used for PDF classification,
- * AI classification, and heuristic extraction are defined here and imported
- * everywhere else. Changing a phrase or mapping here automatically propagates
- * to all classifiers and extractors.
+ * Owns the production vocabulary used by the rule engine and floor-plan classifiers:
+ *   - Floor plan inclusion/exclusion phrases (Phase 2 page classification)
+ *   - Room-label → sign-type mappings (ROOM_LABEL_MAP, BUILDING_TYPE_VOCABULARY)
+ *   - Canonical level names and known room abbreviations
+ *   - Building-type detection keywords and helpers
+ *
+ * Out of scope (lives in extraction-classification.ts):
+ *   - SIGN_SCHEDULE_PHRASES and other page-type detection signals
  */
 
 /**
@@ -147,32 +151,6 @@ export const FLOOR_PLAN_EXCLUSION_PHRASES: string[] = [
   // Specialty engineering drawings
   "photometric",
   "sprinkler",
-];
-
-/**
- * Phrases identifying a sign schedule page.
- */
-export const SIGN_SCHEDULE_PHRASES: string[] = [
-  "sign schedule",
-  "signage schedule",
-  "sign spec",
-  "sign specification",
-  "sign legend",
-  "sign program",
-  "sign list",
-  // "sign detail" removed — too broad; matches incidental cross-references like
-  // "see sign details on A11" on elevation and structural sheets.  Replaced with
-  // phrases that only appear on actual sign spec pages.
-  "sign detail schedule",
-  "sign type detail",
-  "sign panel detail",
-  "signage plan",
-  // NOTE: "signs" removed — too broad as a substring match; catches cover sheets,
-  // drawing indexes, and any page with the word "signs" anywhere in the title block.
-  // "signage" is specific enough: it rarely appears in non-sign-related drawing titles.
-  "signage",
-  "signage criteria",
-  "sign criteria",
 ];
 
 /**

@@ -11,8 +11,38 @@
 import {
   FLOOR_PLAN_INCLUSION_PHRASES,
   FLOOR_PLAN_EXCLUSION_PHRASES,
-  SIGN_SCHEDULE_PHRASES,
 } from "./sign-vocabulary";
+
+/**
+ * Phrases that identify a sign schedule page during page-type classification.
+ *
+ * Defined here (in the page classifier) rather than in sign-vocabulary.ts because
+ * these are classification signals, not sign-production vocabulary.  The rule
+ * engine's room-label lookups live in sign-vocabulary.ts; page-type detection
+ * phrases live here.
+ */
+export const SIGN_SCHEDULE_PHRASES: string[] = [
+  "sign schedule",
+  "signage schedule",
+  "sign spec",
+  "sign specification",
+  "sign legend",
+  "sign program",
+  "sign list",
+  // "sign detail" removed — too broad; matches incidental cross-references like
+  // "see sign details on A11" on elevation and structural sheets.  Replaced with
+  // phrases that only appear on actual sign spec pages.
+  "sign detail schedule",
+  "sign type detail",
+  "sign panel detail",
+  "signage plan",
+  // NOTE: "signs" removed — too broad as a substring match; catches cover sheets,
+  // drawing indexes, and any page with the word "signs" anywhere in the title block.
+  // "signage" is specific enough: it rarely appears in non-sign-related drawing titles.
+  "signage",
+  "signage criteria",
+  "sign criteria",
+];
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 

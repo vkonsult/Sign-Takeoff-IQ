@@ -19,7 +19,6 @@ import {
 } from "@workspace/db";
 
 import { extractTextFromPdf } from "./extraction";
-import { extractSignsHeuristic } from "./extraction-heuristic";
 import { isCodeOnlyLocation } from "./sign-vocabulary";
 import { saveParsedResult, getFilePageImagesDir, PAGES_DIR } from "./storage";
 import { renderFloorPlanPages } from "./pdf-render";
@@ -28,7 +27,6 @@ import {
   extractPagePhrases,
   extractRawPageItems,
   matchLocationToCoords,
-  extractCodeProximityPairs,
   type PdfPhrase,
 } from "./pdf-words";
 import { runPhase2Classification } from "./phase-2-classification";

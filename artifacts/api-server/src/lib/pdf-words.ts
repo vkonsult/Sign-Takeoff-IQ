@@ -2,13 +2,12 @@ import fs from "fs/promises";
 import {
   FLOOR_PLAN_INCLUSION_PHRASES,
   FLOOR_PLAN_EXCLUSION_PHRASES,
-  SIGN_SCHEDULE_PHRASES,
   CANONICAL_LEVEL_NAMES as CANONICAL_LEVEL_NAMES_FROM_VOCAB,
   KNOWN_ROOM_ABBREVIATIONS,
   detectBuildingType,
   type CanonicalBuildingType,
 } from "./sign-vocabulary";
-import { OTHER_TITLE_KEYWORDS_STANDALONE } from "./extraction-classification";
+import { OTHER_TITLE_KEYWORDS_STANDALONE, SIGN_SCHEDULE_PHRASES } from "./extraction-classification";
 
 export interface PdfPhrase {
   text: string;
