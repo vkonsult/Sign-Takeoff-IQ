@@ -1,6 +1,6 @@
 import { Router, type IRouter } from "express";
 import { db, activityLogsTable, organizationsTable, aiCallLogsTable, jobsTable } from "@workspace/db";
-import { desc, eq, and, gte, lte, inArray, like, ilike } from "drizzle-orm";
+import { desc, eq, and, gte, lte, inArray, like, ilike, sql } from "drizzle-orm";
 import { z } from "zod/v4";
 
 const router: IRouter = Router();
@@ -193,7 +193,7 @@ router.get("/activity/ai-calls", async (req, res) => {
         .where(eq(jobsTable.organizationId, user.organizationId));
       const orgJobIdSet = orgJobIds.map((j) => j.id);
       if (orgJobIdSet.length === 0) {
-        res.json({ aiCalls: [], limit, offset });
+        res.json({ aiCalls: [], limit, offset, totals: null });
         return;
       }
       if (jobId) {
@@ -231,7 +231,25 @@ router.get("/activity/ai-calls", async (req, res) => {
       jobName: r.jobId ? (jobNames.get(r.jobId) ?? null) : null,
     }));
 
-    res.json({ aiCalls: enriched, limit, offset });
+    const hasFilters = !!(jobId || page != null || callType || from || to);
+    let totals: { inputTokens: number; outputTokens: number } | null = null;
+    if (hasFilters) {
+      const [agg] = await db
+        .select({
+          totalInputTokens: sql<number>`coalesce(sum(${aiCallLogsTable.inputTokens}), 0)`,
+          totalOutputTokens: sql<number>`coalesce(sum(${aiCallLogsTable.outputTokens}), 0)`,
+        })
+        .from(aiCallLogsTable)
+        .where(whereClause);
+      if (agg) {
+        totals = {
+          inputTokens: Number(agg.totalInputTokens),
+          outputTokens: Number(agg.totalOutputTokens),
+        };
+      }
+    }
+
+    res.json({ aiCalls: enriched, limit, offset, totals });
   } catch (err) {
     req.log.error({ err }, "Failed to fetch AI call logs");
     res.status(500).json({ error: "Failed to fetch AI call logs" });

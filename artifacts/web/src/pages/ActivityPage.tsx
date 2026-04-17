@@ -186,14 +186,24 @@ function AiCallsTab({ isAdmin, isSuperAdmin }: { isAdmin: boolean; isSuperAdmin:
     queryFn: async () => {
       const res = await apiFetch(`/api/activity/ai-calls?${buildQuery()}`);
       if (!res.ok) throw new Error("Failed to load AI call logs");
-      return res.json() as Promise<{ aiCalls: AiCallRow[]; limit: number; offset: number }>;
+      return res.json() as Promise<{
+        aiCalls: AiCallRow[];
+        limit: number;
+        offset: number;
+        totals: { inputTokens: number; outputTokens: number } | null;
+      }>;
     },
     staleTime: 30_000,
   });
 
   const aiCalls = data?.aiCalls ?? [];
+  const totals = data?.totals ?? null;
   const hasNext = aiCalls.length === PAGE_SIZE;
   const hasPrev = offset > 0;
+
+  const estimatedCostUsd = totals
+    ? (totals.inputTokens / 1_000_000) * 3 + (totals.outputTokens / 1_000_000) * 15
+    : null;
 
   const toggleExpanded = (id: string) => {
     setExpandedIds((prev) => {
@@ -399,6 +409,26 @@ function AiCallsTab({ isAdmin, isSuperAdmin }: { isAdmin: boolean; isSuperAdmin:
             ))
           )}
         </div>
+
+        {hasActiveFilters && totals && !isLoading && (
+          <div className="grid grid-cols-[160px_1fr_160px_120px_100px_140px_36px] gap-2 px-4 py-3 border-t border-border bg-primary/5 items-center">
+            <div className="text-xs font-display font-semibold uppercase tracking-wider text-muted-foreground col-span-3 flex items-center gap-1.5">
+              <SlidersHorizontal className="w-3.5 h-3.5" />
+              Filter totals
+            </div>
+            <div className="text-xs font-semibold font-mono text-foreground">
+              {totals.inputTokens.toLocaleString()} / {totals.outputTokens.toLocaleString()}
+            </div>
+            <div className="text-xs font-semibold text-foreground col-span-2">
+              {estimatedCostUsd !== null && (
+                <span title="Rough estimate at $3/1M input · $15/1M output">
+                  ~${estimatedCostUsd < 0.01 ? estimatedCostUsd.toFixed(4) : estimatedCostUsd.toFixed(2)} est.
+                </span>
+              )}
+            </div>
+            <div />
+          </div>
+        )}
       </div>
 
       {(hasPrev || hasNext) && (
