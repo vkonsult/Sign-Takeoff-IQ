@@ -259,6 +259,33 @@ export function derivePhaseStatus(
   return "pending";
 }
 
+/**
+ * Hex color values for each Tailwind color name used by PIPELINE_PHASES.
+ * Single source of truth — add new colors here when new phases are introduced.
+ */
+const TAILWIND_COLOR_HEX: Record<string, string> = {
+  blue: "#3b82f6",
+  violet: "#8b5cf6",
+  amber: "#f59e0b",
+  emerald: "#10b981",
+  orange: "#f97316",
+  teal: "#14b8a6",
+};
+
+/** Fallback hex used when a phase has no colour mapping (e.g. legacy/unknown). */
+export const PHASE_COLOR_FALLBACK = "#6b7280";
+
+/**
+ * Hex color keyed by phase label string ("phase-1" … "phase-6").
+ * Derived from PIPELINE_PHASES so it can never drift out of sync.
+ */
+export const PHASE_COLOR_HEX: Record<string, string> = Object.fromEntries(
+  PIPELINE_PHASES.map((p) => [
+    `phase-${p.id}`,
+    TAILWIND_COLOR_HEX[p.color] ?? PHASE_COLOR_FALLBACK,
+  ])
+);
+
 /** Color utility — returns Tailwind classes for each phase color */
 export function phaseColorClasses(color: string, variant: "badge" | "bar" | "border" | "text") {
   const map: Record<string, Record<string, string>> = {

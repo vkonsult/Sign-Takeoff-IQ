@@ -46,6 +46,8 @@ import { exportMarkedupPdf, type MarkerSign } from "@/lib/exportMarkedupPdf";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger, TooltipProvider } from "@/components/ui/tooltip";
 import {
+  PHASE_COLOR_FALLBACK,
+  PHASE_COLOR_HEX,
   PIPELINE_PHASES,
   derivePhaseStatus,
   phaseColorClasses,
@@ -760,23 +762,13 @@ function ProcessingTimeline({ steps, isLoading }: { steps: ProcessingStep[]; isL
             const grandTotalMs = totalStep?.durationMs ?? groups.reduce((sum, g) => sum + g.totalMs, 0);
             if (grandTotalMs == null) return null;
 
-            const PHASE_COLOR_MAP: Record<string, string> = {
-              "phase-1": "#3b82f6", // blue   — Intake
-              "phase-2": "#8b5cf6", // violet — Sheet Manifest
-              "phase-3": "#f59e0b", // amber  — Sign Schedule Extraction
-              "phase-4": "#10b981", // emerald — Room Inventory
-              "phase-5": "#f97316", // orange — Apply Rules
-              "phase-6": "#14b8a6", // teal   — Verify & Output
-            };
-            const PHASE_COLOR_FALLBACK = "#6b7280"; // gray — unknown / legacy
-
             const phaseSegments = groups
               .filter((g) => g.totalMs > 0)
               .map((g) => ({
                 label: g.label,
                 ms: g.totalMs,
                 pct: (g.totalMs / grandTotalMs) * 100,
-                color: g.phase ? (PHASE_COLOR_MAP[g.phase] ?? PHASE_COLOR_FALLBACK) : PHASE_COLOR_FALLBACK,
+                color: g.phase ? (PHASE_COLOR_HEX[g.phase] ?? PHASE_COLOR_FALLBACK) : PHASE_COLOR_FALLBACK,
               }));
 
             return (
