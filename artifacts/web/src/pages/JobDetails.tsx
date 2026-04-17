@@ -675,7 +675,7 @@ function PhaseBarSegment({ seg }: PhaseBarSegmentProps) {
   );
 }
 
-function ProcessingTimeline({ steps, isLoading, onRetryFile, retryingFileId, onNavigateToPage }: { steps: ProcessingStep[]; isLoading?: boolean; onRetryFile?: (fileId: string) => void; retryingFileId?: string | null; onNavigateToPage?: (page: number, fileId?: string) => void }) {
+function ProcessingTimeline({ steps, isLoading, isActive, onRetryFile, retryingFileId, onNavigateToPage }: { steps: ProcessingStep[]; isLoading?: boolean; isActive?: boolean; onRetryFile?: (fileId: string) => void; retryingFileId?: string | null; onNavigateToPage?: (page: number, fileId?: string) => void }) {
   if (isLoading) {
     return (
       <div className="space-y-3 animate-pulse">
@@ -1117,6 +1117,15 @@ function ProcessingTimeline({ steps, isLoading, onRetryFile, retryingFileId, onN
             <div className="text-[10px] font-display font-bold uppercase tracking-widest text-muted-foreground mb-3 flex items-center gap-2">
               <Brain className="w-3 h-3" />
               AI Calls
+              {isActive && (
+                <span className="inline-flex items-center gap-1">
+                  <span className="relative flex h-1.5 w-1.5">
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-teal-400 opacity-75" />
+                    <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-teal-500" />
+                  </span>
+                  <span className="font-mono font-normal normal-case tracking-normal text-teal-500/70 text-[9px]">live</span>
+                </span>
+              )}
               {aiCalls.length > 0 && (
                 <span className="font-mono font-normal normal-case tracking-normal text-muted-foreground/60">
                   {aiCalls.length} call{aiCalls.length !== 1 ? "s" : ""}
@@ -1130,7 +1139,7 @@ function ProcessingTimeline({ steps, isLoading, onRetryFile, retryingFileId, onN
             <div className="rounded-lg border border-border/60 overflow-hidden">
               {aiCalls.length === 0 ? (
                 <div className="px-4 py-3 text-xs text-muted-foreground/40 italic">
-                  No AI calls recorded for this job
+                  {isActive ? "Waiting for first AI call\u2026" : "No AI calls recorded for this job"}
                 </div>
               ) : (
                 <div className="divide-y divide-border/30">
@@ -2344,11 +2353,12 @@ export default function JobDetails() {
                     {(() => {
                       const jobLog = (job as Record<string, unknown>).processingLog as ProcessingStep[] | null | undefined;
                       if (isProcessingNow && (!jobLog || jobLog.length === 0)) {
-                        return <ProcessingTimeline steps={[]} isLoading onNavigateToPage={handleNavigateToPage} />;
+                        return <ProcessingTimeline steps={[]} isLoading isActive onNavigateToPage={handleNavigateToPage} />;
                       }
                       return jobLog && jobLog.length > 0 ? (
                         <ProcessingTimeline
                           steps={jobLog}
+                          isActive={isProcessingNow}
                           onRetryFile={handleRetryFile}
                           retryingFileId={retryingFileId}
                           onNavigateToPage={handleNavigateToPage}

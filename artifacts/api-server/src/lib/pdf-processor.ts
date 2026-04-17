@@ -85,6 +85,48 @@ export async function runPdfProcessor(jobId: string, opts: PdfProcessorOptions =
     }
   }
 
+  // ── Live-progress persistence ─────────────────────────────────────────────
+  // Only active during full runs (not file-retry), so the retry merge logic can
+  // still read the original pre-retry log from the DB at finalization time.
+  // Uses a single-in-flight pattern to prevent out-of-order stale writes:
+  // while a write is in flight any new snapshot is staged and flushed once the
+  // current write settles.
+  let _persistInFlight = false;
+  let _pendingSnapshot: ProcessingStep[] | null = null;
+
+  function persistStepsNow(): void {
+    if (isFileRetry) return; // Retry finalization merges from DB; skip live writes
+    if (_persistInFlight) {
+      _pendingSnapshot = [...pipelineSteps]; // stage latest for after current write
+      return;
+    }
+    const snapshot = [...pipelineSteps];
+    _persistInFlight = true;
+    db.update(jobsTable)
+      .set({ processingLog: snapshot })
+      .where(eq(jobsTable.id, jobId))
+      .then(() => {
+        _persistInFlight = false;
+        if (_pendingSnapshot !== null && _pendingSnapshot.length > snapshot.length) {
+          const toFlush = _pendingSnapshot;
+          _pendingSnapshot = null;
+          // Flush the newer staged snapshot now
+          _persistInFlight = true;
+          db.update(jobsTable)
+            .set({ processingLog: toFlush })
+            .where(eq(jobsTable.id, jobId))
+            .then(() => { _persistInFlight = false; })
+            .catch(() => { _persistInFlight = false; });
+        } else {
+          _pendingSnapshot = null;
+        }
+      })
+      .catch(() => {
+        _persistInFlight = false;
+        _pendingSnapshot = null;
+      });
+  }
+
   function recordStep(
     step: string,
     label: string,
@@ -100,6 +142,7 @@ export async function runPdfProcessor(jobId: string, opts: PdfProcessorOptions =
       ...(phase ? { phase } : {}),
       details,
     });
+    persistStepsNow();
   }
 
   // ── Preserve verified + manually-added signs ─────────────────────────────
@@ -1182,6 +1225,7 @@ export async function runPdfProcessor(jobId: string, opts: PdfProcessorOptions =
             warnings: extractResult.warnings,
           },
         });
+        persistStepsNow();
         logger.info(
           {
             jobId,
@@ -1205,6 +1249,7 @@ export async function runPdfProcessor(jobId: string, opts: PdfProcessorOptions =
           phase: "phase-3",
           details: { error: String(err), pages: schedulePageNums.length },
         });
+        persistStepsNow();
       }
     }
 
