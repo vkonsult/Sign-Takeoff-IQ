@@ -1,3 +1,15 @@
+import * as Sentry from "@sentry/node";
+
+const release = process.env.SENTRY_RELEASE;
+const dsn = process.env.SENTRY_DSN;
+
+Sentry.init({
+  dsn,
+  release,
+  environment: process.env.NODE_ENV ?? "development",
+  enabled: !!dsn,
+});
+
 import app from "./app";
 import { logger } from "./lib/logger";
 
@@ -21,5 +33,5 @@ app.listen(port, (err) => {
     process.exit(1);
   }
 
-  logger.info({ port }, "Server listening");
+  logger.info({ port, release: release ?? "unset" }, "Server listening");
 });

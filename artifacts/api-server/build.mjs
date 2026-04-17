@@ -4,6 +4,17 @@ import { fileURLToPath } from "node:url";
 import { build as esbuild } from "esbuild";
 import esbuildPluginPino from "esbuild-plugin-pino";
 import { rm } from "node:fs/promises";
+import { execSync } from "node:child_process";
+
+function getRelease() {
+  try {
+    return execSync("git rev-parse --short HEAD", { encoding: "utf8" }).trim();
+  } catch {
+    return process.env.npm_package_version ?? "dev";
+  }
+}
+
+const release = process.env.SENTRY_RELEASE ?? getRelease();
 
 // Plugins (e.g. 'esbuild-plugin-pino') may use `require` to resolve dependencies
 globalThis.require = createRequire(import.meta.url);
@@ -108,6 +119,9 @@ async function buildAll() {
       "puppeteer-core",
       "electron",
     ],
+    define: {
+      "process.env.SENTRY_RELEASE": JSON.stringify(release),
+    },
     sourcemap: "linked",
     plugins: [
       // pino relies on workers to handle logging, instead of externalizing it we use a plugin to handle it

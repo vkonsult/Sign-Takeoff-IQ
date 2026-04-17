@@ -42,6 +42,7 @@
     "@replit/vite-plugin-cartographer": "catalog:",
     "@replit/vite-plugin-dev-banner": "catalog:",
     "@replit/vite-plugin-runtime-error-modal": "catalog:",
+    "@sentry/vite-plugin": "^5.2.0",
     "@tailwindcss/typography": "^0.5.15",
     "@tailwindcss/vite": "catalog:",
     "@tanstack/react-query": "catalog:",
@@ -83,6 +84,7 @@
   },
   "dependencies": {
     "@clerk/react": "^6.1.4",
+    "@sentry/react": "^10.48.0",
     "pdf-lib": "^1.17.1",
     "react-dropzone": "^15.0.0",
     "react-pdf": "^10.4.1"

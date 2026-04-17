@@ -3,6 +3,8 @@ import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import path from "path";
 import runtimeErrorOverlay from "@replit/vite-plugin-runtime-error-modal";
+import { execSync } from "child_process";
+import { sentryVitePlugin } from "@sentry/vite-plugin";
 
 const rawPort = process.env.PORT;
 
@@ -26,8 +28,27 @@ if (!basePath) {
   );
 }
 
+function getRelease(): string {
+  try {
+    return execSync("git rev-parse --short HEAD", { encoding: "utf8" }).trim();
+  } catch {
+    return process.env.npm_package_version ?? "dev";
+  }
+}
+
+const release = process.env.SENTRY_RELEASE ?? getRelease();
+
+const sentryAuthToken = process.env.SENTRY_AUTH_TOKEN;
+const sentryOrg = process.env.SENTRY_ORG;
+const sentryProject = process.env.SENTRY_PROJECT;
+const sentryEnabled =
+  !!sentryAuthToken && !!sentryOrg && !!sentryProject;
+
 export default defineConfig({
   base: basePath,
+  define: {
+    "import.meta.env.VITE_SENTRY_RELEASE": JSON.stringify(release),
+  },
   plugins: [
     react(),
     tailwindcss(),
@@ -45,6 +66,19 @@ export default defineConfig({
           ),
         ]
       : []),
+    ...(sentryEnabled
+      ? [
+          sentryVitePlugin({
+            org: sentryOrg,
+            project: sentryProject,
+            authToken: sentryAuthToken,
+            release: { name: release },
+            sourcemaps: {
+              filesToDeleteAfterUpload: ["./dist/public/**/*.map"],
+            },
+          }),
+        ]
+      : []),
   ],
   resolve: {
     alias: {
@@ -57,6 +91,7 @@ export default defineConfig({
   build: {
     outDir: path.resolve(import.meta.dirname, "dist/public"),
     emptyOutDir: true,
+    sourcemap: true,
   },
   server: {
     port,
