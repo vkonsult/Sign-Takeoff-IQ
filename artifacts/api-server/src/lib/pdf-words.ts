@@ -1100,6 +1100,54 @@ export const TABLE_COL_X_TOLERANCE = 0.02;
 export const TABLE_COL_Y_SPACING_MAX = 15;
 
 /**
+ * Identify phrases that belong to embedded schedule-table columns.
+ *
+ * Groups the supplied phrases into x-centre buckets.  Any bucket with at
+ * least TABLE_COL_MIN_PHRASES members whose consecutive y-gaps are all within
+ * TABLE_COL_Y_SPACING_MAX of the median gap is treated as a regular table
+ * column and all its phrases are returned in the exclusion set.
+ *
+ * @param phrases    Candidate phrases (already filtered to drawing area).
+ * @param pageHeight Viewport height in pts (= pageWidth/pageHeight from PageWords).
+ */
+export function detectTableColumnPhrases(
+  phrases: PdfPhrase[],
+  pageHeight: number,
+): Set<PdfPhrase> {
+  const excluded = new Set<PdfPhrase>();
+
+  const xBuckets = new Map<number, PdfPhrase[]>();
+  for (const p of phrases) {
+    const nx = (p.x0 + p.x1) / 2;
+    const bucket = Math.round(nx / TABLE_COL_X_TOLERANCE) * TABLE_COL_X_TOLERANCE;
+    let list = xBuckets.get(bucket);
+    if (!list) { list = []; xBuckets.set(bucket, list); }
+    list.push(p);
+  }
+
+  for (const [, col] of xBuckets) {
+    if (col.length < TABLE_COL_MIN_PHRASES) continue;
+    const sorted = [...col].sort((a, b) => ((a.y0 + a.y1) / 2) - ((b.y0 + b.y1) / 2));
+    const gaps: number[] = [];
+    for (let i = 1; i < sorted.length; i++) {
+      const prevCy = (sorted[i - 1]!.y0 + sorted[i - 1]!.y1) / 2 * pageHeight;
+      const currCy = (sorted[i]!.y0 + sorted[i]!.y1) / 2 * pageHeight;
+      gaps.push(currCy - prevCy);
+    }
+    if (gaps.length === 0) continue;
+    const sortedGaps = [...gaps].sort((a, b) => a - b);
+    const medianGap = sortedGaps[Math.floor(sortedGaps.length / 2)]!;
+    if (medianGap <= 0) continue;
+    const isRegular = gaps.every((g) => Math.abs(g - medianGap) <= TABLE_COL_Y_SPACING_MAX);
+    if (isRegular) {
+      for (const p of sorted) excluded.add(p);
+    }
+  }
+
+  return excluded;
+}
+
+/**
  * A candidate room label extracted from a floor plan page.
  * Coordinates are normalized to [0, 1] with origin at top-left.
  */
@@ -1150,48 +1198,7 @@ export function extractFloorPlanTextCandidates(
   const drawingPhrases = phrases.filter((p) => !isInTitleBlockZone(p));
 
   // ── Detect and exclude embedded schedule-table columns ────────────────────
-  // Commercial floor plans often embed a sign-schedule table alongside the drawing.
-  // Such tables produce a dense grid of text that, if included, causes markers to
-  // snap to table cells instead of real room labels.
-  //
-  // Uses the module-level TABLE_COL_* constants — see their declarations above
-  // for threshold values, rationale, known limitations, and tuning guidance.
-  const tableExcludedPhrases = new Set<PdfPhrase>();
-
-  // Group phrases by similar normalised x-centre
-  const xBuckets = new Map<number, PdfPhrase[]>();
-  for (const p of drawingPhrases) {
-    const nx = (p.x0 + p.x1) / 2;
-    // Round to nearest TABLE_COL_X_TOLERANCE bucket
-    const bucket = Math.round(nx / TABLE_COL_X_TOLERANCE) * TABLE_COL_X_TOLERANCE;
-    let list = xBuckets.get(bucket);
-    if (!list) { list = []; xBuckets.set(bucket, list); }
-    list.push(p);
-  }
-
-  for (const [, col] of xBuckets) {
-    if (col.length < TABLE_COL_MIN_PHRASES) continue;
-    // Sort by y-centre
-    const sorted = [...col].sort((a, b) => ((a.y0 + a.y1) / 2) - ((b.y0 + b.y1) / 2));
-    // Compute consecutive y-gaps in pts
-    const gaps: number[] = [];
-    for (let i = 1; i < sorted.length; i++) {
-      const prevCy = (sorted[i - 1]!.y0 + sorted[i - 1]!.y1) / 2 * pageHeight;
-      const currCy = (sorted[i]!.y0 + sorted[i]!.y1) / 2 * pageHeight;
-      gaps.push(currCy - prevCy);
-    }
-    if (gaps.length === 0) continue;
-    // Compute median gap
-    const sortedGaps = [...gaps].sort((a, b) => a - b);
-    const medianGap = sortedGaps[Math.floor(sortedGaps.length / 2)]!;
-    if (medianGap <= 0) continue;
-    // Check regularity: all gaps within TABLE_COL_Y_SPACING_MAX of the median
-    const isRegular = gaps.every((g) => Math.abs(g - medianGap) <= TABLE_COL_Y_SPACING_MAX);
-    if (isRegular) {
-      for (const p of sorted) tableExcludedPhrases.add(p);
-    }
-  }
-
+  const tableExcludedPhrases = detectTableColumnPhrases(drawingPhrases, pageHeight);
   const candidatePhrases = drawingPhrases.filter((p) => !tableExcludedPhrases.has(p));
 
   // ── Per-phrase filtering ──────────────────────────────────────────────────

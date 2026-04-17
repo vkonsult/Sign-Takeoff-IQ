@@ -587,6 +587,8 @@ function PageViewer({
     pageWidth: number;
     pageHeight: number;
     phrases: PdfPhrase[];
+    /** Floor-plan pages only: phrases with title-block and embedded table columns removed. */
+    drawingPhrases?: PdfPhrase[];
     pageType?: string | null;
   };
   const [serverPhrases, setServerPhrases] = useState<ServerPhraseData | null>(null);
@@ -704,7 +706,9 @@ function PageViewer({
 
     const markers: TextMarker[] = [];
     let currentSignFound = false;
-    const phrases = serverPhrases?.phrases ?? [];
+    // Use drawing-only phrases (table columns filtered) when available so markers
+    // land on actual room labels rather than adjacent schedule-table cells.
+    const phrases = serverPhrases?.drawingPhrases ?? serverPhrases?.phrases ?? [];
 
     const buildLabel = (s: (typeof signsOnCurrentPage)[number]): string => {
       const base = s.signIdentifier ?? s.signType?.slice(0, 6) ?? "SIGN";
@@ -825,7 +829,7 @@ function PageViewer({
       if (!isResidentialUnitLocation(s.location ?? "")) return false;
       const { typeToken, numberToken } = parseLocationParts(s.location ?? "");
       if (!typeToken || !numberToken) return false;
-      const clusterResult = findPairedClusterMatch(serverPhrases.phrases, typeToken, numberToken, s.id);
+      const clusterResult = findPairedClusterMatch(serverPhrases.drawingPhrases ?? serverPhrases.phrases, typeToken, numberToken, s.id);
       // Exclude null (no match) and "ambiguous" — only confirmed unambiguous matches pass
       return clusterResult !== null && clusterResult !== "ambiguous";
     }).slice(0, 20);
