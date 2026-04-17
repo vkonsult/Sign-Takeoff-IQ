@@ -94,7 +94,7 @@ const TITLE_BLOCK_Y_THRESHOLD = 0.82;
 
 // ── Flag derivation ───────────────────────────────────────────────────────────
 
-function deriveFlags(
+export function deriveFlags(
   roomName: string,
   occupantLoad: number | null,
   occupancyGroup: string | null,
@@ -328,9 +328,24 @@ interface RawRoomLabel {
 }
 
 /**
+ * Parses a "NAME / NUMBER" or "NAME/NUMBER" single-phrase label.
+ * Returns { name, number } on success, or null if the text does not match.
+ * Exported for unit testing.
+ */
+export function parseSlashLabel(text: string): { name: string; number: string } | null {
+  const t = text.trim();
+  const m = t.match(/^(.+?)\s*\/\s*([A-Za-z0-9\-]+)\s*$/);
+  if (!m) return null;
+  const name = m[1]!.trim();
+  const number = m[2]!.trim();
+  if (name.length < 2 || DIMENSION_RE.test(name)) return null;
+  return { name: name.toUpperCase(), number: number.toUpperCase() };
+}
+
+/**
  * Checks whether a text phrase looks like a room *name* (not a number or dimension).
  */
-function isLikelyRoomName(text: string, heightPts: number): boolean {
+export function isLikelyRoomName(text: string, heightPts: number): boolean {
   const t = text.trim();
   if (t.length < 2 || t.length > 40) return false;
 
@@ -361,7 +376,7 @@ function isLikelyRoomName(text: string, heightPts: number): boolean {
 /**
  * Returns true if a phrase looks like a room *number* (e.g. "120", "B-201").
  */
-function isLikelyRoomNumber(text: string): boolean {
+export function isLikelyRoomNumber(text: string): boolean {
   return ROOM_NUMBER_RE.test(text.trim());
 }
 
@@ -410,23 +425,19 @@ async function extractRoomLabelsFromPage(
     const text = phrase.text.trim();
 
     // Case 1: "NAME / NUMBER" or "NAME/NUMBER" in a single phrase
-    const slashMatch = text.match(/^(.+?)\s*\/\s*([A-Za-z0-9\-]+)\s*$/);
-    if (slashMatch) {
-      const name = slashMatch[1]!.trim();
-      const num = slashMatch[2]!.trim();
-      if (name.length >= 2 && !DIMENSION_RE.test(name)) {
-        results.push({
-          name: name.toUpperCase(),
-          number: num.toUpperCase(),
-          pdfPage: pageNum,
-          x: phrase.x0,
-          y: phrase.y0,
-          w: phrase.x1 - phrase.x0,
-          h: phrase.y1 - phrase.y0,
-          confidence: 0.85,
-        });
-        continue;
-      }
+    const slashParsed = parseSlashLabel(text);
+    if (slashParsed) {
+      results.push({
+        name: slashParsed.name,
+        number: slashParsed.number,
+        pdfPage: pageNum,
+        x: phrase.x0,
+        y: phrase.y0,
+        w: phrase.x1 - phrase.x0,
+        h: phrase.y1 - phrase.y0,
+        confidence: 0.85,
+      });
+      continue;
     }
 
     // Case 2: Look for an adjacent room number in the numberCandidates set.
