@@ -137,10 +137,10 @@ export function SignSpecModal({ jobId, fileId, fileName, specPages, plaqueTable,
   const [specs, setSpecs] = useState<SignTypeSpec[]>([]);
   const [specsLoading, setSpecsLoading] = useState(false);
   const [activeSpecId, setActiveSpecId] = useState<string | null>(null);
-  const [lightboxUrl, setLightboxUrl] = useState<string | null>(null);
+  const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
 
-  const lightboxUrlRef = useRef<string | null>(null);
-  useEffect(() => { lightboxUrlRef.current = lightboxUrl; }, [lightboxUrl]);
+  const lightboxIndexRef = useRef<number | null>(null);
+  useEffect(() => { lightboxIndexRef.current = lightboxIndex; }, [lightboxIndex]);
 
   const activeSpecRowRefs = useRef<Map<string, HTMLDivElement>>(new Map());
 
@@ -176,6 +176,11 @@ export function SignSpecModal({ jobId, fileId, fileName, specPages, plaqueTable,
     return () => { cancelled = true; };
   }, [jobId]);
 
+  const specsWithDrawings = useMemo(
+    () => specs.filter((s) => s.hasDrawing && s.cropImageUrl),
+    [specs]
+  );
+
   const currentPage = specPages[specIdx] ?? 1;
   const totalSpec = specPages.length;
 
@@ -187,18 +192,28 @@ export function SignSpecModal({ jobId, fileId, fileName, specPages, plaqueTable,
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
-        if (lightboxUrlRef.current) {
-          setLightboxUrl(null);
+        if (lightboxIndexRef.current !== null) {
+          setLightboxIndex(null);
         } else {
           onClose();
         }
+        return;
+      }
+      if (lightboxIndexRef.current !== null) {
+        if (e.key === "ArrowLeft") {
+          setLightboxIndex((i) => (i !== null && i > 0 ? i - 1 : i));
+        }
+        if (e.key === "ArrowRight") {
+          setLightboxIndex((i) => (i !== null && i < specsWithDrawings.length - 1 ? i + 1 : i));
+        }
+        return;
       }
       if (e.key === "ArrowLeft") setSpecIdx((i) => Math.max(0, i - 1));
       if (e.key === "ArrowRight") setSpecIdx((i) => Math.min(totalSpec - 1, i + 1));
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [onClose, totalSpec]);
+  }, [onClose, totalSpec, specsWithDrawings]);
 
   useEffect(() => {
     const el = viewerRef.current;
@@ -543,7 +558,10 @@ export function SignSpecModal({ jobId, fileId, fileName, specPages, plaqueTable,
                           <CropThumbnail
                             src={`${import.meta.env.BASE_URL}${spec.cropImageUrl.replace(/^\//, "")}`}
                             alt={`Drawing for ${spec.typeCode}`}
-                            onClick={() => setLightboxUrl(`${import.meta.env.BASE_URL}${spec.cropImageUrl!.replace(/^\//, "")}`)}
+                            onClick={() => {
+                              const idx = specsWithDrawings.findIndex((s) => s.id === spec.id);
+                              if (idx !== -1) setLightboxIndex(idx);
+                            }}
                           />
                         </div>
                       ) : (
@@ -611,27 +629,69 @@ export function SignSpecModal({ jobId, fileId, fileName, specPages, plaqueTable,
         </div>
 
         {/* Lightbox overlay */}
-        {lightboxUrl && (
-          <div
-            className="absolute inset-0 z-50 flex items-center justify-center bg-black/80"
-            onClick={() => setLightboxUrl(null)}
-          >
-            <button
-              type="button"
-              onClick={() => setLightboxUrl(null)}
-              className="absolute top-3 right-3 p-1.5 rounded-full bg-background/20 text-white hover:bg-background/40 transition-colors"
-              aria-label="Close"
+        {lightboxIndex !== null && specsWithDrawings.length > 0 && (() => {
+          const clampedIdx = Math.min(lightboxIndex, specsWithDrawings.length - 1);
+          const currentSpec = specsWithDrawings[clampedIdx];
+          const lightboxUrl = `${import.meta.env.BASE_URL}${currentSpec.cropImageUrl!.replace(/^\//, "")}`;
+          const hasPrev = clampedIdx > 0;
+          const hasNext = clampedIdx < specsWithDrawings.length - 1;
+          return (
+            <div
+              className="absolute inset-0 z-50 flex items-center justify-center bg-black/80"
+              onClick={() => setLightboxIndex(null)}
             >
-              <X className="w-5 h-5" />
-            </button>
-            <img
-              src={lightboxUrl}
-              alt="Full drawing"
-              className="max-w-[90%] max-h-[85%] object-contain rounded shadow-2xl"
-              onClick={(e) => e.stopPropagation()}
-            />
-          </div>
-        )}
+              {/* Close button */}
+              <button
+                type="button"
+                onClick={() => setLightboxIndex(null)}
+                className="absolute top-3 right-3 p-1.5 rounded-full bg-background/20 text-white hover:bg-background/40 transition-colors"
+                aria-label="Close"
+              >
+                <X className="w-5 h-5" />
+              </button>
+
+              {/* Type code + counter label */}
+              <div className="absolute top-3 left-1/2 -translate-x-1/2 flex items-center gap-2">
+                <span className="px-3 py-1 rounded-full bg-background/30 text-white text-sm font-display font-bold tracking-wider">
+                  {currentSpec.typeCode}
+                </span>
+                <span className="text-white/50 text-xs font-mono">
+                  {clampedIdx + 1} / {specsWithDrawings.length}
+                </span>
+              </div>
+
+              {/* Prev arrow */}
+              <button
+                type="button"
+                onClick={(e) => { e.stopPropagation(); setLightboxIndex((i) => (i !== null && i > 0 ? i - 1 : i)); }}
+                disabled={!hasPrev}
+                aria-label="Previous drawing"
+                className="absolute left-3 top-1/2 -translate-y-1/2 p-2 rounded-full bg-background/20 text-white hover:bg-background/40 disabled:opacity-20 disabled:cursor-not-allowed transition-colors"
+              >
+                <ChevronLeft className="w-6 h-6" />
+              </button>
+
+              {/* Image */}
+              <img
+                src={lightboxUrl}
+                alt={`Drawing for ${currentSpec.typeCode}`}
+                className="max-w-[80%] max-h-[80%] object-contain rounded shadow-2xl"
+                onClick={(e) => e.stopPropagation()}
+              />
+
+              {/* Next arrow */}
+              <button
+                type="button"
+                onClick={(e) => { e.stopPropagation(); setLightboxIndex((i) => (i !== null && i < specsWithDrawings.length - 1 ? i + 1 : i)); }}
+                disabled={!hasNext}
+                aria-label="Next drawing"
+                className="absolute right-3 top-1/2 -translate-y-1/2 p-2 rounded-full bg-background/20 text-white hover:bg-background/40 disabled:opacity-20 disabled:cursor-not-allowed transition-colors"
+              >
+                <ChevronRight className="w-6 h-6" />
+              </button>
+            </div>
+          );
+        })()}
       </div>
     </div>
   );
