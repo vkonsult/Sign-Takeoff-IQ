@@ -10,7 +10,7 @@ import {
   signTypeSpecsTable,
   signageScheduleEntriesTable,
 } from "@workspace/db";
-import { buildExcelExport } from "../lib/export";
+import { buildExcelExport, type VerificationReportDetails } from "../lib/export";
 import { getJobExportPath, PAGES_DIR } from "../lib/storage";
 import { processJob, deduplicateSignRows } from "../lib/process-job";
 import { extractSignsFromPdfImage, extractSignsFromPdf, visualLocateDoors } from "../lib/extraction";
@@ -1283,8 +1283,22 @@ router.get("/jobs/:jobId/export", async (req, res) => {
       return;
     }
 
+    const verificationReport: VerificationReportDetails | undefined = (() => {
+      const log = job.processingLog ?? [];
+      const step = log.findLast((s) => s.step === "verification");
+      if (!step?.details) return undefined;
+      const d = step.details as Record<string, unknown>;
+      return {
+        passed: Boolean(d.passed),
+        errorDetails: Array.isArray(d.errorDetails) ? (d.errorDetails as string[]) : [],
+        warningDetails: Array.isArray(d.warningDetails) ? (d.warningDetails as string[]) : [],
+        questionDetails: Array.isArray(d.questionDetails) ? (d.questionDetails as string[]) : [],
+        checksPassed: Array.isArray(d.checksPassed) ? (d.checksPassed as string[]) : [],
+      };
+    })();
+
     const exportPath = getJobExportPath(jobId);
-    await buildExcelExport(signs, jobId, exportPath);
+    await buildExcelExport(signs, jobId, exportPath, verificationReport);
 
     const fileName = `sign-takeoff-${jobId.slice(0, 8)}.xlsx`;
     res.setHeader(
