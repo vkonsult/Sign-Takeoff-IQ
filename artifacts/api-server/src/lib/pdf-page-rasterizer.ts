@@ -166,3 +166,136 @@ export async function rasterizePage(
     doc.destroy();
   }
 }
+
+/**
+ * Rasterize multiple pages of a PDF to PNG files, loading the PDF only once.
+ *
+ * Per-page caching still applies: pages whose output file already exists are
+ * skipped entirely, and if all pages are cached the PDF is never opened.
+ *
+ * @param pdfPath   Absolute path to the source PDF.
+ * @param pageNums  1-indexed page numbers to render.
+ * @param outputDir Directory where PNG files will be written (created if needed).
+ * @param options   Optional rendering options (maxPixels, compressionLevel).
+ * @returns         Map of pageNum → absolute path to the written PNG file.
+ */
+export async function rasterizePages(
+  pdfPath: string,
+  pageNums: number[],
+  outputDir: string,
+  options?: RasterizeOptions,
+): Promise<Map<number, string>> {
+  const maxPixels = options?.maxPixels ?? 8_000_000;
+  const compressionLevel = options?.compressionLevel ?? 1;
+
+  const result = new Map<number, string>();
+  if (pageNums.length === 0) return result;
+
+  await fs.mkdir(outputDir, { recursive: true });
+
+  // --- Cache pass: collect pages that still need rendering ---
+  const uncachedPageNums: number[] = [];
+  await Promise.all(
+    pageNums.map(async (pageNum) => {
+      const fileName = `page-${pageNum}.png`;
+      const filePath = path.resolve(outputDir, fileName);
+      try {
+        await fs.access(filePath);
+        logger.debug({ pageNum, filePath }, "rasterizePages: cache hit — skipping render");
+        result.set(pageNum, filePath);
+      } catch {
+        uncachedPageNums.push(pageNum);
+      }
+    }),
+  );
+
+  if (uncachedPageNums.length === 0) {
+    logger.debug({ pdfPath }, "rasterizePages: all pages cached — PDF not loaded");
+    return result;
+  }
+
+  // --- Load the PDF once for all uncached pages ---
+  const t0 = Date.now();
+  const lib = await getPdfjs();
+  const { createCanvas } = await import("@napi-rs/canvas");
+
+  const rawBuffer = await fs.readFile(pdfPath);
+  const data = new Uint8Array(rawBuffer);
+  const doc = await lib.getDocument({ data, disableAutoFetch: true, disableStream: true }).promise;
+
+  logger.info(
+    { pdfPath, totalPages: doc.numPages, uncachedCount: uncachedPageNums.length },
+    "rasterizePages: PDF loaded — rendering uncached pages",
+  );
+
+  let successCount = 0;
+  try {
+    await Promise.all(
+      uncachedPageNums.map(async (pageNum) => {
+        const fileName = `page-${pageNum}.png`;
+        const filePath = path.resolve(outputDir, fileName);
+
+        try {
+          if (pageNum < 1 || pageNum > doc.numPages) {
+            logger.warn(
+              { pageNum, numPages: doc.numPages },
+              "rasterizePages: pageNum out of range — skipping",
+            );
+            return;
+          }
+
+          const pageT0 = Date.now();
+          const page = await doc.getPage(pageNum);
+
+          const baseViewport = page.getViewport({ scale: 1 });
+          const basePixels = baseViewport.width * baseViewport.height;
+          const scale = basePixels > maxPixels ? Math.sqrt(maxPixels / basePixels) : 1;
+
+          const viewport = page.getViewport({ scale });
+          const canvasWidth = Math.ceil(viewport.width);
+          const canvasHeight = Math.ceil(viewport.height);
+
+          logger.info(
+            { pageNum, canvasWidth, canvasHeight, scale, compressionLevel, maxPixels },
+            "rasterizePages: starting render",
+          );
+
+          const canvasEl = createCanvas(canvasWidth, canvasHeight);
+          const ctx = canvasEl.getContext("2d");
+
+          await page.render({
+            canvasContext: ctx as unknown as PdfjsCanvasContext,
+            viewport,
+          }).promise;
+
+          const pngBuffer = await canvasEl.encode("png", compressionLevel);
+          await fs.writeFile(filePath, pngBuffer);
+
+          const durationMs = Date.now() - pageT0;
+          logger.info(
+            { pageNum, canvasWidth, canvasHeight, scale, compressionLevel, durationMs, filePath },
+            `rasterizePages: rendered page ${pageNum} in ${durationMs}ms`,
+          );
+
+          result.set(pageNum, filePath);
+          successCount++;
+        } catch (err) {
+          logger.warn(
+            { err, pageNum, pdfPath },
+            "rasterizePages: failed to render page — skipping",
+          );
+        }
+      }),
+    );
+  } finally {
+    doc.destroy();
+  }
+
+  const totalMs = Date.now() - t0;
+  logger.info(
+    { pdfPath, attempted: uncachedPageNums.length, succeeded: successCount, totalMs },
+    "rasterizePages: batch render complete",
+  );
+
+  return result;
+}
