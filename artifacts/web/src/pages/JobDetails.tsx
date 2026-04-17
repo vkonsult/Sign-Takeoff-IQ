@@ -59,6 +59,7 @@ interface ProcessingStep {
   label: string;
   durationMs: number;
   startedAt: string;
+  phase?: string;
   details?: Record<string, unknown>;
 }
 
@@ -70,349 +71,144 @@ function formatDuration(ms: number): string {
   return `${m}m ${s}s`;
 }
 
-// UUID pattern to detect per-file step suffixes
+// UUID pattern to detect per-file step suffixes — used to filter them out of the top-level view
 const PER_FILE_STEP_RE = /^(.+?)_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/;
 
-interface FileSummary {
-  fileId: string;
-  fileName: string;
-  pages: number;
-  excludedPages: number;
-  classifiedPages: { floor_plan: number; sign_schedule: number; both: number; unknown: number; excluded: number };
-  textDurationMs: number;
-  imageDurationMs: number;
+function formatDetails(details: Record<string, unknown> | undefined): string | null {
+  if (!details) return null;
+  const parts: string[] = [];
+  const d = details as Record<string, number | string | boolean | undefined>;
+  const { rows, pages, inputTokens, outputTokens, verified, discoveries, matched, totalSigns, textAfter, imageAfter, textRows, imageRows, signsExtracted, specFileCount, succeeded, failed, textBefore, imageBefore, classified, floorPlan, signSchedule, filesWithBboxes, pagesWithBboxes, fileCount } = d;
+  const { skipReason, skipped } = details as Record<string, string | boolean | undefined>;
+  if (specFileCount != null) parts.push(`${specFileCount} spec file${Number(specFileCount) !== 1 ? "s" : ""}`);
+  if (fileCount != null) parts.push(`${fileCount} file${Number(fileCount) !== 1 ? "s" : ""}`);
+  if (rows != null) parts.push(`${rows} rows`);
+  if (pages != null) parts.push(`${pages} pages`);
+  if (classified != null) parts.push(`${classified} classified`);
+  if (floorPlan != null) parts.push(`${floorPlan} floor plan`);
+  if (signSchedule != null) parts.push(`${signSchedule} sign sched`);
+  if (filesWithBboxes != null) parts.push(`${filesWithBboxes} file${Number(filesWithBboxes) !== 1 ? "s" : ""}`);
+  if (pagesWithBboxes != null) parts.push(`${pagesWithBboxes} page${Number(pagesWithBboxes) !== 1 ? "s" : ""}`);
+  if (inputTokens != null) parts.push(`${Number(inputTokens).toLocaleString()} in-tok`);
+  if (outputTokens != null) parts.push(`${Number(outputTokens).toLocaleString()} out-tok`);
+  if (succeeded != null) parts.push(`${succeeded} ok`);
+  if (failed != null && Number(failed) > 0) parts.push(`${failed} failed`);
+  if (verified != null) parts.push(`${verified} verified`);
+  if (discoveries != null) parts.push(`${discoveries} discoveries`);
+  if (totalSigns != null && matched != null) parts.push(`${matched}/${totalSigns} matched`);
+  if (textBefore != null && textAfter != null) parts.push(`${textAfter}/${textBefore} text`);
+  else if (textAfter != null) parts.push(`${textAfter} text`);
+  if (imageBefore != null && imageAfter != null) parts.push(`${imageAfter}/${imageBefore} image`);
+  else if (imageAfter != null) parts.push(`${imageAfter} image`);
+  if (textRows != null) parts.push(`${textRows} text rows`);
+  if (imageRows != null) parts.push(`${imageRows} image rows`);
+  if (signsExtracted != null) parts.push(`${signsExtracted} signs`);
+  if (skipped && skipReason) parts.push(`skipped: ${skipReason}`);
+  else if (skipped) parts.push("skipped");
+  return parts.length > 0 ? parts.join(" · ") : null;
 }
 
-function getClassificationLabel(cp: { floor_plan: number; sign_schedule: number; both: number; unknown: number; excluded: number }): string {
-  const hasFP = cp.floor_plan > 0;
-  const hasSS = cp.sign_schedule > 0;
-  const hasBoth = cp.both > 0;
-  // A file with ONLY "both" pages → "both"; mixed floor+sched without "both" pages → "both"
-  if (hasBoth || (hasFP && hasSS)) return "both";
-  if (hasFP) return "floor plan";
-  if (hasSS) return "sign schedule";
-  return "unknown";
+const PHASE_LABELS: Record<string, string> = {
+  "phase-1": "Phase 1 — Intake",
+  "phase-2": "Phase 2 — Locate Sheets",
+  "phase-3": "Phase 3 — Extract",
+  "phase-4": "Phase 4 — Finalize",
+};
+
+function getPhaseLabel(phase: string): string {
+  return PHASE_LABELS[phase] ?? phase;
 }
 
-function ProcessingTimeline({ steps }: { steps: ProcessingStep[] }) {
-  // Separate total step and per-file steps from top-level steps
-  const total = steps.find((s) => s.step === "total");
+interface PhaseGroup {
+  phase: string | null;
+  label: string;
+  steps: ProcessingStep[];
+  totalMs: number;
+}
 
-  // Classify each step: top-level vs per-file (has UUID suffix)
-  const topLevelSteps: ProcessingStep[] = [];
-  const perFileSteps: ProcessingStep[] = [];
-  for (const step of steps) {
-    if (step.step === "total") continue;
-    if (PER_FILE_STEP_RE.test(step.step)) {
-      perFileSteps.push(step);
-    } else {
-      topLevelSteps.push(step);
-    }
-  }
-
-  // Build fileId → { spatial, text, visual } map from per-file steps
-  type FileStepGroup = {
-    fileId: string;
-    spatial?: ProcessingStep;
-    text?: ProcessingStep;
-    visual?: ProcessingStep;
-    others: ProcessingStep[];
-  };
-  const fileStepGroups = new Map<string, FileStepGroup>();
-  for (const step of perFileSteps) {
-    const match = PER_FILE_STEP_RE.exec(step.step);
-    if (!match) continue;
-    const [, baseType, fileId] = match as [string, string, string];
-    if (!fileStepGroups.has(fileId)) {
-      fileStepGroups.set(fileId, { fileId, others: [] });
-    }
-    const group = fileStepGroups.get(fileId)!;
-    if (baseType === "spatial_prepass") group.spatial = step;
-    else if (baseType === "text_extraction") group.text = step;
-    else if (baseType === "visual_verification") group.visual = step;
-    else group.others.push(step);
-  }
-
-  // Use the extraction step's details.files array (from backend) when available,
-  // falling back to per-file step aggregation.
-  const extractionStep = topLevelSteps.find((s) => s.step === "extraction");
-  const backendFiles = extractionStep?.details?.files as FileSummary[] | undefined;
-
-  // Build a generic map: parentStepKey → ordered list of child fileIds.
-  // For each per-file step group, determine the appropriate parent:
-  //   1. Look for a matching top-level step with the same base name (e.g. "text_extraction")
-  //   2. Fall back to the "extraction" aggregate step
-  // This ensures future per-file step types are automatically grouped under their parent.
-  const topLevelStepKeys = new Set(topLevelSteps.map((s) => s.step));
-  const parentToFileIds = new Map<string, string[]>();
-
-  // Seed extraction's ordered fileIds from the backend files array when available
-  if (backendFiles && backendFiles.length > 0) {
-    parentToFileIds.set("extraction", backendFiles.map((f) => f.fileId));
-  }
-
-  for (const [fileId, group] of fileStepGroups.entries()) {
-    // Collect all base types present for this file group
-    const baseTypes = [
-      group.spatial ? "spatial_prepass" : null,
-      group.text ? "text_extraction" : null,
-      group.visual ? "visual_verification" : null,
-      ...group.others.map((s) => PER_FILE_STEP_RE.exec(s.step)?.[1] ?? null),
-    ].filter((t): t is string => t !== null);
-
-    // For each base type, find the parent top-level step
-    const assignedParents = new Set<string>();
-    for (const bt of baseTypes) {
-      const parentId = topLevelStepKeys.has(bt) ? bt : "extraction";
-      if (!assignedParents.has(parentId)) {
-        assignedParents.add(parentId);
-        if (!parentToFileIds.has(parentId)) parentToFileIds.set(parentId, []);
-        const arr = parentToFileIds.get(parentId)!;
-        if (!arr.includes(fileId)) arr.push(fileId);
-      }
-    }
-  }
-
-  const maxMs = Math.max(...topLevelSteps.map((s) => s.durationMs), 1);
-
-  const STEP_COLORS: Record<string, string> = {
-    project_info: "bg-blue-500",
-    spec_processing: "bg-purple-500",
-    extraction: "bg-amber-500",
-    deduplication: "bg-teal-500",
-    word_match: "bg-green-500",
-    db_insert: "bg-gray-400",
-    bbox_persist: "bg-cyan-500",
-  };
-
-  function getBarColor(step: string): string {
-    return STEP_COLORS[step] ?? "bg-muted-foreground";
-  }
-
-  function formatDetails(details: Record<string, unknown> | undefined): string | null {
-    if (!details) return null;
-    const parts: string[] = [];
-    const d = details as Record<string, number | string | boolean | undefined>;
-    const { rows, pages, inputTokens, outputTokens, verified, discoveries, matched, totalSigns, textAfter, imageAfter, textRows, imageRows, signsExtracted, specFileCount, succeeded, failed, textBefore, imageBefore, classified, floorPlan, signSchedule, filesWithBboxes, pagesWithBboxes } = d;
-    const { skipReason, skipped } = details as Record<string, string | boolean | undefined>;
-    if (specFileCount != null) parts.push(`${specFileCount} spec file${Number(specFileCount) !== 1 ? "s" : ""}`);
-    if (rows != null) parts.push(`${rows} rows`);
-    if (pages != null) parts.push(`${pages} pages`);
-    if (classified != null) parts.push(`${classified} classified`);
-    if (floorPlan != null) parts.push(`${floorPlan} floor plan`);
-    if (signSchedule != null) parts.push(`${signSchedule} sign sched`);
-    if (filesWithBboxes != null) parts.push(`${filesWithBboxes} file${Number(filesWithBboxes) !== 1 ? "s" : ""}`);
-    if (pagesWithBboxes != null) parts.push(`${pagesWithBboxes} page${Number(pagesWithBboxes) !== 1 ? "s" : ""}`);
-    if (inputTokens != null) parts.push(`${Number(inputTokens).toLocaleString()} in-tok`);
-    if (outputTokens != null) parts.push(`${Number(outputTokens).toLocaleString()} out-tok`);
-    if (succeeded != null) parts.push(`${succeeded} ok`);
-    if (failed != null && Number(failed) > 0) parts.push(`${failed} failed`);
-    if (verified != null) parts.push(`${verified} verified`);
-    if (discoveries != null) parts.push(`${discoveries} discoveries`);
-    if (totalSigns != null && matched != null) parts.push(`${matched}/${totalSigns} matched`);
-    if (textBefore != null && textAfter != null) parts.push(`${textAfter}/${textBefore} text`);
-    else if (textAfter != null) parts.push(`${textAfter} text`);
-    if (imageBefore != null && imageAfter != null) parts.push(`${imageAfter}/${imageBefore} image`);
-    else if (imageAfter != null) parts.push(`${imageAfter} image`);
-    if (textRows != null) parts.push(`${textRows} text rows`);
-    if (imageRows != null) parts.push(`${imageRows} image rows`);
-    if (signsExtracted != null) parts.push(`${signsExtracted} signs`);
-    if (skipped && skipReason) parts.push(`skipped: ${skipReason}`);
-    else if (skipped) parts.push("skipped");
-    return parts.length > 0 ? parts.join(" · ") : null;
-  }
-
-  // Build sub-row data for a given fileId
-  function buildFileSummary(fileId: string): FileSummary | null {
-    // Prefer backend-provided files array
-    if (backendFiles) {
-      const f = backendFiles.find((bf) => bf.fileId === fileId);
-      if (f) {
-        // Ensure classifiedPages has all required fields (backward compat with older jobs)
-        return {
-          ...f,
-          classifiedPages: {
-            floor_plan: f.classifiedPages?.floor_plan ?? 0,
-            sign_schedule: f.classifiedPages?.sign_schedule ?? 0,
-            both: (f.classifiedPages as Record<string, number>)?.both ?? 0,
-            unknown: (f.classifiedPages as Record<string, number>)?.unknown ?? 0,
-            excluded: (f.classifiedPages as Record<string, number>)?.excluded ?? 0,
-          },
-        };
-      }
-    }
-    // Fall back to assembling from per-file steps
-    const group = fileStepGroups.get(fileId);
-    if (!group) return null;
-    const spatialDetails = group.spatial?.details ?? {};
-    const textDetails = group.text?.details ?? {};
-    const fileName = group.text
-      ? (group.text.label.includes(" — ") ? group.text.label.split(" — ").slice(1).join(" — ") : group.text.label)
-      : group.spatial
-        ? (group.spatial.label.includes(" — ") ? group.spatial.label.split(" — ").slice(1).join(" — ") : group.spatial.label)
-        : fileId.slice(0, 8);
-    // Prefer nested classifiedPages (new schema) then fall back to flat legacy fields
-    const cp = (spatialDetails.classifiedPages as Record<string, number> | undefined) ?? {};
-    const fpCount = cp.floor_plan ?? (spatialDetails.floorPlan as number) ?? 0;
-    const ssCount = cp.sign_schedule ?? (spatialDetails.signSchedule as number) ?? 0;
-    const bothCount = cp.both ?? (spatialDetails.both as number) ?? 0;
-    const unknownCount = cp.unknown ?? (spatialDetails.unknown as number) ?? 0;
-    // Prefer excludedPages key, then legacy excluded key, then unknown count
-    const excludedCount = (spatialDetails.excludedPages as number) ?? cp.excluded ?? (spatialDetails.excluded as number) ?? unknownCount;
-    return {
-      fileId,
-      fileName,
-      pages: (spatialDetails.pages as number) ?? (textDetails.pages as number) ?? 0,
-      excludedPages: excludedCount,
-      classifiedPages: {
-        floor_plan: fpCount,
-        sign_schedule: ssCount,
-        both: bothCount,
-        unknown: unknownCount,
-        excluded: excludedCount,
-      },
-      textDurationMs: group.text?.durationMs ?? 0,
-      imageDurationMs: group.visual?.durationMs ?? 0,
-    };
-  }
-
-  function renderTopLevelRow(step: ProcessingStep) {
-    const widthPct = Math.max(2, (step.durationMs / maxMs) * 100);
-    const detailStr = formatDetails(step.details);
-    // Generic: render sub-rows for any parent step that has per-file children
-    const childFileIds = parentToFileIds.get(step.step) ?? [];
-    const hasSubRows = childFileIds.length > 0;
-    const borderColor = step.step === "extraction" ? "border-amber-500/30" : "border-muted-foreground/20";
-    return (
-      <div key={step.step}>
-        <div className="flex items-center gap-4" title={detailStr ?? undefined}>
-          <div className="w-56 shrink-0 text-sm text-foreground/80 truncate leading-tight">
-            {step.label}
-          </div>
-          <div className="flex-1 h-5 bg-muted/40 rounded overflow-hidden">
-            <div
-              className={`h-full rounded ${getBarColor(step.step)}`}
-              style={{ width: `${widthPct}%`, opacity: 0.75 }}
-            />
-          </div>
-          <div className="w-16 shrink-0 text-right text-sm font-mono text-foreground/70">
-            {formatDuration(step.durationMs)}
-          </div>
-          {detailStr && (
-            <div className="w-72 shrink-0 text-xs text-muted-foreground truncate">
-              {detailStr}
-            </div>
-          )}
-        </div>
-        {hasSubRows && (
-          <div className={`mt-1 space-y-1 pl-4 border-l-2 ${borderColor} ml-4`}>
-            {childFileIds.map((fileId) => renderFileSubRow(fileId, step.step))}
-          </div>
+function TimelineStepRow({ step, maxMs }: { step: ProcessingStep; maxMs: number }) {
+  const widthPct = Math.max(2, (step.durationMs / maxMs) * 100);
+  const detailStr = formatDetails(step.details);
+  return (
+    <div className="flex items-center gap-3 py-1.5" title={detailStr ?? undefined}>
+      <div className="w-52 shrink-0 text-sm text-foreground/80 truncate leading-tight">
+        {step.label}
+      </div>
+      <div className="flex-1 h-4 bg-muted/40 rounded overflow-hidden">
+        <div
+          className="h-full rounded bg-primary/50"
+          style={{ width: `${widthPct}%` }}
+        />
+      </div>
+      <div className="w-16 shrink-0 text-right text-sm font-mono text-foreground/70 tabular-nums">
+        {formatDuration(step.durationMs)}
+      </div>
+      <div className="w-64 shrink-0">
+        {detailStr && (
+          <span className="inline-flex items-center px-1.5 py-0.5 rounded bg-muted/50 text-[11px] text-muted-foreground truncate max-w-full">
+            {detailStr}
+          </span>
         )}
       </div>
-    );
-  }
+    </div>
+  );
+}
 
-  // Parent-context-aware sub-row rendering.
-  // parentStepKey controls duration and details displayed:
-  //   "text_extraction"     → text-only duration, row count
-  //   "visual_verification" → visual-only duration, verifications count
-  //   "extraction" / other  → combined duration, classification badge + T/V breakdown
-  function renderFileSubRow(fileId: string, parentStepKey: string) {
-    const summary = buildFileSummary(fileId);
-    if (!summary) return null;
+function PhaseSection({ group, maxMs, defaultOpen }: { group: PhaseGroup; maxMs: number; defaultOpen: boolean }) {
+  const [open, setOpen] = useState(defaultOpen);
+  const isLegacy = group.phase === null;
+  return (
+    <div className="rounded-lg border border-border/60 overflow-hidden">
+      <button
+        onClick={() => setOpen((o) => !o)}
+        className={`w-full flex items-center gap-3 px-4 py-2.5 text-left transition-colors
+          ${isLegacy ? "bg-muted/30 hover:bg-muted/50" : "bg-primary/5 hover:bg-primary/10"}`}
+      >
+        <span className={`text-xs font-display font-bold uppercase tracking-wider
+          ${isLegacy ? "text-muted-foreground" : "text-primary/80"}`}>
+          {group.label}
+        </span>
+        <span className="flex-1" />
+        <span className="text-xs font-mono text-foreground/50 tabular-nums">
+          {formatDuration(group.totalMs)}
+        </span>
+        <ChevronDown
+          className={`w-3.5 h-3.5 text-muted-foreground/60 transition-transform ${open ? "" : "-rotate-90"}`}
+        />
+      </button>
+      {open && (
+        <div className="px-4 py-1 divide-y divide-border/30">
+          {group.steps.map((step) => (
+            <TimelineStepRow key={step.step} step={step} maxMs={maxMs} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
 
-    const group = fileStepGroups.get(fileId);
-    const visualSkipped = (group?.visual?.details?.skipped as boolean | undefined) ?? false;
-
-    let displayMs: number;
-    let detailContent: React.ReactNode;
-
-    const processedPages = summary.pages - summary.excludedPages;
-    const exclLabel = summary.excludedPages > 0
-      ? `${summary.excludedPages} unclassified`
-      : null;
-
-    if (parentStepKey === "text_extraction") {
-      displayMs = summary.textDurationMs;
-      const rows = group?.text?.details?.rows as number | undefined;
-      detailContent = (
-        <>
-          {processedPages} processed
-          {exclLabel && <span className="text-orange-400/80 ml-1">· {exclLabel} excl</span>}
-          {rows != null && <span className="ml-1 text-foreground/40">· {rows} rows</span>}
-        </>
-      );
-    } else if (parentStepKey === "visual_verification") {
-      displayMs = summary.imageDurationMs;
-      const verified = group?.visual?.details?.verified as number | undefined;
-      const discoveries = group?.visual?.details?.discoveries as number | undefined;
-      const classLabel = getClassificationLabel(summary.classifiedPages);
-      detailContent = visualSkipped
-        ? (
-          <>
-            <span className="inline-block bg-muted/60 rounded px-1 mr-1 text-[10px] font-medium text-foreground/60">
-              {classLabel}
-            </span>
-            <span className="text-muted-foreground/50">skipped</span>
-          </>
-        )
-        : (
-          <>
-            <span className="inline-block bg-muted/60 rounded px-1 mr-1 text-[10px] font-medium text-foreground/60">
-              {classLabel}
-            </span>
-            {processedPages} of {summary.pages} pg
-            {exclLabel && <span className="text-orange-400/80 ml-1">· {exclLabel} skipped</span>}
-            {verified != null && <span className="ml-1 text-foreground/40">· {verified} verified</span>}
-            {discoveries != null && discoveries > 0 && <span className="ml-1 text-foreground/40">· {discoveries} found</span>}
-          </>
-        );
-    } else {
-      displayMs = summary.textDurationMs + summary.imageDurationMs;
-      const classLabel = getClassificationLabel(summary.classifiedPages);
-      detailContent = (
-        <>
-          <span className="inline-block bg-muted/60 rounded px-1 mr-1 text-[10px] font-medium text-foreground/60">
-            {classLabel}
-          </span>
-          {processedPages} of {summary.pages} pg
-          {exclLabel && (
-            <span className="text-orange-400/80 ml-1">· {exclLabel} skipped</span>
-          )}
-          <span className="ml-1 text-foreground/40">
-            · T:{formatDuration(summary.textDurationMs)}
-            {" "}V:{visualSkipped ? "skip" : formatDuration(summary.imageDurationMs)}
-          </span>
-        </>
-      );
-    }
-
-    const subBarWidthPct = Math.max(2, (displayMs / maxMs) * 100);
-    const tooltipParts = [
-      summary.fileName,
-      `${summary.pages} pages`,
-      summary.excludedPages > 0 ? `${summary.excludedPages} excluded` : "",
-      `Text: ${formatDuration(summary.textDurationMs)}`,
-      visualSkipped ? "Visual: skipped" : `Visual: ${formatDuration(summary.imageDurationMs)}`,
-    ].filter(Boolean);
-
+function ProcessingTimeline({ steps, isLoading }: { steps: ProcessingStep[]; isLoading?: boolean }) {
+  if (isLoading) {
     return (
-      <div key={fileId} className="flex items-center gap-3 py-0.5" title={tooltipParts.join(" · ")}>
-        <div className="w-52 shrink-0 text-xs text-foreground/70 truncate leading-tight pl-1">
-          {summary.fileName}
-        </div>
-        <div className="flex-1 h-3.5 bg-muted/30 rounded overflow-hidden">
-          <div
-            className="h-full rounded bg-amber-400/70"
-            style={{ width: `${subBarWidthPct}%` }}
-          />
-        </div>
-        <div className="w-16 shrink-0 text-right text-xs font-mono text-foreground/60">
-          {formatDuration(displayMs)}
-        </div>
-        <div className="w-72 shrink-0 text-xs text-muted-foreground truncate">
-          {detailContent}
+      <div className="space-y-3 animate-pulse">
+        {[1, 2, 3].map((i) => (
+          <div key={i} className="rounded-lg border border-border/40 overflow-hidden">
+            <div className="h-10 bg-muted/30" />
+            <div className="px-4 py-2 space-y-2">
+              {[1, 2].map((j) => (
+                <div key={j} className="flex items-center gap-3 py-1">
+                  <div className="w-52 h-4 rounded bg-muted/50" />
+                  <div className="flex-1 h-4 rounded bg-muted/40" />
+                  <div className="w-16 h-4 rounded bg-muted/50" />
+                  <div className="w-32 h-4 rounded bg-muted/30" />
+                </div>
+              ))}
+            </div>
+          </div>
+        ))}
+        <div className="mt-4 pt-3 border-t border-border/60 flex items-center justify-between">
+          <div className="w-16 h-4 rounded bg-muted/50" />
+          <div className="w-20 h-5 rounded bg-muted/50" />
         </div>
       </div>
     );
@@ -420,6 +216,43 @@ function ProcessingTimeline({ steps }: { steps: ProcessingStep[] }) {
 
   // ── Phase overview ─────────────────────────────────────────────────────────
   const completedStepKeys = steps.map((s) => s.step);
+  const totalStep = steps.find((s) => s.step === "total");
+
+  // Filter out per-file steps (UUID suffixed) and the total step
+  const visibleSteps = steps.filter(
+    (s) => s.step !== "total" && !PER_FILE_STEP_RE.test(s.step)
+  );
+
+  // Group steps: check step.phase first (backend-tagged), then resolvePhaseForStep fallback
+  const phaseGroupMap = new Map<string, { label: string; steps: ProcessingStep[] }>();
+  const legacySteps: ProcessingStep[] = [];
+  for (const step of visibleSteps) {
+    if (step.phase) {
+      const label = getPhaseLabel(step.phase);
+      if (!phaseGroupMap.has(step.phase)) phaseGroupMap.set(step.phase, { label, steps: [] });
+      phaseGroupMap.get(step.phase)!.steps.push(step);
+    } else {
+      const resolved = resolvePhaseForStep(step.step);
+      if (resolved) {
+        const key = `phase-${resolved.id}`;
+        const label = `Phase ${resolved.id} — ${resolved.name}`;
+        if (!phaseGroupMap.has(key)) phaseGroupMap.set(key, { label, steps: [] });
+        phaseGroupMap.get(key)!.steps.push(step);
+      } else {
+        legacySteps.push(step);
+      }
+    }
+  }
+
+  const groups: PhaseGroup[] = [];
+  for (const [phase, { label, steps: phaseSteps }] of [...phaseGroupMap.entries()].sort(([a], [b]) => a.localeCompare(b))) {
+    groups.push({ phase, label, steps: phaseSteps, totalMs: phaseSteps.reduce((sum, s) => sum + s.durationMs, 0) });
+  }
+  if (legacySteps.length > 0) {
+    groups.push({ phase: null, label: "Pipeline Steps", steps: legacySteps, totalMs: legacySteps.reduce((sum, s) => sum + s.durationMs, 0) });
+  }
+
+  const maxMs = Math.max(...visibleSteps.map((s) => s.durationMs), 1);
 
   return (
     <div className="space-y-8">
@@ -486,62 +319,29 @@ function ProcessingTimeline({ steps }: { steps: ProcessingStep[] }) {
         </div>
       </div>
 
-      {/* Detailed step rows — grouped by phase */}
-      <div>
-        <div className="text-[10px] font-display font-bold uppercase tracking-widest text-muted-foreground mb-3">
-          Step Details
+      {/* Step Details — collapsible phase sections */}
+      {groups.length > 0 && (
+        <div>
+          <div className="text-[10px] font-display font-bold uppercase tracking-widest text-muted-foreground mb-3">
+            Step Details
+          </div>
+          <div className="space-y-3">
+            {groups.map((group, i) => (
+              <PhaseSection
+                key={group.phase ?? "__legacy__"}
+                group={group}
+                maxMs={maxMs}
+                defaultOpen={i === 0 || groups.length <= 2}
+              />
+            ))}
+          </div>
         </div>
-        <div className="space-y-4">
-          {(() => {
-            // Group top-level steps by phase; unmatched go under "Other"
-            const grouped = new Map<string, ProcessingStep[]>();
-            grouped.set("__other__", []);
-            for (const phase of PIPELINE_PHASES) {
-              grouped.set(String(phase.id), []);
-            }
-            for (const step of topLevelSteps) {
-              const phase = resolvePhaseForStep(step.step);
-              const key = phase ? String(phase.id) : "__other__";
-              grouped.get(key)!.push(step);
-            }
-            return (
-              <>
-                {PIPELINE_PHASES.map((phase) => {
-                  const phaseSteps = grouped.get(String(phase.id)) ?? [];
-                  if (phaseSteps.length === 0) return null;
-                  const borderClass = phaseColorClasses(phase.color, "border");
-                  const textClass = phaseColorClasses(phase.color, "text");
-                  return (
-                    <div key={phase.id} className={`pl-3 border-l-2 ${borderClass}`}>
-                      <div className={`text-[10px] font-display font-semibold uppercase tracking-wider mb-2 ${textClass}`}>
-                        {phase.icon} Phase {phase.id} — {phase.name}
-                      </div>
-                      <div className="space-y-2">
-                        {phaseSteps.map((step) => renderTopLevelRow(step))}
-                      </div>
-                    </div>
-                  );
-                })}
-                {(grouped.get("__other__") ?? []).length > 0 && (
-                  <div className="pl-3 border-l-2 border-border/30">
-                    <div className="text-[10px] font-display font-semibold uppercase tracking-wider mb-2 text-muted-foreground/50">
-                      Other Steps
-                    </div>
-                    <div className="space-y-2">
-                      {(grouped.get("__other__") ?? []).map((step) => renderTopLevelRow(step))}
-                    </div>
-                  </div>
-                )}
-              </>
-            );
-          })()}
-        </div>
-      </div>
+      )}
 
-      {total && (
+      {totalStep && (
         <div className="pt-3 border-t border-border/60 flex items-center justify-between">
-          <span className="text-sm text-muted-foreground font-display font-semibold uppercase tracking-wide">Total</span>
-          <span className="text-base font-bold font-mono text-foreground">{formatDuration(total.durationMs)}</span>
+          <span className="text-sm text-muted-foreground font-display font-semibold uppercase tracking-wide">Grand Total</span>
+          <span className="text-base font-bold font-mono text-foreground tabular-nums">{formatDuration(totalStep.durationMs)}</span>
         </div>
       )}
     </div>
@@ -1257,6 +1057,9 @@ export default function JobDetails() {
                     </div>
                     {(() => {
                       const jobLog = (job as Record<string, unknown>).processingLog as ProcessingStep[] | null | undefined;
+                      if (isProcessingNow && (!jobLog || jobLog.length === 0)) {
+                        return <ProcessingTimeline steps={[]} isLoading />;
+                      }
                       return jobLog && jobLog.length > 0 ? (
                         <ProcessingTimeline steps={jobLog} />
                       ) : (

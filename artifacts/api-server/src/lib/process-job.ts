@@ -1,4 +1,7 @@
 import { type InsertExtractedSign } from "@workspace/db";
+import { db } from "@workspace/db";
+import { jobsTable } from "@workspace/db";
+import { eq } from "drizzle-orm";
 import { logger } from "./logger";
 import { runPdfProcessor } from "./pdf-processor";
 
@@ -40,8 +43,21 @@ export function deduplicateSignRows(rows: InsertExtractedSign[]): InsertExtracte
 /**
  * Process a job using only the PDF Processor (no Gemini AI calls).
  * AI sign extraction is available on-demand via the /api/jobs/:jobId/ai-scan endpoint.
+ * Ensures currentStep is cleared on any unexpected exception so the UI does not
+ * show a stale step label after a failure.
  */
 export async function processJob(jobId: string): Promise<void> {
   logger.info({ jobId }, "processJob → delegating to PDF Processor (no AI)");
-  await runPdfProcessor(jobId);
+  try {
+    await runPdfProcessor(jobId);
+  } catch (err) {
+    // Ensure currentStep is always cleared on unexpected failure so the UI
+    // does not display a stale "Extracting…" label after the job fails.
+    await db
+      .update(jobsTable)
+      .set({ currentStep: null })
+      .where(eq(jobsTable.id, jobId))
+      .catch(() => {});
+    throw err;
+  }
 }

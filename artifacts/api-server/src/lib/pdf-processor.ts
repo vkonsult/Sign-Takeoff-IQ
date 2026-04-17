@@ -42,17 +42,30 @@ export async function runPdfProcessor(jobId: string): Promise<void> {
   const pipelineSteps: ProcessingStep[] = [];
   const jobStart = Date.now();
 
+  async function setCurrentStep(label: string | null): Promise<void> {
+    try {
+      await db
+        .update(jobsTable)
+        .set({ currentStep: label })
+        .where(eq(jobsTable.id, jobId));
+    } catch {
+      // non-fatal
+    }
+  }
+
   function recordStep(
     step: string,
     label: string,
     stepStart: number,
     details?: Record<string, unknown>,
+    phase?: string,
   ): void {
     pipelineSteps.push({
       step,
       label,
       durationMs: Date.now() - stepStart,
       startedAt: new Date(stepStart).toISOString(),
+      ...(phase ? { phase } : {}),
       details,
     });
   }
@@ -101,7 +114,7 @@ export async function runPdfProcessor(jobId: string): Promise<void> {
   if (files.length === 0) {
     await db
       .update(jobsTable)
-      .set({ status: "failed", error: "No files found for this job", updatedAt: new Date() })
+      .set({ status: "failed", error: "No files found for this job", currentStep: null, updatedAt: new Date() })
       .where(eq(jobsTable.id, jobId));
     return;
   }
@@ -113,6 +126,7 @@ export async function runPdfProcessor(jobId: string): Promise<void> {
 
   // Extract raw text from spec files for metadata (no AI)
   if (specFiles.length > 0 && hasDataFiles) {
+    await setCurrentStep("Processing spec files…");
     const t_spec = Date.now();
     for (const specFile of specFiles) {
       try {
@@ -126,7 +140,7 @@ export async function runPdfProcessor(jobId: string): Promise<void> {
         logger.warn({ err, fileName: specFile.originalName }, "[PDF Processor] Failed to extract spec file text");
       }
     }
-    recordStep("spec_processing", "Spec file processing (text-only)", t_spec, { specFileCount: specFiles.length });
+    recordStep("spec_processing", "Spec file processing (text-only)", t_spec, { specFileCount: specFiles.length }, "phase-1");
   }
 
   const filesToProcess = hasDataFiles ? dataFiles : files;
@@ -145,6 +159,7 @@ export async function runPdfProcessor(jobId: string): Promise<void> {
   // and shared across all files in this job.  Set once; never overwritten.
   let detectedBuildingType: string | null = null;
 
+  await setCurrentStep("Extracting floor plans…");
   const t_extraction = Date.now();
 
   await Promise.all(
@@ -578,6 +593,7 @@ export async function runPdfProcessor(jobId: string): Promise<void> {
   // ── Word-match coordinate assignment for preserved signs ──────────────────
   // Re-run coordinate matching for preserved signs that may have lost their positions.
   if (preservedSigns.length > 0) {
+    await setCurrentStep("Matching coordinates…");
     const t_wordmatch = Date.now();
     const filePathById = new Map<string, string>(filesToProcess.map((f) => [f.id, f.storedPath]));
 
@@ -654,7 +670,7 @@ export async function runPdfProcessor(jobId: string): Promise<void> {
       .join("; ");
     await db
       .update(jobsTable)
-      .set({ status: "failed", error: `All files failed processing: ${errorSummary}`, processingLog: pipelineSteps, updatedAt: new Date() })
+      .set({ status: "failed", error: `All files failed processing: ${errorSummary}`, processingLog: pipelineSteps, currentStep: null, updatedAt: new Date() })
       .where(eq(jobsTable.id, jobId));
     return;
   }
@@ -664,6 +680,7 @@ export async function runPdfProcessor(jobId: string): Promise<void> {
     .set({
       status: "completed",
       processingLog: pipelineSteps,
+      currentStep: null,
       updatedAt: new Date(),
       ...(detectedBuildingType ? { buildingType: detectedBuildingType } : {}),
     })

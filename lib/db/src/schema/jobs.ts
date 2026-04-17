@@ -18,6 +18,7 @@ export const jobsTable = pgTable("jobs", {
   status: jobStatusEnum("status").notNull().default("pending"),
   fileCount: integer("file_count").notNull().default(0),
   error: text("error"),
+  currentStep: text("current_step"),
   inputTokens: integer("input_tokens").notNull().default(0),
   outputTokens: integer("output_tokens").notNull().default(0),
   imageInputTokens: integer("image_input_tokens").notNull().default(0),
@@ -39,6 +40,7 @@ export interface ProcessingStep {
   label: string;
   durationMs: number;
   startedAt: string;
+  phase?: string;
   details?: Record<string, unknown>;
 }
 

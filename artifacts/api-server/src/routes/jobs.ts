@@ -433,7 +433,7 @@ router.post("/jobs/:jobId/process", async (req, res) => {
     req.log.error({ err, jobId }, "Job processing failed");
     await db
       .update(jobsTable)
-      .set({ status: "failed", error: String(err), updatedAt: new Date() })
+      .set({ status: "failed", error: String(err), currentStep: null, updatedAt: new Date() })
       .where(eq(jobsTable.id, jobId)).catch(() => {});
     res.status(500).json({ error: "Job processing failed", details: String(err) });
   }

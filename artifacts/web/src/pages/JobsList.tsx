@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { AppShell } from "@/components/layout/Shell";
 import { useJobsList } from "@/hooks/use-takeoff";
 import { apiFetch, openPdfInNewTab } from "@/lib/apiClient";
@@ -68,6 +68,7 @@ export default function JobsList() {
     fileCount: number;
     createdAt: string;
     updatedAt?: string | null;
+    currentStep?: string | null;
     recentUsers?: RecentUser[];
     files?: { id: string; originalName: string }[];
   }>;
@@ -237,6 +238,9 @@ export default function JobsList() {
                 const recentUsers: RecentUser[] = jobAny.recentUsers ?? [];
                 const jobFiles: { id: string; originalName: string }[] = jobAny.files ?? [];
 
+                const isProcessing = job.status === "processing";
+                const currentStep = isProcessing ? (jobAny as typeof job & { currentStep?: string | null }).currentStep : null;
+
                 return (
                   <div key={job.id} className="flex flex-col">
                     {/* Main row */}
@@ -244,6 +248,8 @@ export default function JobsList() {
                       className={`relative group grid grid-cols-[36px_1fr_120px_40px_160px_160px_48px] gap-3 items-center transition-colors
                         ${isChecked ? "bg-primary/5 border-l-2 border-l-primary" : "hover:bg-secondary/40"}`}
                     >
+                    {isProcessing && <IndeterminateBar />}
+
                     {/* Checkbox */}
                     <button
                       onClick={(e) => toggleSelect(job.id, e)}
@@ -279,12 +285,22 @@ export default function JobsList() {
                           </div>
                           <div className="text-xs font-mono text-muted-foreground/60 truncate mt-0.5">
                             {job.id.split("-")[0]}
+                            {isProcessing && currentStep && (
+                              <span className="ml-2 text-primary/60 font-sans normal-case tracking-normal font-normal not-italic">
+                                · {currentStep}
+                              </span>
+                            )}
                           </div>
                         </div>
                       </div>
 
-                      <div className="flex justify-center py-4">
+                      <div className="flex flex-col items-center justify-center gap-1 py-4">
                         <StatusIcon status={job.status} />
+                        {isProcessing && (
+                          <span className="text-[10px] font-mono text-primary/70 tabular-nums">
+                            <ElapsedTimer createdAt={job.createdAt} />
+                          </span>
+                        )}
                       </div>
 
                       <div className="flex justify-center py-4">
@@ -419,6 +435,42 @@ export default function JobsList() {
         </div>
       </div>
     </AppShell>
+  );
+}
+
+function ElapsedTimer({ createdAt }: { createdAt: string }) {
+  const [elapsed, setElapsed] = useState(() => Math.floor((Date.now() - new Date(createdAt).getTime()) / 1000));
+
+  useEffect(() => {
+    const id = setInterval(() => {
+      setElapsed(Math.floor((Date.now() - new Date(createdAt).getTime()) / 1000));
+    }, 1000);
+    return () => clearInterval(id);
+  }, [createdAt]);
+
+  const m = Math.floor(elapsed / 60);
+  const s = elapsed % 60;
+  return <span>{m > 0 ? `${m}m ` : ""}{s}s</span>;
+}
+
+function IndeterminateBar() {
+  return (
+    <div className="absolute bottom-0 left-0 right-0 h-0.5 overflow-hidden bg-primary/10">
+      <div
+        className="h-full bg-primary/60 rounded"
+        style={{
+          width: "40%",
+          animation: "indeterminate-slide 1.4s infinite ease-in-out",
+        }}
+      />
+      <style>{`
+        @keyframes indeterminate-slide {
+          0% { transform: translateX(-100%) scaleX(0.5); }
+          50% { transform: translateX(150%) scaleX(1.2); }
+          100% { transform: translateX(350%) scaleX(0.5); }
+        }
+      `}</style>
+    </div>
   );
 }
 
