@@ -4,7 +4,7 @@ import { logger } from "@/lib/logger";
 import { useQueryClient } from "@tanstack/react-query";
 import { AppShell } from "@/components/layout/Shell";
 import { apiFetch, openPdfInNewTab } from "@/lib/apiClient";
-import { logger } from "@/lib/logger";
+import { useUserRole } from "@/hooks/use-user-role";
 import { useJobDetails, useStartExtraction, downloadExport, useUpdateJobName } from "@/hooks/use-takeoff";
 import { useExportButtonState } from "@/hooks/useExportButtonState";
 import { useToast } from "@/hooks/use-toast";
@@ -55,6 +55,7 @@ import {
   Users,
   BookOpen,
   Lock,
+  Upload,
 } from "lucide-react";
 import { format, formatDistanceToNow } from "date-fns";
 import { exportMarkedupPdf, type MarkerSign } from "@/lib/exportMarkedupPdf";
@@ -466,6 +467,48 @@ export default function JobDetails() {
   const updateJobName = useUpdateJobName(jobId);
 
   const { toast } = useToast();
+  const { isAdmin } = useUserRole();
+
+  const [replacingFileId, setReplacingFileId] = useState<string | null>(null);
+  const replaceFileInputRef = useRef<HTMLInputElement>(null);
+  const pendingReplaceFileId = useRef<string | null>(null);
+
+  const openReplacePicker = useCallback((fileId: string) => {
+    pendingReplaceFileId.current = fileId;
+    replaceFileInputRef.current?.click();
+  }, []);
+
+  const handleReplaceFileChosen = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const fileId = pendingReplaceFileId.current;
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!fileId || !file) return;
+
+    setReplacingFileId(fileId);
+    try {
+      const body = new FormData();
+      body.append("file", file);
+      const res = await apiFetch(`/api/files/${fileId}/replace`, {
+        method: "PATCH",
+        body,
+      });
+      if (!res.ok) {
+        const json = await res.json().catch(() => ({})) as { error?: string };
+        throw new Error(json.error ?? `Server error ${res.status}`);
+      }
+      queryClient.invalidateQueries({ queryKey: getGetJobQueryKey(jobId) });
+      toast({ title: "PDF replaced", description: "The file has been replaced successfully." });
+    } catch (err) {
+      toast({
+        variant: "destructive",
+        title: "Replace failed",
+        description: err instanceof Error ? err.message : "An unexpected error occurred.",
+      });
+    } finally {
+      setReplacingFileId(null);
+      pendingReplaceFileId.current = null;
+    }
+  }, [jobId, queryClient, toast]);
 
   const plaqueScheduleQuery = useGetPlaqueSchedule(jobId);
   const occupantLoadsQuery = useGetOccupantLoads(jobId);
@@ -972,38 +1015,6 @@ export default function JobDetails() {
   const isCompleted = job.status === "completed";
   const isPending = job.status === "pending";
   const isFailed = job.status === "failed";
-
-  // eslint-disable-next-line react-hooks/rules-of-hooks
-  const handleTabListKeyDown = useCallback((e: React.KeyboardEvent<HTMLDivElement>) => {
-    const tablist = e.currentTarget;
-    const tabs = Array.from(tablist.querySelectorAll<HTMLButtonElement>('[role="tab"]'));
-    if (tabs.length === 0) return;
-    const focused = tabs.findIndex((t) => t === document.activeElement);
-    if (focused === -1) return;
-    // eslint-disable-next-line no-useless-assignment
-    let next = focused;
-    if (e.key === "ArrowRight") {
-      e.preventDefault();
-      next = (focused + 1) % tabs.length;
-    } else if (e.key === "ArrowLeft") {
-      e.preventDefault();
-      next = (focused - 1 + tabs.length) % tabs.length;
-    } else if (e.key === "Home") {
-      e.preventDefault();
-      next = 0;
-    } else if (e.key === "End") {
-      e.preventDefault();
-      next = tabs.length - 1;
-    } else if (e.key === "Enter" || e.key === " ") {
-      e.preventDefault();
-      tabs[focused].click();
-      return;
-    } else {
-      return;
-    }
-    tabs[next].focus();
-  }, []);
-
 
   return (
     <AppShell>
@@ -1582,6 +1593,9 @@ export default function JobDetails() {
                     toggleHidden={toggleHidden}
                     jobId={jobId}
                     toggleRejectedPage={toggleRejectedPage}
+                    isAdmin={isAdmin}
+                    onReplaceFile={openReplacePicker}
+                    replacingFileId={replacingFileId}
                   />
                 </div>
               ) : activeTab === "timeline" ? (
@@ -1996,14 +2010,31 @@ export default function JobDetails() {
                     <div className="flex-1 min-w-0">
                       <p className="text-sm font-medium text-foreground truncate">{f.originalName}</p>
                     </div>
-                    <button
-                      onClick={() => openPdfInNewTab(jobId, f.id, f.originalName).catch(() => {})}
-                      title="Open original PDF in new tab"
-                      className="ml-3 flex items-center gap-1.5 px-2.5 py-1 rounded text-[11px] font-medium text-muted-foreground border border-border hover:text-primary hover:border-primary/50 transition-colors flex-shrink-0"
-                    >
-                      <ExternalLink className="w-3.5 h-3.5" />
-                      View PDF
-                    </button>
+                    <div className="flex items-center gap-2 flex-shrink-0 ml-3">
+                      <button
+                        onClick={() => openPdfInNewTab(jobId, f.id, f.originalName).catch(() => {})}
+                        title="Open original PDF in new tab"
+                        className="flex items-center gap-1.5 px-2.5 py-1 rounded text-[11px] font-medium text-muted-foreground border border-border hover:text-primary hover:border-primary/50 transition-colors"
+                      >
+                        <ExternalLink className="w-3.5 h-3.5" />
+                        View PDF
+                      </button>
+                      {isAdmin && (
+                        <button
+                          onClick={() => openReplacePicker(f.id)}
+                          disabled={replacingFileId !== null}
+                          title="Replace this PDF with a new file"
+                          className="flex items-center gap-1.5 px-2.5 py-1 rounded text-[11px] font-medium text-muted-foreground border border-border hover:text-amber-600 hover:border-amber-400 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                        >
+                          {replacingFileId === f.id ? (
+                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                          ) : (
+                            <Upload className="w-3.5 h-3.5" />
+                          )}
+                          {replacingFileId === f.id ? "Replacing…" : "Replace PDF"}
+                        </button>
+                      )}
+                    </div>
                   </div>
                 ))}
               </div>
@@ -2046,6 +2077,18 @@ export default function JobDetails() {
           onClose={() => setSpecViewer(null)}
         />
       )}
+
+      {/* Hidden file input for Replace PDF */}
+      <input
+        ref={replaceFileInputRef}
+        type="file"
+        accept=".pdf,application/pdf"
+        aria-label="Select replacement PDF file"
+        aria-hidden="true"
+        tabIndex={-1}
+        className="hidden"
+        onChange={handleReplaceFileChosen}
+      />
     </AppShell>
   );
 }
@@ -2620,6 +2663,9 @@ function SheetsPanel({
   toggleHidden: _toggleHidden,
   jobId,
   toggleRejectedPage,
+  isAdmin,
+  onReplaceFile,
+  replacingFileId,
 }: {
   files: FileWithStats[];
   onOpenSpec: (v: SpecViewerState) => void;
@@ -2628,6 +2674,9 @@ function SheetsPanel({
   toggleHidden: (signId: string, currentlyHidden: boolean) => void;
   jobId: string;
   toggleRejectedPage: (fileId: string, pageNo: number) => void;
+  isAdmin?: boolean;
+  onReplaceFile?: (fileId: string) => void;
+  replacingFileId?: string | null;
 }) {
   const [open, setOpen] = useState(true);
 
@@ -2724,6 +2773,21 @@ function SheetsPanel({
                         <ExternalLink className="w-3 h-3" />
                         PDF
                       </button>
+                      {isAdmin && onReplaceFile && (
+                        <button
+                          onClick={() => onReplaceFile(f.id)}
+                          disabled={replacingFileId != null}
+                          title="Replace this PDF with a new file"
+                          className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium text-muted-foreground border border-border hover:text-amber-600 hover:border-amber-400 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                        >
+                          {replacingFileId === f.id ? (
+                            <Loader2 className="w-3 h-3 animate-spin" />
+                          ) : (
+                            <Upload className="w-3 h-3" />
+                          )}
+                          {replacingFileId === f.id ? "Replacing…" : "Replace"}
+                        </button>
+                      )}
                       {(ssCount > 0 || bothCount > 0) && (
                         <button
                           onClick={() =>

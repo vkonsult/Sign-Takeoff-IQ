@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
-import { render, fireEvent, cleanup } from "@testing-library/react";
+import { render, cleanup } from "@testing-library/react";
 import axe from "axe-core";
 import React from "react";
 
@@ -109,6 +109,16 @@ vi.mock("@/components/SignSpecsTab", () => ({
 
 vi.mock("@/components/ComplianceTab", () => ({
   ComplianceTab: () => React.createElement("div", { "data-testid": "compliance-tab" }),
+}));
+
+vi.mock("@/hooks/use-user-role", () => ({
+  useUserRole: () => ({
+    role: "ADMIN",
+    organizationId: "test-org",
+    isLoaded: true,
+    isSuperAdmin: false,
+    isAdmin: true,
+  }),
 }));
 
 vi.mock("@workspace/api-client-react", () => ({
