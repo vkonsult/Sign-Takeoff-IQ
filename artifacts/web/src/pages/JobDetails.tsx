@@ -2850,6 +2850,8 @@ interface RoomRecord {
 interface RoomInventoryData {
   rooms: RoomRecord[];
   occupantLoadTableFound: boolean;
+  occupantLoadSource?: "gemini" | "text" | "none";
+  occupantLoadRoomsMatched?: number;
   warnings: string[];
   sourcePages: number[];
   aiEnrichedCount?: number;
@@ -2881,7 +2883,7 @@ function roomFlags(r: RoomRecord): string[] {
 
 function RoomInventoryPanel({ inventory }: { inventory: RoomInventoryData }) {
   const [open, setOpen] = useState(false);
-  const { rooms, occupantLoadTableFound, warnings, aiEnrichedCount } = inventory;
+  const { rooms, occupantLoadTableFound, occupantLoadSource, occupantLoadRoomsMatched, warnings, aiEnrichedCount } = inventory;
 
   if (rooms.length === 0) return null;
 
@@ -2936,7 +2938,21 @@ function RoomInventoryPanel({ inventory }: { inventory: RoomInventoryData }) {
           </>
         )}
         {occupantLoadTableFound && (
-          <span className="ml-1 text-[9px] font-mono text-emerald-400/60 bg-emerald-500/10 border border-emerald-500/20 px-1 rounded">occ loads ✓</span>
+          <>
+            <span className="ml-1 text-[9px] font-mono text-emerald-400/60 bg-emerald-500/10 border border-emerald-500/20 px-1 rounded">occ loads ✓</span>
+            {occupantLoadSource === "gemini" && (
+              <span className="text-[9px] font-mono text-violet-400/80 bg-violet-500/10 border border-violet-500/20 px-1 rounded">Gemini</span>
+            )}
+            {occupantLoadSource === "text" && (
+              <span className="text-[9px] font-mono text-amber-400/80 bg-amber-500/10 border border-amber-500/20 px-1 rounded">text</span>
+            )}
+            {occupantLoadSource != null && occupantLoadSource !== "none" && occupantLoadRoomsMatched != null && occupantLoadRoomsMatched > 0 && (
+              <span className="text-[9px] font-mono text-muted-foreground/50">{occupantLoadRoomsMatched} matched</span>
+            )}
+          </>
+        )}
+        {occupantLoadSource === "none" && (
+          <span className="ml-1 text-[9px] font-mono text-muted-foreground/50 italic">No egress sheet — text fallback</span>
         )}
         {aiEnrichedCount != null && aiEnrichedCount > 0 && (
           <TooltipProvider>
