@@ -1,16 +1,20 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { renderHook } from "@testing-library/react";
-import { useJobsList } from "./use-takeoff";
+import { useJobsList, useJobDetails } from "./use-takeoff";
 
 let capturedStandardOptions: { query: { refetchInterval: (q: unknown) => unknown } } | null = null;
 let capturedArchivedOptions: { refetchInterval: (q: unknown) => unknown } | null = null;
+let capturedJobDetailOptions: { query: { refetchInterval: (q: unknown) => unknown } } | null = null;
 
 vi.mock("@workspace/api-client-react", () => ({
   useListJobs: vi.fn((options: typeof capturedStandardOptions) => {
     capturedStandardOptions = options;
     return {};
   }),
-  useGetJob: vi.fn(() => ({})),
+  useGetJob: vi.fn((_jobId: string, options: typeof capturedJobDetailOptions) => {
+    capturedJobDetailOptions = options;
+    return {};
+  }),
   useUploadFiles: vi.fn(() => ({})),
   useProcessJob: vi.fn(() => ({})),
   getListJobsQueryKey: vi.fn(() => ["jobs"]),
@@ -41,6 +45,7 @@ describe("useJobsList — refetchInterval for standard (non-archived) queries", 
   beforeEach(() => {
     capturedStandardOptions = null;
     capturedArchivedOptions = null;
+    capturedJobDetailOptions = null;
   });
 
   it("polls every 5 s when a job has status 'pending'", () => {
@@ -106,6 +111,7 @@ describe("useJobsList — refetchInterval for archived queries", () => {
   beforeEach(() => {
     capturedStandardOptions = null;
     capturedArchivedOptions = null;
+    capturedJobDetailOptions = null;
   });
 
   it("polls every 5 s when an archived job has status 'pending'", () => {
@@ -137,6 +143,59 @@ describe("useJobsList — refetchInterval for archived queries", () => {
     renderHook(() => useJobsList(true));
     const interval = capturedArchivedOptions!.refetchInterval(
       { state: { data: undefined } }
+    );
+    expect(interval).toBe(false);
+  });
+});
+
+function makeJobQuery(status: string | undefined) {
+  return { state: { data: status !== undefined ? { job: { status } } : undefined } };
+}
+
+describe("useJobDetails — refetchInterval", () => {
+  beforeEach(() => {
+    capturedStandardOptions = null;
+    capturedArchivedOptions = null;
+    capturedJobDetailOptions = null;
+  });
+
+  it("polls every 3 s when the job status is 'pending'", () => {
+    renderHook(() => useJobDetails("job-1"));
+    expect(capturedJobDetailOptions).not.toBeNull();
+    const interval = capturedJobDetailOptions!.query.refetchInterval(
+      makeJobQuery("pending")
+    );
+    expect(interval).toBe(3000);
+  });
+
+  it("polls every 3 s when the job status is 'processing'", () => {
+    renderHook(() => useJobDetails("job-1"));
+    const interval = capturedJobDetailOptions!.query.refetchInterval(
+      makeJobQuery("processing")
+    );
+    expect(interval).toBe(3000);
+  });
+
+  it("stops polling when the job status is 'complete'", () => {
+    renderHook(() => useJobDetails("job-1"));
+    const interval = capturedJobDetailOptions!.query.refetchInterval(
+      makeJobQuery("complete")
+    );
+    expect(interval).toBe(false);
+  });
+
+  it("stops polling when the job status is 'failed'", () => {
+    renderHook(() => useJobDetails("job-1"));
+    const interval = capturedJobDetailOptions!.query.refetchInterval(
+      makeJobQuery("failed")
+    );
+    expect(interval).toBe(false);
+  });
+
+  it("stops polling when data is undefined (initial load)", () => {
+    renderHook(() => useJobDetails("job-1"));
+    const interval = capturedJobDetailOptions!.query.refetchInterval(
+      makeJobQuery(undefined)
     );
     expect(interval).toBe(false);
   });
