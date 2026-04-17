@@ -1,4 +1,5 @@
 import fs from "fs/promises";
+import { createRequire } from "module";
 import {
   FLOOR_PLAN_INCLUSION_PHRASES,
   FLOOR_PLAN_EXCLUSION_PHRASES,
@@ -168,17 +169,20 @@ async function getPdfjs(): Promise<PdfjsLib> {
   const lib = imported as unknown as PdfjsLib;
 
   // Configure worker for Node.js once.
-  // We use the globalThis.require injected by the esbuild banner to resolve
-  // the worker path inside node_modules — this avoids hard-coding any path.
+  // Primary: use globalThis.require injected by the esbuild banner (production).
+  // Fallback: use createRequire from Node's 'module' package (vitest / dev).
+  // pdfjs v5+ requires a real workerSrc — an empty string throws "No workerSrc specified".
   try {
-    // The esbuild build banner injects: globalThis.require = createRequire(import.meta.url)
     const req = (globalThis as Record<string, unknown>)["require"] as (NodeRequire & { resolve: (id: string) => string }) | undefined;
-    if (req?.resolve) {
-      const workerPath = req.resolve("pdfjs-dist/legacy/build/pdf.worker.min.mjs");
-      lib.GlobalWorkerOptions.workerSrc = `file://${workerPath}`;
-    }
-  } catch {
-    // Fallback: empty string → pdfjs uses synchronous in-process mode
+    const resolveFn = req?.resolve ?? createRequire(import.meta.url).resolve;
+    const workerPath = resolveFn("pdfjs-dist/legacy/build/pdf.worker.min.mjs");
+    lib.GlobalWorkerOptions.workerSrc = `file://${workerPath}`;
+  } catch (e) {
+    console.warn(
+      "[pdfjs] Worker path resolution failed — pdfjs will not be able to parse PDFs. " +
+      "Ensure pdfjs-dist is installed and the build output includes pdf.worker.min.mjs. " +
+      `Error: ${(e as Error)?.message ?? String(e)}`,
+    );
     lib.GlobalWorkerOptions.workerSrc = "";
   }
 
@@ -837,13 +841,38 @@ function isSignageLeaf(title: string): boolean {
   return lower.includes("signs") || lower.includes("signage");
 }
 
-function classifyOutlineSection(title: string): PdfOutlineSection["type"] {
+// Lazily loaded classifyTitle to break the circular ESM import cycle.
+// pdf-words is imported by sheet-manifest; sheet-manifest must not be
+// statically imported by pdf-words.  We cache the resolved function after
+// the first dynamic import so subsequent calls are synchronous.
+let _classifyTitleFn: ((text: string) => string) | null = null;
+
+async function classifyOutlineSection(title: string): Promise<PdfOutlineSection["type"]> {
   // Delegate to the 10-bucket classifyTitle from sheet-manifest.ts.
-  // We use require() here to avoid a circular ESM import cycle
-  // (sheet-manifest imports pdf-words; pdf-words must not statically import sheet-manifest).
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const { classifyTitle } = require("./sheet-manifest") as { classifyTitle: (text: string) => string };
-  const bucket = classifyTitle(title);
+  // Dynamic import avoids a circular static-import cycle (sheet-manifest
+  // imports pdf-words; pdf-words must not statically import sheet-manifest).
+  // By the time this function is called (inside extractPdfMetadata), both
+  // modules are fully initialised, so the dynamic import resolves instantly.
+  if (!_classifyTitleFn) {
+    try {
+      // Try the esbuild-bundled require first (production)
+      const req = (globalThis as Record<string, unknown>)["require"] as NodeRequire | undefined;
+      if (req) {
+        _classifyTitleFn = (req("./sheet-manifest") as { classifyTitle: (text: string) => string }).classifyTitle;
+      }
+    } catch {
+      // ignore
+    }
+  }
+  if (!_classifyTitleFn) {
+    try {
+      const mod = await import("./sheet-manifest.js") as { classifyTitle: (text: string) => string };
+      _classifyTitleFn = mod.classifyTitle;
+    } catch {
+      return "other";
+    }
+  }
+  const bucket = _classifyTitleFn(title);
   if (bucket === "floor_plan") return "floor_plan";
   if (bucket === "signage_schedule") return "sign_schedule";
   if (bucket === "life_safety") return "sign_schedule";
@@ -955,7 +984,7 @@ export async function extractPdfMetadata(
           title: leaf.title,
           pageStart: leaf.pageNum,
           pageEnd: leaf.pageNum,
-          type: classifyOutlineSection(leaf.title),
+          type: await classifyOutlineSection(leaf.title),
         });
       }
     }
