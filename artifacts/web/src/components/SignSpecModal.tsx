@@ -138,6 +138,82 @@ export function SignSpecModal({ jobId, fileId, fileName, specPages, plaqueTable,
   const [specsLoading, setSpecsLoading] = useState(false);
   const [activeSpecId, setActiveSpecId] = useState<string | null>(null);
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
+  const [lbScale, setLbScale] = useState(1);
+  const [lbPanX, setLbPanX] = useState(0);
+  const [lbPanY, setLbPanY] = useState(0);
+  const lbDragRef = useRef<{ startX: number; startY: number; startPanX: number; startPanY: number; pointerId: number } | null>(null);
+  const lbContainerRef = useRef<HTMLDivElement>(null);
+  const [lbIsDragging, setLbIsDragging] = useState(false);
+
+  const lbResetView = useCallback(() => {
+    setLbScale(1);
+    setLbPanX(0);
+    setLbPanY(0);
+  }, []);
+
+  const closeLightbox = useCallback(() => {
+    setLightboxIndex(null);
+    setLbScale(1);
+    setLbPanX(0);
+    setLbPanY(0);
+  }, []);
+
+
+  const navigateLightbox = useCallback((delta: number, total: number) => {
+    setLightboxIndex((i) => {
+      if (i === null) return i;
+      const next = i + delta;
+      if (next < 0 || next >= total) return i;
+      return next;
+    });
+    setLbScale(1);
+    setLbPanX(0);
+    setLbPanY(0);
+  }, []);
+
+  const lbHandleWheel = useCallback((e: React.WheelEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const factor = e.deltaY < 0 ? 1.12 : 1 / 1.12;
+    setLbScale((prev) => {
+      const next = Math.min(10, Math.max(1, prev * factor));
+      const rect = lbContainerRef.current?.getBoundingClientRect();
+      if (!rect) return next;
+      const cx = e.clientX - rect.left - rect.width / 2;
+      const cy = e.clientY - rect.top - rect.height / 2;
+      setLbPanX((px) => cx * (1 - next / prev) + px * (next / prev));
+      setLbPanY((py) => cy * (1 - next / prev) + py * (next / prev));
+      return next;
+    });
+  }, []);
+
+  const lbHandlePointerDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    if (e.button !== 0) return;
+    e.currentTarget.setPointerCapture(e.pointerId);
+    lbDragRef.current = {
+      startX: e.clientX,
+      startY: e.clientY,
+      startPanX: lbPanX,
+      startPanY: lbPanY,
+      pointerId: e.pointerId,
+    };
+    setLbIsDragging(true);
+  }, [lbPanX, lbPanY]);
+
+  const lbHandlePointerMove = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    if (!lbDragRef.current || lbDragRef.current.pointerId !== e.pointerId) return;
+    const dx = e.clientX - lbDragRef.current.startX;
+    const dy = e.clientY - lbDragRef.current.startY;
+    setLbPanX(lbDragRef.current.startPanX + dx);
+    setLbPanY(lbDragRef.current.startPanY + dy);
+  }, []);
+
+  const lbHandlePointerUp = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    if (lbDragRef.current?.pointerId === e.pointerId) {
+      lbDragRef.current = null;
+      setLbIsDragging(false);
+    }
+  }, []);
 
   const lightboxIndexRef = useRef<number | null>(null);
   useEffect(() => { lightboxIndexRef.current = lightboxIndex; }, [lightboxIndex]);
@@ -193,19 +269,15 @@ export function SignSpecModal({ jobId, fileId, fileName, specPages, plaqueTable,
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         if (lightboxIndexRef.current !== null) {
-          setLightboxIndex(null);
+          closeLightbox();
         } else {
           onClose();
         }
         return;
       }
       if (lightboxIndexRef.current !== null) {
-        if (e.key === "ArrowLeft") {
-          setLightboxIndex((i) => (i !== null && i > 0 ? i - 1 : i));
-        }
-        if (e.key === "ArrowRight") {
-          setLightboxIndex((i) => (i !== null && i < specsWithDrawings.length - 1 ? i + 1 : i));
-        }
+        if (e.key === "ArrowLeft") navigateLightbox(-1, specsWithDrawings.length);
+        if (e.key === "ArrowRight") navigateLightbox(1, specsWithDrawings.length);
         return;
       }
       if (e.key === "ArrowLeft") setSpecIdx((i) => Math.max(0, i - 1));
@@ -213,7 +285,7 @@ export function SignSpecModal({ jobId, fileId, fileName, specPages, plaqueTable,
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [onClose, totalSpec, specsWithDrawings]);
+  }, [onClose, totalSpec, specsWithDrawings, navigateLightbox, closeLightbox]);
 
   useEffect(() => {
     const el = viewerRef.current;
@@ -560,7 +632,7 @@ export function SignSpecModal({ jobId, fileId, fileName, specPages, plaqueTable,
                             alt={`Drawing for ${spec.typeCode}`}
                             onClick={() => {
                               const idx = specsWithDrawings.findIndex((s) => s.id === spec.id);
-                              if (idx !== -1) setLightboxIndex(idx);
+                              if (idx !== -1) { setLightboxIndex(idx); lbResetView(); }
                             }}
                           />
                         </div>
@@ -628,7 +700,7 @@ export function SignSpecModal({ jobId, fileId, fileName, specPages, plaqueTable,
           </p>
         </div>
 
-        {/* Lightbox overlay */}
+        {/* Lightbox overlay — gallery with zoom/pan */}
         {lightboxIndex !== null && specsWithDrawings.length > 0 && (() => {
           const clampedIdx = Math.min(lightboxIndex, specsWithDrawings.length - 1);
           const currentSpec = specsWithDrawings[clampedIdx];
@@ -637,58 +709,102 @@ export function SignSpecModal({ jobId, fileId, fileName, specPages, plaqueTable,
           const hasNext = clampedIdx < specsWithDrawings.length - 1;
           return (
             <div
-              className="absolute inset-0 z-50 flex items-center justify-center bg-black/80"
-              onClick={() => setLightboxIndex(null)}
+              className="absolute inset-0 z-50 flex items-center justify-center bg-black/85"
+              onClick={closeLightbox}
             >
-              {/* Close button */}
-              <button
-                type="button"
-                onClick={() => setLightboxIndex(null)}
-                className="absolute top-3 right-3 p-1.5 rounded-full bg-background/20 text-white hover:bg-background/40 transition-colors"
-                aria-label="Close"
-              >
-                <X className="w-5 h-5" />
-              </button>
+              {/* Top-right controls: reset zoom + close */}
+              <div className="absolute top-3 right-3 flex items-center gap-1.5 z-10">
+                <button
+                  type="button"
+                  onClick={(e) => { e.stopPropagation(); lbResetView(); }}
+                  className="p-1.5 rounded-full bg-background/20 text-white hover:bg-background/40 transition-colors"
+                  aria-label="Reset zoom"
+                  title="Reset zoom (double-click image)"
+                >
+                  <RefreshCw className="w-4 h-4" />
+                </button>
+                <button
+                  type="button"
+                  onClick={(e) => { e.stopPropagation(); closeLightbox(); }}
+                  className="p-1.5 rounded-full bg-background/20 text-white hover:bg-background/40 transition-colors"
+                  aria-label="Close"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
 
               {/* Type code + counter label */}
-              <div className="absolute top-3 left-1/2 -translate-x-1/2 flex items-center gap-2">
+              <div className="absolute top-3 left-1/2 -translate-x-1/2 flex items-center gap-2 z-10 pointer-events-none">
                 <span className="px-3 py-1 rounded-full bg-background/30 text-white text-sm font-display font-bold tracking-wider">
                   {currentSpec.typeCode}
                 </span>
-                <span className="text-white/50 text-xs font-mono">
-                  {clampedIdx + 1} / {specsWithDrawings.length}
-                </span>
+                {specsWithDrawings.length > 1 && (
+                  <span className="text-white/50 text-xs font-mono">
+                    {clampedIdx + 1} / {specsWithDrawings.length}
+                  </span>
+                )}
               </div>
 
               {/* Prev arrow */}
-              <button
-                type="button"
-                onClick={(e) => { e.stopPropagation(); setLightboxIndex((i) => (i !== null && i > 0 ? i - 1 : i)); }}
-                disabled={!hasPrev}
-                aria-label="Previous drawing"
-                className="absolute left-3 top-1/2 -translate-y-1/2 p-2 rounded-full bg-background/20 text-white hover:bg-background/40 disabled:opacity-20 disabled:cursor-not-allowed transition-colors"
-              >
-                <ChevronLeft className="w-6 h-6" />
-              </button>
-
-              {/* Image */}
-              <img
-                src={lightboxUrl}
-                alt={`Drawing for ${currentSpec.typeCode}`}
-                className="max-w-[80%] max-h-[80%] object-contain rounded shadow-2xl"
-                onClick={(e) => e.stopPropagation()}
-              />
+              {hasPrev && (
+                <button
+                  type="button"
+                  onClick={(e) => { e.stopPropagation(); navigateLightbox(-1, specsWithDrawings.length); }}
+                  aria-label="Previous drawing"
+                  className="absolute left-3 top-1/2 -translate-y-1/2 p-2 rounded-full bg-background/20 text-white hover:bg-background/40 transition-colors z-10"
+                >
+                  <ChevronLeft className="w-6 h-6" />
+                </button>
+              )}
 
               {/* Next arrow */}
-              <button
-                type="button"
-                onClick={(e) => { e.stopPropagation(); setLightboxIndex((i) => (i !== null && i < specsWithDrawings.length - 1 ? i + 1 : i)); }}
-                disabled={!hasNext}
-                aria-label="Next drawing"
-                className="absolute right-3 top-1/2 -translate-y-1/2 p-2 rounded-full bg-background/20 text-white hover:bg-background/40 disabled:opacity-20 disabled:cursor-not-allowed transition-colors"
+              {hasNext && (
+                <button
+                  type="button"
+                  onClick={(e) => { e.stopPropagation(); navigateLightbox(1, specsWithDrawings.length); }}
+                  aria-label="Next drawing"
+                  className="absolute right-3 top-1/2 -translate-y-1/2 p-2 rounded-full bg-background/20 text-white hover:bg-background/40 transition-colors z-10"
+                >
+                  <ChevronRight className="w-6 h-6" />
+                </button>
+              )}
+
+              {/* Zoom level badge */}
+              {lbScale > 1 && (
+                <div className="absolute bottom-3 left-1/2 -translate-x-1/2 px-2 py-0.5 rounded bg-black/60 text-white text-[11px] font-mono pointer-events-none select-none z-10">
+                  {Math.round(lbScale * 100)}%
+                </div>
+              )}
+
+              {/* Zoomable / pannable container */}
+              <div
+                ref={lbContainerRef}
+                className="absolute inset-0 overflow-hidden"
+                onClick={(e) => e.stopPropagation()}
+                onWheel={lbHandleWheel}
+                onPointerDown={lbHandlePointerDown}
+                onPointerMove={lbHandlePointerMove}
+                onPointerUp={lbHandlePointerUp}
+                onPointerCancel={lbHandlePointerUp}
+                style={{ cursor: lbScale > 1 ? (lbIsDragging ? "grabbing" : "grab") : "default" }}
               >
-                <ChevronRight className="w-6 h-6" />
-              </button>
+                <div
+                  className="w-full h-full flex items-center justify-center"
+                  onDoubleClick={(e) => { e.stopPropagation(); lbResetView(); }}
+                >
+                  <img
+                    src={lightboxUrl}
+                    alt={`Drawing for ${currentSpec.typeCode}`}
+                    className="max-w-[80%] max-h-[80%] object-contain rounded shadow-2xl select-none pointer-events-none"
+                    style={{
+                      transform: `translate(${lbPanX}px, ${lbPanY}px) scale(${lbScale})`,
+                      transformOrigin: "center",
+                      transition: lbIsDragging ? "none" : "transform 0.05s ease-out",
+                    }}
+                    draggable={false}
+                  />
+                </div>
+              </div>
             </div>
           );
         })()}
