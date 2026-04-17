@@ -19,6 +19,37 @@ import { LOGOS_DIR } from "../lib/storage";
 
 const router: IRouter = Router();
 
+// ── In-memory rescan progress store ─────────────────────────────────────────
+// Supports a single concurrent rescan run. Tracks real-time job outcomes so
+// the admin UI can poll for live progress.
+
+export type RescanJobOutcome = {
+  jobId: string;
+  name: string;
+  fileNames: string[];
+  status: "succeeded" | "failed" | "warning";
+  signCount: number;
+  durationMs: number;
+  error?: string;
+};
+
+export type RescanProgress = {
+  runId: string;
+  startedAt: string;
+  state: "running" | "done" | "error";
+  total: number;
+  completed: number;
+  currentJob: string | null;
+  results: RescanJobOutcome[];
+  succeeded: number;
+  failed: number;
+  warnings: number;
+  message?: string;
+  fatalError?: string;
+};
+
+let activeRescan: RescanProgress | null = null;
+
 const clerk = createClerkClient({ secretKey: process.env.CLERK_SECRET_KEY! });
 
 // Logo upload — multer storage
@@ -617,8 +648,24 @@ router.get("/admin/extraction-report", requireRole("SUPER_ADMIN"), async (req, r
   }
 });
 
+// GET /admin/rescan-progress — poll the current (or most recent) rescan run state (SUPER_ADMIN)
+router.get("/admin/rescan-progress", requireRole("SUPER_ADMIN"), (_req, res) => {
+  if (!activeRescan) {
+    res.json({ state: "idle" });
+    return;
+  }
+  res.json(activeRescan);
+});
+
 // POST /admin/rescan-all — clear auto-extracted data and re-run the PDF processor for all jobs (SUPER_ADMIN)
+// Returns immediately with a runId; processing runs in the background.
+// Poll GET /admin/rescan-progress to track live progress.
 router.post("/admin/rescan-all", requireRole("SUPER_ADMIN"), async (req, res) => {
+  if (activeRescan?.state === "running") {
+    res.status(409).json({ error: "A rescan is already in progress", runId: activeRescan.runId });
+    return;
+  }
+
   try {
     const jobs = await db
       .select({ id: jobsTable.id, name: jobsTable.name })
@@ -626,72 +673,146 @@ router.post("/admin/rescan-all", requireRole("SUPER_ADMIN"), async (req, res) =>
       .orderBy(jobsTable.createdAt);
 
     if (jobs.length === 0) {
-      res.json({ message: "No jobs found", total: 0, succeeded: 0, failed: 0, results: [] });
+      res.json({ message: "No jobs found", total: 0, succeeded: 0, failed: 0, warnings: 0, results: [], state: "done" });
       return;
     }
 
-    req.log.info({ jobCount: jobs.length }, "[Rescan All] Starting bulk rescan");
+    // Pre-load file names per job for the report
+    const allFiles = await db
+      .select({ jobId: jobFilesTable.jobId, originalName: jobFilesTable.originalName })
+      .from(jobFilesTable)
+      .where(inArray(jobFilesTable.jobId, jobs.map((j) => j.id)));
 
-    // Bulk pre-reset: clear all auto-extracted signs across every job
-    await db
-      .delete(extractedSignsTable)
-      .where(
-        and(
-          eq(extractedSignsTable.userVerified, false),
-          eq(extractedSignsTable.manuallyAdded, false),
-        ),
-      );
-
-    // Bulk reset page_stats and page_count on all job files
-    await db
-      .update(jobFilesTable)
-      .set({ pageStats: null, pageCount: null });
-
-    // Mark all jobs as processing
-    await db
-      .update(jobsTable)
-      .set({ status: "processing", updatedAt: new Date() });
-
-    req.log.info({ jobCount: jobs.length }, "[Rescan All] Pre-reset complete — starting sequential processing");
-
-    // Process each job sequentially
-    const results: Array<{ jobId: string; name: string; status: "succeeded" | "failed"; error?: string }> = [];
-    for (const job of jobs) {
-      try {
-        await runPdfProcessor(job.id);
-        results.push({ jobId: job.id, name: job.name, status: "succeeded" });
-        req.log.info({ jobId: job.id, name: job.name }, "[Rescan All] Job succeeded");
-      } catch (err) {
-        const errMsg = err instanceof Error ? err.message : String(err);
-        results.push({ jobId: job.id, name: job.name, status: "failed", error: errMsg });
-        req.log.error({ jobId: job.id, name: job.name, err }, "[Rescan All] Job failed");
-        // Ensure the job is not left stuck in 'processing' if runPdfProcessor threw
-        try {
-          await db
-            .update(jobsTable)
-            .set({ status: "failed", error: errMsg, updatedAt: new Date() })
-            .where(eq(jobsTable.id, job.id));
-        } catch (updateErr) {
-          req.log.error({ updateErr, jobId: job.id }, "[Rescan All] Failed to mark job as failed after error");
-        }
-      }
+    const fileNamesByJob = new Map<string, string[]>();
+    for (const f of allFiles) {
+      if (!f.jobId) continue;
+      const list = fileNamesByJob.get(f.jobId) ?? [];
+      list.push(f.originalName ?? "");
+      fileNamesByJob.set(f.jobId, list);
     }
 
-    const succeeded = results.filter((r) => r.status === "succeeded").length;
-    const failed = results.filter((r) => r.status === "failed").length;
-
-    req.log.info({ total: jobs.length, succeeded, failed }, "[Rescan All] Bulk rescan complete");
-
-    res.json({
-      message: `Rescan complete: ${succeeded} succeeded, ${failed} failed`,
+    const runId = crypto.randomUUID();
+    activeRescan = {
+      runId,
+      startedAt: new Date().toISOString(),
+      state: "running",
       total: jobs.length,
-      succeeded,
-      failed,
-      results,
+      completed: 0,
+      currentJob: null,
+      results: [],
+      succeeded: 0,
+      failed: 0,
+      warnings: 0,
+    };
+
+    req.log.info({ jobCount: jobs.length, runId }, "[Rescan All] Starting bulk rescan (async)");
+
+    // Return immediately so the client can start polling
+    res.json({ runId, total: jobs.length, state: "running" });
+
+    // Run the pipeline asynchronously (after response is sent)
+    setImmediate(async () => {
+      const progress = activeRescan!;
+
+      try {
+        // Bulk pre-reset: clear all auto-extracted signs across every job
+        await db
+          .delete(extractedSignsTable)
+          .where(
+            and(
+              eq(extractedSignsTable.userVerified, false),
+              eq(extractedSignsTable.manuallyAdded, false),
+            ),
+          );
+
+        // Bulk reset page_stats and page_count on all job files
+        await db
+          .update(jobFilesTable)
+          .set({ pageStats: null, pageCount: null });
+
+        // Mark all jobs as processing
+        await db
+          .update(jobsTable)
+          .set({ status: "processing", updatedAt: new Date() });
+
+        req.log.info({ jobCount: jobs.length, runId }, "[Rescan All] Pre-reset complete — processing sequentially");
+
+        for (const job of jobs) {
+          progress.currentJob = job.name;
+          const jobStart = Date.now();
+
+          try {
+            await runPdfProcessor(job.id);
+            const durationMs = Date.now() - jobStart;
+
+            // Count signs extracted for this job
+            const [signCountRow] = await db
+              .select({ total: count() })
+              .from(extractedSignsTable)
+              .where(eq(extractedSignsTable.jobId, job.id));
+            const signCount = Number(signCountRow?.total ?? 0);
+
+            const status: RescanJobOutcome["status"] = signCount === 0 ? "warning" : "succeeded";
+            const outcome: RescanJobOutcome = {
+              jobId: job.id,
+              name: job.name,
+              fileNames: fileNamesByJob.get(job.id) ?? [],
+              status,
+              signCount,
+              durationMs,
+            };
+            progress.results.push(outcome);
+            if (status === "warning") {
+              progress.warnings++;
+            } else {
+              progress.succeeded++;
+            }
+            req.log.info({ jobId: job.id, name: job.name, signCount, durationMs, status }, "[Rescan All] Job done");
+          } catch (err) {
+            const durationMs = Date.now() - jobStart;
+            const errMsg = err instanceof Error ? err.message : String(err);
+            const outcome: RescanJobOutcome = {
+              jobId: job.id,
+              name: job.name,
+              fileNames: fileNamesByJob.get(job.id) ?? [],
+              status: "failed",
+              signCount: 0,
+              durationMs,
+              error: errMsg,
+            };
+            progress.results.push(outcome);
+            progress.failed++;
+            req.log.error({ jobId: job.id, name: job.name, err }, "[Rescan All] Job failed");
+            try {
+              await db
+                .update(jobsTable)
+                .set({ status: "failed", error: errMsg, updatedAt: new Date() })
+                .where(eq(jobsTable.id, job.id));
+            } catch (updateErr) {
+              req.log.error({ updateErr, jobId: job.id }, "[Rescan All] Failed to mark job as failed after error");
+            }
+          }
+
+          progress.completed++;
+        }
+
+        progress.currentJob = null;
+        progress.state = "done";
+        progress.message = `Rescan complete: ${progress.succeeded} succeeded, ${progress.failed} failed, ${progress.warnings} with zero signs`;
+        req.log.info(
+          { total: jobs.length, succeeded: progress.succeeded, failed: progress.failed, warnings: progress.warnings, runId },
+          "[Rescan All] Bulk rescan complete",
+        );
+      } catch (fatalErr) {
+        progress.state = "error";
+        progress.currentJob = null;
+        progress.fatalError = fatalErr instanceof Error ? fatalErr.message : String(fatalErr);
+        req.log.error({ err: fatalErr, runId }, "[Rescan All] Bulk rescan failed with fatal error");
+      }
     });
   } catch (err) {
-    req.log.error({ err }, "[Rescan All] Bulk rescan failed");
-    res.status(500).json({ error: "Rescan failed", detail: err instanceof Error ? err.message : String(err) });
+    req.log.error({ err }, "[Rescan All] Failed to start bulk rescan");
+    res.status(500).json({ error: "Failed to start rescan", detail: err instanceof Error ? err.message : String(err) });
   }
 });
 
